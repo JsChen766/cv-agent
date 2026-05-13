@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { ResumeGenerationService } from "../src/application/ResumeGenerationService.js";
+import { DeterministicJDRequirementExtractor } from "../src/application/extractors/DeterministicJDRequirementExtractor.js";
+import { DeterministicArtifactGenerator } from "../src/application/generators/DeterministicArtifactGenerator.js";
 import {
   ExperienceIngestionService,
   InMemoryEvidenceRepository,
@@ -44,7 +46,15 @@ describe("ResumeGenerationService", () => {
       evidenceRepo,
       skillRepo,
     );
+    const requirementExtractor = new DeterministicJDRequirementExtractor(
+      skillRepo,
+      requirementRepo,
+    );
+    const artifactGenerator = new DeterministicArtifactGenerator();
+
     const service = new ResumeGenerationService(
+      requirementExtractor,
+      artifactGenerator,
       experienceRepo,
       evidenceRepo,
       skillRepo,
@@ -94,7 +104,15 @@ describe("ResumeGenerationService", () => {
       evidenceRepo,
       skillRepo,
     );
+    const requirementExtractor = new DeterministicJDRequirementExtractor(
+      skillRepo,
+      requirementRepo,
+    );
+    const artifactGenerator = new DeterministicArtifactGenerator();
+
     const service = new ResumeGenerationService(
+      requirementExtractor,
+      artifactGenerator,
       experienceRepo,
       evidenceRepo,
       skillRepo,
@@ -118,5 +136,29 @@ describe("ResumeGenerationService", () => {
     expect(
       result.evidenceChains.every((chain) => chain.risk.missingEvidenceClaims.length > 0),
     ).toBe(true);
+  });
+
+  it("does not depend on internal mockStrategist or mockArchitect methods", async () => {
+    const service = new ResumeGenerationService(
+      new DeterministicJDRequirementExtractor(
+        new InMemorySkillRepository(),
+        new InMemoryJDRequirementRepository(),
+      ),
+      new DeterministicArtifactGenerator(),
+      new InMemoryExperienceRepository(),
+      new InMemoryEvidenceRepository(),
+      new InMemorySkillRepository(),
+      new InMemoryJDRequirementRepository(),
+      new InMemoryGeneratedArtifactRepository(),
+      new KeywordExperienceRetriever(
+        new InMemoryExperienceRepository(),
+        new InMemoryEvidenceRepository(),
+        new InMemorySkillRepository(),
+      ),
+    );
+
+    // Verify the service has no mockStrategist or mockArchitect methods
+    expect("mockStrategist" in service).toBe(false);
+    expect("mockArchitect" in service).toBe(false);
   });
 });

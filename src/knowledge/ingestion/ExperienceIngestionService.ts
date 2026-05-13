@@ -3,7 +3,6 @@ import type {
   EvidenceSourceType,
   EvidenceType,
   Experience,
-  ExperienceType,
   Skill,
 } from "../types.js";
 import type {
@@ -14,7 +13,6 @@ import type {
 import {
   detectKnownSkills,
   skillIdFor,
-  splitEvidenceText,
   stableId,
 } from "../keywordUtils.js";
 import {
@@ -22,6 +20,8 @@ import {
   validateExperience,
   validateSkill,
 } from "../schemas/index.js";
+import { DeterministicExperienceExtractor } from "./extractors/DeterministicExperienceExtractor.js";
+import type { ExperienceExtractor } from "./extractors/types.js";
 
 export type IngestExperienceInput = {
   userId: string;
@@ -36,59 +36,7 @@ export type IngestExperienceResult = {
   skills: Skill[];
 };
 
-type ExtractedExperience = {
-  type: ExperienceType;
-  organization: string;
-  role: string;
-  summary: string;
-  evidenceExcerpts: string[];
-};
-
-export interface ExperienceExtractor {
-  extract(input: IngestExperienceInput): ExtractedExperience;
-}
-
-class DeterministicExperienceExtractor implements ExperienceExtractor {
-  extract(input: IngestExperienceInput): ExtractedExperience {
-    const evidenceExcerpts = splitEvidenceText(input.rawText).slice(0, 5);
-    const firstExcerpt = evidenceExcerpts[0] ?? input.rawText.trim();
-
-    return {
-      type: this.detectType(input.rawText),
-      organization: this.detectOrganization(input.rawText),
-      role: this.detectRole(input.rawText),
-      summary: firstExcerpt,
-      evidenceExcerpts: evidenceExcerpts.length > 0 ? evidenceExcerpts : [input.rawText.trim()],
-    };
-  }
-
-  private detectType(text: string): ExperienceType {
-    const normalized = text.toLowerCase();
-    if (normalized.includes("university") || normalized.includes("course")) {
-      return "education";
-    }
-    if (normalized.includes("project") || normalized.includes("built")) {
-      return "project";
-    }
-    return "work";
-  }
-
-  private detectOrganization(text: string): string {
-    const atMatch = text.match(/\bat\s+([A-Z][A-Za-z0-9&.\-\s]{1,40})/);
-    return atMatch?.[1]?.trim().replace(/[.,;:]$/, "") ?? "Unknown Organization";
-  }
-
-  private detectRole(text: string): string {
-    const roleMatch = text.match(/\bas\s+(?:a|an)?\s*([A-Za-z][A-Za-z0-9&.\-\s]{1,40})\s+at\b/i);
-    if (roleMatch?.[1]) {
-      return roleMatch[1].trim();
-    }
-    if (/\b(frontend|react|typescript|component)\b/i.test(text)) {
-      return "Frontend Engineer";
-    }
-    return "Contributor";
-  }
-}
+export type { ExperienceExtractor } from "./extractors/types.js";
 
 export class ExperienceIngestionService {
   private readonly extractor: ExperienceExtractor;
@@ -103,7 +51,7 @@ export class ExperienceIngestionService {
   }
 
   async ingest(input: IngestExperienceInput): Promise<IngestExperienceResult> {
-    const extracted = this.extractor.extract(input);
+    const extracted = await this.extractor.extract(input);
     const now = new Date().toISOString();
     const experienceId = stableId("exp", `${input.userId}:${input.rawText}`);
 

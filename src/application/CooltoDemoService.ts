@@ -14,6 +14,8 @@ import {
 import type { ExperienceIngestionService as ExperienceIngestionServiceType } from "../knowledge/ingestion/ExperienceIngestionService.js";
 import { ResumeGenerationService } from "./ResumeGenerationService.js";
 import type { ResumeGenerationService as ResumeGenerationServiceType } from "./ResumeGenerationService.js";
+import { DeterministicJDRequirementExtractor } from "./extractors/DeterministicJDRequirementExtractor.js";
+import { DeterministicArtifactGenerator } from "./generators/DeterministicArtifactGenerator.js";
 import {
   toGenerateResumeResponse,
   toIngestExperienceResponse,
@@ -62,17 +64,29 @@ export function createInMemoryCooltoDemoService(): CooltoDemoService {
   const skillRepo = new InMemorySkillRepository();
   const requirementRepo = new InMemoryJDRequirementRepository();
   const artifactRepo = new InMemoryGeneratedArtifactRepository();
+
   const ingestionService = new ExperienceIngestionService(
     experienceRepo,
     evidenceRepo,
     skillRepo,
   );
+
   const retriever = new KeywordExperienceRetriever(
     experienceRepo,
     evidenceRepo,
     skillRepo,
   );
+
+  const requirementExtractor = new DeterministicJDRequirementExtractor(
+    skillRepo,
+    requirementRepo,
+  );
+
+  const artifactGenerator = new DeterministicArtifactGenerator();
+
   const resumeGenerationService = new ResumeGenerationService(
+    requirementExtractor,
+    artifactGenerator,
     experienceRepo,
     evidenceRepo,
     skillRepo,

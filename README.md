@@ -69,6 +69,81 @@ Runtime validation is handled with zod schemas in `src/knowledge/schemas/`. The 
 
 The array lengths are kept aligned by index. It no longer returns single `artifact`, `evidenceChain`, or `graphView` compatibility fields.
 
+## Dual Implementation Architecture
+
+The pipeline now supports **two implementations** for each key processing step:
+
+### Deterministic implementation (default, for demo/tests)
+
+Rule-based extraction without any LLM calls. Used by `createInMemoryCooltoDemoService()` and all existing tests.
+
+| Component | Class | Location |
+|---|---|---|
+| Experience extraction | `DeterministicExperienceExtractor` | `src/knowledge/ingestion/extractors/` |
+| JD requirement extraction | `DeterministicJDRequirementExtractor` | `src/application/extractors/` |
+| Artifact generation | `DeterministicArtifactGenerator` | `src/application/generators/` |
+
+### Agent-backed implementation (for real LLM integration)
+
+Calls a `BaseAgent` subclass and validates the JSON output with zod schemas. Throws on invalid output — no silent fallback.
+
+| Component | Agent used | Class | Location |
+|---|---|---|---|
+| Experience extraction | `ArchivistAgent` (or any `BaseAgent`) | `AgentExperienceExtractor` | `src/knowledge/ingestion/extractors/` |
+| JD requirement extraction | `StrategistAgent` (or any `BaseAgent`) | `AgentJDRequirementExtractor` | `src/application/extractors/` |
+| Artifact generation | `ArchitectAgent` (or any `BaseAgent`) | `AgentArtifactGenerator` | `src/application/generators/` |
+
+### Abstracted interfaces (the "what")
+
+| Interface | Method | Purpose |
+|---|---|---|
+| `ExperienceExtractor` | `extract(input) => Promise<ExtractedExperience>` | Extract structured experience from raw text |
+| `JDRequirementExtractor` | `extract(input) => Promise<ExtractJDRequirementsResult>` | Extract requirements from a job description |
+| `ArtifactGenerator` | `generate(input) => Promise<GeneratedArtifact[]>` | Generate resume artifacts from requirements and experiences |
+
+`ResumeGenerationService` now receives these via **constructor dependency injection** and acts purely as an orchestrator. It no longer contains `mockStrategist` or `mockArchitect` methods.
+
+### Agent-backed factory
+
+For future real-LLM wiring, use the skeleton factory:
+
+```ts
+import { createAgentBackedResumeGenerationService } from "./application/factories/createAgentBackedResumeGenerationService.js";
+
+const service = createAgentBackedResumeGenerationService({
+  strategistAgent,   // StrategistAgent instance with real ModelClient
+  architectAgent,    // ArchitectAgent instance with real ModelClient
+  experienceRepo,
+  evidenceRepo,
+  skillRepo,
+  requirementRepo,
+  artifactRepo,
+  retriever,
+});
+```
+
+The deterministic demo factory remains unchanged:
+
+```ts
+import { createInMemoryCooltoDemoService } from "./application/CooltoDemoService.js";
+const demo = createInMemoryCooltoDemoService();
+```
+
+### Connecting real LLMs (DeepSeek / OpenRouter)
+
+1. Set API keys in `.env`: `DEEPSEEK_API_KEY` or `OPENROUTER_API_KEY`.
+2. Create a `ModelClient` with the real provider:
+   ```ts
+   const provider = new DeepSeekProvider({ apiKey: process.env.DEEPSEEK_API_KEY! });
+   const modelClient = new ModelClient({ provider, defaultModel: "deepseek-v4-pro" });
+   ```
+3. Create agents with that client:
+   ```ts
+   const strategistAgent = new StrategistAgent({ modelClient });
+   const architectAgent = new ArchitectAgent({ modelClient });
+   ```
+4. Pass them to `createAgentBackedResumeGenerationService()`.
+
 ## Frontend Contract
 
 Frontend-oriented TypeScript contracts live in `src/api-contracts/`. They define request and response shapes only; there is no HTTP server.
@@ -91,32 +166,33 @@ raw experience -> IngestExperienceResponse -> GenerateResumeResponse
 
 Use `createInMemoryCooltoDemoService()` for local prototypes and tests.
 
-Current constraints:
+## Current Non-Goals
 
-- No real vector database.
-- No Neo4j or external graph database.
 - No frontend.
 - No HTTP API server.
-- No real LLM calls.
-- Repositories are `interface` + in-memory implementations so they can be replaced later.
-
-Next intended step: add an API server and a frontend panel on top of the contract boundary.
+- No Qdrant / Cloudflare Vectorize integration.
+- No Neo4j or external graph database.
+- No production persistence.
+- No complete RAG.
+- No real embedding pipeline.
+- No real user system.
+- No complex multi-agent self-loop.
 
 ## Directory Structure
 
 ```text
 src/
-  application/   Application services such as ResumeGenerationService
-  core/          Runtime interfaces and base implementations
-  providers/     DeepSeek, OpenRouter, and Mock providers
-  agents/        Minimal example agents
-  tools/         Example tools
-  workflows/     Workflow placeholders
-  knowledge/     Knowledge types, zod schemas, repositories, ingestion, retrieval, graph builders
-  api-contracts/ Frontend-facing request and response types
-  examples/      Runnable demos
-  config/        Node.js environment loading
-tests/           Vitest tests
+  application/           Application services, extractors, generators, mappers, factories
+  core/                  Runtime interfaces and base implementations
+  providers/             DeepSeek, OpenRouter, and Mock providers
+  agents/                Concrete agent implementations
+  tools/                 Example tools
+  workflows/             Workflow placeholders
+  knowledge/             Knowledge types, zod schemas, repositories, ingestion, retrieval, graph builders
+  api-contracts/         Frontend-facing request and response types
+  examples/              Runnable demos
+  config/                Node.js environment loading
+tests/                   Vitest tests
 ```
 
 ## Install
@@ -190,15 +266,3 @@ The current demo agents map to future Coolto roles:
 - `StrategistAgent`: analyze JD requirements.
 - `ArchitectAgent`: draft resume bullets.
 - `CriticAgent`: review output from an HR perspective.
-
-## Current Non-Goals
-
-- No complete RAG.
-- No real vector store.
-- No Neo4j integration.
-- No HTTP API server.
-- No frontend.
-- No real embedding or Qdrant / Cloudflare Vectorize integration.
-- No production resume generator.
-- No real user system.
-- No complex multi-agent self-loop.

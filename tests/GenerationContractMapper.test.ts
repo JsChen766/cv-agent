@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { ResumeGenerationService } from "../src/application/ResumeGenerationService.js";
+import { DeterministicJDRequirementExtractor } from "../src/application/extractors/DeterministicJDRequirementExtractor.js";
+import { DeterministicArtifactGenerator } from "../src/application/generators/DeterministicArtifactGenerator.js";
 import { toGenerateResumeResponse } from "../src/application/mappers/index.js";
 import {
   ExperienceIngestionService,
@@ -59,7 +61,14 @@ async function createGenerationResult() {
     evidenceRepo,
     skillRepo,
   );
+  const requirementExtractor = new DeterministicJDRequirementExtractor(
+    skillRepo,
+    requirementRepo,
+  );
+  const artifactGenerator = new DeterministicArtifactGenerator();
   const service = new ResumeGenerationService(
+    requirementExtractor,
+    artifactGenerator,
     experienceRepo,
     evidenceRepo,
     skillRepo,

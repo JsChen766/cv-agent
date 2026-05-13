@@ -1,4 +1,6 @@
 import { ResumeGenerationService } from "../application/ResumeGenerationService.js";
+import { DeterministicJDRequirementExtractor } from "../application/extractors/DeterministicJDRequirementExtractor.js";
+import { DeterministicArtifactGenerator } from "../application/generators/DeterministicArtifactGenerator.js";
 import {
   ExperienceIngestionService,
   InMemoryEvidenceRepository,
@@ -27,7 +29,14 @@ async function main() {
     evidenceRepo,
     skillRepo,
   );
+  const requirementExtractor = new DeterministicJDRequirementExtractor(
+    skillRepo,
+    requirementRepo,
+  );
+  const artifactGenerator = new DeterministicArtifactGenerator();
   const resumeGeneration = new ResumeGenerationService(
+    requirementExtractor,
+    artifactGenerator,
     experienceRepo,
     evidenceRepo,
     skillRepo,
