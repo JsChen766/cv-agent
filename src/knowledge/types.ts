@@ -129,19 +129,37 @@ export type GeneratedArtifact = {
   updatedAt: string;
 };
 
-export type EvidenceChainRisk = {
-  level: "low" | "medium" | "high";
-  reasons: string[];
+export type RiskLevel = "low" | "medium" | "high";
+
+export type EvidenceRiskAssessment = {
+  level: RiskLevel;
+  truthfulnessRisk: RiskLevel;
+  exaggerationRisk: RiskLevel;
+  missingEvidenceClaims: string[];
+  exaggerationWarnings: string[];
+  notes: string[];
+};
+
+export type EvidenceRequirementMatch = {
+  requirement: JDRequirement;
+  matchedSkills: Skill[];
+  matchedExperiences: Experience[];
+  matchedEvidences: Evidence[];
+  matchScore: number;
+  matchReason: string;
 };
 
 export type EvidenceChain = {
+  id: string;
   artifact: GeneratedArtifact;
-  experiences: Experience[];
-  evidences: Evidence[];
-  skills: Skill[];
-  requirements: JDRequirement[];
-  risk: EvidenceChainRisk;
+  summary: string;
+  requirementMatches: EvidenceRequirementMatch[];
+  sourceExperiences: Experience[];
+  sourceEvidences: Evidence[];
+  sourceSkills: Skill[];
+  risk: EvidenceRiskAssessment;
   scores: ArtifactScores;
+  createdAt: string;
 };
 
 export type GraphNodeType =

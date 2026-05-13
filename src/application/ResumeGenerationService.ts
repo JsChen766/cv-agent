@@ -23,6 +23,7 @@ import type {
   ExperienceRetriever,
   RetrievedExperience,
 } from "../knowledge/retrieval/ExperienceRetriever.js";
+import { validateGeneratedArtifact } from "../knowledge/schemas.js";
 
 export type GenerateResumeInput = {
   userId: string;
@@ -34,6 +35,9 @@ export type GenerateResumeResult = {
   jdId: string;
   requirements: JDRequirement[];
   retrievedExperiences: RetrievedExperience[];
+  artifacts: GeneratedArtifact[];
+  evidenceChains: EvidenceChain[];
+  graphViews: GraphView[];
   artifact: GeneratedArtifact;
   evidenceChain: EvidenceChain;
   graphView: GraphView;
@@ -61,21 +65,39 @@ export class ResumeGenerationService {
       requirements,
       limit: 3,
     });
-    const artifact = await this.mockArchitect(input, jdId, requirements, retrievedExperiences);
-    await this.artifactRepo.save(artifact);
-
-    const relevantSkills = await this.loadRelevantSkills(input.userId, artifact);
-    const evidenceChain = await this.chainBuilder.build(
-      artifact,
-      relevantSkills,
+    const artifacts = await this.mockArchitect(
+      input,
+      jdId,
       requirements,
+      retrievedExperiences,
     );
-    const graphView = this.graphBuilder.build(evidenceChain);
+    const evidenceChains: EvidenceChain[] = [];
+    const graphViews: GraphView[] = [];
+
+    for (const artifact of artifacts) {
+      validateGeneratedArtifact(artifact);
+      await this.artifactRepo.save(artifact);
+      const relevantSkills = await this.loadRelevantSkills(input.userId, artifact);
+      const evidenceChain = await this.chainBuilder.build(
+        artifact,
+        relevantSkills,
+        requirements,
+      );
+      evidenceChains.push(evidenceChain);
+      graphViews.push(this.graphBuilder.build(evidenceChain));
+    }
+
+    const [artifact] = artifacts;
+    const [evidenceChain] = evidenceChains;
+    const [graphView] = graphViews;
 
     return {
       jdId,
       requirements,
       retrievedExperiences,
+      artifacts,
+      evidenceChains,
+      graphViews,
       artifact,
       evidenceChain,
       graphView,
@@ -129,51 +151,75 @@ export class ResumeGenerationService {
     jdId: string,
     requirements: JDRequirement[],
     retrievedExperiences: RetrievedExperience[],
-  ): Promise<GeneratedArtifact> {
+  ): Promise<GeneratedArtifact[]> {
     const now = new Date().toISOString();
-    const topMatches = retrievedExperiences.slice(0, 2);
-    const sourceExperienceIds = topMatches.map((r) => r.experience.id);
-    const sourceEvidenceIds = unique(topMatches.flatMap((r) => r.matchedEvidenceIds));
-    const matchedSkillIds = unique(topMatches.flatMap((r) => r.matchedSkillIds));
-    const averageScore =
-      topMatches.length === 0
-        ? 0
-        : topMatches.reduce((sum, item) => sum + item.matchScore, 0) / topMatches.length;
+    const topMatches = retrievedExperiences.slice(0, 3);
+    if (topMatches.length === 0) {
+      return [
+        this.createArtifact({
+          input,
+          jdId,
+          requirements,
+          content: `Built relevant experience narrative for ${input.targetRole}; needs stronger evidence before use.`,
+          sourceExperienceIds: [],
+          sourceEvidenceIds: [],
+          matchedSkillIds: [],
+          score: 0,
+          evidenceStrength: 0.2,
+          now,
+        }),
+      ];
+    }
 
-    const content =
-      topMatches.length === 0
-        ? `Built relevant experience narrative for ${input.targetRole}; needs stronger evidence before use.`
-        : this.renderBullet(input.targetRole, topMatches);
-
-    return {
-      id: stableId("artifact", `${input.userId}:${jdId}:${content}`),
-      userId: input.userId,
-      type: "resume_bullet",
-      content,
-      sourceExperienceIds,
-      sourceEvidenceIds,
-      matchedSkillIds,
-      targetJDId: jdId,
-      targetRequirementIds: requirements.map((r) => r.id),
-      targetRole: input.targetRole,
-      scores: {
-        overall: Number(averageScore.toFixed(3)),
-        requirementMatch: Number(averageScore.toFixed(3)),
-        evidenceStrength: sourceEvidenceIds.length > 0 ? 0.85 : 0.2,
-      },
-      status: sourceEvidenceIds.length > 0 ? "ready" : "needs_review",
-      createdAt: now,
-      updatedAt: now,
-    };
+    return topMatches.map((match) =>
+      this.createArtifact({
+        input,
+        jdId,
+        requirements,
+        content: this.renderBullet(input.targetRole, match),
+        sourceExperienceIds: [match.experience.id],
+        sourceEvidenceIds: match.matchedEvidences.map((evidence) => evidence.id),
+        matchedSkillIds: match.matchedSkills.map((skill) => skill.id),
+        score: match.matchScore,
+        evidenceStrength: match.matchedEvidences.length > 0 ? 0.85 : 0.2,
+        now,
+      }),
+    );
   }
 
   private renderBullet(
     targetRole: string,
-    retrievedExperiences: RetrievedExperience[],
+    retrievedExperience: RetrievedExperience,
   ): string {
-    const top = retrievedExperiences[0];
-    const support = top.reason.replace(/\.$/, "");
-    return `Delivered ${targetRole} impact at ${top.experience.organization} as ${top.experience.role}, using ${support.toLowerCase()} to support ${top.experience.star.result}`;
+    const support = retrievedExperience.reason.replace(/\.$/, "");
+    return `Delivered ${targetRole} impact at ${retrievedExperience.experience.organization} as ${retrievedExperience.experience.role}, using ${support.toLowerCase()} to support ${retrievedExperience.experience.star.result}`;
+  }
+
+  private createArtifact(params: CreateArtifactInput): GeneratedArtifact {
+    const score = Number(params.score.toFixed(3));
+    return {
+      id: stableId(
+        "artifact",
+        `${params.input.userId}:${params.jdId}:${params.content}`,
+      ),
+      userId: params.input.userId,
+      type: "resume_bullet",
+      content: params.content,
+      sourceExperienceIds: params.sourceExperienceIds,
+      sourceEvidenceIds: unique(params.sourceEvidenceIds),
+      matchedSkillIds: unique(params.matchedSkillIds),
+      targetJDId: params.jdId,
+      targetRequirementIds: params.requirements.map((r) => r.id),
+      targetRole: params.input.targetRole,
+      scores: {
+        overall: score,
+        requirementMatch: score,
+        evidenceStrength: params.evidenceStrength,
+      },
+      status: params.sourceEvidenceIds.length > 0 ? "ready" : "needs_review",
+      createdAt: params.now,
+      updatedAt: params.now,
+    };
   }
 
   private async loadRelevantSkills(
@@ -188,3 +234,16 @@ export class ResumeGenerationService {
 function unique(values: string[]): string[] {
   return Array.from(new Set(values));
 }
+
+type CreateArtifactInput = {
+  input: GenerateResumeInput;
+  jdId: string;
+  requirements: JDRequirement[];
+  content: string;
+  sourceExperienceIds: string[];
+  sourceEvidenceIds: string[];
+  matchedSkillIds: string[];
+  score: number;
+  evidenceStrength: number;
+  now: string;
+};

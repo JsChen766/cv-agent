@@ -23,6 +23,9 @@ export type RetrievedExperience = {
   matchedEvidenceIds: string[];
   matchedSkillIds: string[];
   matchedRequirementIds: string[];
+  matchedEvidences: Evidence[];
+  matchedSkills: Skill[];
+  matchedRequirements: JDRequirement[];
   reason: string;
 };
 
@@ -133,7 +136,16 @@ export class KeywordExperienceRetriever implements ExperienceRetriever {
 
     const matchScore =
       totalWeight === 0 ? 0 : Number((weightedScore / totalWeight).toFixed(3));
-    const reason = this.buildReason(matchedSkillIds, matchedEvidenceIds, skillById);
+    const matchedEvidences = evidences.filter((evidence) =>
+      matchedEvidenceIds.has(evidence.id),
+    );
+    const matchedSkills = Array.from(matchedSkillIds)
+      .map((id) => skillById.get(id))
+      .filter(Boolean) as Skill[];
+    const matchedRequirements = requirements.filter((requirement) =>
+      matchedRequirementIds.has(requirement.id),
+    );
+    const reason = this.buildReason(matchedSkills, matchedEvidences);
 
     return {
       experience,
@@ -141,19 +153,19 @@ export class KeywordExperienceRetriever implements ExperienceRetriever {
       matchedEvidenceIds: Array.from(matchedEvidenceIds),
       matchedSkillIds: Array.from(matchedSkillIds),
       matchedRequirementIds: Array.from(matchedRequirementIds),
+      matchedEvidences,
+      matchedSkills,
+      matchedRequirements,
       reason,
     };
   }
 
   private buildReason(
-    matchedSkillIds: Set<string>,
-    matchedEvidenceIds: Set<string>,
-    skillById: Map<string, Skill>,
+    matchedSkills: Skill[],
+    matchedEvidences: Evidence[],
   ): string {
-    const skillNames = Array.from(matchedSkillIds)
-      .map((id) => skillById.get(id)?.name)
-      .filter(Boolean);
-    return `Matched ${skillNames.join(", ") || "keywords"} with ${matchedEvidenceIds.size} supporting evidence item(s).`;
+    const skillNames = matchedSkills.map((skill) => skill.name);
+    return `Matched ${skillNames.join(", ") || "keywords"} with ${matchedEvidences.length} supporting evidence item(s).`;
   }
 }
 

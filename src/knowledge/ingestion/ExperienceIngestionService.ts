@@ -17,6 +17,7 @@ import {
   splitEvidenceText,
   stableId,
 } from "../keywordUtils.js";
+import { validateEvidence, validateExperience, validateSkill } from "../schemas.js";
 
 export type IngestExperienceInput = {
   userId: string;
@@ -141,8 +142,10 @@ export class ExperienceIngestionService {
       updatedAt: now,
     };
 
+    validateExperience(experience);
     await this.experienceRepo.save(experience);
     for (const evidence of evidences) {
+      validateEvidence(evidence);
       await this.evidenceRepo.save(evidence);
     }
 
@@ -208,6 +211,9 @@ export class ExperienceIngestionService {
       skills.push(skill);
     }
 
+    for (const skill of skills) {
+      validateSkill(skill);
+    }
     return skills;
   }
 

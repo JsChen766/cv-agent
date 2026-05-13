@@ -5,6 +5,7 @@ import type { EvidenceChain } from "../src/knowledge/index.js";
 describe("GraphViewBuilder", () => {
   it("builds frontend-ready graph nodes and edges", () => {
     const chain: EvidenceChain = {
+      id: "chain-1",
       artifact: {
         id: "artifact-1",
         userId: "user-1",
@@ -25,7 +26,69 @@ describe("GraphViewBuilder", () => {
         createdAt: "2025-01-01T00:00:00Z",
         updatedAt: "2025-01-01T00:00:00Z",
       },
-      experiences: [
+      summary: "Test chain summary.",
+      requirementMatches: [
+        {
+          requirement: {
+            id: "req-1",
+            userId: "user-1",
+            jdId: "jd-1",
+            description: "React performance experience.",
+            requiredSkillIds: ["skill-react"],
+            weight: 1,
+            createdAt: "2025-01-01T00:00:00Z",
+          },
+          matchedSkills: [
+            {
+              id: "skill-react",
+              userId: "user-1",
+              name: "React",
+              category: "technical",
+              evidenceIds: ["ev-1"],
+              createdAt: "2025-01-01T00:00:00Z",
+              updatedAt: "2025-01-01T00:00:00Z",
+            },
+          ],
+          matchedExperiences: [
+            {
+              id: "exp-1",
+              userId: "user-1",
+              type: "work",
+              organization: "Acme Corp",
+              role: "Frontend Engineer",
+              summary: "Built a React design system.",
+              timeRange: { startDate: null, endDate: null },
+              star: {
+                situation: "Teams needed reusable UI.",
+                task: "Lead frontend platform work.",
+                action: "Built components.",
+                result: "Improved delivery.",
+              },
+              evidenceIds: ["ev-1"],
+              skillIds: ["skill-react"],
+              confidence: 0.9,
+              createdAt: "2025-01-01T00:00:00Z",
+              updatedAt: "2025-01-01T00:00:00Z",
+            },
+          ],
+          matchedEvidences: [
+            {
+              id: "ev-1",
+              userId: "user-1",
+              experienceId: "exp-1",
+              sourceType: "raw_input",
+              evidenceType: "metric",
+              sourceRef: "test",
+              excerpt: "Reduced bundle size by 40%.",
+              confidence: 0.95,
+              createdAt: "2025-01-01T00:00:00Z",
+            },
+          ],
+          matchScore: 1,
+          matchReason: "Matched React.",
+        },
+      ],
+      sourceExperiences: [
         {
           id: "exp-1",
           userId: "user-1",
@@ -47,7 +110,7 @@ describe("GraphViewBuilder", () => {
           updatedAt: "2025-01-01T00:00:00Z",
         },
       ],
-      evidences: [
+      sourceEvidences: [
         {
           id: "ev-1",
           userId: "user-1",
@@ -60,7 +123,7 @@ describe("GraphViewBuilder", () => {
           createdAt: "2025-01-01T00:00:00Z",
         },
       ],
-      skills: [
+      sourceSkills: [
         {
           id: "skill-react",
           userId: "user-1",
@@ -71,26 +134,20 @@ describe("GraphViewBuilder", () => {
           updatedAt: "2025-01-01T00:00:00Z",
         },
       ],
-      requirements: [
-        {
-          id: "req-1",
-          userId: "user-1",
-          jdId: "jd-1",
-          description: "React performance experience.",
-          requiredSkillIds: ["skill-react"],
-          weight: 1,
-          createdAt: "2025-01-01T00:00:00Z",
-        },
-      ],
       risk: {
         level: "low",
-        reasons: [],
+        truthfulnessRisk: "low",
+        exaggerationRisk: "low",
+        missingEvidenceClaims: [],
+        exaggerationWarnings: [],
+        notes: [],
       },
       scores: {
         overall: 0.9,
         requirementMatch: 0.9,
         evidenceStrength: 0.95,
       },
+      createdAt: "2025-01-01T00:00:00Z",
     };
 
     const graph = new GraphViewBuilder().build(chain);

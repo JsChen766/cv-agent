@@ -30,6 +30,14 @@ describe("ResumeGenerationService", () => {
         "Reduced bundle size by 40% with performance optimization.",
       ].join("\n"),
     });
+    await ingestion.ingest({
+      userId: "user-1",
+      rawText: [
+        "As a Frontend Platform Engineer at Beta Inc, I built a React component library.",
+        "Improved accessibility coverage with WCAG review patterns.",
+        "Added TypeScript testing utilities for reusable UI components.",
+      ].join("\n"),
+    });
 
     const retriever = new KeywordExperienceRetriever(
       experienceRepo,
@@ -52,12 +60,19 @@ describe("ResumeGenerationService", () => {
       targetRole: "Senior Frontend Engineer",
     });
 
+    expect(result.artifacts.length).toBeGreaterThan(1);
+    expect(result.artifact).toBe(result.artifacts[0]);
     expect(result.artifact.status).toBe("ready");
     expect(result.artifact.sourceExperienceIds).toHaveLength(1);
     expect(result.artifact.sourceEvidenceIds.length).toBeGreaterThan(0);
+    expect(result.evidenceChain.requirementMatches[0]?.matchedSkills.length).toBeGreaterThan(0);
     expect(result.evidenceChain.risk.level).toBe("low");
+    expect(result.evidenceChains).toHaveLength(result.artifacts.length);
+    expect(result.graphViews).toHaveLength(result.artifacts.length);
     expect(result.graphView.nodes.some((node) => node.type === "artifact")).toBe(true);
     expect(result.graphView.nodes.some((node) => node.type === "requirement")).toBe(true);
-    await expect(artifactRepo.listByUserId("user-1")).resolves.toHaveLength(1);
+    await expect(artifactRepo.listByUserId("user-1")).resolves.toHaveLength(
+      result.artifacts.length,
+    );
   });
 });

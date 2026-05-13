@@ -57,5 +57,12 @@ describe("KeywordExperienceRetriever", () => {
       expect.arrayContaining(requirement.requiredSkillIds),
     );
     expect(results[0]?.matchedEvidenceIds.length).toBeGreaterThan(0);
+    expect(results[0]?.matchedSkills.map((skill) => skill.id)).toEqual(
+      expect.arrayContaining(requirement.requiredSkillIds),
+    );
+    expect(results[0]?.matchedEvidences.length).toBe(
+      results[0]?.matchedEvidenceIds.length,
+    );
+    expect(results[0]?.matchedRequirements[0]?.id).toBe(requirement.id);
   });
 });

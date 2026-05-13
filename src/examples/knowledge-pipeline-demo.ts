@@ -60,12 +60,12 @@ async function main() {
 
   console.log("=== Ingested Experience Knowledge ===\n");
   console.log(JSON.stringify(ingestResult, null, 2));
-  console.log("\n=== Generated Artifact ===\n");
-  console.log(JSON.stringify(generationResult.artifact, null, 2));
-  console.log("\n=== Evidence Chain ===\n");
-  console.log(JSON.stringify(generationResult.evidenceChain, null, 2));
-  console.log("\n=== Graph View ===\n");
-  console.log(JSON.stringify(generationResult.graphView, null, 2));
+  console.log("\n=== Generated Artifacts ===\n");
+  console.log(JSON.stringify(generationResult.artifacts, null, 2));
+  console.log("\n=== Evidence Chains ===\n");
+  console.log(JSON.stringify(generationResult.evidenceChains, null, 2));
+  console.log("\n=== Graph Views ===\n");
+  console.log(JSON.stringify(generationResult.graphViews, null, 2));
 }
 
 main().catch(console.error);

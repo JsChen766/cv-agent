@@ -1,4 +1,5 @@
 export * from "./types.js";
+export * from "./schemas.js";
 export * from "./repositories.js";
 export * from "./inMemory/InMemoryExperienceRepository.js";
 export * from "./inMemory/InMemoryEvidenceRepository.js";

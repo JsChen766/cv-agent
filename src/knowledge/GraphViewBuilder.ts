@@ -18,7 +18,7 @@ export class GraphViewBuilder {
       },
     });
 
-    for (const experience of chain.experiences) {
+    for (const experience of chain.sourceExperiences) {
       nodes.set(experience.id, {
         id: experience.id,
         type: "experience",
@@ -39,7 +39,7 @@ export class GraphViewBuilder {
       });
     }
 
-    for (const evidence of chain.evidences) {
+    for (const evidence of chain.sourceEvidences) {
       nodes.set(evidence.id, {
         id: evidence.id,
         type: "evidence",
@@ -67,7 +67,7 @@ export class GraphViewBuilder {
       });
     }
 
-    for (const skill of chain.skills) {
+    for (const skill of chain.sourceSkills) {
       nodes.set(skill.id, {
         id: skill.id,
         type: "skill",
@@ -86,7 +86,7 @@ export class GraphViewBuilder {
       });
 
       for (const evidenceId of skill.evidenceIds) {
-        if (chain.evidences.some((evidence) => evidence.id === evidenceId)) {
+        if (chain.sourceEvidences.some((evidence) => evidence.id === evidenceId)) {
           edges.push({
             source: evidenceId,
             target: skill.id,
@@ -98,16 +98,18 @@ export class GraphViewBuilder {
       }
     }
 
-    for (const requirement of chain.requirements) {
+    for (const requirementMatch of chain.requirementMatches) {
+      const requirement = requirementMatch.requirement;
       nodes.set(requirement.id, {
         id: requirement.id,
         type: "requirement",
         label: "JD Requirement",
         detail: requirement.description,
-        score: requirement.weight,
+        score: requirementMatch.matchScore,
         metadata: {
           jdId: requirement.jdId,
           requiredSkillIds: requirement.requiredSkillIds,
+          matchReason: requirementMatch.matchReason,
         },
       });
       edges.push({
