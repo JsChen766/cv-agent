@@ -10,6 +10,7 @@
     "dev:tool": "tsx src/examples/tool-call-demo.ts",
     "dev:memory": "tsx src/examples/memory-demo.ts",
     "dev:knowledge": "tsx src/examples/knowledge-demo.ts",
+    "dev:knowledge-pipeline": "tsx src/examples/knowledge-pipeline-demo.ts",
     "test": "vitest run",
     "typecheck": "tsc --noEmit"
   },

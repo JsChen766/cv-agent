@@ -14,6 +14,10 @@ export class InMemoryEvidenceRepository implements EvidenceRepository {
     );
   }
 
+  async listByUserId(userId: string): Promise<Evidence[]> {
+    return Array.from(this.store.values()).filter((e) => e.userId === userId);
+  }
+
   async save(evidence: Evidence): Promise<void> {
     this.store.set(evidence.id, { ...evidence });
   }

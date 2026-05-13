@@ -12,6 +12,10 @@ export class InMemoryExperienceRepository implements ExperienceRepository {
     return Array.from(this.store.values());
   }
 
+  async listByUserId(userId: string): Promise<Experience[]> {
+    return Array.from(this.store.values()).filter((e) => e.userId === userId);
+  }
+
   async save(experience: Experience): Promise<void> {
     this.store.set(experience.id, { ...experience });
   }

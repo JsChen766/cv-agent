@@ -12,8 +12,12 @@ export class InMemoryGeneratedArtifactRepository
 
   async getByExperienceId(experienceId: string): Promise<GeneratedArtifact[]> {
     return Array.from(this.store.values()).filter(
-      (a) => a.experienceId === experienceId,
+      (a) => a.sourceExperienceIds.includes(experienceId),
     );
+  }
+
+  async listByUserId(userId: string): Promise<GeneratedArtifact[]> {
+    return Array.from(this.store.values()).filter((a) => a.userId === userId);
   }
 
   async save(artifact: GeneratedArtifact): Promise<void> {

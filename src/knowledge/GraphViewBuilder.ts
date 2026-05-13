@@ -1,88 +1,146 @@
-import type { EvidenceChain, GraphNode, GraphEdge, GraphView } from "./types.js";
+import type { EvidenceChain, GraphEdge, GraphNode, GraphView } from "./types.js";
 
 export class GraphViewBuilder {
   build(chain: EvidenceChain): GraphView {
-    const nodes: GraphNode[] = [];
+    const nodes = new Map<string, GraphNode>();
     const edges: GraphEdge[] = [];
 
-    // Experience node
-    nodes.push({
-      id: chain.experience.id,
-      type: "experience",
-      label: chain.experience.title,
-      detail: `${chain.experience.company} | ${chain.experience.startDate} – ${chain.experience.endDate ?? "Present"}`,
-    });
-
-    // Artifact node (the generated bullet)
-    nodes.push({
+    nodes.set(chain.artifact.id, {
       id: chain.artifact.id,
       type: "artifact",
-      label: "Generated Bullet",
-      detail: chain.artifact.bulletText,
-    });
-    edges.push({
-      from: chain.experience.id,
-      to: chain.artifact.id,
-      label: "generated from",
+      label: artifactLabel(chain.artifact.type),
+      detail: chain.artifact.content,
+      score: chain.artifact.scores.overall,
+      metadata: {
+        status: chain.artifact.status,
+        targetRole: chain.artifact.targetRole,
+        targetJDId: chain.artifact.targetJDId,
+      },
     });
 
-    // Evidence nodes
-    for (const e of chain.evidences) {
-      nodes.push({
-        id: e.id,
-        type: "evidence",
-        label: e.type,
-        detail: e.content,
+    for (const experience of chain.experiences) {
+      nodes.set(experience.id, {
+        id: experience.id,
+        type: "experience",
+        label: `${experience.role} @ ${experience.organization}`,
+        detail: experience.summary,
+        score: experience.confidence,
+        metadata: {
+          type: experience.type,
+          timeRange: experience.timeRange,
+        },
       });
       edges.push({
-        from: chain.experience.id,
-        to: e.id,
-        label: "contains",
-      });
-      edges.push({
-        from: e.id,
-        to: chain.artifact.id,
-        label: "supports",
+        source: experience.id,
+        target: chain.artifact.id,
+        type: "generated_from",
+        label: "generated from",
+        weight: chain.artifact.scores.requirementMatch,
       });
     }
 
-    // Skill nodes
-    for (const s of chain.skills) {
-      nodes.push({
-        id: s.id,
-        type: "skill",
-        label: s.name,
-        detail: s.category,
+    for (const evidence of chain.evidences) {
+      nodes.set(evidence.id, {
+        id: evidence.id,
+        type: "evidence",
+        label: evidence.evidenceType,
+        detail: evidence.excerpt,
+        score: evidence.confidence,
+        metadata: {
+          sourceType: evidence.sourceType,
+          sourceRef: evidence.sourceRef,
+        },
       });
       edges.push({
-        from: s.id,
-        to: chain.artifact.id,
-        label: "demonstrated by",
+        source: evidence.experienceId,
+        target: evidence.id,
+        type: "contains",
+        label: "contains",
+        weight: evidence.confidence,
       });
-      for (const eId of s.evidenceIds) {
-        if (chain.evidences.some((e) => e.id === eId)) {
+      edges.push({
+        source: evidence.id,
+        target: chain.artifact.id,
+        type: "supported_by",
+        label: "supports",
+        weight: evidence.confidence,
+      });
+    }
+
+    for (const skill of chain.skills) {
+      nodes.set(skill.id, {
+        id: skill.id,
+        type: "skill",
+        label: skill.name,
+        detail: skill.category,
+        metadata: {
+          evidenceIds: skill.evidenceIds,
+        },
+      });
+      edges.push({
+        source: skill.id,
+        target: chain.artifact.id,
+        type: "demonstrates",
+        label: "demonstrates",
+        weight: chain.artifact.matchedSkillIds.includes(skill.id) ? 1 : 0.5,
+      });
+
+      for (const evidenceId of skill.evidenceIds) {
+        if (chain.evidences.some((evidence) => evidence.id === evidenceId)) {
           edges.push({
-            from: eId,
-            to: s.id,
+            source: evidenceId,
+            target: skill.id,
+            type: "demonstrates",
             label: "proves",
+            weight: 0.8,
           });
         }
       }
     }
 
-    // Requirement node
-    nodes.push({
-      id: chain.requirement.id,
-      type: "requirement",
-      label: "JD Requirement",
-      detail: chain.requirement.description,
-    });
-    edges.push({
-      from: chain.artifact.id,
-      to: chain.requirement.id,
-      label: "targets",
-    });
+    for (const requirement of chain.requirements) {
+      nodes.set(requirement.id, {
+        id: requirement.id,
+        type: "requirement",
+        label: "JD Requirement",
+        detail: requirement.description,
+        score: requirement.weight,
+        metadata: {
+          jdId: requirement.jdId,
+          requiredSkillIds: requirement.requiredSkillIds,
+        },
+      });
+      edges.push({
+        source: chain.artifact.id,
+        target: requirement.id,
+        type: "targets",
+        label: "targets",
+        weight: requirement.weight,
+      });
 
-    return { nodes, edges };
+      for (const skillId of requirement.requiredSkillIds) {
+        if (nodes.has(skillId)) {
+          edges.push({
+            source: requirement.id,
+            target: skillId,
+            type: "requires",
+            label: "requires",
+            weight: requirement.weight,
+          });
+        }
+      }
+    }
+
+    return {
+      nodes: Array.from(nodes.values()),
+      edges,
+    };
   }
+}
+
+function artifactLabel(type: string): string {
+  return type
+    .split("_")
+    .map((part) => part[0]?.toUpperCase() + part.slice(1))
+    .join(" ");
 }

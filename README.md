@@ -1,18 +1,17 @@
 # Coolto Agent Runtime
 
-「库投 Coolto」的 TypeScript 多 Agent Runtime 底座。当前仓库只实现 Infrastructure / Framework / Runtime，不实现完整求职业务逻辑。
+TypeScript agent runtime foundation for Coolto. The project currently focuses on runtime primitives plus a minimal knowledge pipeline. It still avoids real LLM calls, real vector databases, Neo4j, and frontend code.
 
 ## Framework Goal
-- 第一层：数据采集与感知层 你在日常中产生的所有学习/工作痕迹（Markdown笔记代码提交、面试复盘等）作为数据源，也直接通过和agent聊天进行上传（包括文本输入和简历文件上传）。 通过各种tools进行外部进行获取，由经历编目员Agent（Archivist） 实时监控并将原始信息转化为结构化的“经历JSON”。 
-- 第二层：结构化知识库 经历分块、向量化存入向量数据库，并与知识图谱联动建立技能-项目关联。 经历版本流：同一段真实经历保留多个面向不同JD的话术变体，并追踪每个变体的使用次数与成功率。 时效性衰减：根据时间动态调整经历权重，过时或方向偏离的内容降权。 技能树：自动从经历中抽取技能标签，用于后续盲区检测。 
-- 第三层：逻辑推理与策略层 （多智能体协作核心） Strategist 拿到岗位JD后，深度解析出真正的关键需求。 Architect 根据需求从知识库检索经历，优先选择高成功率的话术版本，或生成新描述。 Critic 以HR视角按照STAR原则逐项审计，同时从用户偏好学习器获取你的风格规则，确保输出“像你”。 审计与修改形成最多3轮的闭环循环，直到输出质量达标。 
-- 第四层：表现层 最终交付个性化简历、求职信，以及基于你真实经历可能被追问的模拟面试题。 
-- 第五层：自我进化层 （让系统随使用变“聪明”） 结果追踪器记录每份简历投递后的状态（邀请/拒信/追问点），或者也可以记录其他任何事务。 有效性回灌器将面试反馈转化为对经历版本成功率的更新，高共鸣经历被增强，低效话术触发重写。 技能盲区检测比对JD高频要求的技能与知识库已有技能，主动提醒你补足。
 
+- Data ingestion layer: collect raw experience text and turn it into structured experience knowledge.
+- Structured knowledge layer: keep experiences, evidence, skills, JD requirements, generated artifacts, evidence chains, and graph views behind replaceable repository interfaces.
+- Reasoning layer: use deterministic mock services today where future `ArchivistAgent`, `StrategistAgent`, and `ArchitectAgent` implementations can be plugged in.
+- Presentation layer: expose `EvidenceChain` and `GraphView` data that a future frontend panel can consume.
 
 ## Architecture
 
-Runtime is split into low-coupled modules:
+Runtime modules remain low-coupled:
 
 ```text
 Agent -> ModelClient -> LLMProvider
@@ -26,22 +25,53 @@ Agent -> ModelClient -> LLMProvider
   +-> Orchestrator -> sequential multi-agent pipeline
 ```
 
-The current demo agents map to future Coolto roles:
+Knowledge pipeline modules:
 
-- `ArchivistAgent`: convert raw experience text into structured JSON drafts.
-- `StrategistAgent`: analyze JD requirements.
-- `ArchitectAgent`: draft resume bullets.
-- `CriticAgent`: review output from an HR perspective.
+```text
+Raw Experience Input
+  -> ExperienceIngestionService
+  -> Experience / Evidence / Skill repositories
+  -> KeywordExperienceRetriever
+  -> ResumeGenerationService
+  -> GeneratedArtifact
+  -> EvidenceChainBuilder
+  -> GraphViewBuilder
+```
+
+## Knowledge Pipeline
+
+The pipeline demo implements the current smallest real business loop:
+
+1. Input raw experience text.
+2. Deterministically extract structured `Experience`, `Evidence`, and `Skill` records.
+3. Input JD text and target role.
+4. Deterministically create `JDRequirement` records.
+5. Retrieve matching experiences with `KeywordExperienceRetriever`.
+6. Generate a `GeneratedArtifact`.
+7. Build an `EvidenceChain`.
+8. Build a frontend-ready local `GraphView`.
+
+Current constraints:
+
+- No real vector database.
+- No Neo4j or external graph database.
+- No frontend.
+- No real LLM calls.
+- Repositories are `interface` + in-memory implementations so they can be replaced later.
+
+Next intended step: add an API server and a frontend panel on top of this pipeline.
 
 ## Directory Structure
 
 ```text
 src/
+  application/   Application services such as ResumeGenerationService
   core/          Runtime interfaces and base implementations
   providers/     DeepSeek, OpenRouter, and Mock providers
   agents/        Minimal example agents
   tools/         Example tools
   workflows/     Workflow placeholders
+  knowledge/     Knowledge types, repositories, ingestion, retrieval, graph builders
   examples/      Runnable demos
   config/        Node.js environment loading
 tests/           Vitest tests
@@ -70,13 +100,15 @@ Core classes do not read `process.env` directly. `src/config/env.ts` is only a N
 
 ## Run Demos
 
-All demos use `MockProvider` by default and do not require API keys.
+All demos use mock or deterministic local behavior by default and do not require API keys.
 
 ```bash
 npm run dev:single
 npm run dev:multi
 npm run dev:tool
 npm run dev:memory
+npm run dev:knowledge
+npm run dev:knowledge-pipeline
 ```
 
 ## Test
@@ -97,7 +129,7 @@ export class MyAgent extends BaseAgent {
       ...config,
       name: "my-agent",
       role: "My role",
-      systemPrompt: "Do one clear job."
+      systemPrompt: "Do one clear job.",
     });
   }
 }
@@ -109,78 +141,19 @@ Then register it:
 registry.register(new MyAgent({ modelClient }));
 ```
 
-## Add a Provider
+The current demo agents map to future Coolto roles:
 
-Implement `LLMProvider`:
-
-```ts
-export class MyProvider implements LLMProvider {
-  name = "my-provider";
-  async chat(request: LLMChatRequest): Promise<LLMChatResponse> {
-    return { content: "normalized response" };
-  }
-}
-```
-
-Providers must convert raw API responses into `LLMChatResponse`.
-
-Switch providers at runtime through `ModelClient`:
-
-```ts
-client.setProvider(new MyProvider());
-```
-
-## Add a Tool
-
-Create a `ToolDefinition` and register it with `ToolExecutor`:
-
-```ts
-executor.register({
-  name: "myTool",
-  description: "Do a small deterministic task.",
-  parameters: { type: "object", properties: {}, additionalProperties: false },
-  async execute(args) {
-    return { ok: true, args };
-  }
-});
-```
-
-## Add a StorageAdapter
-
-Implement the storage interface:
-
-```ts
-export class KVStorageAdapter implements StorageAdapter {
-  get<T>(key: string): Promise<T | null> {}
-  set<T>(key: string, value: T): Promise<void> {}
-  delete(key: string): Promise<void> {}
-  list(prefix?: string): Promise<string[]> {}
-}
-```
-
-`MemoryManager` depends only on `StorageAdapter`, so it can move from local files to D1/KV without changing memory logic.
-
-## Node.js and Cloudflare Workers
-
-- Providers use `fetch` instead of SDK clients.
-- Core runtime does not depend on Node-only APIs.
-- `FileSystemStorageAdapter` and `config/env.ts` are Node-specific examples.
-- Future Workers deployments should replace file storage with KV/D1 and pass env bindings explicitly.
+- `ArchivistAgent`: convert raw experience text into structured JSON drafts.
+- `StrategistAgent`: analyze JD requirements.
+- `ArchitectAgent`: draft resume bullets.
+- `CriticAgent`: review output from an HR perspective.
 
 ## Current Non-Goals
 
 - No complete RAG.
-- No knowledge graph.
+- No real vector store.
+- No Neo4j integration.
 - No frontend.
-- No complete resume generator.
+- No production resume generator.
 - No real user system.
 - No complex multi-agent self-loop.
-
-## Suggested Next Steps
-
-- Connect the real `DeepSeekProvider`.
-- Add D1/KV storage adapters.
-- Add an Experience JSON schema.
-- Add a Retriever interface for RAG.
-- Expand `resumeWorkflow`.
-- Add an API server or Cloudflare Workers handler.

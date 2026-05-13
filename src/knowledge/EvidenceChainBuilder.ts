@@ -1,10 +1,12 @@
 import type {
+  Evidence,
   EvidenceChain,
+  EvidenceChainRisk,
   GeneratedArtifact,
   JDRequirement,
   Skill,
 } from "./types.js";
-import type { ExperienceRepository, EvidenceRepository } from "./repositories.js";
+import type { EvidenceRepository, ExperienceRepository } from "./repositories.js";
 
 export class EvidenceChainBuilder {
   constructor(
@@ -15,29 +17,56 @@ export class EvidenceChainBuilder {
   async build(
     artifact: GeneratedArtifact,
     skills: Skill[],
-    requirement: JDRequirement,
+    requirements: JDRequirement[],
   ): Promise<EvidenceChain> {
-    const experience = await this.experienceRepo.getById(artifact.experienceId);
-    if (!experience) {
-      throw new Error(
-        `Experience not found: ${artifact.experienceId}`,
-      );
-    }
+    const experiences = await Promise.all(
+      artifact.sourceExperienceIds.map((id) => this.experienceRepo.getById(id)),
+    );
+    const foundExperiences = experiences.filter(Boolean) as NonNullable<
+      Awaited<ReturnType<typeof this.experienceRepo.getById>>
+    >[];
 
     const evidences = await Promise.all(
-      artifact.matchedEvidenceIds.map((id) => this.evidenceRepo.getById(id)),
+      artifact.sourceEvidenceIds.map((id) => this.evidenceRepo.getById(id)),
     );
-
-    const found = evidences.filter(Boolean) as NonNullable<
-      Awaited<ReturnType<typeof this.evidenceRepo.getById>>
-    >[];
+    const foundEvidences = evidences.filter(Boolean) as Evidence[];
 
     return {
       artifact,
-      experience,
-      evidences: found,
+      experiences: foundExperiences,
+      evidences: foundEvidences,
       skills,
-      requirement,
+      requirements,
+      risk: this.assessRisk(artifact, foundEvidences, requirements),
+      scores: artifact.scores,
+    };
+  }
+
+  private assessRisk(
+    artifact: GeneratedArtifact,
+    evidences: Evidence[],
+    requirements: JDRequirement[],
+  ): EvidenceChainRisk {
+    const reasons: string[] = [];
+    if (artifact.sourceExperienceIds.length === 0) {
+      reasons.push("Artifact has no source experience.");
+    }
+    if (evidences.length === 0) {
+      reasons.push("Artifact has no supporting evidence.");
+    }
+    if (requirements.length === 0) {
+      reasons.push("Artifact has no target JD requirement.");
+    }
+    if (artifact.scores.evidenceStrength < 0.5) {
+      reasons.push("Evidence strength score is low.");
+    }
+
+    if (reasons.length === 0) {
+      return { level: "low", reasons: [] };
+    }
+    return {
+      level: reasons.length > 1 ? "high" : "medium",
+      reasons,
     };
   }
 }

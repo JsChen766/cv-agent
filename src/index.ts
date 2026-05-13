@@ -26,4 +26,5 @@ export * from "./providers/MockProvider.js";
 export * from "./tools/echoTool.js";
 export * from "./tools/getCurrentTimeTool.js";
 export * from "./workflows/resumeWorkflow.js";
+export * from "./application/ResumeGenerationService.js";
 export * from "./knowledge/index.js";
