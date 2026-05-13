@@ -11,11 +11,13 @@
     "dev:memory": "tsx src/examples/memory-demo.ts",
     "dev:knowledge": "tsx src/examples/knowledge-demo.ts",
     "dev:knowledge-pipeline": "tsx src/examples/knowledge-pipeline-demo.ts",
+    "dev:coolto-demo": "tsx src/examples/coolto-demo-service-demo.ts",
     "test": "vitest run",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "dotenv": "^16.4.7"
+    "dotenv": "^16.4.7",
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "@types/node": "^20.17.10",

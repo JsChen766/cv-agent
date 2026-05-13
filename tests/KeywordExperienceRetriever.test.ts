@@ -52,6 +52,8 @@ describe("KeywordExperienceRetriever", () => {
 
     expect(results).toHaveLength(1);
     expect(results[0]?.experience.id).toBe(ingestResult.experience.id);
+    expect(results[0]?.evidences.length).toBeGreaterThan(0);
+    expect(results[0]?.skills.length).toBeGreaterThan(0);
     expect(results[0]?.matchScore).toBeGreaterThan(0.6);
     expect(results[0]?.matchedSkillIds).toEqual(
       expect.arrayContaining(requirement.requiredSkillIds),

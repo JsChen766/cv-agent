@@ -17,7 +17,11 @@ import {
   splitEvidenceText,
   stableId,
 } from "../keywordUtils.js";
-import { validateEvidence, validateExperience, validateSkill } from "../schemas.js";
+import {
+  validateEvidence,
+  validateExperience,
+  validateSkill,
+} from "../schemas/index.js";
 
 export type IngestExperienceInput = {
   userId: string;

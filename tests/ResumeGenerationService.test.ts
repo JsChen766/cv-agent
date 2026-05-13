@@ -11,7 +11,7 @@ import {
 } from "../src/knowledge/index.js";
 
 describe("ResumeGenerationService", () => {
-  it("generates an artifact, evidence chain, and graph view from stored experience", async () => {
+  it("generates multiple artifacts, evidence chains, and graph views from stored experience", async () => {
     const experienceRepo = new InMemoryExperienceRepository();
     const evidenceRepo = new InMemoryEvidenceRepository();
     const skillRepo = new InMemorySkillRepository();
@@ -60,19 +60,63 @@ describe("ResumeGenerationService", () => {
       targetRole: "Senior Frontend Engineer",
     });
 
-    expect(result.artifacts.length).toBeGreaterThan(1);
-    expect(result.artifact).toBe(result.artifacts[0]);
-    expect(result.artifact.status).toBe("ready");
-    expect(result.artifact.sourceExperienceIds).toHaveLength(1);
-    expect(result.artifact.sourceEvidenceIds.length).toBeGreaterThan(0);
-    expect(result.evidenceChain.requirementMatches[0]?.matchedSkills.length).toBeGreaterThan(0);
-    expect(result.evidenceChain.risk.level).toBe("low");
+    expect(result.userId).toBe("user-1");
+    expect(result.jdText).toContain("React");
+    expect(result.targetRole).toBe("Senior Frontend Engineer");
+    expect(result.artifacts).toHaveLength(3);
+    expect("artifact" in result).toBe(false);
+    expect("evidenceChain" in result).toBe(false);
+    expect("graphView" in result).toBe(false);
+    expect(new Set(result.artifacts.map((artifact) => artifact.id)).size).toBe(3);
+    expect(new Set(result.artifacts.map((artifact) => artifact.content)).size).toBe(3);
+    expect(result.artifacts[0]?.status).toBe("ready");
+    expect(result.artifacts[0]?.sourceExperienceIds).toHaveLength(1);
+    expect(result.artifacts[0]?.sourceEvidenceIds.length).toBeGreaterThan(0);
+    expect(result.evidenceChains[0]?.requirementMatches[0]?.matchedSkills.length).toBeGreaterThan(0);
+    expect(result.evidenceChains[0]?.risk.level).toBe("low");
     expect(result.evidenceChains).toHaveLength(result.artifacts.length);
     expect(result.graphViews).toHaveLength(result.artifacts.length);
-    expect(result.graphView.nodes.some((node) => node.type === "artifact")).toBe(true);
-    expect(result.graphView.nodes.some((node) => node.type === "requirement")).toBe(true);
+    expect(result.graphViews[0]?.nodes.some((node) => node.type === "artifact")).toBe(true);
+    expect(result.graphViews[0]?.nodes.some((node) => node.type === "requirement")).toBe(true);
     await expect(artifactRepo.listByUserId("user-1")).resolves.toHaveLength(
       result.artifacts.length,
     );
+  });
+
+  it("generates three needs_review artifacts when no experience is retrieved", async () => {
+    const experienceRepo = new InMemoryExperienceRepository();
+    const evidenceRepo = new InMemoryEvidenceRepository();
+    const skillRepo = new InMemorySkillRepository();
+    const requirementRepo = new InMemoryJDRequirementRepository();
+    const artifactRepo = new InMemoryGeneratedArtifactRepository();
+    const retriever = new KeywordExperienceRetriever(
+      experienceRepo,
+      evidenceRepo,
+      skillRepo,
+    );
+    const service = new ResumeGenerationService(
+      experienceRepo,
+      evidenceRepo,
+      skillRepo,
+      requirementRepo,
+      artifactRepo,
+      retriever,
+    );
+
+    const result = await service.generate({
+      userId: "user-empty",
+      jdText: "Looking for React and TypeScript experience.",
+      targetRole: "Frontend Engineer",
+    });
+
+    expect(result.artifacts).toHaveLength(3);
+    expect(result.artifacts.every((artifact) => artifact.status === "needs_review")).toBe(true);
+    expect(result.artifacts.every((artifact) => artifact.sourceExperienceIds.length === 0)).toBe(true);
+    expect(result.artifacts.every((artifact) => artifact.sourceEvidenceIds.length === 0)).toBe(true);
+    expect(result.evidenceChains).toHaveLength(3);
+    expect(result.graphViews).toHaveLength(3);
+    expect(
+      result.evidenceChains.every((chain) => chain.risk.missingEvidenceClaims.length > 0),
+    ).toBe(true);
   });
 });

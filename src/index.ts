@@ -27,4 +27,7 @@ export * from "./tools/echoTool.js";
 export * from "./tools/getCurrentTimeTool.js";
 export * from "./workflows/resumeWorkflow.js";
 export * from "./application/ResumeGenerationService.js";
+export * from "./application/CooltoDemoService.js";
+export * from "./application/mappers/index.js";
+export * from "./api-contracts/index.js";
 export * from "./knowledge/index.js";

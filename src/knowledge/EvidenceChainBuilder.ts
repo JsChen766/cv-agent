@@ -10,7 +10,7 @@ import type {
 } from "./types.js";
 import type { EvidenceRepository, ExperienceRepository } from "./repositories.js";
 import { stableId, tokenize } from "./keywordUtils.js";
-import { validateEvidenceChain } from "./schemas.js";
+import { validateEvidenceChain } from "./schemas/index.js";
 
 export class EvidenceChainBuilder {
   constructor(

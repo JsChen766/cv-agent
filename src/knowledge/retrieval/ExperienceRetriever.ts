@@ -19,13 +19,15 @@ export type RetrieveExperiencesInput = {
 
 export type RetrievedExperience = {
   experience: Experience;
-  matchScore: number;
-  matchedEvidenceIds: string[];
-  matchedSkillIds: string[];
-  matchedRequirementIds: string[];
+  evidences: Evidence[];
+  skills: Skill[];
   matchedEvidences: Evidence[];
   matchedSkills: Skill[];
   matchedRequirements: JDRequirement[];
+  matchScore: number;
+  matchedRequirementIds: string[];
+  matchedEvidenceIds: string[];
+  matchedSkillIds: string[];
   reason: string;
 };
 
@@ -136,6 +138,9 @@ export class KeywordExperienceRetriever implements ExperienceRetriever {
 
     const matchScore =
       totalWeight === 0 ? 0 : Number((weightedScore / totalWeight).toFixed(3));
+    const skills = experience.skillIds
+      .map((id) => skillById.get(id))
+      .filter(Boolean) as Skill[];
     const matchedEvidences = evidences.filter((evidence) =>
       matchedEvidenceIds.has(evidence.id),
     );
@@ -149,13 +154,15 @@ export class KeywordExperienceRetriever implements ExperienceRetriever {
 
     return {
       experience,
-      matchScore,
-      matchedEvidenceIds: Array.from(matchedEvidenceIds),
-      matchedSkillIds: Array.from(matchedSkillIds),
-      matchedRequirementIds: Array.from(matchedRequirementIds),
+      evidences,
+      skills,
       matchedEvidences,
       matchedSkills,
       matchedRequirements,
+      matchScore,
+      matchedRequirementIds: Array.from(matchedRequirementIds),
+      matchedEvidenceIds: Array.from(matchedEvidenceIds),
+      matchedSkillIds: Array.from(matchedSkillIds),
       reason,
     };
   }

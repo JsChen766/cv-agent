@@ -60,12 +60,32 @@ async function main() {
 
   console.log("=== Ingested Experience Knowledge ===\n");
   console.log(JSON.stringify(ingestResult, null, 2));
+  console.log("\n=== Retrieved Experiences ===\n");
+  for (const retrieved of generationResult.retrievedExperiences) {
+    console.log(
+      JSON.stringify(
+        {
+          experienceId: retrieved.experience.id,
+          evidences: retrieved.evidences.length,
+          skills: retrieved.skills.map((skill) => skill.name),
+          matchedEvidences: retrieved.matchedEvidences.length,
+          matchedSkills: retrieved.matchedSkills.map((skill) => skill.name),
+          reason: retrieved.reason,
+        },
+        null,
+        2,
+      ),
+    );
+  }
   console.log("\n=== Generated Artifacts ===\n");
-  console.log(JSON.stringify(generationResult.artifacts, null, 2));
-  console.log("\n=== Evidence Chains ===\n");
-  console.log(JSON.stringify(generationResult.evidenceChains, null, 2));
-  console.log("\n=== Graph Views ===\n");
-  console.log(JSON.stringify(generationResult.graphViews, null, 2));
+  generationResult.artifacts.forEach((artifact, index) => {
+    console.log(`--- Artifact ${index + 1} ---`);
+    console.log(JSON.stringify(artifact, null, 2));
+    console.log("Evidence Chain:");
+    console.log(JSON.stringify(generationResult.evidenceChains[index], null, 2));
+    console.log("Graph View:");
+    console.log(JSON.stringify(generationResult.graphViews[index], null, 2));
+  });
 }
 
 main().catch(console.error);
