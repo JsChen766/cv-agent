@@ -1,0 +1,25 @@
+{
+  "name": "coolto-agent-runtime",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Extensible TypeScript multi-agent runtime foundation for Coolto.",
+  "scripts": {
+    "dev:single": "tsx src/examples/single-agent-demo.ts",
+    "dev:multi": "tsx src/examples/multi-agent-demo.ts",
+    "dev:tool": "tsx src/examples/tool-call-demo.ts",
+    "dev:memory": "tsx src/examples/memory-demo.ts",
+    "dev:knowledge": "tsx src/examples/knowledge-demo.ts",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.7"
+  },
+  "devDependencies": {
+    "@types/node": "^20.17.10",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8"
+  }
+}
