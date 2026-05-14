@@ -217,10 +217,155 @@ describe("EvidenceChainBuilder", () => {
     expect(chain.risk.exaggerationWarnings.some((warning) => warning.includes("gathered requirements"))).toBe(true);
   });
 
+  it("warns when organization-wide phrasing is only backed by team scope evidence", async () => {
+    const chain = await buildChain({
+      artifact: {
+        content: "Scaled the design system across the organization for 12 product teams.",
+        sourceEvidenceIds: ["ev-scale"],
+        matchedSkillIds: ["skill-design-system"],
+        targetRequirementIds: ["req-design-system"],
+      },
+      evidence: {
+        id: "ev-scale",
+        evidenceType: "scope",
+        excerpt: "Led a design system project for 12 product teams.",
+      },
+      experience: {
+        evidenceIds: ["ev-scale"],
+        skillIds: ["skill-design-system"],
+      },
+      skills: [
+        makeSkill({
+          id: "skill-design-system",
+          name: "Design System",
+          category: "domain",
+          evidenceIds: ["ev-scale"],
+        }),
+      ],
+      requirements: [
+        makeRequirement({
+          id: "req-design-system",
+          description: "Design system experience",
+          requiredSkillIds: ["skill-design-system"],
+        }),
+      ],
+    });
+
+    expect(chain.risk.level).toBe("medium");
+    expect(chain.risk.exaggerationWarnings.some((warning) => warning.includes("across the organization"))).toBe(true);
+  });
+
+  it("warns when organization-wide phrasing lacks organization-wide evidence", async () => {
+    const chain = await buildChain({
+      artifact: {
+        content: "Built an organization-wide component library.",
+        sourceEvidenceIds: ["ev-scale"],
+        matchedSkillIds: ["skill-design-system"],
+        targetRequirementIds: ["req-design-system"],
+      },
+      evidence: {
+        id: "ev-scale",
+        evidenceType: "scope",
+        excerpt: "Built a component library for 12 product teams.",
+      },
+      experience: {
+        evidenceIds: ["ev-scale"],
+        skillIds: ["skill-design-system"],
+      },
+      skills: [
+        makeSkill({
+          id: "skill-design-system",
+          name: "Design System",
+          category: "domain",
+          evidenceIds: ["ev-scale"],
+        }),
+      ],
+      requirements: [
+        makeRequirement({
+          id: "req-design-system",
+          description: "Design system experience",
+          requiredSkillIds: ["skill-design-system"],
+        }),
+      ],
+    });
+
+    expect(chain.risk.level).toBe("medium");
+    expect(chain.risk.exaggerationWarnings.some((warning) => warning.includes("organization-wide"))).toBe(true);
+  });
+
+  it("warns when cross-team collaboration is only backed by team scope evidence", async () => {
+    const chain = await buildChain({
+      artifact: {
+        content: "Led cross-team collaboration on the design system.",
+        sourceEvidenceIds: ["ev-scale"],
+        matchedSkillIds: ["skill-design-system"],
+        targetRequirementIds: ["req-collab"],
+      },
+      evidence: {
+        id: "ev-scale",
+        evidenceType: "scope",
+        excerpt: "Led a design system project for 12 product teams.",
+      },
+      experience: {
+        evidenceIds: ["ev-scale"],
+        skillIds: ["skill-design-system"],
+      },
+      skills: [
+        makeSkill({
+          id: "skill-design-system",
+          name: "Design System",
+          category: "domain",
+          evidenceIds: ["ev-scale"],
+        }),
+      ],
+      requirements: [
+        makeRequirement({
+          id: "req-collab",
+          description: "Cross-team collaboration",
+          requiredSkillIds: [],
+        }),
+      ],
+    });
+
+    expect(chain.risk.level).toBe("medium");
+    expect(chain.risk.exaggerationWarnings.some((warning) => warning.includes("cross-team collaboration"))).toBe(true);
+  });
+
   it("does not warn when a result claim is directly supported", async () => {
     const chain = await buildChain({});
 
     expect(chain.risk.exaggerationWarnings).toEqual([]);
+  });
+
+  it("does not warn when product impact is backed by outcome evidence", async () => {
+    const chain = await buildChain({
+      artifact: {
+        content: "Delivered product impact by reducing bundle size by 40%.",
+      },
+    });
+
+    expect(chain.risk.exaggerationWarnings).toEqual([]);
+    expect(chain.risk.level).toBe("low");
+  });
+
+  it("warns at medium risk for unsupported broad requirements with linked evidence", async () => {
+    const chain = await buildChain({
+      artifact: {
+        content: "Reduced bundle size by 40%.",
+        targetRequirementIds: ["req-broad"],
+      },
+      requirements: [
+        makeRequirement({
+          id: "req-broad",
+          description: "Cross-team collaboration and product impact demonstrated",
+          requiredSkillIds: [],
+        }),
+      ],
+    });
+
+    expect(chain.risk.level).toBe("medium");
+    expect(chain.risk.exaggerationRisk).toBe("medium");
+    expect(chain.risk.exaggerationWarnings.some((warning) => warning.includes("Unsupported broad requirement"))).toBe(true);
   });
 
   it("adds a note for unknown target requirement IDs without crashing", async () => {

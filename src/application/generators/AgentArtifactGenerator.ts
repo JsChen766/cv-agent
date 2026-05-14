@@ -4,7 +4,7 @@ import { GeneratedArtifactTypeSchema } from "../../knowledge/schemas/GeneratedAr
 import { parseWithSchema } from "../../knowledge/schemas/validate.js";
 import type { BaseAgent } from "../../core/agent/BaseAgent.js";
 import { parseAgentJson } from "../../core/json/index.js";
-import type { GeneratedArtifact } from "../../knowledge/types.js";
+import type { GeneratedArtifact, JDRequirement } from "../../knowledge/types.js";
 import type { ArtifactGenerator, GenerateArtifactsInput } from "./ArtifactGenerator.js";
 
 const AgentArtifactItemSchema = z.object({
@@ -56,22 +56,35 @@ export class AgentArtifactGenerator implements ArtifactGenerator {
       input.retrievedExperiences.flatMap((e) => e.matchedSkills.map((s) => s.id)),
     );
     const allowedRequirementIds = new Set(input.requirements.map((r) => r.id));
+    const evidenceTextById = new Map(
+      input.retrievedExperiences.flatMap((entry) =>
+        entry.matchedEvidences.map((evidence) => [evidence.id, evidence.excerpt]),
+      ),
+    );
 
     return validated.map((item, index) => {
       const sourceExperienceIds = item.sourceExperienceIds.filter((id) => allowedExperienceIds.has(id));
       const matchedSkillIds = item.matchedSkillIds.filter((id) => allowedSkillIds.has(id));
-      const targetRequirementIds = item.targetRequirementIds.filter((id) => allowedRequirementIds.has(id));
+      const initialTargetRequirementIds = item.targetRequirementIds.filter((id) => allowedRequirementIds.has(id));
       const alignedItem = {
         ...item,
         sourceExperienceIds,
         matchedSkillIds,
-        targetRequirementIds,
+        targetRequirementIds: initialTargetRequirementIds,
       };
       const sourceEvidenceIds = this.alignEvidenceIds({
         item: alignedItem,
         retrievedExperiences: input.retrievedExperiences,
         allowedEvidenceIds,
         allowedSkillIds,
+      });
+      const targetRequirementIds = this.filterTargetRequirementIds({
+        targetRequirementIds: initialTargetRequirementIds,
+        requirements: input.requirements,
+        content: item.content,
+        evidenceTexts: sourceEvidenceIds
+          .map((id) => evidenceTextById.get(id))
+          .filter(Boolean) as string[],
       });
 
       const hasEvidence = sourceEvidenceIds.length > 0;
@@ -206,6 +219,93 @@ export class AgentArtifactGenerator implements ArtifactGenerator {
   private sharedNumber(content: string, excerpt: string): boolean {
     const contentNumbers = new Set(content.match(/\d+%?/g) ?? []);
     return (excerpt.match(/\d+%?/g) ?? []).some((number) => contentNumbers.has(number));
+  }
+
+  private filterTargetRequirementIds(input: {
+    targetRequirementIds: string[];
+    requirements: JDRequirement[];
+    content: string;
+    evidenceTexts: string[];
+  }): string[] {
+    const requirementById = new Map(input.requirements.map((requirement) => [requirement.id, requirement]));
+    return input.targetRequirementIds.filter((id) => {
+      const requirement = requirementById.get(id);
+      if (!requirement || !this.isBroadRequirement(requirement)) {
+        return true;
+      }
+      return this.contentAndEvidenceSupportBroadRequirement({
+        requirement,
+        content: input.content,
+        evidenceTexts: input.evidenceTexts,
+      });
+    });
+  }
+
+  private isBroadRequirement(requirement: JDRequirement): boolean {
+    return /\b(cross-team|collaboration|collaborate|product impact|measurable impact|business impact|adoption|stakeholder|organization-wide|company-wide)\b/i
+      .test(requirement.description);
+  }
+
+  private contentAndEvidenceSupportBroadRequirement(input: {
+    requirement: JDRequirement;
+    content: string;
+    evidenceTexts: string[];
+  }): boolean {
+    const description = input.requirement.description.toLowerCase();
+    const evidenceText = input.evidenceTexts.join(" ");
+    const checks: Array<() => boolean> = [];
+
+    if (/\b(cross-team|collaboration|collaborate)\b/i.test(description)) {
+      checks.push(() =>
+        this.supportsCollaboration(input.content) && this.supportsCollaboration(evidenceText),
+      );
+    }
+    if (/\b(product impact|measurable impact|business impact)\b/i.test(description)) {
+      checks.push(() =>
+        this.supportsImpact(input.content) && this.supportsImpact(evidenceText),
+      );
+    }
+    if (/\badoption\b/i.test(description)) {
+      checks.push(() =>
+        this.supportsAdoption(input.content) && this.supportsAdoption(evidenceText),
+      );
+    }
+    if (/\bstakeholder\b/i.test(description)) {
+      checks.push(() =>
+        this.supportsStakeholderWork(input.content) && this.supportsStakeholderWork(evidenceText),
+      );
+    }
+    if (/\b(organization-wide|company-wide)\b/i.test(description)) {
+      checks.push(() =>
+        this.supportsOrganizationWideScope(input.content) &&
+        this.supportsOrganizationWideScope(evidenceText),
+      );
+    }
+
+    return checks.length > 0 && checks.every((check) => check());
+  }
+
+  private supportsCollaboration(text: string): boolean {
+    return /\b(collaborat\w*|cross-team|cross-functional|worked with|partnered(?: with)?|worked across teams)\b/i
+      .test(text);
+  }
+
+  private supportsImpact(text: string): boolean {
+    return /%|\bby\s+\d+|\b(reduced|improved|increased|decreased|saved|delivered|lowered|raised|impact|measurable)\b/i
+      .test(text);
+  }
+
+  private supportsAdoption(text: string): boolean {
+    return /\b(adoption|adopted|rollout|rolled out|used by|usage)\b/i.test(text);
+  }
+
+  private supportsStakeholderWork(text: string): boolean {
+    return /\b(stakeholder|alignment|aligned|requirements|gathered)\b/i.test(text);
+  }
+
+  private supportsOrganizationWideScope(text: string): boolean {
+    return /\b(organization-wide|company-wide|companywide|company wide|org-wide|org wide|across the organization|across the company)\b/i
+      .test(text);
   }
 
   private buildPrompt(input: GenerateArtifactsInput): string {

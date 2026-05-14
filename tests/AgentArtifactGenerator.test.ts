@@ -204,6 +204,95 @@ function makeMixedRetrievedExperience(): RetrievedExperience {
   };
 }
 
+function makeBroadRetrievedExperience(): RetrievedExperience {
+  const experience: Experience = {
+    id: "exp-broad",
+    userId: "user-1",
+    type: "work",
+    organization: "Acme Corp",
+    role: "Senior Frontend Engineer",
+    summary: "Led frontend platform work.",
+    timeRange: { startDate: null, endDate: null },
+    star: { situation: "x", task: "x", action: "x", result: "40% reduction" },
+    evidenceIds: ["ev-scale", "ev-collab", "ev-impact"],
+    skillIds: ["skill-design-system", "skill-performance"],
+    confidence: 0.85,
+    createdAt: "2024-01-01T00:00:00Z",
+    updatedAt: "2024-01-01T00:00:00Z",
+  };
+
+  const evidences: Evidence[] = [
+    {
+      id: "ev-scale",
+      userId: "user-1",
+      experienceId: "exp-broad",
+      sourceType: "raw_input",
+      evidenceType: "scope",
+      sourceRef: "test",
+      excerpt: "Led a React design system project for 12 product teams.",
+      confidence: 0.9,
+      createdAt: "2024-01-01T00:00:00Z",
+    },
+    {
+      id: "ev-collab",
+      userId: "user-1",
+      experienceId: "exp-broad",
+      sourceType: "raw_input",
+      evidenceType: "action",
+      sourceRef: "test",
+      excerpt: "Partnered with product and design teams on cross-team collaboration for the design system rollout.",
+      confidence: 0.9,
+      createdAt: "2024-01-01T00:00:00Z",
+    },
+    {
+      id: "ev-impact",
+      userId: "user-1",
+      experienceId: "exp-broad",
+      sourceType: "raw_input",
+      evidenceType: "result",
+      sourceRef: "test",
+      excerpt: "Delivered measurable product impact by reducing bundle size by 40%.",
+      confidence: 0.92,
+      createdAt: "2024-01-01T00:00:00Z",
+    },
+  ];
+
+  const skills = [
+    {
+      id: "skill-design-system",
+      userId: "user-1",
+      name: "Design System",
+      category: "domain" as const,
+      evidenceIds: ["ev-scale", "ev-collab"],
+      createdAt: "2024-01-01T00:00:00Z",
+      updatedAt: "2024-01-01T00:00:00Z",
+    },
+    {
+      id: "skill-performance",
+      userId: "user-1",
+      name: "Performance Optimization",
+      category: "technical" as const,
+      evidenceIds: ["ev-impact"],
+      createdAt: "2024-01-01T00:00:00Z",
+      updatedAt: "2024-01-01T00:00:00Z",
+    },
+  ];
+
+  return {
+    experience,
+    evidences,
+    skills,
+    matchedEvidences: evidences,
+    matchedSkills: skills,
+    matchedRequirements: [],
+    matchScore: 0.9,
+    matchedRequirementIds: [],
+    matchedEvidenceIds: evidences.map((evidence) => evidence.id),
+    matchedSkillIds: skills.map((skill) => skill.id),
+    reason: "Matched frontend platform evidence",
+  };
+}
+
 describe("AgentArtifactGenerator", () => {
   it("parses and validates valid JSON agent output", async () => {
     const provider = fakeProvider(
@@ -495,6 +584,67 @@ describe("AgentArtifactGenerator", () => {
     expect(result[0].sourceEvidenceIds).toEqual(["ev-perf"]);
     expect(result[1].sourceEvidenceIds).toEqual(["ev-a11y"]);
     expect(result[2].sourceEvidenceIds).toEqual(["ev-scope", "ev-perf"]);
+  });
+
+  it("filters broad requirements unless content and linked evidence explicitly support them", async () => {
+    const provider = fakeProvider(
+      JSON.stringify([
+        {
+          type: "resume_bullet",
+          content: "Reduced bundle size by 40%.",
+          sourceExperienceIds: ["exp-broad"],
+          sourceEvidenceIds: ["ev-impact"],
+          matchedSkillIds: ["skill-performance"],
+          targetRequirementIds: ["req-perf", "req-broad"],
+        },
+        {
+          type: "resume_bullet",
+          content: "Partnered with product and design teams through cross-team collaboration on the design system rollout.",
+          sourceExperienceIds: ["exp-broad"],
+          sourceEvidenceIds: ["ev-collab"],
+          matchedSkillIds: ["skill-design-system"],
+          targetRequirementIds: ["req-collab"],
+        },
+        {
+          type: "resume_bullet",
+          content: "Delivered measurable product impact by reducing bundle size by 40%.",
+          sourceExperienceIds: ["exp-broad"],
+          sourceEvidenceIds: ["ev-impact"],
+          matchedSkillIds: ["skill-performance"],
+          targetRequirementIds: ["req-impact"],
+        },
+        {
+          type: "resume_bullet",
+          content: "Led design system work for 12 product teams.",
+          sourceExperienceIds: ["exp-broad"],
+          sourceEvidenceIds: ["ev-scale"],
+          matchedSkillIds: ["skill-design-system"],
+          targetRequirementIds: ["req-collab"],
+        },
+      ]),
+    );
+    const generator = new AgentArtifactGenerator(new ArchitectAgent({
+      modelClient: new ModelClient({ provider, defaultModel: "fake" }),
+    }));
+
+    const result = await generator.generate({
+      userId: "user-1",
+      jdId: "jd-1",
+      jdText: "Looking for frontend platform impact and collaboration.",
+      targetRole: "Frontend Engineer",
+      requirements: [
+        makeAlignmentRequirement("req-perf", "Performance optimization", ["skill-performance"]),
+        makeAlignmentRequirement("req-broad", "Cross-team collaboration and product impact demonstrated", []),
+        makeAlignmentRequirement("req-collab", "Cross-team collaboration", []),
+        makeAlignmentRequirement("req-impact", "Measurable impact", []),
+      ],
+      retrievedExperiences: [makeBroadRetrievedExperience()],
+    });
+
+    expect(result[0].targetRequirementIds).toEqual(["req-perf"]);
+    expect(result[1].targetRequirementIds).toEqual(["req-collab"]);
+    expect(result[2].targetRequirementIds).toEqual(["req-impact"]);
+    expect(result[3].targetRequirementIds).toEqual([]);
   });
 
   it("does not add unrelated evidence when content has no supporting match", async () => {

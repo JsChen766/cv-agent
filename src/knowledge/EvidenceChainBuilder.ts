@@ -201,6 +201,20 @@ export class EvidenceChainBuilder {
         `Artifact includes unsupported claim phrase "${phrase}" that is not present in linked evidence.`,
       );
     }
+    for (const match of requirementMatches) {
+      if (
+        this.isBroadRequirement(match.requirement) &&
+        !this.contentAndEvidenceSupportBroadRequirement({
+          requirement: match.requirement,
+          content: artifact.content,
+          evidenceTexts: sourceEvidences.map((evidence) => evidence.excerpt),
+        })
+      ) {
+        exaggerationWarnings.push(
+          `Unsupported broad requirement: "${match.requirement.description}" is not explicitly supported by artifact content and linked evidence.`,
+        );
+      }
+    }
     if (artifact.status === "needs_review") {
       notes.push("Artifact is marked as needs_review.");
     }
@@ -265,22 +279,175 @@ export class EvidenceChainBuilder {
     sourceEvidences: Evidence[],
   ): string[] {
     const evidenceText = sourceEvidences.map((evidence) => evidence.excerpt).join(" ").toLowerCase();
-    const checks: Array<{ pattern: RegExp; phrase: string; evidenceKeywords: string[] }> = [
-      { pattern: /\bgather(?:ed)? requirements\b/i, phrase: "gathered requirements", evidenceKeywords: ["requirements"] },
-      { pattern: /\balign(?:ed)? stakeholders\b/i, phrase: "aligned stakeholders", evidenceKeywords: ["stakeholders"] },
-      { pattern: /\bmentored\b/i, phrase: "mentored", evidenceKeywords: ["mentored", "mentoring"] },
-      { pattern: /\bmanaged\b/i, phrase: "managed", evidenceKeywords: ["managed", "management"] },
-      { pattern: /\bowned roadmap\b/i, phrase: "owned roadmap", evidenceKeywords: ["roadmap"] },
-      { pattern: /\bled migration\b/i, phrase: "led migration", evidenceKeywords: ["migration"] },
-      { pattern: /\bincreased revenue\b/i, phrase: "increased revenue", evidenceKeywords: ["revenue"] },
-      { pattern: /\breduced cost\b/i, phrase: "reduced cost", evidenceKeywords: ["cost"] },
-      { pattern: /\bimproved conversion\b/i, phrase: "improved conversion", evidenceKeywords: ["conversion"] },
+    const checks: Array<{ pattern: RegExp; phrase: string; supported: () => boolean }> = [
+      {
+        pattern: /\bacross the organization\b/i,
+        phrase: "across the organization",
+        supported: () => this.supportsOrganizationWideScope(evidenceText),
+      },
+      {
+        pattern: /\bacross the company\b/i,
+        phrase: "across the company",
+        supported: () => this.supportsOrganizationWideScope(evidenceText),
+      },
+      {
+        pattern: /\borganization-wide\b/i,
+        phrase: "organization-wide",
+        supported: () => this.supportsOrganizationWideScope(evidenceText),
+      },
+      {
+        pattern: /\b(company-wide|company wide|companywide)\b/i,
+        phrase: "company-wide",
+        supported: () => this.supportsOrganizationWideScope(evidenceText),
+      },
+      {
+        pattern: /\b(org-wide|org wide)\b/i,
+        phrase: "org-wide",
+        supported: () => this.supportsOrganizationWideScope(evidenceText),
+      },
+      {
+        pattern: /\b(drove adoption|driven adoption|owned adoption|adoption across)\b/i,
+        phrase: "adoption",
+        supported: () => this.supportsAdoption(evidenceText),
+      },
+      {
+        pattern: /\bstakeholder alignment\b/i,
+        phrase: "stakeholder alignment",
+        supported: () => this.supportsStakeholderWork(evidenceText),
+      },
+      {
+        pattern: /\balign(?:ed)? stakeholders\b/i,
+        phrase: "aligned stakeholders",
+        supported: () => this.supportsStakeholderWork(evidenceText),
+      },
+      {
+        pattern: /\bgather(?:ed)? requirements\b/i,
+        phrase: "gathered requirements",
+        supported: () => this.supportsStakeholderWork(evidenceText),
+      },
+      {
+        pattern: /\brequirements gathering\b/i,
+        phrase: "requirements gathering",
+        supported: () => this.supportsStakeholderWork(evidenceText),
+      },
+      {
+        pattern: /\b(product impact|measurable impact|business impact)\b/i,
+        phrase: "product impact",
+        supported: () => this.supportsImpact(evidenceText),
+      },
+      {
+        pattern: /\b(cross-functional collaboration|cross-team collaboration|collaborated cross-functionally)\b/i,
+        phrase: "cross-team collaboration",
+        supported: () => this.supportsCollaboration(evidenceText),
+      },
+      {
+        pattern: /\bmentored\b/i,
+        phrase: "mentored",
+        supported: () => /\b(mentored|mentoring)\b/i.test(evidenceText),
+      },
+      {
+        pattern: /\bmanaged\b/i,
+        phrase: "managed",
+        supported: () => /\b(managed|management)\b/i.test(evidenceText),
+      },
+      {
+        pattern: /\bowned roadmap\b/i,
+        phrase: "owned roadmap",
+        supported: () => /\broadmap\b/i.test(evidenceText),
+      },
+      {
+        pattern: /\bled migration\b/i,
+        phrase: "led migration",
+        supported: () => /\bmigration\b/i.test(evidenceText),
+      },
+      {
+        pattern: /\bincreased revenue\b/i,
+        phrase: "increased revenue",
+        supported: () => /\brevenue\b/i.test(evidenceText),
+      },
+      {
+        pattern: /\breduced cost\b/i,
+        phrase: "reduced cost",
+        supported: () => /\bcost\b/i.test(evidenceText),
+      },
+      {
+        pattern: /\bimproved conversion\b/i,
+        phrase: "improved conversion",
+        supported: () => /\bconversion\b/i.test(evidenceText),
+      },
     ];
 
     return checks
       .filter((check) => check.pattern.test(content))
-      .filter((check) => !check.evidenceKeywords.some((keyword) => evidenceText.includes(keyword)))
+      .filter((check) => !check.supported())
       .map((check) => check.phrase);
+  }
+
+  private isBroadRequirement(requirement: JDRequirement): boolean {
+    return /\b(cross-team|collaboration|collaborate|product impact|measurable impact|business impact|adoption|stakeholder|organization-wide|company-wide)\b/i
+      .test(requirement.description);
+  }
+
+  private contentAndEvidenceSupportBroadRequirement(input: {
+    requirement: JDRequirement;
+    content: string;
+    evidenceTexts: string[];
+  }): boolean {
+    const description = input.requirement.description.toLowerCase();
+    const evidenceText = input.evidenceTexts.join(" ");
+    const checks: Array<() => boolean> = [];
+
+    if (/\b(cross-team|collaboration|collaborate)\b/i.test(description)) {
+      checks.push(() =>
+        this.supportsCollaboration(input.content) && this.supportsCollaboration(evidenceText),
+      );
+    }
+    if (/\b(product impact|measurable impact|business impact)\b/i.test(description)) {
+      checks.push(() =>
+        this.supportsImpact(input.content) && this.supportsImpact(evidenceText),
+      );
+    }
+    if (/\badoption\b/i.test(description)) {
+      checks.push(() =>
+        this.supportsAdoption(input.content) && this.supportsAdoption(evidenceText),
+      );
+    }
+    if (/\bstakeholder\b/i.test(description)) {
+      checks.push(() =>
+        this.supportsStakeholderWork(input.content) && this.supportsStakeholderWork(evidenceText),
+      );
+    }
+    if (/\b(organization-wide|company-wide)\b/i.test(description)) {
+      checks.push(() =>
+        this.supportsOrganizationWideScope(input.content) &&
+        this.supportsOrganizationWideScope(evidenceText),
+      );
+    }
+
+    return checks.length > 0 && checks.every((check) => check());
+  }
+
+  private supportsCollaboration(text: string): boolean {
+    return /\b(collaborat\w*|cross-team|cross-functional|worked with|partnered(?: with)?|worked across teams)\b/i
+      .test(text);
+  }
+
+  private supportsImpact(text: string): boolean {
+    return /%|\bby\s+\d+|\b(reduced|improved|increased|decreased|saved|delivered|lowered|raised|impact|measurable)\b/i
+      .test(text);
+  }
+
+  private supportsAdoption(text: string): boolean {
+    return /\b(adoption|adopted|rollout|rolled out|used by|usage)\b/i.test(text);
+  }
+
+  private supportsStakeholderWork(text: string): boolean {
+    return /\b(stakeholder|alignment|aligned|requirements|gathered)\b/i.test(text);
+  }
+
+  private supportsOrganizationWideScope(text: string): boolean {
+    return /\b(organization-wide|company-wide|companywide|company wide|org-wide|org wide|across the organization|across the company)\b/i
+      .test(text);
   }
 
   private buildTruthfulnessRisk(
