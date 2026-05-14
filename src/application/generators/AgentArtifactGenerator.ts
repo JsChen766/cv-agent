@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { stableId } from "../../knowledge/keywordUtils.js";
+import { stableId, tokenize } from "../../knowledge/keywordUtils.js";
 import { GeneratedArtifactTypeSchema } from "../../knowledge/schemas/GeneratedArtifactSchema.js";
 import { parseWithSchema } from "../../knowledge/schemas/validate.js";
 import type { BaseAgent } from "../../core/agent/BaseAgent.js";
@@ -17,8 +17,10 @@ const AgentArtifactItemSchema = z.object({
 });
 
 const AgentArtifactOutputSchema = z.array(AgentArtifactItemSchema);
+type AgentArtifactItem = z.infer<typeof AgentArtifactItemSchema>;
 
 const MIN_ARTIFACTS = 3;
+const MAX_ALIGNED_EVIDENCE_IDS = 3;
 
 export class AgentArtifactGenerator implements ArtifactGenerator {
   constructor(private readonly agent: BaseAgent) {}
@@ -56,10 +58,23 @@ export class AgentArtifactGenerator implements ArtifactGenerator {
     const allowedRequirementIds = new Set(input.requirements.map((r) => r.id));
 
     return validated.map((item, index) => {
-      const sourceEvidenceIds = item.sourceEvidenceIds.filter((id) => allowedEvidenceIds.has(id));
       const sourceExperienceIds = item.sourceExperienceIds.filter((id) => allowedExperienceIds.has(id));
       const matchedSkillIds = item.matchedSkillIds.filter((id) => allowedSkillIds.has(id));
       const targetRequirementIds = item.targetRequirementIds.filter((id) => allowedRequirementIds.has(id));
+      const alignedItem = {
+        ...item,
+        sourceExperienceIds,
+        matchedSkillIds,
+        targetRequirementIds,
+      };
+      const sourceEvidenceIds = this.alignEvidenceIds({
+        item: alignedItem,
+        requirements: input.requirements,
+        retrievedExperiences: input.retrievedExperiences,
+        allowedEvidenceIds,
+        allowedSkillIds,
+        allowedRequirementIds,
+      });
 
       const hasEvidence = sourceEvidenceIds.length > 0;
       const evidenceStrength = hasEvidence ? 0.85 : 0.2;
@@ -86,6 +101,91 @@ export class AgentArtifactGenerator implements ArtifactGenerator {
         updatedAt: now,
       };
     });
+  }
+
+  private alignEvidenceIds(input: {
+    item: AgentArtifactItem;
+    requirements: GenerateArtifactsInput["requirements"];
+    retrievedExperiences: GenerateArtifactsInput["retrievedExperiences"];
+    allowedEvidenceIds: Set<string>;
+    allowedSkillIds: Set<string>;
+    allowedRequirementIds: Set<string>;
+  }): string[] {
+    const aligned = new Set(
+      input.item.sourceEvidenceIds.filter((id) => input.allowedEvidenceIds.has(id)),
+    );
+
+    if (input.item.sourceExperienceIds.length === 0) {
+      return Array.from(aligned).slice(0, MAX_ALIGNED_EVIDENCE_IDS);
+    }
+
+    const sourceExperienceIds = new Set(input.item.sourceExperienceIds);
+    const retrieved = input.retrievedExperiences.filter((entry) =>
+      sourceExperienceIds.has(entry.experience.id),
+    );
+
+    for (const entry of retrieved) {
+      for (const evidence of entry.matchedEvidences) {
+        if (
+          input.allowedEvidenceIds.has(evidence.id) &&
+          this.contentMatchesEvidence(input.item.content, evidence.excerpt)
+        ) {
+          aligned.add(evidence.id);
+        }
+      }
+    }
+
+    const matchedSkillIds = new Set(
+      input.item.matchedSkillIds.filter((id) => input.allowedSkillIds.has(id)),
+    );
+    for (const entry of retrieved) {
+      for (const skill of entry.matchedSkills) {
+        if (!matchedSkillIds.has(skill.id)) {
+          continue;
+        }
+        for (const evidenceId of skill.evidenceIds) {
+          if (input.allowedEvidenceIds.has(evidenceId)) {
+            aligned.add(evidenceId);
+          }
+        }
+      }
+    }
+
+    const targetRequirementIds = new Set(
+      input.item.targetRequirementIds.filter((id) => input.allowedRequirementIds.has(id)),
+    );
+    const requiredSkillIds = new Set(
+      input.requirements
+        .filter((requirement) => targetRequirementIds.has(requirement.id))
+        .flatMap((requirement) => requirement.requiredSkillIds),
+    );
+    for (const entry of retrieved) {
+      for (const skill of entry.matchedSkills) {
+        if (!requiredSkillIds.has(skill.id)) {
+          continue;
+        }
+        for (const evidenceId of skill.evidenceIds) {
+          if (input.allowedEvidenceIds.has(evidenceId)) {
+            aligned.add(evidenceId);
+          }
+        }
+      }
+    }
+
+    return Array.from(aligned).slice(0, MAX_ALIGNED_EVIDENCE_IDS);
+  }
+
+  private contentMatchesEvidence(content: string, excerpt: string): boolean {
+    const contentTokens = new Set(tokenize(content));
+    const evidenceTokens = tokenize(excerpt);
+    const matches = evidenceTokens.filter((token) => contentTokens.has(token));
+
+    return matches.length >= 2 || this.sharedNumber(content, excerpt);
+  }
+
+  private sharedNumber(content: string, excerpt: string): boolean {
+    const contentNumbers = new Set(content.match(/\d+%?/g) ?? []);
+    return (excerpt.match(/\d+%?/g) ?? []).some((number) => contentNumbers.has(number));
   }
 
   private buildPrompt(input: GenerateArtifactsInput): string {

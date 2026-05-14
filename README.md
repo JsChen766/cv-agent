@@ -214,6 +214,12 @@ Recommended real-agent debugging order:
 
 Agent JSON output is parsed through `parseAgentJson`, which handles JSON code fences, short explanatory text before or after the JSON, and object/array root validation. Prompts still require pure JSON because tolerant parsing is only a recovery layer.
 
+Evidence alignment and risk calibration are intentionally conservative:
+
+- `AgentArtifactGenerator` filters illegal IDs returned by the model, then tries to fill related `sourceEvidenceIds` from artifact content, matched skills, and target requirements. It only links existing evidence IDs and does not invent evidence.
+- `EvidenceChainBuilder` evaluates only the requirements listed in `artifact.targetRequirementIds` when present, so one artifact is not penalized for failing to cover the entire JD. It also warns on unsupported numbers and a small set of high-risk claim phrases.
+- `ExperienceIngestionService` builds STAR fields with separate scoring for situation, task, action, and result. Result selection now prefers outcome/metric evidence such as "reduced", "improved", percentages, or "from X to Y" changes.
+
 `createAgentBackedCooltoDemoService()` now exists as an in-memory skeleton for the complete agent-backed pipeline. It wires agent-backed ingestion, JD extraction, artifact generation, retrieval, evidence chains, graph views, and contract mapping, but the safer first validation point is still `agent-ingest-demo`.
 
 Current non-goals remain unchanged: no frontend, no HTTP API server, no vector database, no Neo4j, and no production persistence.

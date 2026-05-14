@@ -6,6 +6,7 @@ import type {
   Experience,
   GeneratedArtifact,
   JDRequirement,
+  RiskLevel,
   Skill,
 } from "./types.js";
 import type { EvidenceRepository, ExperienceRepository } from "./repositories.js";
@@ -30,7 +31,11 @@ export class EvidenceChainBuilder {
     const sourceSkills = skills.filter((skill) =>
       artifact.matchedSkillIds.includes(skill.id),
     );
-    const requirementMatches = requirements.map((requirement) =>
+    const { effectiveRequirements, notes } = this.getEffectiveRequirements(
+      artifact,
+      requirements,
+    );
+    const requirementMatches = effectiveRequirements.map((requirement) =>
       this.matchRequirement(
         requirement,
         artifact,
@@ -43,7 +48,7 @@ export class EvidenceChainBuilder {
     const chain: EvidenceChain = {
       id: stableId("chain", `${artifact.id}:${artifact.updatedAt}`),
       artifact,
-      summary: this.buildSummary(artifact, requirementMatches, sourceEvidences),
+      summary: this.buildSummary(artifact, effectiveRequirements, sourceEvidences),
       requirementMatches,
       sourceExperiences,
       sourceEvidences,
@@ -53,6 +58,7 @@ export class EvidenceChainBuilder {
         requirementMatches,
         sourceExperiences,
         sourceEvidences,
+        notes,
       ),
       scores: artifact.scores,
       createdAt: new Date().toISOString(),
@@ -146,13 +152,16 @@ export class EvidenceChainBuilder {
 
   private buildSummary(
     artifact: GeneratedArtifact,
-    requirementMatches: EvidenceRequirementMatch[],
+    requirements: JDRequirement[],
     sourceEvidences: Evidence[],
   ): string {
-    const matchedRequirements = requirementMatches.filter(
-      (match) => match.matchScore > 0,
-    ).length;
-    return `${artifact.type} is supported by ${sourceEvidences.length} evidence item(s) across ${matchedRequirements} matched requirement(s).`;
+    const label = this.artifactTypeLabel(artifact.type);
+    const evidenceCount = sourceEvidences.length;
+    const requirementCount = requirements.length;
+    if (evidenceCount === 0) {
+      return `This ${label} needs review because no supporting evidence is linked. It covers ${requirementCount} target requirement${requirementCount === 1 ? "" : "s"}.`;
+    }
+    return `This ${label} is backed by ${evidenceCount} evidence item${evidenceCount === 1 ? "" : "s"} and covers ${requirementCount} target requirement${requirementCount === 1 ? "" : "s"}.`;
   }
 
   private assessRisk(
@@ -160,10 +169,11 @@ export class EvidenceChainBuilder {
     requirementMatches: EvidenceRequirementMatch[],
     sourceExperiences: Experience[],
     sourceEvidences: Evidence[],
+    initialNotes: string[] = [],
   ): EvidenceRiskAssessment {
     const missingEvidenceClaims: string[] = [];
     const exaggerationWarnings: string[] = [];
-    const notes: string[] = [];
+    const notes: string[] = [...initialNotes];
 
     if (sourceExperiences.length === 0) {
       missingEvidenceClaims.push("Generated artifact has no source experience.");
@@ -181,21 +191,30 @@ export class EvidenceChainBuilder {
     if (artifact.scores.evidenceStrength < 0.5) {
       exaggerationWarnings.push("Evidence strength score is below 0.5.");
     }
+    for (const number of this.detectUnsupportedNumbers(artifact.content, sourceEvidences)) {
+      exaggerationWarnings.push(
+        `Artifact includes unsupported number "${number}" that is not present in linked evidence.`,
+      );
+    }
+    for (const phrase of this.detectUnsupportedClaimPhrases(artifact.content, sourceEvidences)) {
+      exaggerationWarnings.push(
+        `Artifact includes unsupported claim phrase "${phrase}" that is not present in linked evidence.`,
+      );
+    }
     if (artifact.status === "needs_review") {
       notes.push("Artifact is marked as needs_review.");
     }
 
-    const truthfulnessRisk = missingEvidenceClaims.length > 0 ? "medium" : "low";
-    const exaggerationRisk =
-      exaggerationWarnings.length > 0 || artifact.scores.overall < 0.5
-        ? "medium"
-        : "low";
-    const level =
-      missingEvidenceClaims.length > 1 || exaggerationWarnings.length > 1
-        ? "high"
-        : truthfulnessRisk === "medium" || exaggerationRisk === "medium"
-          ? "medium"
-          : "low";
+    const truthfulnessRisk = this.buildTruthfulnessRisk(
+      sourceExperiences,
+      sourceEvidences,
+      requirementMatches,
+    );
+    const exaggerationRisk = this.buildExaggerationRisk(
+      artifact,
+      exaggerationWarnings,
+    );
+    const level = this.buildRiskLevel(truthfulnessRisk, exaggerationRisk);
 
     return {
       level,
@@ -205,5 +224,116 @@ export class EvidenceChainBuilder {
       exaggerationWarnings,
       notes,
     };
+  }
+
+  private getEffectiveRequirements(
+    artifact: GeneratedArtifact,
+    requirements: JDRequirement[],
+  ): { effectiveRequirements: JDRequirement[]; notes: string[] } {
+    const notes: string[] = [];
+    if (artifact.targetRequirementIds.length === 0) {
+      return { effectiveRequirements: requirements, notes };
+    }
+
+    const requirementById = new Map(requirements.map((requirement) => [requirement.id, requirement]));
+    const effectiveRequirements = artifact.targetRequirementIds
+      .map((id) => requirementById.get(id))
+      .filter(Boolean) as JDRequirement[];
+    const missingIds = artifact.targetRequirementIds.filter((id) => !requirementById.has(id));
+
+    if (missingIds.length > 0) {
+      notes.push(`Artifact references unknown target requirement id(s): ${missingIds.join(", ")}.`);
+    }
+
+    return {
+      effectiveRequirements: effectiveRequirements.length > 0 ? effectiveRequirements : requirements,
+      notes,
+    };
+  }
+
+  private detectUnsupportedNumbers(
+    content: string,
+    sourceEvidences: Evidence[],
+  ): string[] {
+    const evidenceText = sourceEvidences.map((evidence) => evidence.excerpt).join(" ");
+    const evidenceNumbers = new Set(this.extractNumbers(evidenceText));
+    return this.extractNumbers(content).filter((number) => !evidenceNumbers.has(number));
+  }
+
+  private detectUnsupportedClaimPhrases(
+    content: string,
+    sourceEvidences: Evidence[],
+  ): string[] {
+    const evidenceText = sourceEvidences.map((evidence) => evidence.excerpt).join(" ").toLowerCase();
+    const checks: Array<{ pattern: RegExp; phrase: string; evidenceKeywords: string[] }> = [
+      { pattern: /\bgather(?:ed)? requirements\b/i, phrase: "gathered requirements", evidenceKeywords: ["requirements"] },
+      { pattern: /\balign(?:ed)? stakeholders\b/i, phrase: "aligned stakeholders", evidenceKeywords: ["stakeholders"] },
+      { pattern: /\bmentored\b/i, phrase: "mentored", evidenceKeywords: ["mentored", "mentoring"] },
+      { pattern: /\bmanaged\b/i, phrase: "managed", evidenceKeywords: ["managed", "management"] },
+      { pattern: /\bowned roadmap\b/i, phrase: "owned roadmap", evidenceKeywords: ["roadmap"] },
+      { pattern: /\bled migration\b/i, phrase: "led migration", evidenceKeywords: ["migration"] },
+      { pattern: /\bincreased revenue\b/i, phrase: "increased revenue", evidenceKeywords: ["revenue"] },
+      { pattern: /\breduced cost\b/i, phrase: "reduced cost", evidenceKeywords: ["cost"] },
+      { pattern: /\bimproved conversion\b/i, phrase: "improved conversion", evidenceKeywords: ["conversion"] },
+    ];
+
+    return checks
+      .filter((check) => check.pattern.test(content))
+      .filter((check) => !check.evidenceKeywords.some((keyword) => evidenceText.includes(keyword)))
+      .map((check) => check.phrase);
+  }
+
+  private buildTruthfulnessRisk(
+    sourceExperiences: Experience[],
+    sourceEvidences: Evidence[],
+    requirementMatches: EvidenceRequirementMatch[],
+  ): RiskLevel {
+    if (sourceExperiences.length === 0 || sourceEvidences.length === 0) {
+      return "high";
+    }
+    if (requirementMatches.some((match) => match.matchedEvidences.length === 0)) {
+      return "medium";
+    }
+    return "low";
+  }
+
+  private buildExaggerationRisk(
+    artifact: GeneratedArtifact,
+    exaggerationWarnings: string[],
+  ): RiskLevel {
+    if (exaggerationWarnings.some((warning) => warning.includes("unsupported number"))) {
+      return "high";
+    }
+    if (exaggerationWarnings.length > 0 || artifact.scores.evidenceStrength < 0.5 || artifact.scores.overall < 0.5) {
+      return "medium";
+    }
+    return "low";
+  }
+
+  private buildRiskLevel(
+    truthfulnessRisk: RiskLevel,
+    exaggerationRisk: RiskLevel,
+  ): RiskLevel {
+    if (truthfulnessRisk === "high" || exaggerationRisk === "high") {
+      return "high";
+    }
+    if (truthfulnessRisk === "medium" || exaggerationRisk === "medium") {
+      return "medium";
+    }
+    return "low";
+  }
+
+  private artifactTypeLabel(type: GeneratedArtifact["type"]): string {
+    if (type === "resume_bullet") {
+      return "resume bullet";
+    }
+    if (type === "resume_summary") {
+      return "resume summary";
+    }
+    return "cover letter snippet";
+  }
+
+  private extractNumbers(text: string): string[] {
+    return Array.from(new Set(text.match(/\d+(?:\.\d+)?%/g) ?? []));
   }
 }

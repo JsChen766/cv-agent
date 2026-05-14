@@ -40,7 +40,17 @@ export type EvidenceSourceType =
   | "portfolio"
   | "manual";
 
-export type EvidenceType = "bullet" | "metric" | "project" | "skill" | "outcome";
+export type EvidenceType =
+  | "bullet"
+  | "metric"
+  | "project"
+  | "skill"
+  | "outcome"
+  | "scope"
+  | "action"
+  | "result"
+  | "skill_proof"
+  | "raw_excerpt";
 
 export type Evidence = {
   id: string;

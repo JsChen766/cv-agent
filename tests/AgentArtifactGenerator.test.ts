@@ -27,8 +27,8 @@ function makeRetrievedExperience(): RetrievedExperience {
     summary: "Built a React design system.",
     timeRange: { startDate: null, endDate: null },
     star: { situation: "x", task: "x", action: "x", result: "40% improvement" },
-    evidenceIds: ["ev-1", "ev-2"],
-    skillIds: ["skill-react", "skill-ts"],
+    evidenceIds: ["ev-1", "ev-2", "ev-3"],
+    skillIds: ["skill-react", "skill-ts", "skill-performance"],
     confidence: 0.85,
     createdAt: "2024-01-01T00:00:00Z",
     updatedAt: "2024-01-01T00:00:00Z",
@@ -37,11 +37,13 @@ function makeRetrievedExperience(): RetrievedExperience {
   const evidences: Evidence[] = [
     { id: "ev-1", userId: "user-1", experienceId: "exp-1", sourceType: "raw_input", evidenceType: "project", sourceRef: "test", excerpt: "Built React components", confidence: 0.9, createdAt: "2024-01-01T00:00:00Z" },
     { id: "ev-2", userId: "user-1", experienceId: "exp-1", sourceType: "raw_input", evidenceType: "metric", sourceRef: "test", excerpt: "Reduced bundle size by 40%", confidence: 0.92, createdAt: "2024-01-01T00:00:00Z" },
+    { id: "ev-3", userId: "user-1", experienceId: "exp-1", sourceType: "raw_input", evidenceType: "skill_proof", sourceRef: "test", excerpt: "Built TypeScript component APIs", confidence: 0.88, createdAt: "2024-01-01T00:00:00Z" },
   ];
 
   const skills = [
     { id: "skill-react", userId: "user-1", name: "React", category: "technical" as const, evidenceIds: ["ev-1"], createdAt: "2024-01-01T00:00:00Z", updatedAt: "2024-01-01T00:00:00Z" },
-    { id: "skill-ts", userId: "user-1", name: "TypeScript", category: "technical" as const, evidenceIds: ["ev-2"], createdAt: "2024-01-01T00:00:00Z", updatedAt: "2024-01-01T00:00:00Z" },
+    { id: "skill-ts", userId: "user-1", name: "TypeScript", category: "technical" as const, evidenceIds: ["ev-3"], createdAt: "2024-01-01T00:00:00Z", updatedAt: "2024-01-01T00:00:00Z" },
+    { id: "skill-performance", userId: "user-1", name: "Performance Optimization", category: "technical" as const, evidenceIds: ["ev-2"], createdAt: "2024-01-01T00:00:00Z", updatedAt: "2024-01-01T00:00:00Z" },
   ];
 
   return {
@@ -67,6 +69,18 @@ function makeRequirement(): JDRequirement {
     description: "React experience",
     requiredSkillIds: ["skill-react"],
     weight: 1,
+    createdAt: "2024-01-01T00:00:00Z",
+  };
+}
+
+function makePerformanceRequirement(): JDRequirement {
+  return {
+    id: "req-2",
+    userId: "user-1",
+    jdId: "jd-1",
+    description: "Performance optimization experience",
+    requiredSkillIds: ["skill-performance"],
+    weight: 0.9,
     createdAt: "2024-01-01T00:00:00Z",
   };
 }
@@ -266,5 +280,142 @@ describe("AgentArtifactGenerator", () => {
     // But real IDs should be kept
     expect(result[0].sourceExperienceIds).toContain("exp-1");
     expect(result[0].sourceEvidenceIds).toContain("ev-1");
+  });
+
+  it("aligns additional relevant evidence IDs from content, skills, and requirements", async () => {
+    const provider = fakeProvider(
+      JSON.stringify([
+        {
+          type: "resume_bullet",
+          content: "Built React and TypeScript component APIs while reducing bundle size by 40%.",
+          sourceExperienceIds: ["exp-1"],
+          sourceEvidenceIds: ["ev-1"],
+          matchedSkillIds: ["skill-react", "skill-ts", "skill-performance"],
+          targetRequirementIds: ["req-1", "req-2"],
+        },
+        {
+          type: "resume_bullet",
+          content: "Built React component systems.",
+          sourceExperienceIds: ["exp-1"],
+          sourceEvidenceIds: ["ev-1"],
+          matchedSkillIds: ["skill-react"],
+          targetRequirementIds: ["req-1"],
+        },
+        {
+          type: "resume_summary",
+          content: "Frontend engineer with React, TypeScript, and performance experience.",
+          sourceExperienceIds: ["exp-1"],
+          sourceEvidenceIds: ["ev-1"],
+          matchedSkillIds: ["skill-react", "skill-ts", "skill-performance"],
+          targetRequirementIds: ["req-1", "req-2"],
+        },
+      ]),
+    );
+    const generator = new AgentArtifactGenerator(new ArchitectAgent({
+      modelClient: new ModelClient({ provider, defaultModel: "fake" }),
+    }));
+
+    const result = await generator.generate({
+      userId: "user-1",
+      jdId: "jd-1",
+      jdText: "Looking for React, TypeScript, and performance optimization.",
+      targetRole: "Frontend Engineer",
+      requirements: [makeRequirement(), makePerformanceRequirement()],
+      retrievedExperiences: [makeRetrievedExperience()],
+    });
+
+    expect(result[0].sourceEvidenceIds).toEqual(["ev-1", "ev-2", "ev-3"]);
+  });
+
+  it("does not add unrelated evidence when content has no supporting match", async () => {
+    const provider = fakeProvider(
+      JSON.stringify([
+        {
+          type: "resume_bullet",
+          content: "Improved performance for frontend applications.",
+          sourceExperienceIds: ["exp-1"],
+          sourceEvidenceIds: [],
+          matchedSkillIds: [],
+          targetRequirementIds: [],
+        },
+        {
+          type: "resume_bullet",
+          content: "Draft bullet.",
+          sourceExperienceIds: ["exp-1"],
+          sourceEvidenceIds: [],
+          matchedSkillIds: [],
+          targetRequirementIds: [],
+        },
+        {
+          type: "resume_summary",
+          content: "Draft summary.",
+          sourceExperienceIds: ["exp-1"],
+          sourceEvidenceIds: [],
+          matchedSkillIds: [],
+          targetRequirementIds: [],
+        },
+      ]),
+    );
+    const generator = new AgentArtifactGenerator(new ArchitectAgent({
+      modelClient: new ModelClient({ provider, defaultModel: "fake" }),
+    }));
+
+    const result = await generator.generate({
+      userId: "user-1",
+      jdId: "jd-1",
+      jdText: "Performance role.",
+      targetRole: "Frontend Engineer",
+      requirements: [],
+      retrievedExperiences: [makeRetrievedExperience()],
+    });
+
+    expect(result[0].sourceEvidenceIds).toEqual([]);
+    expect(result[0].status).toBe("needs_review");
+  });
+
+  it("does not align evidence when no retrieved experiences are available", async () => {
+    const provider = fakeProvider(
+      JSON.stringify([
+        {
+          type: "resume_bullet",
+          content: "Built React components.",
+          sourceExperienceIds: ["exp-1"],
+          sourceEvidenceIds: ["ev-1"],
+          matchedSkillIds: ["skill-react"],
+          targetRequirementIds: ["req-1"],
+        },
+        {
+          type: "resume_bullet",
+          content: "Reduced bundle size by 40%.",
+          sourceExperienceIds: ["exp-1"],
+          sourceEvidenceIds: ["ev-2"],
+          matchedSkillIds: ["skill-performance"],
+          targetRequirementIds: ["req-2"],
+        },
+        {
+          type: "resume_summary",
+          content: "Frontend engineer.",
+          sourceExperienceIds: ["exp-1"],
+          sourceEvidenceIds: ["ev-1"],
+          matchedSkillIds: ["skill-react"],
+          targetRequirementIds: ["req-1"],
+        },
+      ]),
+    );
+    const generator = new AgentArtifactGenerator(new ArchitectAgent({
+      modelClient: new ModelClient({ provider, defaultModel: "fake" }),
+    }));
+
+    const result = await generator.generate({
+      userId: "user-1",
+      jdId: "jd-1",
+      jdText: "React role.",
+      targetRole: "Frontend Engineer",
+      requirements: [makeRequirement(), makePerformanceRequirement()],
+      retrievedExperiences: [],
+    });
+
+    expect(result[0].sourceEvidenceIds).toEqual([]);
+    expect(result[0].status).toBe("needs_review");
   });
 });

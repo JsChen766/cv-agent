@@ -68,7 +68,6 @@ export class ExperienceIngestionService {
     }));
 
     const skills = await this.upsertSkills(input.userId, input.rawText, evidences, now);
-    const resultExcerpt = evidences.find((e) => e.evidenceType === "metric")?.excerpt;
 
     const experience: Experience = {
       id: experienceId,
@@ -81,12 +80,11 @@ export class ExperienceIngestionService {
         startDate: null,
         endDate: null,
       },
-      star: {
-        situation: extracted.summary,
-        task: extracted.evidenceExcerpts[1] ?? extracted.summary,
-        action: extracted.evidenceExcerpts.slice(1).join(" "),
-        result: resultExcerpt ?? extracted.evidenceExcerpts.at(-1) ?? extracted.summary,
-      },
+      star: this.buildStar({
+        summary: extracted.summary,
+        evidenceExcerpts: extracted.evidenceExcerpts,
+        evidences,
+      }),
       evidenceIds: evidences.map((e) => e.id),
       skillIds: skills.map((s) => s.id),
       confidence: evidences.length > 1 ? 0.82 : 0.68,
@@ -105,23 +103,118 @@ export class ExperienceIngestionService {
   }
 
   private detectEvidenceType(excerpt: string): EvidenceType {
-    if (/\d|%/.test(excerpt)) {
-      return "metric";
+    if (this.scoreResultCandidate(excerpt) > 0) {
+      return "result";
+    }
+    if (/\b(for|across)\s+\d+[\w\s-]*(teams|users|customers|products|projects|markets)\b/i.test(excerpt)) {
+      return "scope";
+    }
+    if (this.scoreActionCandidate(excerpt) > 0) {
+      return "action";
     }
     if (/\b(project|built|shipped|launched|library|system)\b/i.test(excerpt)) {
       return "project";
     }
-    if (/\b(result|reduced|increased|improved)\b/i.test(excerpt)) {
-      return "outcome";
+    if (detectKnownSkills(excerpt).length > 0) {
+      return "skill_proof";
     }
-    return "bullet";
+    if (/\d|%/.test(excerpt)) {
+      return "metric";
+    }
+    return "raw_excerpt";
   }
 
   private detectEvidenceConfidence(excerpt: string): number {
-    if (/\d|%/.test(excerpt)) {
+    if (this.scoreResultCandidate(excerpt) > 0) {
       return 0.92;
     }
+    if (/\d|%/.test(excerpt)) {
+      return 0.86;
+    }
     return excerpt.length > 40 ? 0.8 : 0.7;
+  }
+
+  private buildStar(input: {
+    summary: string;
+    evidenceExcerpts: string[];
+    evidences: Evidence[];
+  }): Experience["star"] {
+    const excerpts = input.evidences.length > 0
+      ? input.evidences.map((evidence) => evidence.excerpt)
+      : input.evidenceExcerpts;
+    const fallback = excerpts[0] ?? input.summary;
+
+    const situation =
+      this.pickBestEvidence(excerpts, (text) => this.scoreSituationCandidate(text)) ??
+      fallback;
+    const task =
+      this.pickBestEvidence(excerpts, (text) => this.scoreTaskCandidate(text)) ??
+      excerpts[1] ??
+      fallback;
+    const actionFallback = excerpts.slice(1).join(" ") || fallback;
+    const action =
+      this.pickBestEvidence(excerpts, (text) => this.scoreActionCandidate(text)) ??
+      actionFallback;
+    const result =
+      this.pickBestEvidence(excerpts, (text) => this.scoreResultCandidate(text)) ??
+      this.pickResultFallback(excerpts, fallback);
+
+    return { situation, task, action, result };
+  }
+
+  private pickResultFallback(excerpts: string[], fallback: string): string {
+    const nonSituation = [...excerpts]
+      .reverse()
+      .find((excerpt) => this.scoreSituationCandidate(excerpt) === 0);
+    return nonSituation ?? excerpts.at(-1) ?? fallback;
+  }
+
+  private pickBestEvidence(
+    excerpts: string[],
+    scorer: (text: string) => number,
+  ): string | null {
+    let best: { excerpt: string; score: number } | null = null;
+    for (const excerpt of excerpts) {
+      const score = scorer(excerpt);
+      if (score <= 0) {
+        continue;
+      }
+      if (!best || score > best.score) {
+        best = { excerpt, score };
+      }
+    }
+    return best?.excerpt ?? null;
+  }
+
+  private scoreSituationCandidate(text: string): number {
+    let score = 0;
+    if (/\bas\s+(?:a|an)\b/i.test(text)) score += 2;
+    if (/\bat\s+[A-Z][\w\s&.-]+/i.test(text)) score += 2;
+    if (/\b(for|across)\s+\d+[\w\s-]*(teams|users|customers|products|projects|markets)\b/i.test(text)) score += 2;
+    if (/\bproject\s+for\b/i.test(text)) score += 1;
+    return score;
+  }
+
+  private scoreTaskCandidate(text: string): number {
+    let score = 0;
+    if (/\b(led|owned|responsible for|tasked with|managed|coordinated)\b/i.test(text)) score += 2;
+    if (/\b(scope|initiative|program|project)\b/i.test(text)) score += 1;
+    return score;
+  }
+
+  private scoreActionCandidate(text: string): number {
+    let score = 0;
+    if (/\b(built|implemented|created|optimized|integrated|launched|designed|shipped|developed)\b/i.test(text)) score += 2;
+    if (/\b(using|through|with)\b/i.test(text)) score += 1;
+    return score;
+  }
+
+  private scoreResultCandidate(text: string): number {
+    let score = 0;
+    if (/\b(reduced|improved|increased|decreased|saved|achieved|delivered|grew|lowered|raised)\b/i.test(text)) score += 3;
+    if (/%|\bby\s+\d+|\bfrom\s+.+\s+to\s+.+/i.test(text)) score += 2;
+    if (/\b(result|outcome|impact)\b/i.test(text)) score += 1;
+    return score;
   }
 
   private async upsertSkills(

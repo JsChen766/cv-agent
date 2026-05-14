@@ -19,6 +19,11 @@ export const EvidenceTypeSchema = z.enum([
   "project",
   "skill",
   "outcome",
+  "scope",
+  "action",
+  "result",
+  "skill_proof",
+  "raw_excerpt",
 ]) satisfies z.ZodType<EvidenceType>;
 
 export const EvidenceSchema = z.object({
