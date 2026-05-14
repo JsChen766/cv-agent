@@ -11,7 +11,7 @@ export class MockProvider implements LLMProvider {
 
     return {
       content: request.responseFormat === "json"
-        ? JSON.stringify({ provider: this.name, input: lastUserMessage?.content ?? "", model: request.model })
+        ? JSON.stringify(this.mockJsonResponse(request, lastUserMessage?.content ?? ""))
         : `[mock:${request.model}] ${lastUserMessage?.content ?? ""}`,
       reasoning: request.thinking ? "Mock reasoning trace." : undefined,
       toolCalls,
@@ -46,5 +46,67 @@ export class MockProvider implements LLMProvider {
         arguments: JSON.stringify(args)
       }
     };
+  }
+
+  private mockJsonResponse(request: LLMChatRequest, userContent: string): Record<string, unknown> {
+    if (request.metadata?.agentName === "archivist") {
+      const rawText = this.extractRawText(userContent);
+      const excerpts = this.extractEvidenceExcerpts(rawText);
+
+      return {
+        type: this.detectExperienceType(rawText),
+        organization: this.detectOrganization(rawText),
+        role: this.detectRole(rawText),
+        summary: this.summarize(rawText),
+        evidenceExcerpts: excerpts.length > 0 ? excerpts : [rawText || "No source text provided."],
+      };
+    }
+
+    return { provider: this.name, input: userContent, model: request.model };
+  }
+
+  private extractRawText(userContent: string): string {
+    const marker = "rawText:";
+    const markerIndex = userContent.indexOf(marker);
+    if (markerIndex === -1) {
+      return userContent.trim();
+    }
+    return userContent.slice(markerIndex + marker.length).trim();
+  }
+
+  private extractEvidenceExcerpts(rawText: string): string[] {
+    const lines = rawText
+      .split(/\r?\n|(?<=[.!?])\s+/)
+      .map((line) => line.trim())
+      .filter(Boolean);
+    return lines.slice(0, 5);
+  }
+
+  private detectExperienceType(rawText: string): string {
+    if (/\b(school|university|student|degree|coursework)\b/i.test(rawText)) {
+      return "education";
+    }
+    if (/\b(volunteer|nonprofit)\b/i.test(rawText)) {
+      return "volunteer";
+    }
+    if (/\b(project|built|shipped|launched)\b/i.test(rawText)) {
+      return /\b(at|corp|inc|company)\b/i.test(rawText) ? "work" : "project";
+    }
+    return "other";
+  }
+
+  private detectOrganization(rawText: string): string {
+    const match = rawText.match(/\bat\s+([^,\n.]+)/i);
+    return match?.[1]?.trim() || "Unknown Organization";
+  }
+
+  private detectRole(rawText: string): string {
+    const match = rawText.match(/\bas\s+(?:a|an)\s+([^,\n.]+?)\s+at\s+/i);
+    return match?.[1]?.trim() || "Contributor";
+  }
+
+  private summarize(rawText: string): string {
+    const firstLine = this.extractEvidenceExcerpts(rawText)[0] ?? rawText.trim();
+    return firstLine.length > 160 ? `${firstLine.slice(0, 157)}...` : firstLine;
   }
 }

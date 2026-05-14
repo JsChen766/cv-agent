@@ -166,6 +166,41 @@ raw experience -> IngestExperienceResponse -> GenerateResumeResponse
 
 Use `createInMemoryCooltoDemoService()` for local prototypes and tests.
 
+## Real Agent Demo
+
+The deterministic demo remains the stable default path:
+
+```bash
+npm run dev:coolto-demo
+```
+
+It does not require API keys and should remain the baseline for tests and local regression checks.
+
+The first real agent-backed demo starts only with ArchivistAgent / experience ingestion:
+
+```bash
+npm run dev:agent-ingest
+```
+
+It uses the mock provider by default. To switch providers:
+
+```bash
+DEFAULT_PROVIDER=deepseek DEFAULT_MODEL=deepseek-v4-pro npm run dev:agent-ingest
+DEFAULT_PROVIDER=openrouter DEFAULT_MODEL=openai/gpt-4o-mini npm run dev:agent-ingest
+```
+
+`DEFAULT_PROVIDER=deepseek` requires `DEEPSEEK_API_KEY`. `DEFAULT_PROVIDER=openrouter` requires `OPENROUTER_API_KEY`. Core classes do not read `process.env`; demo/config code owns provider setup.
+
+Recommended real-agent rollout order:
+
+1. Verify `ArchivistAgent` / `AgentExperienceExtractor` with `npm run dev:agent-ingest`.
+2. Then verify `StrategistAgent` / `AgentJDRequirementExtractor`.
+3. Finally verify `ArchitectAgent` / `AgentArtifactGenerator`.
+
+`createAgentBackedCooltoDemoService()` now exists as an in-memory skeleton for the complete agent-backed pipeline. It wires agent-backed ingestion, JD extraction, artifact generation, retrieval, evidence chains, graph views, and contract mapping, but the safer first validation point is still `agent-ingest-demo`.
+
+Current non-goals remain unchanged: no frontend, no HTTP API server, no vector database, no Neo4j, and no production persistence.
+
 ## Current Non-Goals
 
 - No frontend.

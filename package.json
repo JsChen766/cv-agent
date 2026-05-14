@@ -12,6 +12,7 @@
     "dev:knowledge": "tsx src/examples/knowledge-demo.ts",
     "dev:knowledge-pipeline": "tsx src/examples/knowledge-pipeline-demo.ts",
     "dev:coolto-demo": "tsx src/examples/coolto-demo-service-demo.ts",
+    "dev:agent-ingest": "tsx src/examples/agent-ingest-demo.ts",
     "test": "vitest run",
     "typecheck": "tsc --noEmit"
   },
