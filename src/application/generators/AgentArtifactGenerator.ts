@@ -204,7 +204,18 @@ export class AgentArtifactGenerator implements ArtifactGenerator {
       ].join("\n");
     });
 
+    const taskInstructions = [
+      "Task:",
+      "Generate at least 3 grounded resume artifacts.",
+      "Use only the IDs shown below.",
+      "Each artifact should target only the requirements it directly proves.",
+      "Each artifact should cite 1-3 directly relevant evidence IDs.",
+      "Do not attach unrelated targetRequirementIds.",
+      "Do not invent facts or IDs.",
+    ].join("\n");
+
     return [
+      taskInstructions,
       `Target role: ${input.targetRole}`,
       `Job description: ${input.jdText}`,
       `Requirements:`,
