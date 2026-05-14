@@ -1,4 +1,5 @@
 import type { LLMMessage } from "../model/types.js";
+import type { ToolCall } from "../tool/types.js";
 
 export type AgentInput = {
   content: string;
@@ -8,13 +9,14 @@ export type AgentInput = {
   maxTokens?: number;
   responseFormat?: "text" | "json";
   thinking?: boolean;
+  toolChoice?: "auto" | "none" | "required" | string;
   metadata?: Record<string, unknown>;
 };
 
 export type AgentOutput = {
   content: string;
   reasoning?: string;
-  toolCalls?: unknown[];
+  toolCalls?: ToolCall[];
   raw?: unknown;
   metadata?: Record<string, unknown>;
 };

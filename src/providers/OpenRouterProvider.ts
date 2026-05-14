@@ -56,7 +56,8 @@ export class OpenRouterProvider implements LLMProvider {
         role: message.role,
         content: message.content,
         ...(message.name ? { name: message.name } : {}),
-        ...(message.toolCallId ? { tool_call_id: message.toolCallId } : {})
+        ...(message.toolCallId ? { tool_call_id: message.toolCallId } : {}),
+        ...(message.toolCalls ? { tool_calls: message.toolCalls } : {})
       })),
       ...(request.temperature === undefined ? {} : { temperature: request.temperature }),
       ...(request.maxTokens === undefined ? {} : { max_tokens: request.maxTokens }),

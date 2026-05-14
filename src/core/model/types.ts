@@ -7,6 +7,7 @@ export type LLMMessage = {
   content: string;
   name?: string;
   toolCallId?: string;
+  toolCalls?: ToolCall[];
   reasoningContent?: string;
   raw?: unknown;
 };

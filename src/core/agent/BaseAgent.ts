@@ -33,6 +33,7 @@ export abstract class BaseAgent {
       temperature: input.temperature,
       maxTokens: input.maxTokens,
       tools: this.tools?.map(toToolSchema),
+      toolChoice: input.toolChoice,
       responseFormat: input.responseFormat ?? this.defaultResponseFormat,
       thinking: input.thinking,
       metadata: {

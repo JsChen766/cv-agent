@@ -3,6 +3,7 @@ export * from "./agents/StrategistAgent.js";
 export * from "./agents/ArchitectAgent.js";
 export * from "./agents/CriticAgent.js";
 export * from "./core/agent/BaseAgent.js";
+export * from "./core/agent/AgentToolRunner.js";
 export * from "./core/agent/AgentRegistry.js";
 export * from "./core/agent/types.js";
 export * from "./core/errors/AgentRuntimeError.js";

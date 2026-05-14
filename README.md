@@ -18,12 +18,36 @@ Agent -> ModelClient -> LLMProvider
   |          |
   |          +-> DeepSeek / OpenRouter / Mock
   |
-  +-> Tools -> ToolExecutor
+  +-> Tools -> ToolExecutor -> AgentToolRunner
   |
   +-> MemoryManager -> StorageAdapter
   |
   +-> Orchestrator -> sequential multi-agent pipeline
 ```
+
+## Tool Calling Runtime
+
+The runtime now supports a complete OpenAI-compatible tool-calling loop:
+
+1. `ToolDefinition` defines a tool name, description, JSON schema parameters, and `execute` function.
+2. `ToolExecutor` registers tools and executes model-returned `ToolCall` objects.
+3. `BaseAgent` passes tool schemas to `ModelClient.chat`.
+4. `AgentToolRunner` runs the loop: agent output `toolCalls` -> execute tools -> append assistant/tool messages -> continue the agent -> final `AgentOutput`.
+
+DeepSeek tool calls follow the OpenAI-compatible function-calling shape:
+
+- Tools are sent as `type: "function"` schemas.
+- `tool_choice` supports `auto`, `none`, `required`, or a provider-compatible string.
+- Assistant messages with tool calls are preserved with `tool_calls`.
+- Tool results are returned as `role: "tool"` messages with `tool_call_id` and JSON-serialized execution results.
+- When reasoning is present, DeepSeek assistant messages can preserve `reasoning_content` through the tool continuation request.
+
+Current demos:
+
+- `npm run dev:tool`: manually constructs `ToolCall` objects and executes them with `ToolExecutor`.
+- `npm run dev:agent-tool-runner`: uses a fake provider to demonstrate an agent returning `toolCalls`, automatic tool execution, tool result messages, and a final answer.
+
+This round does not add PDF, Markdown, GitHub, or other business tools. A next step is to add text extraction tools and register them with a future `FrontDeskAgent`.
 
 Knowledge pipeline modules:
 
@@ -332,6 +356,7 @@ All demos use mock or deterministic local behavior by default and do not require
 npm run dev:single
 npm run dev:multi
 npm run dev:tool
+npm run dev:agent-tool-runner
 npm run dev:memory
 npm run dev:knowledge
 npm run dev:knowledge-pipeline
