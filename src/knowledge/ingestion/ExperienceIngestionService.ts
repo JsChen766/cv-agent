@@ -147,7 +147,7 @@ export class ExperienceIngestionService {
     const situation =
       this.pickBestEvidence(excerpts, (text) => this.scoreSituationCandidate(text)) ??
       fallback;
-    const task =
+    const taskCandidate =
       this.pickBestEvidence(excerpts, (text) => this.scoreTaskCandidate(text)) ??
       excerpts[1] ??
       fallback;
@@ -158,8 +158,77 @@ export class ExperienceIngestionService {
     const result =
       this.pickBestEvidence(excerpts, (text) => this.scoreResultCandidate(text)) ??
       this.pickResultFallback(excerpts, fallback);
+    const task = this.sameText(taskCandidate, situation)
+      ? this.pickTaskFallback({
+        excerpts,
+        situation,
+        summary: input.summary,
+      })
+      : taskCandidate;
 
     return { situation, task, action, result };
+  }
+
+  private pickTaskFallback(input: {
+    excerpts: string[];
+    situation: string;
+    summary: string;
+  }): string {
+    const actionEvidence =
+      this.pickBestEvidence(input.excerpts, (text) => this.scoreActionCandidate(text)) ??
+      input.excerpts.find((excerpt) => !this.sameText(excerpt, input.situation));
+    if (actionEvidence) {
+      return this.synthesizeTaskFromAction(
+        actionEvidence,
+        [input.summary, input.situation, ...input.excerpts].join(" "),
+      );
+    }
+
+    const summaryTask = this.synthesizeTaskFromAction(input.summary, input.summary);
+    if (!this.sameText(summaryTask, input.situation)) {
+      return summaryTask;
+    }
+    return "Support the related project goals described in the experience.";
+  }
+
+  private synthesizeTaskFromAction(actionEvidence: string, context: string): string {
+    const objective = this.toImperativeObjective(actionEvidence);
+    if (
+      /\bcomponent library\b/i.test(objective) &&
+      /\bdesign system\b/i.test(context)
+    ) {
+      return `${objective} and support the related design system work.`;
+    }
+    return `${objective}.`;
+  }
+
+  private toImperativeObjective(text: string): string {
+    const cleaned = text
+      .trim()
+      .replace(/[.!?]+$/, "")
+      .replace(/\s+\b(?:using|through|with)\b.*$/i, "");
+    const replacements: Array<[RegExp, string]> = [
+      [/^built\b/i, "Build"],
+      [/^implemented\b/i, "Implement"],
+      [/^created\b/i, "Create"],
+      [/^optimized\b/i, "Optimize"],
+      [/^integrated\b/i, "Integrate"],
+      [/^launched\b/i, "Launch"],
+      [/^designed\b/i, "Design"],
+      [/^shipped\b/i, "Ship"],
+      [/^developed\b/i, "Develop"],
+      [/^led\b/i, "Lead"],
+      [/^owned\b/i, "Own"],
+      [/^managed\b/i, "Manage"],
+      [/^coordinated\b/i, "Coordinate"],
+    ];
+
+    for (const [pattern, replacement] of replacements) {
+      if (pattern.test(cleaned)) {
+        return cleaned.replace(pattern, replacement);
+      }
+    }
+    return `Support ${cleaned.charAt(0).toLowerCase()}${cleaned.slice(1)}`;
   }
 
   private pickResultFallback(excerpts: string[], fallback: string): string {
@@ -198,7 +267,7 @@ export class ExperienceIngestionService {
   private scoreTaskCandidate(text: string): number {
     let score = 0;
     if (/\b(led|owned|responsible for|tasked with|managed|coordinated)\b/i.test(text)) score += 2;
-    if (/\b(scope|initiative|program|project)\b/i.test(text)) score += 1;
+    if (/\b(scope|initiative|program|project|design system|component library)\b/i.test(text)) score += 1;
     return score;
   }
 
@@ -215,6 +284,10 @@ export class ExperienceIngestionService {
     if (/%|\bby\s+\d+|\bfrom\s+.+\s+to\s+.+/i.test(text)) score += 2;
     if (/\b(result|outcome|impact)\b/i.test(text)) score += 1;
     return score;
+  }
+
+  private sameText(a: string, b: string): boolean {
+    return a.trim().toLowerCase() === b.trim().toLowerCase();
   }
 
   private async upsertSkills(

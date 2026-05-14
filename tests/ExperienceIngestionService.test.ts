@@ -67,6 +67,10 @@ describe("ExperienceIngestionService", () => {
     expect(result.evidences[1].evidenceType).toBe("action");
     expect(result.evidences[2].evidenceType).toBe("result");
     expect(result.experience.star.situation).toContain("12 product teams");
+    expect(result.experience.star.task).not.toBe(result.experience.star.situation);
+    expect(result.experience.star.task).toBe(
+      "Build an accessible component library and support the related design system work.",
+    );
     expect(result.experience.star.result).toBe("Reduced bundle size by 40% through tree-shaking.");
   });
 
@@ -87,5 +91,6 @@ describe("ExperienceIngestionService", () => {
     expect(result.experience.star.task).toBeTruthy();
     expect(result.experience.star.action).toBeTruthy();
     expect(result.experience.star.result).toBeTruthy();
+    expect(result.experience.star.task).toBe("Build a React component library.");
   });
 });

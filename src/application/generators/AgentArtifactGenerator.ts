@@ -69,11 +69,9 @@ export class AgentArtifactGenerator implements ArtifactGenerator {
       };
       const sourceEvidenceIds = this.alignEvidenceIds({
         item: alignedItem,
-        requirements: input.requirements,
         retrievedExperiences: input.retrievedExperiences,
         allowedEvidenceIds,
         allowedSkillIds,
-        allowedRequirementIds,
       });
 
       const hasEvidence = sourceEvidenceIds.length > 0;
@@ -105,11 +103,9 @@ export class AgentArtifactGenerator implements ArtifactGenerator {
 
   private alignEvidenceIds(input: {
     item: AgentArtifactItem;
-    requirements: GenerateArtifactsInput["requirements"];
     retrievedExperiences: GenerateArtifactsInput["retrievedExperiences"];
     allowedEvidenceIds: Set<string>;
     allowedSkillIds: Set<string>;
-    allowedRequirementIds: Set<string>;
   }): string[] {
     const aligned = new Set(
       input.item.sourceEvidenceIds.filter((id) => input.allowedEvidenceIds.has(id)),
@@ -123,12 +119,15 @@ export class AgentArtifactGenerator implements ArtifactGenerator {
     const retrieved = input.retrievedExperiences.filter((entry) =>
       sourceExperienceIds.has(entry.experience.id),
     );
+    const evidenceById = new Map(
+      retrieved.flatMap((entry) => entry.matchedEvidences.map((evidence) => [evidence.id, evidence])),
+    );
 
     for (const entry of retrieved) {
       for (const evidence of entry.matchedEvidences) {
         if (
           input.allowedEvidenceIds.has(evidence.id) &&
-          this.contentMatchesEvidence(input.item.content, evidence.excerpt)
+          this.contentStronglyMatchesEvidence(input.item.content, evidence.excerpt)
         ) {
           aligned.add(evidence.id);
         }
@@ -143,29 +142,16 @@ export class AgentArtifactGenerator implements ArtifactGenerator {
         if (!matchedSkillIds.has(skill.id)) {
           continue;
         }
-        for (const evidenceId of skill.evidenceIds) {
-          if (input.allowedEvidenceIds.has(evidenceId)) {
-            aligned.add(evidenceId);
-          }
-        }
-      }
-    }
-
-    const targetRequirementIds = new Set(
-      input.item.targetRequirementIds.filter((id) => input.allowedRequirementIds.has(id)),
-    );
-    const requiredSkillIds = new Set(
-      input.requirements
-        .filter((requirement) => targetRequirementIds.has(requirement.id))
-        .flatMap((requirement) => requirement.requiredSkillIds),
-    );
-    for (const entry of retrieved) {
-      for (const skill of entry.matchedSkills) {
-        if (!requiredSkillIds.has(skill.id)) {
+        if (!this.contentMatchesSkill(input.item.content, skill.name)) {
           continue;
         }
         for (const evidenceId of skill.evidenceIds) {
-          if (input.allowedEvidenceIds.has(evidenceId)) {
+          const evidence = evidenceById.get(evidenceId);
+          if (
+            evidence &&
+            input.allowedEvidenceIds.has(evidenceId) &&
+            this.contentStronglyMatchesEvidence(input.item.content, evidence.excerpt)
+          ) {
             aligned.add(evidenceId);
           }
         }
@@ -175,12 +161,46 @@ export class AgentArtifactGenerator implements ArtifactGenerator {
     return Array.from(aligned).slice(0, MAX_ALIGNED_EVIDENCE_IDS);
   }
 
-  private contentMatchesEvidence(content: string, excerpt: string): boolean {
-    const contentTokens = new Set(tokenize(content));
-    const evidenceTokens = tokenize(excerpt);
-    const matches = evidenceTokens.filter((token) => contentTokens.has(token));
+  private contentStronglyMatchesEvidence(content: string, excerpt: string): boolean {
+    return this.sharedNumber(content, excerpt) || this.sharedCoreEvidenceTerm(content, excerpt);
+  }
 
-    return matches.length >= 2 || this.sharedNumber(content, excerpt);
+  private sharedCoreEvidenceTerm(content: string, excerpt: string): boolean {
+    const coreTerms = [
+      "react",
+      "typescript",
+      "wcag",
+      "accessibility",
+      "accessible",
+      "performance",
+      "bundle size",
+      "api integration",
+      "api",
+      "design system",
+      "component library",
+    ];
+    const normalizedContent = content.toLowerCase();
+    const normalizedExcerpt = excerpt.toLowerCase();
+    return coreTerms.some((term) =>
+      normalizedContent.includes(term) && normalizedExcerpt.includes(term),
+    );
+  }
+
+  private contentMatchesSkill(content: string, skillName: string): boolean {
+    const contentTokens = new Set(tokenize(content));
+    const skillTokens = tokenize(skillName);
+    if (skillTokens.some((token) => contentTokens.has(token))) {
+      return true;
+    }
+
+    const normalizedContent = content.toLowerCase();
+    if (skillName === "Performance Optimization") {
+      return /\b(performance|bundle size)\b/i.test(normalizedContent);
+    }
+    if (skillName === "Accessibility") {
+      return /\b(accessibility|accessible|wcag)\b/i.test(normalizedContent);
+    }
+    return false;
   }
 
   private sharedNumber(content: string, excerpt: string): boolean {

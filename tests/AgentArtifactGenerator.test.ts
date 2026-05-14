@@ -85,6 +85,125 @@ function makePerformanceRequirement(): JDRequirement {
   };
 }
 
+function makeAlignmentRequirement(id: string, description: string, requiredSkillIds: string[]): JDRequirement {
+  return {
+    id,
+    userId: "user-1",
+    jdId: "jd-1",
+    description,
+    requiredSkillIds,
+    weight: 1,
+    createdAt: "2024-01-01T00:00:00Z",
+  };
+}
+
+function makeMixedRetrievedExperience(): RetrievedExperience {
+  const experience: Experience = {
+    id: "exp-align",
+    userId: "user-1",
+    type: "work",
+    organization: "Acme Corp",
+    role: "Senior Frontend Engineer",
+    summary: "Led frontend platform work.",
+    timeRange: { startDate: null, endDate: null },
+    star: { situation: "x", task: "x", action: "x", result: "40% reduction" },
+    evidenceIds: ["ev-scope", "ev-a11y", "ev-perf"],
+    skillIds: ["skill-react", "skill-ts", "skill-accessibility", "skill-performance"],
+    confidence: 0.85,
+    createdAt: "2024-01-01T00:00:00Z",
+    updatedAt: "2024-01-01T00:00:00Z",
+  };
+
+  const evidences: Evidence[] = [
+    {
+      id: "ev-scope",
+      userId: "user-1",
+      experienceId: "exp-align",
+      sourceType: "raw_input",
+      evidenceType: "scope",
+      sourceRef: "test",
+      excerpt: "Owned React and TypeScript frontend scope for the platform.",
+      confidence: 0.9,
+      createdAt: "2024-01-01T00:00:00Z",
+    },
+    {
+      id: "ev-a11y",
+      userId: "user-1",
+      experienceId: "exp-align",
+      sourceType: "raw_input",
+      evidenceType: "skill_proof",
+      sourceRef: "test",
+      excerpt: "Built an accessible component library with WCAG patterns.",
+      confidence: 0.9,
+      createdAt: "2024-01-01T00:00:00Z",
+    },
+    {
+      id: "ev-perf",
+      userId: "user-1",
+      experienceId: "exp-align",
+      sourceType: "raw_input",
+      evidenceType: "result",
+      sourceRef: "test",
+      excerpt: "Reduced bundle size by 40% through performance optimization.",
+      confidence: 0.92,
+      createdAt: "2024-01-01T00:00:00Z",
+    },
+  ];
+
+  const skills = [
+    {
+      id: "skill-react",
+      userId: "user-1",
+      name: "React",
+      category: "technical" as const,
+      evidenceIds: ["ev-scope"],
+      createdAt: "2024-01-01T00:00:00Z",
+      updatedAt: "2024-01-01T00:00:00Z",
+    },
+    {
+      id: "skill-ts",
+      userId: "user-1",
+      name: "TypeScript",
+      category: "technical" as const,
+      evidenceIds: ["ev-scope"],
+      createdAt: "2024-01-01T00:00:00Z",
+      updatedAt: "2024-01-01T00:00:00Z",
+    },
+    {
+      id: "skill-accessibility",
+      userId: "user-1",
+      name: "Accessibility",
+      category: "technical" as const,
+      evidenceIds: ["ev-a11y"],
+      createdAt: "2024-01-01T00:00:00Z",
+      updatedAt: "2024-01-01T00:00:00Z",
+    },
+    {
+      id: "skill-performance",
+      userId: "user-1",
+      name: "Performance Optimization",
+      category: "technical" as const,
+      evidenceIds: ["ev-perf"],
+      createdAt: "2024-01-01T00:00:00Z",
+      updatedAt: "2024-01-01T00:00:00Z",
+    },
+  ];
+
+  return {
+    experience,
+    evidences,
+    skills,
+    matchedEvidences: evidences,
+    matchedSkills: skills,
+    matchedRequirements: [],
+    matchScore: 0.9,
+    matchedRequirementIds: [],
+    matchedEvidenceIds: evidences.map((evidence) => evidence.id),
+    matchedSkillIds: skills.map((skill) => skill.id),
+    reason: "Matched frontend platform evidence",
+  };
+}
+
 describe("AgentArtifactGenerator", () => {
   it("parses and validates valid JSON agent output", async () => {
     const provider = fakeProvider(
@@ -325,6 +444,57 @@ describe("AgentArtifactGenerator", () => {
     });
 
     expect(result[0].sourceEvidenceIds).toEqual(["ev-1", "ev-2", "ev-3"]);
+  });
+
+  it("only supplements strongly relevant evidence for focused and composite bullets", async () => {
+    const provider = fakeProvider(
+      JSON.stringify([
+        {
+          type: "resume_bullet",
+          content: "Reduced bundle size by 40%.",
+          sourceExperienceIds: ["exp-align"],
+          sourceEvidenceIds: [],
+          matchedSkillIds: ["skill-performance", "skill-accessibility"],
+          targetRequirementIds: ["req-perf", "req-a11y"],
+        },
+        {
+          type: "resume_bullet",
+          content: "Improved WCAG accessibility for a component library.",
+          sourceExperienceIds: ["exp-align"],
+          sourceEvidenceIds: [],
+          matchedSkillIds: ["skill-accessibility", "skill-react", "skill-ts"],
+          targetRequirementIds: ["req-a11y", "req-react"],
+        },
+        {
+          type: "resume_bullet",
+          content: "Built React and TypeScript work that reduced bundle size by 40%.",
+          sourceExperienceIds: ["exp-align"],
+          sourceEvidenceIds: [],
+          matchedSkillIds: ["skill-react", "skill-ts", "skill-performance"],
+          targetRequirementIds: ["req-react", "req-perf"],
+        },
+      ]),
+    );
+    const generator = new AgentArtifactGenerator(new ArchitectAgent({
+      modelClient: new ModelClient({ provider, defaultModel: "fake" }),
+    }));
+
+    const result = await generator.generate({
+      userId: "user-1",
+      jdId: "jd-1",
+      jdText: "Looking for React, TypeScript, accessibility, and performance.",
+      targetRole: "Frontend Engineer",
+      requirements: [
+        makeAlignmentRequirement("req-react", "React and TypeScript", ["skill-react", "skill-ts"]),
+        makeAlignmentRequirement("req-a11y", "Accessibility", ["skill-accessibility"]),
+        makeAlignmentRequirement("req-perf", "Performance", ["skill-performance"]),
+      ],
+      retrievedExperiences: [makeMixedRetrievedExperience()],
+    });
+
+    expect(result[0].sourceEvidenceIds).toEqual(["ev-perf"]);
+    expect(result[1].sourceEvidenceIds).toEqual(["ev-a11y"]);
+    expect(result[2].sourceEvidenceIds).toEqual(["ev-scope", "ev-perf"]);
   });
 
   it("does not add unrelated evidence when content has no supporting match", async () => {
