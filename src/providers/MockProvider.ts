@@ -48,8 +48,10 @@ export class MockProvider implements LLMProvider {
     };
   }
 
-  private mockJsonResponse(request: LLMChatRequest, userContent: string): Record<string, unknown> {
-    if (request.metadata?.agentName === "archivist") {
+  private mockJsonResponse(request: LLMChatRequest, userContent: string): unknown {
+    const agentName = request.metadata?.agentName;
+
+    if (agentName === "archivist") {
       const rawText = this.extractRawText(userContent);
       const excerpts = this.extractEvidenceExcerpts(rawText);
 
@@ -62,7 +64,56 @@ export class MockProvider implements LLMProvider {
       };
     }
 
+    if (agentName === "strategist") {
+      return {
+        requirements: [
+          { description: "React and TypeScript frontend engineering experience", weight: 1 },
+          { description: "Performance optimization and bundle size improvement experience", weight: 0.85 },
+          { description: "Design system and accessible component library experience", weight: 0.8 },
+        ],
+      };
+    }
+
+    if (agentName === "architect") {
+      return this.mockArtifactResponse(userContent);
+    }
+
     return { provider: this.name, input: userContent, model: request.model };
+  }
+
+  private mockArtifactResponse(userContent: string): Array<Record<string, unknown>> {
+    const sourceExperienceIds = this.extractAll(userContent, /Experience: ([^ |]+)/g);
+    const sourceEvidenceIds = this.extractAll(userContent, /(exp-[a-z0-9]+-ev-\d+):/g);
+    const matchedSkillIds = this.extractAll(userContent, /\b(skill-[a-z0-9]+)\b/g);
+    const targetRequirementIds = this.extractAll(userContent, /\b(req-[a-z0-9]+)\b/g);
+    const experienceIds = sourceExperienceIds.slice(0, 1);
+
+    return [
+      {
+        type: "resume_bullet",
+        content: "Led React and TypeScript frontend work grounded in design system evidence.",
+        sourceExperienceIds: experienceIds,
+        sourceEvidenceIds,
+        matchedSkillIds,
+        targetRequirementIds,
+      },
+      {
+        type: "resume_bullet",
+        content: "Improved product impact through performance optimization and accessible components.",
+        sourceExperienceIds: experienceIds,
+        sourceEvidenceIds,
+        matchedSkillIds,
+        targetRequirementIds,
+      },
+      {
+        type: "resume_summary",
+        content: "Frontend engineer with React, TypeScript, design system, accessibility, and performance experience.",
+        sourceExperienceIds: experienceIds,
+        sourceEvidenceIds,
+        matchedSkillIds,
+        targetRequirementIds,
+      },
+    ];
   }
 
   private extractRawText(userContent: string): string {
@@ -108,5 +159,9 @@ export class MockProvider implements LLMProvider {
   private summarize(rawText: string): string {
     const firstLine = this.extractEvidenceExcerpts(rawText)[0] ?? rawText.trim();
     return firstLine.length > 160 ? `${firstLine.slice(0, 157)}...` : firstLine;
+  }
+
+  private extractAll(text: string, pattern: RegExp): string[] {
+    return Array.from(new Set(Array.from(text.matchAll(pattern)).map((match) => match[1])));
   }
 }

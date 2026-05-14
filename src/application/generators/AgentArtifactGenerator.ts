@@ -3,6 +3,7 @@ import { stableId } from "../../knowledge/keywordUtils.js";
 import { GeneratedArtifactTypeSchema } from "../../knowledge/schemas/GeneratedArtifactSchema.js";
 import { parseWithSchema } from "../../knowledge/schemas/validate.js";
 import type { BaseAgent } from "../../core/agent/BaseAgent.js";
+import { parseAgentJson } from "../../core/json/index.js";
 import type { GeneratedArtifact } from "../../knowledge/types.js";
 import type { ArtifactGenerator, GenerateArtifactsInput } from "./ArtifactGenerator.js";
 
@@ -31,14 +32,7 @@ export class AgentArtifactGenerator implements ArtifactGenerator {
       responseFormat: "json",
     });
 
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(output.content.trim());
-    } catch {
-      throw new Error(
-        `AgentArtifactGenerator: agent output is not valid JSON. Got: ${output.content.slice(0, 200)}`,
-      );
-    }
+    const parsed = parseAgentJson(output.content, { expectedRoot: "array" });
 
     const validated = parseWithSchema(
       AgentArtifactOutputSchema,

@@ -20,12 +20,12 @@ describe("AgentJDRequirementExtractor", () => {
     const skillRepo = new InMemorySkillRepository();
     const requirementRepo = new InMemoryJDRequirementRepository();
     const provider = fakeProvider(
-      JSON.stringify({
+      `Here is the JSON: ${JSON.stringify({
         requirements: [
           { description: "Must have React experience", weight: 1.0 },
           { description: "Must know TypeScript", weight: 0.8 },
         ],
-      }),
+      })}`,
     );
     const modelClient = new ModelClient({ provider, defaultModel: "fake" });
     const agent = new StrategistAgent({ modelClient });

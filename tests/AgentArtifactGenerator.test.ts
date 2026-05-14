@@ -74,7 +74,7 @@ function makeRequirement(): JDRequirement {
 describe("AgentArtifactGenerator", () => {
   it("parses and validates valid JSON agent output", async () => {
     const provider = fakeProvider(
-      JSON.stringify([
+      `${JSON.stringify([
         {
           type: "resume_bullet",
           content: "Built React design system at Acme Corp, reducing bundle size by 40%.",
@@ -99,7 +99,7 @@ describe("AgentArtifactGenerator", () => {
           matchedSkillIds: ["skill-react", "skill-ts"],
           targetRequirementIds: ["req-1"],
         },
-      ]),
+      ])}\nGenerated from evidence.`,
     );
     const modelClient = new ModelClient({ provider, defaultModel: "fake" });
     const agent = new ArchitectAgent({ modelClient });

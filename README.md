@@ -168,34 +168,51 @@ Use `createInMemoryCooltoDemoService()` for local prototypes and tests.
 
 ## Real Agent Demo
 
-The deterministic demo remains the stable default path:
+The deterministic demo remains the stable default path and does not require API keys:
 
 ```bash
 npm run dev:coolto-demo
 ```
 
-It does not require API keys and should remain the baseline for tests and local regression checks.
-
-The first real agent-backed demo starts only with ArchivistAgent / experience ingestion:
+Use `agent-ingest-demo` first to validate `ArchivistAgent` / `AgentExperienceExtractor`:
 
 ```bash
 npm run dev:agent-ingest
 ```
 
-It uses the mock provider by default. To switch providers:
+It defaults to `DEFAULT_PROVIDER=mock`. To run it with a real provider on Windows PowerShell:
 
-```bash
-DEFAULT_PROVIDER=deepseek DEFAULT_MODEL=deepseek-v4-pro npm run dev:agent-ingest
-DEFAULT_PROVIDER=openrouter DEFAULT_MODEL=openai/gpt-4o-mini npm run dev:agent-ingest
+```powershell
+$env:DEFAULT_PROVIDER="deepseek"
+$env:DEFAULT_MODEL="deepseek-v4-pro"
+$env:DEEPSEEK_API_KEY="your_api_key"
+npm run dev:agent-ingest
 ```
 
-`DEFAULT_PROVIDER=deepseek` requires `DEEPSEEK_API_KEY`. `DEFAULT_PROVIDER=openrouter` requires `OPENROUTER_API_KEY`. Core classes do not read `process.env`; demo/config code owns provider setup.
+On macOS / Linux:
 
-Recommended real-agent rollout order:
+```bash
+DEFAULT_PROVIDER=deepseek DEFAULT_MODEL=deepseek-v4-pro DEEPSEEK_API_KEY=your_api_key npm run dev:agent-ingest
+```
+
+For OpenRouter, set `DEFAULT_PROVIDER=openrouter`, `DEFAULT_MODEL=openai/gpt-4o-mini`, and `OPENROUTER_API_KEY`.
+
+Use `agent-coolto-demo` after ingest is stable to run the complete agent-backed pipeline:
+
+```bash
+npm run dev:agent-coolto
+```
+
+It also defaults to mock and can be switched to DeepSeek or OpenRouter with the same environment variables. It is a manual demo and is not a test dependency.
+
+Recommended real-agent debugging order:
 
 1. Verify `ArchivistAgent` / `AgentExperienceExtractor` with `npm run dev:agent-ingest`.
-2. Then verify `StrategistAgent` / `AgentJDRequirementExtractor`.
-3. Finally verify `ArchitectAgent` / `AgentArtifactGenerator`.
+2. Tune `ArchivistAgent` prompt from the extracted experience/evidence output.
+3. Run `npm run dev:agent-coolto`.
+4. Tune `StrategistAgent` / `AgentJDRequirementExtractor` and `ArchitectAgent` / `AgentArtifactGenerator` from requirements and artifact bundles.
+
+Agent JSON output is parsed through `parseAgentJson`, which handles JSON code fences, short explanatory text before or after the JSON, and object/array root validation. Prompts still require pure JSON because tolerant parsing is only a recovery layer.
 
 `createAgentBackedCooltoDemoService()` now exists as an in-memory skeleton for the complete agent-backed pipeline. It wires agent-backed ingestion, JD extraction, artifact generation, retrieval, evidence chains, graph views, and contract mapping, but the safer first validation point is still `agent-ingest-demo`.
 

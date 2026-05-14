@@ -20,17 +20,21 @@ function fakeProvider(response: string): LLMProvider {
 describe("AgentExperienceExtractor", () => {
   it("parses and validates valid JSON agent output", async () => {
     const provider = fakeProvider(
-      JSON.stringify({
-        type: "work",
-        organization: "Acme Corp",
-        role: "Frontend Engineer",
-        summary: "Built a React design system at Acme Corp.",
-        evidenceExcerpts: [
-          "Built a React design system",
-          "Reduced bundle size by 40%",
-          "Improved accessibility",
-        ],
-      }),
+      [
+        "```json",
+        JSON.stringify({
+          type: "work",
+          organization: "Acme Corp",
+          role: "Frontend Engineer",
+          summary: "Built a React design system at Acme Corp.",
+          evidenceExcerpts: [
+            "Built a React design system",
+            "Reduced bundle size by 40%",
+            "Improved accessibility",
+          ],
+        }),
+        "```",
+      ].join("\n"),
     );
     const modelClient = new ModelClient({ provider, defaultModel: "fake" });
     const agent = new ArchivistAgent({ modelClient });

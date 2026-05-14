@@ -12,6 +12,7 @@ export * from "./core/memory/types.js";
 export * from "./core/model/LLMProvider.js";
 export * from "./core/model/ModelClient.js";
 export * from "./core/model/types.js";
+export * from "./core/json/index.js";
 export * from "./core/storage/FileSystemStorageAdapter.js";
 export * from "./core/storage/StorageAdapter.js";
 export * from "./core/tool/ToolDefinition.js";

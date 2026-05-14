@@ -1,5 +1,6 @@
 import { parseWithSchema } from "../../schemas/validate.js";
 import type { BaseAgent } from "../../../core/agent/BaseAgent.js";
+import { parseAgentJson } from "../../../core/json/index.js";
 import type { IngestExperienceInput } from "../ExperienceIngestionService.js";
 import { AgentExtractedExperienceSchema } from "./types.js";
 import type { ExperienceExtractor, ExtractedExperience } from "./types.js";
@@ -20,14 +21,7 @@ export class AgentExperienceExtractor implements ExperienceExtractor {
       responseFormat: "json",
     });
 
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(output.content.trim());
-    } catch {
-      throw new Error(
-        `AgentExperienceExtractor: agent output is not valid JSON. Got: ${output.content.slice(0, 200)}`,
-      );
-    }
+    const parsed = parseAgentJson(output.content, { expectedRoot: "object" });
 
     const validated = parseWithSchema(
       AgentExtractedExperienceSchema,
