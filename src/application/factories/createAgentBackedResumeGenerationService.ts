@@ -8,6 +8,7 @@ import type {
 } from "../../knowledge/repositories.js";
 import type { ExperienceRetriever } from "../../knowledge/retrieval/ExperienceRetriever.js";
 import { ResumeGenerationService } from "../ResumeGenerationService.js";
+import { AgentArtifactCritic } from "../critique/AgentArtifactCritic.js";
 import { AgentJDRequirementExtractor } from "../extractors/AgentJDRequirementExtractor.js";
 import { AgentArtifactGenerator } from "../generators/AgentArtifactGenerator.js";
 
@@ -20,6 +21,8 @@ export type AgentBackedResumeGenerationConfig = {
   requirementRepo: JDRequirementRepository;
   artifactRepo: GeneratedArtifactRepository;
   retriever: ExperienceRetriever;
+  criticAgent?: BaseAgent;
+  useAgentCritic?: boolean;
 };
 
 export function createAgentBackedResumeGenerationService(
@@ -32,6 +35,10 @@ export function createAgentBackedResumeGenerationService(
   );
 
   const artifactGenerator = new AgentArtifactGenerator(config.architectAgent);
+  const artifactCritic =
+    config.useAgentCritic && config.criticAgent
+      ? new AgentArtifactCritic(config.criticAgent)
+      : undefined;
 
   return new ResumeGenerationService(
     requirementExtractor,
@@ -42,5 +49,9 @@ export function createAgentBackedResumeGenerationService(
     config.requirementRepo,
     config.artifactRepo,
     config.retriever,
+    undefined,
+    undefined,
+    undefined,
+    artifactCritic,
   );
 }

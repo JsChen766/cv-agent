@@ -32,6 +32,8 @@ export function toGenerateResumeResponse(
     requirements: result.requirements,
     retrievedExperiences: result.retrievedExperiences,
     artifacts,
+    coverageReport: result.coverageReport,
+    critiqueReport: result.critiqueReport,
     createdAt: result.createdAt,
   };
 }

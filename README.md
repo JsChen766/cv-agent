@@ -64,10 +64,12 @@ Runtime validation is handled with zod schemas in `src/knowledge/schemas/`. The 
   artifacts: GeneratedArtifact[];
   evidenceChains: EvidenceChain[];
   graphViews: GraphView[];
+  coverageReport: ArtifactCoverageReport;
+  critiqueReport: ArtifactCritiqueReport;
 }
 ```
 
-The array lengths are kept aligned by index. It no longer returns single `artifact`, `evidenceChain`, or `graphView` compatibility fields.
+The artifact, evidence-chain, and graph-view array lengths are kept aligned by index. It no longer returns single `artifact`, `evidenceChain`, or `graphView` compatibility fields. `coverageReport` describes whole-JD requirement coverage, while `critiqueReport` reviews artifact quality without modifying generated content.
 
 ## Dual Implementation Architecture
 
@@ -82,6 +84,8 @@ Rule-based extraction without any LLM calls. Used by `createInMemoryCooltoDemoSe
 | Experience extraction | `DeterministicExperienceExtractor` | `src/knowledge/ingestion/extractors/` |
 | JD requirement extraction | `DeterministicJDRequirementExtractor` | `src/application/extractors/` |
 | Artifact generation | `DeterministicArtifactGenerator` | `src/application/generators/` |
+| Coverage evaluation | `ArtifactCoverageEvaluator` | `src/application/evaluation/` |
+| Artifact critique | `DeterministicArtifactCritic` | `src/application/critique/` |
 
 ### Agent-backed implementation (for real LLM integration)
 
@@ -92,6 +96,7 @@ Calls a `BaseAgent` subclass and validates the JSON output with zod schemas. Thr
 | Experience extraction | `ArchivistAgent` (or any `BaseAgent`) | `AgentExperienceExtractor` | `src/knowledge/ingestion/extractors/` |
 | JD requirement extraction | `StrategistAgent` (or any `BaseAgent`) | `AgentJDRequirementExtractor` | `src/application/extractors/` |
 | Artifact generation | `ArchitectAgent` (or any `BaseAgent`) | `AgentArtifactGenerator` | `src/application/generators/` |
+| Artifact critique | `CriticAgent` (or any `BaseAgent`) | `AgentArtifactCritic` | `src/application/critique/` |
 
 ### Abstracted interfaces (the "what")
 
@@ -113,6 +118,8 @@ import { createAgentBackedResumeGenerationService } from "./application/factorie
 const service = createAgentBackedResumeGenerationService({
   strategistAgent,   // StrategistAgent instance with real ModelClient
   architectAgent,    // ArchitectAgent instance with real ModelClient
+  criticAgent,       // Optional CriticAgent instance
+  useAgentCritic,    // Optional; defaults to false, deterministic critic is used otherwise
   experienceRepo,
   evidenceRepo,
   skillRepo,
@@ -157,6 +164,8 @@ Frontend-oriented TypeScript contracts live in `src/api-contracts/`. They define
   graphView: GraphView;
 }
 ```
+
+The same response also includes `coverageReport` for whole-JD requirement coverage and `critiqueReport` for artifact-level review verdicts.
 
 Contract mappers live in `src/application/mappers/` and translate internal service results into contract responses. `CooltoDemoService` in `src/application/CooltoDemoService.ts` runs the in-memory product demo flow:
 
@@ -220,6 +229,16 @@ Evidence alignment and risk calibration are intentionally conservative:
 - `AgentArtifactGenerator` filters illegal IDs returned by the model, then tries to fill related `sourceEvidenceIds` from artifact content and matched skills. It only links existing evidence IDs and does not invent evidence. Broad requirements such as collaboration, adoption, product impact, or organization-wide scope are kept only when both artifact content and linked evidence explicitly support them.
 - `EvidenceChainBuilder` evaluates only the requirements listed in `artifact.targetRequirementIds` when present, so one artifact is not penalized for failing to cover the entire JD. It also warns on unsupported numbers, unsupported broad requirements, organization-wide/company-wide scope expansion, and high-risk claim phrases.
 - `ExperienceIngestionService` builds STAR fields with separate scoring for situation, task, action, and result. Result selection now prefers outcome/metric evidence such as "reduced", "improved", percentages, or "from X to Y" changes.
+
+Coverage and critique now happen after artifact generation:
+
+- `ArtifactCoverageEvaluator` produces an `ArtifactCoverageReport` for the whole generated result. Requirement statuses are `covered`, `weakly_covered`, `evidence_available_but_not_used`, `no_evidence`, and `not_targeted`.
+- `covered` means a generated artifact targets the requirement and the matching evidence chain has supporting evidence, a match score of at least 0.5, and low risk.
+- `weakly_covered` means an artifact targets the requirement, but evidence is missing or weak, match score is below 0.5, risk is not low, or broad requirement support is not explicit enough.
+- `evidence_available_but_not_used` means retrieved experience/skill evidence exists but no artifact targets the requirement.
+- `no_evidence` means the retrieved experience set does not currently support the requirement.
+- `ArtifactCritic` produces an `ArtifactCritiqueReport`. The default demo path uses `DeterministicArtifactCritic` for stable local output; future agent-backed critique can use `AgentArtifactCritic` with `CriticAgent`.
+- `CriticAgent` is JSON-only and reviews artifacts from `EvidenceChain` plus `ArtifactCoverageReport`. It does not edit artifacts or generate replacements; it only returns pass/revise/reject decisions and conservative rewrite suggestions.
 
 `createAgentBackedCooltoDemoService()` now exists as an in-memory skeleton for the complete agent-backed pipeline. It wires agent-backed ingestion, JD extraction, artifact generation, retrieval, evidence chains, graph views, and contract mapping, but the safer first validation point is still `agent-ingest-demo`.
 

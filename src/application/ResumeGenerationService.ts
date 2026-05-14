@@ -24,6 +24,13 @@ import {
 } from "../knowledge/schemas/index.js";
 import type { JDRequirementExtractor } from "./extractors/JDRequirementExtractor.js";
 import type { ArtifactGenerator } from "./generators/ArtifactGenerator.js";
+import { ArtifactCoverageEvaluator } from "./evaluation/ArtifactCoverageEvaluator.js";
+import type { ArtifactCoverageReport } from "./evaluation/types.js";
+import { DeterministicArtifactCritic } from "./critique/DeterministicArtifactCritic.js";
+import type {
+  ArtifactCritic,
+  ArtifactCritiqueReport,
+} from "./critique/types.js";
 
 export type GenerateResumeInput = {
   userId: string;
@@ -41,6 +48,8 @@ export type GenerateResumeResult = {
   artifacts: GeneratedArtifact[];
   evidenceChains: EvidenceChain[];
   graphViews: GraphView[];
+  coverageReport: ArtifactCoverageReport;
+  critiqueReport: ArtifactCritiqueReport;
   createdAt: string;
 };
 
@@ -59,6 +68,8 @@ export class ResumeGenerationService {
       evidenceRepo,
     ),
     private readonly graphBuilder = new GraphViewBuilder(),
+    private readonly coverageEvaluator = new ArtifactCoverageEvaluator(),
+    private readonly artifactCritic: ArtifactCritic = new DeterministicArtifactCritic(),
   ) {}
 
   async generate(input: GenerateResumeInput): Promise<GenerateResumeResult> {
@@ -102,6 +113,21 @@ export class ResumeGenerationService {
       validateGraphView(graphView);
       graphViews.push(graphView);
     }
+    const coverageReport = this.coverageEvaluator.evaluate({
+      userId: input.userId,
+      jdId,
+      requirements,
+      retrievedExperiences,
+      artifacts,
+      evidenceChains,
+    });
+    const critiqueReport = await this.artifactCritic.critique({
+      userId: input.userId,
+      jdId,
+      artifacts,
+      evidenceChains,
+      coverageReport,
+    });
 
     return {
       userId: input.userId,
@@ -113,6 +139,8 @@ export class ResumeGenerationService {
       artifacts,
       evidenceChains,
       graphViews,
+      coverageReport,
+      critiqueReport,
       createdAt,
     };
   }

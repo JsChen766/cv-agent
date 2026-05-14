@@ -1,4 +1,6 @@
 import type { RetrievedExperience } from "../knowledge/retrieval/ExperienceRetriever.js";
+import type { ArtifactCritiqueReport } from "../application/critique/types.js";
+import type { ArtifactCoverageReport } from "../application/evaluation/types.js";
 import type {
   EvidenceChain,
   GeneratedArtifact,
@@ -26,5 +28,7 @@ export type GenerateResumeResponse = {
   requirements: JDRequirement[];
   retrievedExperiences: RetrievedExperience[];
   artifacts: GeneratedArtifactBundle[];
+  coverageReport: ArtifactCoverageReport;
+  critiqueReport: ArtifactCritiqueReport;
   createdAt: string;
 };

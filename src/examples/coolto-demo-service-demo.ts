@@ -42,6 +42,31 @@ async function main() {
       ),
     );
   }
+
+  console.log("\n=== Coverage Report ===\n");
+  console.log(JSON.stringify({
+    summary: result.generation.coverageReport.summary,
+    coveredRequirementIds: result.generation.coverageReport.coveredRequirementIds,
+    weaklyCoveredRequirementIds: result.generation.coverageReport.weaklyCoveredRequirementIds,
+    evidenceAvailableButNotUsedRequirementIds: result.generation.coverageReport.evidenceAvailableButNotUsedRequirementIds,
+    noEvidenceRequirementIds: result.generation.coverageReport.noEvidenceRequirementIds,
+  }, null, 2));
+
+  console.log("\n=== Critique Report ===\n");
+  console.log(JSON.stringify({
+    summary: result.generation.critiqueReport.summary,
+    items: result.generation.critiqueReport.items.map((item) => ({
+      artifactId: item.artifactId,
+      verdict: item.verdict,
+      truthfulnessRisk: item.truthfulnessRisk,
+      exaggerationRisk: item.exaggerationRisk,
+      specificityScore: item.specificityScore,
+      evidenceStrengthScore: item.evidenceStrengthScore,
+      unsupportedClaims: item.unsupportedClaims,
+      missingEvidence: item.missingEvidence,
+      rewriteSuggestions: item.rewriteSuggestions,
+    })),
+  }, null, 2));
 }
 
 main().catch(console.error);

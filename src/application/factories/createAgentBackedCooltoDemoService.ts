@@ -15,6 +15,8 @@ export type AgentBackedCooltoDemoConfig = {
   archivistAgent: BaseAgent;
   strategistAgent: BaseAgent;
   architectAgent: BaseAgent;
+  criticAgent?: BaseAgent;
+  useAgentCritic?: boolean;
 };
 
 export function createAgentBackedCooltoDemoService(
@@ -48,6 +50,8 @@ export function createAgentBackedCooltoDemoService(
     requirementRepo,
     artifactRepo,
     retriever,
+    criticAgent: config.criticAgent,
+    useAgentCritic: config.useAgentCritic,
   });
 
   return new CooltoDemoService(ingestionService, resumeGenerationService);

@@ -86,6 +86,9 @@ describe("ResumeGenerationService", () => {
     expect(result.evidenceChains[0]?.risk.level).toBe("low");
     expect(result.evidenceChains).toHaveLength(result.artifacts.length);
     expect(result.graphViews).toHaveLength(result.artifacts.length);
+    expect(result.coverageReport.totalRequirements).toBe(result.requirements.length);
+    expect(result.coverageReport.items.length).toBe(result.requirements.length);
+    expect(result.critiqueReport.items).toHaveLength(result.artifacts.length);
     expect(result.graphViews[0]?.nodes.some((node) => node.type === "artifact")).toBe(true);
     expect(result.graphViews[0]?.nodes.some((node) => node.type === "requirement")).toBe(true);
     await expect(artifactRepo.listByUserId("user-1")).resolves.toHaveLength(
@@ -133,6 +136,8 @@ describe("ResumeGenerationService", () => {
     expect(result.artifacts.every((artifact) => artifact.sourceEvidenceIds.length === 0)).toBe(true);
     expect(result.evidenceChains).toHaveLength(3);
     expect(result.graphViews).toHaveLength(3);
+    expect(result.coverageReport.weaklyCoveredRequirementIds.length).toBeGreaterThan(0);
+    expect(result.critiqueReport.items.every((item) => item.verdict === "reject")).toBe(true);
     expect(
       result.evidenceChains.every((chain) => chain.risk.missingEvidenceClaims.length > 0),
     ).toBe(true);

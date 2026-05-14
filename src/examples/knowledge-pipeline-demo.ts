@@ -95,6 +95,10 @@ async function main() {
     console.log("Graph View:");
     console.log(JSON.stringify(generationResult.graphViews[index], null, 2));
   });
+  console.log("\n=== Coverage Report ===\n");
+  console.log(JSON.stringify(generationResult.coverageReport, null, 2));
+  console.log("\n=== Critique Report ===\n");
+  console.log(JSON.stringify(generationResult.critiqueReport, null, 2));
 }
 
 main().catch(console.error);

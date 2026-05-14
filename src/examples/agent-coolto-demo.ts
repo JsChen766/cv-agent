@@ -74,6 +74,44 @@ async function main() {
       ),
     );
   }
+
+  console.log("\n=== Coverage Report ===");
+  console.log(JSON.stringify({
+    summary: result.generation.coverageReport.summary,
+    coveredRequirementIds: result.generation.coverageReport.coveredRequirementIds,
+    weaklyCoveredRequirementIds: result.generation.coverageReport.weaklyCoveredRequirementIds,
+    evidenceAvailableButNotUsedRequirementIds: result.generation.coverageReport.evidenceAvailableButNotUsedRequirementIds,
+    noEvidenceRequirementIds: result.generation.coverageReport.noEvidenceRequirementIds,
+  }, null, 2));
+
+  console.log("\n=== Requirement Coverage Items ===");
+  for (const item of result.generation.coverageReport.items) {
+    console.log(JSON.stringify({
+      requirementId: item.requirement.id,
+      description: item.requirement.description,
+      status: item.status,
+      coveredByArtifactIds: item.coveredByArtifactIds,
+      supportingEvidenceIds: item.supportingEvidenceIds,
+      reason: item.reason,
+      suggestions: item.suggestions,
+    }, null, 2));
+  }
+
+  console.log("\n=== Critique Report ===");
+  console.log(JSON.stringify({
+    summary: result.generation.critiqueReport.summary,
+    items: result.generation.critiqueReport.items.map((item) => ({
+      artifactId: item.artifactId,
+      verdict: item.verdict,
+      truthfulnessRisk: item.truthfulnessRisk,
+      exaggerationRisk: item.exaggerationRisk,
+      specificityScore: item.specificityScore,
+      evidenceStrengthScore: item.evidenceStrengthScore,
+      unsupportedClaims: item.unsupportedClaims,
+      missingEvidence: item.missingEvidence,
+      rewriteSuggestions: item.rewriteSuggestions,
+    })),
+  }, null, 2));
 }
 
 main().catch((error) => {

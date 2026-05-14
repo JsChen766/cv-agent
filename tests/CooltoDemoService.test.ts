@@ -20,6 +20,8 @@ describe("CooltoDemoService", () => {
     expect(result.ingest.experience.userId).toBe("user-1");
     expect(result.ingest.evidences.length).toBeGreaterThan(0);
     expect(result.generation.artifacts.length).toBeGreaterThanOrEqual(3);
+    expect(result.generation.coverageReport.items.length).toBe(result.generation.requirements.length);
+    expect(result.generation.critiqueReport.items.length).toBe(result.generation.artifacts.length);
     for (const bundle of result.generation.artifacts) {
       expect(bundle.artifact).toBeDefined();
       expect(bundle.evidenceChain).toBeDefined();

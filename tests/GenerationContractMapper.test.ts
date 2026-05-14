@@ -23,6 +23,8 @@ describe("GenerationContractMapper", () => {
     expect(response.artifacts[0]?.artifact).toBe(result.artifacts[0]);
     expect(response.artifacts[0]?.evidenceChain).toBe(result.evidenceChains[0]);
     expect(response.artifacts[0]?.graphView).toBe(result.graphViews[0]);
+    expect(response.coverageReport).toBe(result.coverageReport);
+    expect(response.critiqueReport).toBe(result.critiqueReport);
   });
 
   it("throws when artifact, evidence chain, and graph view counts differ", async () => {
