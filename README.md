@@ -250,6 +250,22 @@ Coverage and critique now happen after artifact generation:
 
 Current non-goals remain unchanged: no frontend, no HTTP API server, no vector database, no Neo4j, and no production persistence.
 
+## Generation Session and User Decisions
+
+`GenerationSession` stores one complete `GenerateResumeResponse` plus user decision state for a future interactive review flow. Decisions are separate from the generated objects, so accepting or rejecting a bullet does not mutate the original artifact bundle.
+
+- `ArtifactDecision` supports `accepted`, `rejected`, and `needs_revision`, with `undecided` as the default session state.
+- `CoverageGapDecision` supports `generate_supplemental_artifact`, `request_more_evidence`, `ignore`, and `mark_not_relevant`, with `undecided` as the default.
+- `SupplementalArtifactDraft` is created only when the user explicitly chooses to generate a supplemental artifact from a coverage gap suggestion. Drafts stay in `supplementalArtifactDrafts`; they are not merged into the main `generation.artifacts` array and are not saved to the artifact repository.
+- `InMemoryGenerationSessionRepository` is the current storage layer. There is no database, frontend, or HTTP API server.
+- `src/api-contracts/session.ts` exposes request/response types for future API wiring.
+
+Run the local session demo:
+
+```bash
+npm run dev:generation-session
+```
+
 ## Current Non-Goals
 
 - No frontend.
@@ -312,6 +328,7 @@ npm run dev:memory
 npm run dev:knowledge
 npm run dev:knowledge-pipeline
 npm run dev:coolto-demo
+npm run dev:generation-session
 ```
 
 ## Test
