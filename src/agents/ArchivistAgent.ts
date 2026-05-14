@@ -46,6 +46,8 @@ export class ArchivistAgent extends BaseAgent {
         "Include metric/result evidence when present, such as percentages, user counts, revenue, latency, bundle size, accuracy, or time saved.",
         "Include action evidence when present, such as built, implemented, designed, optimized, integrated, launched, led, or shipped.",
         "Include scope evidence when present, such as for 12 teams, across products, for users, or at a specific organization.",
+        "Include accessibility or WCAG evidence when present.",
+        "Include API integration evidence when present.",
         "",
         "Truthfulness rules:",
         "Do not invent numbers.",

@@ -293,6 +293,84 @@ function makeBroadRetrievedExperience(): RetrievedExperience {
   };
 }
 
+function makeAccessibilityApiRetrievedExperience(): RetrievedExperience {
+  const experience: Experience = {
+    id: "exp-a11y-api",
+    userId: "user-1",
+    type: "work",
+    organization: "Acme Corp",
+    role: "Senior Frontend Engineer",
+    summary: "Built accessible component library and API integration patterns.",
+    timeRange: { startDate: null, endDate: null },
+    star: { situation: "x", task: "x", action: "x", result: "x" },
+    evidenceIds: ["ev-a11y", "ev-api"],
+    skillIds: ["skill-accessibility", "skill-api"],
+    confidence: 0.85,
+    createdAt: "2024-01-01T00:00:00Z",
+    updatedAt: "2024-01-01T00:00:00Z",
+  };
+
+  const evidences: Evidence[] = [
+    {
+      id: "ev-a11y",
+      userId: "user-1",
+      experienceId: "exp-a11y-api",
+      sourceType: "raw_input",
+      evidenceType: "skill_proof",
+      sourceRef: "test",
+      excerpt: "Built an accessible component library with WCAG practices.",
+      confidence: 0.9,
+      createdAt: "2024-01-01T00:00:00Z",
+    },
+    {
+      id: "ev-api",
+      userId: "user-1",
+      experienceId: "exp-a11y-api",
+      sourceType: "raw_input",
+      evidenceType: "skill_proof",
+      sourceRef: "test",
+      excerpt: "Shared API integration patterns for frontend data flows.",
+      confidence: 0.9,
+      createdAt: "2024-01-01T00:00:00Z",
+    },
+  ];
+
+  const skills = [
+    {
+      id: "skill-accessibility",
+      userId: "user-1",
+      name: "Accessibility",
+      category: "domain" as const,
+      evidenceIds: ["ev-a11y"],
+      createdAt: "2024-01-01T00:00:00Z",
+      updatedAt: "2024-01-01T00:00:00Z",
+    },
+    {
+      id: "skill-api",
+      userId: "user-1",
+      name: "API Integration",
+      category: "technical" as const,
+      evidenceIds: ["ev-api"],
+      createdAt: "2024-01-01T00:00:00Z",
+      updatedAt: "2024-01-01T00:00:00Z",
+    },
+  ];
+
+  return {
+    experience,
+    evidences,
+    skills,
+    matchedEvidences: evidences,
+    matchedSkills: skills,
+    matchedRequirements: [],
+    matchScore: 0.9,
+    matchedRequirementIds: [],
+    matchedEvidenceIds: evidences.map((evidence) => evidence.id),
+    matchedSkillIds: skills.map((skill) => skill.id),
+    reason: "Matched accessibility and API evidence",
+  };
+}
+
 describe("AgentArtifactGenerator", () => {
   it("parses and validates valid JSON agent output", async () => {
     const provider = fakeProvider(
@@ -645,6 +723,56 @@ describe("AgentArtifactGenerator", () => {
     expect(result[1].targetRequirementIds).toEqual(["req-collab"]);
     expect(result[2].targetRequirementIds).toEqual(["req-impact"]);
     expect(result[3].targetRequirementIds).toEqual([]);
+  });
+
+  it("keeps WCAG and API evidence when artifact content mentions them", async () => {
+    const provider = fakeProvider(
+      JSON.stringify([
+        {
+          type: "resume_bullet",
+          content: "Built WCAG accessibility patterns for an accessible component library.",
+          sourceExperienceIds: ["exp-a11y-api"],
+          sourceEvidenceIds: [],
+          matchedSkillIds: ["skill-accessibility"],
+          targetRequirementIds: ["req-a11y"],
+        },
+        {
+          type: "resume_bullet",
+          content: "Shared API integration patterns for frontend data flows.",
+          sourceExperienceIds: ["exp-a11y-api"],
+          sourceEvidenceIds: [],
+          matchedSkillIds: ["skill-api"],
+          targetRequirementIds: ["req-api"],
+        },
+        {
+          type: "resume_summary",
+          content: "Frontend engineer with accessibility and API integration experience.",
+          sourceExperienceIds: ["exp-a11y-api"],
+          sourceEvidenceIds: [],
+          matchedSkillIds: ["skill-accessibility", "skill-api"],
+          targetRequirementIds: ["req-a11y", "req-api"],
+        },
+      ]),
+    );
+    const generator = new AgentArtifactGenerator(new ArchitectAgent({
+      modelClient: new ModelClient({ provider, defaultModel: "fake" }),
+    }));
+
+    const result = await generator.generate({
+      userId: "user-1",
+      jdId: "jd-1",
+      jdText: "Looking for accessibility and API integration.",
+      targetRole: "Frontend Engineer",
+      requirements: [
+        makeAlignmentRequirement("req-a11y", "Accessibility implementation", ["skill-accessibility"]),
+        makeAlignmentRequirement("req-api", "API integration", ["skill-api"]),
+      ],
+      retrievedExperiences: [makeAccessibilityApiRetrievedExperience()],
+    });
+
+    expect(result[0].sourceEvidenceIds).toEqual(["ev-a11y"]);
+    expect(result[1].sourceEvidenceIds).toEqual(["ev-api"]);
+    expect(result[2].sourceEvidenceIds).toEqual(["ev-a11y", "ev-api"]);
   });
 
   it("does not add unrelated evidence when content has no supporting match", async () => {

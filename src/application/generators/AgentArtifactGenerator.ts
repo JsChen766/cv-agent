@@ -179,23 +179,21 @@ export class AgentArtifactGenerator implements ArtifactGenerator {
   }
 
   private sharedCoreEvidenceTerm(content: string, excerpt: string): boolean {
-    const coreTerms = [
-      "react",
-      "typescript",
-      "wcag",
-      "accessibility",
-      "accessible",
-      "performance",
-      "bundle size",
-      "api integration",
-      "api",
-      "design system",
-      "component library",
+    const coreTermGroups = [
+      ["react"],
+      ["typescript"],
+      ["wcag", "accessibility", "accessible", "a11y"],
+      ["performance"],
+      ["bundle size"],
+      ["api integration", "api patterns", "api"],
+      ["design system"],
+      ["component library"],
     ];
     const normalizedContent = content.toLowerCase();
     const normalizedExcerpt = excerpt.toLowerCase();
-    return coreTerms.some((term) =>
-      normalizedContent.includes(term) && normalizedExcerpt.includes(term),
+    return coreTermGroups.some((terms) =>
+      terms.some((term) => normalizedContent.includes(term)) &&
+      terms.some((term) => normalizedExcerpt.includes(term)),
     );
   }
 

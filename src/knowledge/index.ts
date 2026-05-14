@@ -8,6 +8,7 @@ export * from "./inMemory/InMemorySkillRepository.js";
 export * from "./inMemory/InMemoryJDRequirementRepository.js";
 export * from "./inMemory/InMemoryExperienceVariantRepository.js";
 export * from "./ingestion/ExperienceIngestionService.js";
+export * from "./ingestion/EvidenceCompletenessGuard.js";
 export * from "./retrieval/ExperienceRetriever.js";
 export * from "./EvidenceChainBuilder.js";
 export * from "./GraphViewBuilder.js";

@@ -45,7 +45,7 @@ export const KNOWN_SKILLS: KnownSkill[] = [
   {
     name: "API Integration",
     category: "technical",
-    aliases: ["api", "integration", "backend"],
+    aliases: ["api", "apis", "api integration", "api patterns", "integration", "backend"],
   },
 ];
 

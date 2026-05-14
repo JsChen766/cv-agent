@@ -4,6 +4,7 @@ import {
   InMemoryEvidenceRepository,
   InMemoryExperienceRepository,
   InMemorySkillRepository,
+  type ExperienceExtractor,
 } from "../src/knowledge/index.js";
 
 describe("ExperienceIngestionService", () => {
@@ -92,5 +93,49 @@ describe("ExperienceIngestionService", () => {
     expect(result.experience.star.action).toBeTruthy();
     expect(result.experience.star.result).toBeTruthy();
     expect(result.experience.star.task).toBe("Build a React component library.");
+  });
+
+  it("completes omitted WCAG and API evidence from raw text", async () => {
+    const extractor: ExperienceExtractor = {
+      async extract() {
+        return {
+          type: "work",
+          organization: "Acme Corp",
+          role: "Senior Frontend Engineer",
+          summary: "Led a React and TypeScript design system for 12 product teams and reduced bundle size by 40%.",
+          evidenceExcerpts: [
+            "As a Senior Frontend Engineer at Acme Corp, I led a React and TypeScript design system project for 12 product teams.",
+            "Reduced bundle size by 40% through performance optimization, tree-shaking, and lazy loading.",
+          ],
+        };
+      },
+    };
+    const service = new ExperienceIngestionService(
+      new InMemoryExperienceRepository(),
+      new InMemoryEvidenceRepository(),
+      new InMemorySkillRepository(),
+      extractor,
+    );
+
+    const result = await service.ingest({
+      userId: "user-1",
+      rawText: [
+        "As a Senior Frontend Engineer at Acme Corp, I led a React and TypeScript design system project for 12 product teams.",
+        "Built an accessible component library with WCAG practices and shared API integration patterns.",
+        "Reduced bundle size by 40% through performance optimization, tree-shaking, and lazy loading.",
+      ].join("\n"),
+    });
+
+    expect(result.evidences).toHaveLength(3);
+    expect(result.evidences.map((evidence) => evidence.excerpt)).toContain(
+      "Built an accessible component library with WCAG practices and shared API integration patterns.",
+    );
+    expect(result.skills.find((skill) => skill.name === "Accessibility")?.evidenceIds.length).toBeGreaterThan(0);
+    expect(result.skills.find((skill) => skill.name === "API Integration")?.evidenceIds.length).toBeGreaterThan(0);
+    expect(result.skills.find((skill) => skill.name === "Design System")?.evidenceIds.length).toBeGreaterThan(0);
+    expect(result.experience.star.result).toBe(
+      "Reduced bundle size by 40% through performance optimization, tree-shaking, and lazy loading.",
+    );
+    expect(result.experience.star.task).not.toBe(result.experience.star.situation);
   });
 });

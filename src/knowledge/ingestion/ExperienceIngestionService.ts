@@ -22,6 +22,7 @@ import {
 } from "../schemas/index.js";
 import { DeterministicExperienceExtractor } from "./extractors/DeterministicExperienceExtractor.js";
 import type { ExperienceExtractor } from "./extractors/types.js";
+import { EvidenceCompletenessGuard } from "./EvidenceCompletenessGuard.js";
 
 export type IngestExperienceInput = {
   userId: string;
@@ -40,22 +41,30 @@ export type { ExperienceExtractor } from "./extractors/types.js";
 
 export class ExperienceIngestionService {
   private readonly extractor: ExperienceExtractor;
+  private readonly evidenceCompletenessGuard: EvidenceCompletenessGuard;
 
   constructor(
     private readonly experienceRepo: ExperienceRepository,
     private readonly evidenceRepo: EvidenceRepository,
     private readonly skillRepo: SkillRepository,
     extractor: ExperienceExtractor = new DeterministicExperienceExtractor(),
+    evidenceCompletenessGuard: EvidenceCompletenessGuard = new EvidenceCompletenessGuard(),
   ) {
     this.extractor = extractor;
+    this.evidenceCompletenessGuard = evidenceCompletenessGuard;
   }
 
   async ingest(input: IngestExperienceInput): Promise<IngestExperienceResult> {
     const extracted = await this.extractor.extract(input);
+    const completed = this.evidenceCompletenessGuard.complete({
+      rawText: input.rawText,
+      evidenceExcerpts: extracted.evidenceExcerpts,
+    });
+    const evidenceExcerpts = completed.evidenceExcerpts;
     const now = new Date().toISOString();
     const experienceId = stableId("exp", `${input.userId}:${input.rawText}`);
 
-    const evidences = extracted.evidenceExcerpts.map((excerpt, index) => ({
+    const evidences = evidenceExcerpts.map((excerpt, index) => ({
       id: `${experienceId}-ev-${index + 1}`,
       userId: input.userId,
       experienceId,
@@ -82,7 +91,7 @@ export class ExperienceIngestionService {
       },
       star: this.buildStar({
         summary: extracted.summary,
-        evidenceExcerpts: extracted.evidenceExcerpts,
+        evidenceExcerpts,
         evidences,
       }),
       evidenceIds: evidences.map((e) => e.id),
