@@ -52,6 +52,28 @@ async function main() {
     noEvidenceRequirementIds: result.generation.coverageReport.noEvidenceRequirementIds,
   }, null, 2));
 
+  console.log("\n=== Coverage Gap Report ===\n");
+  console.log(JSON.stringify({
+    summary: result.generation.coverageGapReport.summary,
+    supplementalArtifactCount: result.generation.coverageGapReport.supplementalArtifactCount,
+    evidenceRequestCount: result.generation.coverageGapReport.evidenceRequestCount,
+  }, null, 2));
+
+  console.log("\n=== Coverage Gap Items ===\n");
+  for (const item of result.generation.coverageGapReport.items) {
+    console.log(JSON.stringify({
+      requirementId: item.requirement.id,
+      description: item.requirement.description,
+      gapType: item.gapType,
+      severity: item.severity,
+      existingEvidenceIds: item.existingEvidenceIds,
+      existingArtifactIds: item.existingArtifactIds,
+      supplementalArtifactSuggestions: item.supplementalArtifactSuggestions,
+      evidenceRequestSuggestions: item.evidenceRequestSuggestions,
+      reason: item.reason,
+    }, null, 2));
+  }
+
   console.log("\n=== Critique Report ===\n");
   console.log(JSON.stringify({
     summary: result.generation.critiqueReport.summary,

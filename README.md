@@ -65,11 +65,12 @@ Runtime validation is handled with zod schemas in `src/knowledge/schemas/`. The 
   evidenceChains: EvidenceChain[];
   graphViews: GraphView[];
   coverageReport: ArtifactCoverageReport;
+  coverageGapReport: CoverageGapReport;
   critiqueReport: ArtifactCritiqueReport;
 }
 ```
 
-The artifact, evidence-chain, and graph-view array lengths are kept aligned by index. It no longer returns single `artifact`, `evidenceChain`, or `graphView` compatibility fields. `coverageReport` describes whole-JD requirement coverage, while `critiqueReport` reviews artifact quality without modifying generated content.
+The artifact, evidence-chain, and graph-view array lengths are kept aligned by index. It no longer returns single `artifact`, `evidenceChain`, or `graphView` compatibility fields. `coverageReport` describes whole-JD requirement coverage, `coverageGapReport` suggests how to handle uncovered requirements, and `critiqueReport` reviews artifact quality without modifying generated content.
 
 ## Dual Implementation Architecture
 
@@ -85,6 +86,7 @@ Rule-based extraction without any LLM calls. Used by `createInMemoryCooltoDemoSe
 | JD requirement extraction | `DeterministicJDRequirementExtractor` | `src/application/extractors/` |
 | Artifact generation | `DeterministicArtifactGenerator` | `src/application/generators/` |
 | Coverage evaluation | `ArtifactCoverageEvaluator` | `src/application/evaluation/` |
+| Coverage gap advice | `DeterministicCoverageGapAdvisor` | `src/application/coverage-gaps/` |
 | Artifact critique | `DeterministicArtifactCritic` | `src/application/critique/` |
 
 ### Agent-backed implementation (for real LLM integration)
@@ -96,6 +98,7 @@ Calls a `BaseAgent` subclass and validates the JSON output with zod schemas. Thr
 | Experience extraction | `ArchivistAgent` (or any `BaseAgent`) | `AgentExperienceExtractor` | `src/knowledge/ingestion/extractors/` |
 | JD requirement extraction | `StrategistAgent` (or any `BaseAgent`) | `AgentJDRequirementExtractor` | `src/application/extractors/` |
 | Artifact generation | `ArchitectAgent` (or any `BaseAgent`) | `AgentArtifactGenerator` | `src/application/generators/` |
+| Coverage gap advice | any `BaseAgent` | `AgentCoverageGapAdvisor` | `src/application/coverage-gaps/` |
 | Artifact critique | `CriticAgent` (or any `BaseAgent`) | `AgentArtifactCritic` | `src/application/critique/` |
 
 ### Abstracted interfaces (the "what")
@@ -120,6 +123,8 @@ const service = createAgentBackedResumeGenerationService({
   architectAgent,    // ArchitectAgent instance with real ModelClient
   criticAgent,       // Optional CriticAgent instance
   useAgentCritic,    // Optional; defaults to false, deterministic critic is used otherwise
+  coverageGapAgent,  // Optional BaseAgent for coverage gap advice
+  useAgentCoverageGapAdvisor, // Optional; defaults to false
   experienceRepo,
   evidenceRepo,
   skillRepo,
@@ -165,7 +170,7 @@ Frontend-oriented TypeScript contracts live in `src/api-contracts/`. They define
 }
 ```
 
-The same response also includes `coverageReport` for whole-JD requirement coverage and `critiqueReport` for artifact-level review verdicts.
+The same response also includes `coverageReport` for whole-JD requirement coverage, `coverageGapReport` for uncovered-requirement suggestions, and `critiqueReport` for artifact-level review verdicts.
 
 Contract mappers live in `src/application/mappers/` and translate internal service results into contract responses. `CooltoDemoService` in `src/application/CooltoDemoService.ts` runs the in-memory product demo flow:
 
@@ -237,6 +242,7 @@ Coverage and critique now happen after artifact generation:
 - `weakly_covered` means an artifact targets the requirement, but evidence is missing or weak, match score is below 0.5, risk is not low, or broad requirement support is not explicit enough.
 - `evidence_available_but_not_used` means retrieved experience/skill evidence exists but no artifact targets the requirement.
 - `no_evidence` means the retrieved experience set does not currently support the requirement.
+- `CoverageGapAdvisor` produces a `CoverageGapReport` from the coverage report. For `evidence_available_but_not_used`, it creates conservative supplemental artifact suggestions that cite existing evidence IDs only. For `no_evidence`, it creates evidence request prompts that ask the user to add a real experience or metric instead of forcing a claim into the resume. These suggestions are not added to the main `artifacts` array or saved to the artifact repository.
 - `ArtifactCritic` produces an `ArtifactCritiqueReport`. The default demo path uses `DeterministicArtifactCritic` for stable local output; future agent-backed critique can use `AgentArtifactCritic` with `CriticAgent`.
 - `CriticAgent` is JSON-only and reviews artifacts from `EvidenceChain` plus `ArtifactCoverageReport`. It does not edit artifacts or generate replacements; it only returns pass/revise/reject decisions and conservative rewrite suggestions.
 

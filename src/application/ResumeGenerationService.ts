@@ -31,6 +31,11 @@ import type {
   ArtifactCritic,
   ArtifactCritiqueReport,
 } from "./critique/types.js";
+import { DeterministicCoverageGapAdvisor } from "./coverage-gaps/DeterministicCoverageGapAdvisor.js";
+import type {
+  CoverageGapAdvisor,
+  CoverageGapReport,
+} from "./coverage-gaps/index.js";
 
 export type GenerateResumeInput = {
   userId: string;
@@ -49,6 +54,7 @@ export type GenerateResumeResult = {
   evidenceChains: EvidenceChain[];
   graphViews: GraphView[];
   coverageReport: ArtifactCoverageReport;
+  coverageGapReport: CoverageGapReport;
   critiqueReport: ArtifactCritiqueReport;
   createdAt: string;
 };
@@ -69,6 +75,7 @@ export class ResumeGenerationService {
     ),
     private readonly graphBuilder = new GraphViewBuilder(),
     private readonly coverageEvaluator = new ArtifactCoverageEvaluator(),
+    private readonly coverageGapAdvisor: CoverageGapAdvisor = new DeterministicCoverageGapAdvisor(),
     private readonly artifactCritic: ArtifactCritic = new DeterministicArtifactCritic(),
   ) {}
 
@@ -121,6 +128,13 @@ export class ResumeGenerationService {
       artifacts,
       evidenceChains,
     });
+    const coverageGapReport = await this.coverageGapAdvisor.advise({
+      userId: input.userId,
+      jdId,
+      coverageReport,
+      retrievedExperiences,
+      artifacts,
+    });
     const critiqueReport = await this.artifactCritic.critique({
       userId: input.userId,
       jdId,
@@ -140,6 +154,7 @@ export class ResumeGenerationService {
       evidenceChains,
       graphViews,
       coverageReport,
+      coverageGapReport,
       critiqueReport,
       createdAt,
     };

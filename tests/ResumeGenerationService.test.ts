@@ -88,6 +88,7 @@ describe("ResumeGenerationService", () => {
     expect(result.graphViews).toHaveLength(result.artifacts.length);
     expect(result.coverageReport.totalRequirements).toBe(result.requirements.length);
     expect(result.coverageReport.items.length).toBe(result.requirements.length);
+    expect(result.coverageGapReport.items).toBeDefined();
     expect(result.critiqueReport.items).toHaveLength(result.artifacts.length);
     expect(result.graphViews[0]?.nodes.some((node) => node.type === "artifact")).toBe(true);
     expect(result.graphViews[0]?.nodes.some((node) => node.type === "requirement")).toBe(true);
@@ -137,6 +138,7 @@ describe("ResumeGenerationService", () => {
     expect(result.evidenceChains).toHaveLength(3);
     expect(result.graphViews).toHaveLength(3);
     expect(result.coverageReport.weaklyCoveredRequirementIds.length).toBeGreaterThan(0);
+    expect(result.coverageGapReport.items.length).toBeGreaterThan(0);
     expect(result.critiqueReport.items.every((item) => item.verdict === "reject")).toBe(true);
     expect(
       result.evidenceChains.every((chain) => chain.risk.missingEvidenceClaims.length > 0),

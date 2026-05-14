@@ -17,6 +17,8 @@ export type AgentBackedCooltoDemoConfig = {
   architectAgent: BaseAgent;
   criticAgent?: BaseAgent;
   useAgentCritic?: boolean;
+  coverageGapAgent?: BaseAgent;
+  useAgentCoverageGapAdvisor?: boolean;
 };
 
 export function createAgentBackedCooltoDemoService(
@@ -52,6 +54,8 @@ export function createAgentBackedCooltoDemoService(
     retriever,
     criticAgent: config.criticAgent,
     useAgentCritic: config.useAgentCritic,
+    coverageGapAgent: config.coverageGapAgent,
+    useAgentCoverageGapAdvisor: config.useAgentCoverageGapAdvisor,
   });
 
   return new CooltoDemoService(ingestionService, resumeGenerationService);

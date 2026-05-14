@@ -33,6 +33,7 @@ export function toGenerateResumeResponse(
     retrievedExperiences: result.retrievedExperiences,
     artifacts,
     coverageReport: result.coverageReport,
+    coverageGapReport: result.coverageGapReport,
     critiqueReport: result.critiqueReport,
     createdAt: result.createdAt,
   };

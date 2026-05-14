@@ -97,6 +97,8 @@ async function main() {
   });
   console.log("\n=== Coverage Report ===\n");
   console.log(JSON.stringify(generationResult.coverageReport, null, 2));
+  console.log("\n=== Coverage Gap Report ===\n");
+  console.log(JSON.stringify(generationResult.coverageGapReport, null, 2));
   console.log("\n=== Critique Report ===\n");
   console.log(JSON.stringify(generationResult.critiqueReport, null, 2));
 }

@@ -8,6 +8,7 @@ import type {
 } from "../../knowledge/repositories.js";
 import type { ExperienceRetriever } from "../../knowledge/retrieval/ExperienceRetriever.js";
 import { ResumeGenerationService } from "../ResumeGenerationService.js";
+import { AgentCoverageGapAdvisor } from "../coverage-gaps/AgentCoverageGapAdvisor.js";
 import { AgentArtifactCritic } from "../critique/AgentArtifactCritic.js";
 import { AgentJDRequirementExtractor } from "../extractors/AgentJDRequirementExtractor.js";
 import { AgentArtifactGenerator } from "../generators/AgentArtifactGenerator.js";
@@ -23,6 +24,8 @@ export type AgentBackedResumeGenerationConfig = {
   retriever: ExperienceRetriever;
   criticAgent?: BaseAgent;
   useAgentCritic?: boolean;
+  coverageGapAgent?: BaseAgent;
+  useAgentCoverageGapAdvisor?: boolean;
 };
 
 export function createAgentBackedResumeGenerationService(
@@ -39,6 +42,10 @@ export function createAgentBackedResumeGenerationService(
     config.useAgentCritic && config.criticAgent
       ? new AgentArtifactCritic(config.criticAgent)
       : undefined;
+  const coverageGapAdvisor =
+    config.useAgentCoverageGapAdvisor && config.coverageGapAgent
+      ? new AgentCoverageGapAdvisor(config.coverageGapAgent)
+      : undefined;
 
   return new ResumeGenerationService(
     requirementExtractor,
@@ -52,6 +59,7 @@ export function createAgentBackedResumeGenerationService(
     undefined,
     undefined,
     undefined,
+    coverageGapAdvisor,
     artifactCritic,
   );
 }

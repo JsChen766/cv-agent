@@ -97,6 +97,28 @@ async function main() {
     }, null, 2));
   }
 
+  console.log("\n=== Coverage Gap Report ===");
+  console.log(JSON.stringify({
+    summary: result.generation.coverageGapReport.summary,
+    supplementalArtifactCount: result.generation.coverageGapReport.supplementalArtifactCount,
+    evidenceRequestCount: result.generation.coverageGapReport.evidenceRequestCount,
+  }, null, 2));
+
+  console.log("\n=== Coverage Gap Items ===");
+  for (const item of result.generation.coverageGapReport.items) {
+    console.log(JSON.stringify({
+      requirementId: item.requirement.id,
+      description: item.requirement.description,
+      gapType: item.gapType,
+      severity: item.severity,
+      existingEvidenceIds: item.existingEvidenceIds,
+      existingArtifactIds: item.existingArtifactIds,
+      supplementalArtifactSuggestions: item.supplementalArtifactSuggestions,
+      evidenceRequestSuggestions: item.evidenceRequestSuggestions,
+      reason: item.reason,
+    }, null, 2));
+  }
+
   console.log("\n=== Critique Report ===");
   console.log(JSON.stringify({
     summary: result.generation.critiqueReport.summary,

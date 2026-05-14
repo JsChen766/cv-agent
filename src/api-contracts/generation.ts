@@ -1,5 +1,6 @@
 import type { RetrievedExperience } from "../knowledge/retrieval/ExperienceRetriever.js";
 import type { ArtifactCritiqueReport } from "../application/critique/types.js";
+import type { CoverageGapReport } from "../application/coverage-gaps/types.js";
 import type { ArtifactCoverageReport } from "../application/evaluation/types.js";
 import type {
   EvidenceChain,
@@ -29,6 +30,7 @@ export type GenerateResumeResponse = {
   retrievedExperiences: RetrievedExperience[];
   artifacts: GeneratedArtifactBundle[];
   coverageReport: ArtifactCoverageReport;
+  coverageGapReport: CoverageGapReport;
   critiqueReport: ArtifactCritiqueReport;
   createdAt: string;
 };

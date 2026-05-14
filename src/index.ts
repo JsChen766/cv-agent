@@ -31,6 +31,7 @@ export * from "./application/ResumeGenerationService.js";
 export * from "./application/CooltoDemoService.js";
 export * from "./application/evaluation/index.js";
 export * from "./application/critique/index.js";
+export * from "./application/coverage-gaps/index.js";
 export * from "./application/factories/createAgentBackedExperienceIngestionService.js";
 export * from "./application/factories/createAgentBackedResumeGenerationService.js";
 export * from "./application/factories/createAgentBackedCooltoDemoService.js";
