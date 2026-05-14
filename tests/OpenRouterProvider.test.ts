@@ -6,7 +6,7 @@ describe("OpenRouterProvider request serialization", () => {
     vi.restoreAllMocks();
   });
 
-  it("sanitizes assistant tool_calls", async () => {
+  it("OpenRouterProvider request body does not include raw", async () => {
     let requestBody: Record<string, unknown> | undefined;
     vi.spyOn(globalThis, "fetch").mockImplementation(async (_input, init) => {
       requestBody = JSON.parse(String(init?.body)) as Record<string, unknown>;

@@ -41,7 +41,7 @@ describe("normalizeOpenAIChatResponse", () => {
     ]);
   });
 
-  it("keeps raw on normalized ToolCall for internal debugging", () => {
+  it("normalizeOpenAIChatResponse keeps raw on ToolCall", () => {
     const raw = {
       choices: [
         {
@@ -70,7 +70,7 @@ describe("normalizeOpenAIChatResponse", () => {
 });
 
 describe("toOpenAIRequestToolCalls", () => {
-  it("removes raw and provider-specific fields from request tool_calls", () => {
+  it("toOpenAIRequestToolCalls removes raw", () => {
     const toolCalls: ToolCall[] = [
       {
         id: "call-1",
