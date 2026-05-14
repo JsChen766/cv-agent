@@ -1,6 +1,6 @@
 import type { LLMProvider } from "../core/model/LLMProvider.js";
 import type { LLMChatRequest, LLMChatResponse, LLMStreamChunk } from "../core/model/types.js";
-import { asRecord, asString, normalizeOpenAIChatResponse, parseJsonResponse } from "./providerUtils.js";
+import { asRecord, asString, normalizeOpenAIChatResponse, parseJsonResponse, toOpenAIRequestToolCalls } from "./providerUtils.js";
 
 export type DeepSeekProviderConfig = {
   apiKey: string;
@@ -77,7 +77,7 @@ export class DeepSeekProvider implements LLMProvider {
         content: message.content,
         ...(message.name ? { name: message.name } : {}),
         ...(message.toolCallId ? { tool_call_id: message.toolCallId } : {}),
-        ...(message.toolCalls ? { tool_calls: message.toolCalls } : {}),
+        ...(message.toolCalls ? { tool_calls: toOpenAIRequestToolCalls(message.toolCalls) } : {}),
         ...(message.reasoningContent ? { reasoning_content: message.reasoningContent } : {})
       })),
       ...(request.temperature === undefined ? {} : { temperature: request.temperature }),

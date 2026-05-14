@@ -88,3 +88,21 @@ export function normalizeToolCall(value: unknown): ToolCall {
     raw: value
   };
 }
+
+export function toOpenAIRequestToolCalls(toolCalls: ToolCall[]): Array<{
+  id?: string;
+  type: "function";
+  function: {
+    name: string;
+    arguments: string;
+  };
+}> {
+  return toolCalls.map((toolCall) => ({
+    ...(toolCall.id ? { id: toolCall.id } : {}),
+    type: "function",
+    function: {
+      name: toolCall.function.name,
+      arguments: toolCall.function.arguments
+    }
+  }));
+}

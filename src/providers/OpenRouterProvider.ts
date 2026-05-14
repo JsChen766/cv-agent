@@ -1,7 +1,7 @@
 import type { LLMProvider } from "../core/model/LLMProvider.js";
 import type { LLMChatRequest, LLMChatResponse, LLMStreamChunk } from "../core/model/types.js";
 import { AgentRuntimeError } from "../core/errors/AgentRuntimeError.js";
-import { normalizeOpenAIChatResponse, parseJsonResponse } from "./providerUtils.js";
+import { normalizeOpenAIChatResponse, parseJsonResponse, toOpenAIRequestToolCalls } from "./providerUtils.js";
 
 export type OpenRouterProviderConfig = {
   apiKey: string;
@@ -57,7 +57,7 @@ export class OpenRouterProvider implements LLMProvider {
         content: message.content,
         ...(message.name ? { name: message.name } : {}),
         ...(message.toolCallId ? { tool_call_id: message.toolCallId } : {}),
-        ...(message.toolCalls ? { tool_calls: message.toolCalls } : {})
+        ...(message.toolCalls ? { tool_calls: toOpenAIRequestToolCalls(message.toolCalls) } : {})
       })),
       ...(request.temperature === undefined ? {} : { temperature: request.temperature }),
       ...(request.maxTokens === undefined ? {} : { max_tokens: request.maxTokens }),
