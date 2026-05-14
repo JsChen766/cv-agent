@@ -293,6 +293,11 @@ describe("GenerationSessionManager", () => {
     expect(updated.supplementalArtifactDrafts[0]?.artifact.content).toContain("API integration");
     expect(updated.supplementalArtifactDrafts[0]?.artifact.sourceEvidenceIds).toEqual(["ev-api"]);
     expect(updated.supplementalArtifactDrafts[0]?.artifact.status).toBe("ready");
+    expect(updated.supplementalArtifactDrafts[0]?.artifact.scores).toEqual({
+      overall: 0.75,
+      requirementMatch: 0.75,
+      evidenceStrength: 0.75,
+    });
     expect(updated.generation.artifacts).toHaveLength(2);
     expect(updated.coverageGapDecisions.find((item) => item.requirementId === "req-api")?.decision).toBe("generate_supplemental_artifact");
   });
@@ -321,6 +326,55 @@ describe("GenerationSessionManager", () => {
         requirementId: "req-collab",
       }),
     ).rejects.toThrow(/no supplemental artifact suggestion/);
+  });
+
+  it("rejects undecided artifact decisions at runtime", async () => {
+    const { manager, session } = await createManagerWithSession();
+
+    await expect(
+      manager.decideArtifact({
+        sessionId: session.id,
+        artifactId: "artifact-1",
+        decision: "undecided",
+      } as unknown as Parameters<typeof manager.decideArtifact>[0]),
+    ).rejects.toThrow();
+  });
+
+  it("rejects undecided coverage gap decisions at runtime", async () => {
+    const { manager, session } = await createManagerWithSession();
+
+    await expect(
+      manager.decideCoverageGap({
+        sessionId: session.id,
+        requirementId: "req-api",
+        decision: "undecided",
+      } as unknown as Parameters<typeof manager.decideCoverageGap>[0]),
+    ).rejects.toThrow();
+  });
+
+  it("rejects empty session and target ids at runtime", async () => {
+    const { manager, session } = await createManagerWithSession();
+
+    await expect(
+      manager.decideArtifact({
+        sessionId: "",
+        artifactId: "artifact-1",
+        decision: "accepted",
+      }),
+    ).rejects.toThrow();
+    await expect(
+      manager.decideArtifact({
+        sessionId: session.id,
+        artifactId: "",
+        decision: "accepted",
+      }),
+    ).rejects.toThrow();
+    await expect(
+      manager.generateSupplementalArtifactDraft({
+        sessionId: session.id,
+        requirementId: "",
+      }),
+    ).rejects.toThrow();
   });
 
   it("summarizes artifact and coverage gap decisions", async () => {

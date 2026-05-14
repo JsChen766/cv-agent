@@ -15,6 +15,7 @@
     "dev:agent-ingest": "tsx src/examples/agent-ingest-demo.ts",
     "dev:agent-coolto": "tsx src/examples/agent-coolto-demo.ts",
     "dev:generation-session": "tsx src/examples/generation-session-demo.ts",
+    "dev:generation-session-forced-gap": "tsx src/examples/generation-session-forced-gap-demo.ts",
     "test": "vitest run",
     "typecheck": "tsc --noEmit"
   },

@@ -1,82 +1,168 @@
-import { stableId } from "../../knowledge/keywordUtils.js";
-import type { GeneratedArtifact } from "../../knowledge/types.js";
+import { stableId, tokenize } from "../../knowledge/keywordUtils.js";
+import type {
+  Evidence,
+  GeneratedArtifact,
+  JDRequirement,
+  Skill,
+} from "../../knowledge/types.js";
 import type { RetrievedExperience } from "../../knowledge/retrieval/ExperienceRetriever.js";
 import type { ArtifactGenerator, GenerateArtifactsInput } from "./ArtifactGenerator.js";
 
-type ArtifactStyle = "technical" | "product_impact" | "architecture";
+type ArtifactKind = "design_system" | "accessibility_api" | "performance";
 
 export class DeterministicArtifactGenerator implements ArtifactGenerator {
   async generate(input: GenerateArtifactsInput): Promise<GeneratedArtifact[]> {
     const now = new Date().toISOString();
-    const styles: ArtifactStyle[] = ["technical", "product_impact", "architecture"];
+    const evidenceContext = this.collectEvidenceContext(input.retrievedExperiences);
+    const kinds: ArtifactKind[] = ["design_system", "accessibility_api", "performance"];
 
-    return styles.map((style, index) => {
-      const match =
-        input.retrievedExperiences.length > 0
-          ? input.retrievedExperiences[index % input.retrievedExperiences.length]
-          : null;
-
-      const content = match
-        ? this.renderBullet(input.targetRole, match, style)
-        : this.renderNoEvidenceBullet(input.targetRole, style);
+    return kinds.map((kind) => {
+      const evidences = this.selectEvidencesForKind(kind, evidenceContext.evidences);
+      const content = evidences.length > 0
+        ? this.renderEvidenceBullet(kind, evidences)
+        : this.renderNoEvidenceBullet(input.targetRole, kind);
+      const sourceExperienceIds = unique(evidences.map((evidence) => evidence.experienceId));
+      const sourceEvidenceIds = evidences.map((evidence) => evidence.id);
+      const matchedSkillIds = this.selectSkillIdsForEvidence(evidences, evidenceContext.skills);
 
       return this.createArtifact({
         userId: input.userId,
         jdId: input.jdId,
         targetRole: input.targetRole,
-        requirements: input.requirements,
-        style,
+        kind,
         content,
-        sourceExperienceIds: match ? [match.experience.id] : [],
-        sourceEvidenceIds: match ? match.matchedEvidences.map((e) => e.id) : [],
-        matchedSkillIds: match ? match.matchedSkills.map((s) => s.id) : [],
-        score: match ? match.matchScore : 0,
-        evidenceStrength: match && match.matchedEvidences.length > 0 ? 0.85 : 0.2,
+        sourceExperienceIds,
+        sourceEvidenceIds,
+        matchedSkillIds,
+        targetRequirementIds: this.selectTargetRequirementIdsForBullet({
+          requirements: input.requirements,
+          content,
+          matchedSkillIds,
+        }),
+        score: evidences.length > 0 ? evidenceContext.matchScore : 0,
+        evidenceStrength: evidences.length > 0 ? 0.85 : 0.2,
         now,
       });
     });
   }
 
-  private renderBullet(
-    targetRole: string,
-    retrievedExperience: RetrievedExperience,
-    style: ArtifactStyle,
-  ): string {
-    const support = retrievedExperience.reason.replace(/\.$/, "").toLowerCase();
-    const result = retrievedExperience.experience.star.result;
-    const baseContext = `${retrievedExperience.experience.organization} as ${retrievedExperience.experience.role}`;
+  private collectEvidenceContext(retrievedExperiences: RetrievedExperience[]) {
+    const evidences = new Map<string, Evidence>();
+    const skills = new Map<string, Skill>();
+    let matchScore = 0;
 
-    if (style === "technical") {
-      return `Built ${targetRole} capabilities at ${baseContext}, applying ${support} to deliver ${result}`;
+    for (const retrieved of retrievedExperiences) {
+      matchScore = Math.max(matchScore, retrieved.matchScore);
+      for (const evidence of [...retrieved.matchedEvidences, ...retrieved.evidences]) {
+        evidences.set(evidence.id, evidence);
+      }
+      for (const skill of [...retrieved.matchedSkills, ...retrieved.skills]) {
+        skills.set(skill.id, skill);
+      }
     }
-    if (style === "product_impact") {
-      return `Improved product outcomes for ${targetRole} work at ${baseContext}, using ${support} to support ${result}`;
-    }
-    return `Strengthened frontend architecture at ${baseContext} for ${targetRole} scope, connecting ${support} with ${result}`;
+
+    return {
+      evidences: Array.from(evidences.values()),
+      skills: Array.from(skills.values()),
+      matchScore,
+    };
   }
 
-  private renderNoEvidenceBullet(targetRole: string, style: ArtifactStyle): string {
-    if (style === "technical") {
-      return `Draft technical ${targetRole} bullet requires source experience and evidence before use.`;
+  private selectEvidencesForKind(kind: ArtifactKind, evidences: Evidence[]): Evidence[] {
+    const keywordGroups: Record<ArtifactKind, RegExp> = {
+      design_system: /\b(react|typescript|design system|component library|product teams?|teams?)\b/i,
+      accessibility_api: /\b(accessible|accessibility|wcag|api|integration|component library)\b/i,
+      performance: /\b(reduced|improved|performance|bundle size|tree-shaking|lazy loading|\d+%)\b/i,
+    };
+    const preferred = evidences.filter((evidence) =>
+      keywordGroups[kind].test(evidence.excerpt),
+    );
+    return preferred.slice(0, 2);
+  }
+
+  private renderEvidenceBullet(kind: ArtifactKind, evidences: Evidence[]): string {
+    const text = evidences.map((evidence) => evidence.excerpt).join(" ");
+    const best = this.cleanExcerpt(evidences[0]?.excerpt ?? text);
+
+    if (kind === "design_system") {
+      const designSentence = this.findSentence(text, /\b(react|typescript|design system|teams?)\b/i);
+      return this.ensureSentence(designSentence ?? best);
     }
-    if (style === "product_impact") {
-      return `Draft product impact ${targetRole} bullet requires quantified supporting evidence before use.`;
+
+    if (kind === "accessibility_api") {
+      const accessibilitySentence = this.findSentence(
+        text,
+        /\b(accessible|accessibility|wcag|api|integration|component library)\b/i,
+      );
+      return this.ensureSentence(accessibilitySentence ?? best);
     }
-    return `Draft architecture ${targetRole} bullet requires architecture evidence before use.`;
+
+    const performanceSentence = this.findSentence(
+      text,
+      /\b(reduced|improved|performance|bundle size|tree-shaking|lazy loading|\d+%)\b/i,
+    );
+    return this.ensureSentence(performanceSentence ?? best);
+  }
+
+  private findSentence(text: string, pattern: RegExp): string | null {
+    const sentences = text
+      .split(/(?<=[.!?。；;])\s+|\r?\n/)
+      .map((sentence) => this.cleanExcerpt(sentence))
+      .filter(Boolean);
+    return sentences.find((sentence) => pattern.test(sentence)) ?? null;
+  }
+
+  private renderNoEvidenceBullet(targetRole: string, kind: ArtifactKind): string {
+    if (kind === "design_system") {
+      return `Draft ${targetRole} design system bullet requires source evidence before use.`;
+    }
+    if (kind === "accessibility_api") {
+      return `Draft ${targetRole} accessibility or API bullet requires source evidence before use.`;
+    }
+    return `Draft ${targetRole} performance bullet requires quantified source evidence before use.`;
+  }
+
+  private selectSkillIdsForEvidence(evidences: Evidence[], skills: Skill[]): string[] {
+    const evidenceIds = new Set(evidences.map((evidence) => evidence.id));
+    return skills
+      .filter((skill) => skill.evidenceIds.some((evidenceId) => evidenceIds.has(evidenceId)))
+      .map((skill) => skill.id);
+  }
+
+  private selectTargetRequirementIdsForBullet(input: {
+    requirements: JDRequirement[];
+    content: string;
+    matchedSkillIds: string[];
+  }): string[] {
+    const contentTokens = new Set(tokenize(input.content));
+    const targetIds = input.requirements
+      .filter((requirement) => {
+        const skillMatch = requirement.requiredSkillIds.some((skillId) =>
+          input.matchedSkillIds.includes(skillId),
+        );
+        if (skillMatch) {
+          return true;
+        }
+        return tokenize(requirement.description).some((token) => contentTokens.has(token));
+      })
+      .map((requirement) => requirement.id);
+    return targetIds.length > 0
+      ? unique(targetIds)
+      : input.requirements.slice(0, 1).map((requirement) => requirement.id);
   }
 
   private createArtifact(params: CreateArtifactParams): GeneratedArtifact {
     const score = Number(params.score.toFixed(3));
     return {
-      id: stableId("artifact", `${params.userId}:${params.jdId}:${params.style}:${params.content}`),
+      id: stableId("artifact", `${params.userId}:${params.jdId}:${params.kind}:${params.content}`),
       userId: params.userId,
       type: "resume_bullet",
       content: params.content,
-      sourceExperienceIds: params.sourceExperienceIds,
+      sourceExperienceIds: unique(params.sourceExperienceIds),
       sourceEvidenceIds: unique(params.sourceEvidenceIds),
       matchedSkillIds: unique(params.matchedSkillIds),
       targetJDId: params.jdId,
-      targetRequirementIds: params.requirements.map((r) => r.id),
+      targetRequirementIds: unique(params.targetRequirementIds),
       targetRole: params.targetRole,
       scores: {
         overall: score,
@@ -88,6 +174,15 @@ export class DeterministicArtifactGenerator implements ArtifactGenerator {
       updatedAt: params.now,
     };
   }
+
+  private cleanExcerpt(excerpt: string): string {
+    return excerpt.trim().replace(/\s+/g, " ").replace(/^[-*]\s*/, "");
+  }
+
+  private ensureSentence(content: string): string {
+    const trimmed = this.cleanExcerpt(content);
+    return /[.!?。]$/.test(trimmed) ? trimmed : `${trimmed}.`;
+  }
 }
 
 function unique(values: string[]): string[] {
@@ -98,12 +193,12 @@ type CreateArtifactParams = {
   userId: string;
   jdId: string;
   targetRole: string;
-  requirements: GenerateArtifactsInput["requirements"];
-  style: ArtifactStyle;
+  kind: ArtifactKind;
   content: string;
   sourceExperienceIds: string[];
   sourceEvidenceIds: string[];
   matchedSkillIds: string[];
+  targetRequirementIds: string[];
   score: number;
   evidenceStrength: number;
   now: string;

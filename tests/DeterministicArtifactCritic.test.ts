@@ -191,4 +191,24 @@ describe("DeterministicArtifactCritic", () => {
     expect(report.summary).toContain("1 rejected");
     expect(report.summary).toContain("1 requirement has evidence available but is not covered");
   });
+
+  it("returns one critique item with artifactId for every artifact", async () => {
+    const artifacts = [
+      makeArtifact({ id: "artifact-1" }),
+      makeArtifact({ id: "artifact-2" }),
+      makeArtifact({ id: "artifact-3" }),
+    ];
+    const report = await new DeterministicArtifactCritic().critique({
+      userId: "user-1",
+      jdId: "jd-1",
+      artifacts,
+      evidenceChains: artifacts.map((artifact) => makeChain(artifact)),
+      coverageReport: makeCoverageReport(),
+    });
+    const artifactIds = new Set(artifacts.map((artifact) => artifact.id));
+
+    expect(report.items).toHaveLength(artifacts.length);
+    expect(report.items.every((item) => item.artifactId.length > 0)).toBe(true);
+    expect(report.items.every((item) => artifactIds.has(item.artifactId))).toBe(true);
+  });
 });

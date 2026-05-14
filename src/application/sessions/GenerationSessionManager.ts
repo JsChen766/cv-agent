@@ -4,6 +4,12 @@ import type { GenerateResumeResponse } from "../../api-contracts/generation.js";
 import type {
   GenerationSessionRepository,
 } from "./InMemoryGenerationSessionRepository.js";
+import {
+  CreateGenerationSessionInputSchema,
+  DecideArtifactInputSchema,
+  DecideCoverageGapInputSchema,
+  GenerateSupplementalArtifactDraftInputSchema,
+} from "./schemas.js";
 import type {
   ArtifactDecision,
   ArtifactDecisionType,
@@ -43,6 +49,7 @@ export class GenerationSessionManager {
   async createSession(
     input: CreateGenerationSessionInput,
   ): Promise<GenerationSession> {
+    CreateGenerationSessionInputSchema.parse(input);
     const now = new Date().toISOString();
     const session: GenerationSession = {
       id: stableId(
@@ -73,6 +80,7 @@ export class GenerationSessionManager {
   }
 
   async decideArtifact(input: DecideArtifactInput): Promise<GenerationSession> {
+    DecideArtifactInputSchema.parse(input);
     const session = await this.requireSession(input.sessionId);
     if (!this.artifactExists(session, input.artifactId)) {
       throw new Error(
@@ -100,6 +108,7 @@ export class GenerationSessionManager {
   async decideCoverageGap(
     input: DecideCoverageGapInput,
   ): Promise<GenerationSession> {
+    DecideCoverageGapInputSchema.parse(input);
     const session = await this.requireSession(input.sessionId);
     if (!this.coverageGapExists(session, input.requirementId)) {
       throw new Error(
@@ -120,6 +129,7 @@ export class GenerationSessionManager {
   async generateSupplementalArtifactDraft(
     input: GenerateSupplementalArtifactDraftInput,
   ): Promise<GenerationSession> {
+    GenerateSupplementalArtifactDraftInputSchema.parse(input);
     const session = await this.requireSession(input.sessionId);
     const gap = session.generation.coverageGapReport.items.find(
       (item) => item.requirement.id === input.requirementId,

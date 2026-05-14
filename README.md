@@ -257,13 +257,21 @@ Current non-goals remain unchanged: no frontend, no HTTP API server, no vector d
 - `ArtifactDecision` supports `accepted`, `rejected`, and `needs_revision`, with `undecided` as the default session state.
 - `CoverageGapDecision` supports `generate_supplemental_artifact`, `request_more_evidence`, `ignore`, and `mark_not_relevant`, with `undecided` as the default.
 - `SupplementalArtifactDraft` is created only when the user explicitly chooses to generate a supplemental artifact from a coverage gap suggestion. Drafts stay in `supplementalArtifactDrafts`; they are not merged into the main `generation.artifacts` array and are not saved to the artifact repository.
+- Session decision inputs are runtime-validated with zod, so empty IDs and `undecided` user submissions are rejected before state changes.
 - `InMemoryGenerationSessionRepository` is the current storage layer. There is no database, frontend, or HTTP API server.
 - `src/api-contracts/session.ts` exposes request/response types for future API wiring.
+- Deterministic demo bullets are generated from source evidence excerpts instead of mechanical matched-skill summaries, so local product demos look closer to real resume content.
 
-Run the local session demo:
+Run the default local session demo. It uses the real deterministic generation result and does not inject artificial coverage gaps:
 
 ```bash
 npm run dev:generation-session
+```
+
+Run the forced-gap session demo when you specifically want to demonstrate supplemental draft creation:
+
+```bash
+npm run dev:generation-session-forced-gap
 ```
 
 ## Current Non-Goals
@@ -329,6 +337,7 @@ npm run dev:knowledge
 npm run dev:knowledge-pipeline
 npm run dev:coolto-demo
 npm run dev:generation-session
+npm run dev:generation-session-forced-gap
 ```
 
 ## Test

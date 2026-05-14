@@ -13,7 +13,7 @@ const RiskLevelSchema = z.enum(["low", "medium", "high"]);
 const ArtifactCritiqueVerdictSchema = z.enum(["pass", "revise", "reject"]);
 
 const AgentCritiqueItemSchema = z.object({
-  artifactId: z.string(),
+  artifactId: z.string().min(1),
   verdict: ArtifactCritiqueVerdictSchema,
   truthfulnessRisk: RiskLevelSchema,
   exaggerationRisk: RiskLevelSchema,
@@ -43,6 +43,7 @@ export class AgentArtifactCritic implements ArtifactCritic {
       parsed,
       "AgentArtifactCritic",
     );
+    this.validateCritiqueItems(validated.items, input.artifacts);
     const createdAt = new Date().toISOString();
 
     return {
@@ -53,6 +54,25 @@ export class AgentArtifactCritic implements ArtifactCritic {
       summary: validated.summary,
       createdAt,
     };
+  }
+
+  private validateCritiqueItems(
+    items: z.infer<typeof AgentCritiqueItemSchema>[],
+    artifacts: CritiqueArtifactsInput["artifacts"],
+  ): void {
+    const artifactIds = new Set(artifacts.map((artifact) => artifact.id));
+    if (items.length !== artifacts.length) {
+      throw new Error(
+        `AgentArtifactCritic validation failed: expected ${artifacts.length} critique items, received ${items.length}.`,
+      );
+    }
+    for (const item of items) {
+      if (!artifactIds.has(item.artifactId)) {
+        throw new Error(
+          `AgentArtifactCritic validation failed: unknown artifactId ${item.artifactId}.`,
+        );
+      }
+    }
   }
 
   private buildPrompt(input: CritiqueArtifactsInput): string {
