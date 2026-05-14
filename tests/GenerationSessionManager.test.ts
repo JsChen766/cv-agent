@@ -228,6 +228,12 @@ describe("GenerationSessionManager", () => {
 
     expect(session.artifactDecisions).toHaveLength(2);
     expect(session.artifactDecisions.every((item) => item.decision === "undecided")).toBe(true);
+    expect(session.artifactDecisions.every((item) =>
+      item.artifactId.length > 0 &&
+      item.decision.length > 0 &&
+      item.decidedAt.length > 0,
+    )).toBe(true);
+    expect(JSON.parse(JSON.stringify(session.artifactDecisions))).toEqual(session.artifactDecisions);
     expect(session.coverageGapDecisions).toHaveLength(2);
     expect(session.coverageGapDecisions.every((item) => item.decision === "undecided")).toBe(true);
     expect(session.supplementalArtifactDrafts).toHaveLength(0);
@@ -244,6 +250,8 @@ describe("GenerationSessionManager", () => {
 
     expect(updated.artifactDecisions.find((item) => item.artifactId === "artifact-1")?.decision).toBe("accepted");
     expect(updated.artifactDecisions.find((item) => item.artifactId === "artifact-1")?.note).toBe("Use this.");
+    expect(Array.isArray(updated.artifactDecisions)).toBe(true);
+    expect(JSON.parse(JSON.stringify(updated.artifactDecisions))).toEqual(updated.artifactDecisions);
     expect(updated.generation.artifacts[0]?.artifact.status).toBe("ready");
   });
 

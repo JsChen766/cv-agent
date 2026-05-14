@@ -211,4 +211,21 @@ describe("DeterministicArtifactCritic", () => {
     expect(report.items.every((item) => item.artifactId.length > 0)).toBe(true);
     expect(report.items.every((item) => artifactIds.has(item.artifactId))).toBe(true);
   });
+
+  it("throws a clear error when an artifact has no id", async () => {
+    const artifact = {
+      ...makeArtifact(),
+      id: undefined,
+    } as unknown as GeneratedArtifact;
+
+    await expect(
+      new DeterministicArtifactCritic().critique({
+        userId: "user-1",
+        jdId: "jd-1",
+        artifacts: [artifact],
+        evidenceChains: [],
+        coverageReport: makeCoverageReport(),
+      }),
+    ).rejects.toThrow("Cannot critique artifact without artifact.id");
+  });
 });

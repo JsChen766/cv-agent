@@ -87,13 +87,19 @@ async function main() {
   console.log(JSON.stringify(summary, null, 2));
 
   console.log("\n=== Artifact Decisions ===");
-  console.log(JSON.stringify(finalSession?.artifactDecisions, null, 2));
+  console.log(JSON.stringify({
+    artifactDecisions: finalSession?.artifactDecisions ?? [],
+  }, null, 2));
 
   console.log("\n=== Coverage Gap Decisions ===");
-  console.log(JSON.stringify(finalSession?.coverageGapDecisions, null, 2));
+  console.log(JSON.stringify({
+    coverageGapDecisions: finalSession?.coverageGapDecisions ?? [],
+  }, null, 2));
 
   console.log("\n=== Supplemental Artifact Drafts ===");
-  console.log(JSON.stringify(finalSession?.supplementalArtifactDrafts, null, 2));
+  console.log(JSON.stringify({
+    supplementalArtifactDrafts: finalSession?.supplementalArtifactDrafts ?? [],
+  }, null, 2));
 }
 
 main().catch((error) => {

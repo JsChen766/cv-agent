@@ -7,12 +7,12 @@ async function main() {
     userId: "user-demo",
     rawExperienceText: [
       "As a Senior Frontend Engineer at Acme Corp, I led a design system project for 12 product teams.",
-      "Built React and TypeScript component library with accessibility standards.",
+      "Built React and TypeScript component library with accessibility standards and shared API integration patterns.",
       "Reduced bundle size by 40% through tree-shaking and lazy loading.",
       "Mentored 4 engineers on performance and WCAG practices.",
     ].join("\n"),
     jdText:
-      "We need a senior frontend engineer with React, TypeScript, performance optimization, accessibility, and design system experience.",
+      "We need a senior frontend engineer with React, TypeScript, design system, accessibility, API integration, performance optimization, and cross-team collaboration experience.",
     targetRole: "Senior Frontend Engineer",
   });
 
@@ -72,6 +72,20 @@ async function main() {
       evidenceRequestSuggestions: item.evidenceRequestSuggestions,
       reason: item.reason,
     }, null, 2));
+  }
+
+  const artifactIds = new Set(
+    result.generation.artifacts.map((bundle) => bundle.artifact.id),
+  );
+  for (const item of result.generation.critiqueReport.items) {
+    if (!item.artifactId) {
+      throw new Error("Demo invariant failed: critique item is missing artifactId.");
+    }
+    if (!artifactIds.has(item.artifactId)) {
+      throw new Error(
+        `Demo invariant failed: critique item references unknown artifactId ${item.artifactId}.`,
+      );
+    }
   }
 
   console.log("\n=== Critique Report ===\n");

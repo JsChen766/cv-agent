@@ -24,9 +24,7 @@ async function main() {
   const manager = new GenerationSessionManager(repo);
   const session = await manager.createSession({ generation });
   const gap = generation.coverageGapReport.items.find(
-    (item) =>
-      item.gapType === "missing_artifact" &&
-      item.supplementalArtifactSuggestions.length > 0,
+    (item) => item.requirement.id === "req-session-demo-api-gap",
   );
 
   if (gap) {

@@ -4,15 +4,6 @@ import type { JDRequirement } from "../../knowledge/types.js";
 export function addForcedSupplementalGapForDemo(
   generation: GenerateResumeResponse,
 ): GenerateResumeResponse {
-  const existingGap = generation.coverageGapReport.items.some(
-    (item) =>
-      item.gapType === "missing_artifact" &&
-      item.supplementalArtifactSuggestions.length > 0,
-  );
-  if (existingGap) {
-    return generation;
-  }
-
   const firstArtifact = generation.artifacts[0]?.artifact;
   const now = new Date().toISOString();
   const requirement: JDRequirement = {

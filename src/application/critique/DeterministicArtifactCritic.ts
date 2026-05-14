@@ -36,11 +36,12 @@ export class DeterministicArtifactCritic implements ArtifactCritic {
     artifact: GeneratedArtifact,
     evidenceChains: EvidenceChain[],
   ): ArtifactCritiqueItem {
-    const chain = evidenceChains.find((entry) => entry.artifact.id === artifact.id);
+    const artifactId = this.requireArtifactId(artifact);
+    const chain = evidenceChains.find((entry) => entry.artifact.id === artifactId);
     const verdict = this.verdictForRisk(chain?.risk.level ?? "high");
 
     return {
-      artifactId: artifact.id,
+      artifactId,
       verdict,
       truthfulnessRisk: chain?.risk.truthfulnessRisk ?? "high",
       exaggerationRisk: chain?.risk.exaggerationRisk ?? "high",
@@ -54,6 +55,13 @@ export class DeterministicArtifactCritic implements ArtifactCritic {
         ? []
         : ["Revise the artifact to match only claims supported by linked evidence."],
     };
+  }
+
+  private requireArtifactId(artifact: GeneratedArtifact): string {
+    if (!artifact.id) {
+      throw new Error("Cannot critique artifact without artifact.id.");
+    }
+    return artifact.id;
   }
 
   private verdictForRisk(riskLevel: EvidenceChain["risk"]["level"]): ArtifactCritiqueVerdict {

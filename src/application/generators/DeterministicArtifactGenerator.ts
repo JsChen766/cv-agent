@@ -71,7 +71,7 @@ export class DeterministicArtifactGenerator implements ArtifactGenerator {
   private selectEvidencesForKind(kind: ArtifactKind, evidences: Evidence[]): Evidence[] {
     const keywordGroups: Record<ArtifactKind, RegExp> = {
       design_system: /\b(react|typescript|design system|component library|product teams?|teams?)\b/i,
-      accessibility_api: /\b(accessible|accessibility|wcag|api|integration|component library)\b/i,
+      accessibility_api: /\b(accessible|accessibility|wcag|component library)\b/i,
       performance: /\b(reduced|improved|performance|bundle size|tree-shaking|lazy loading|\d+%)\b/i,
     };
     const preferred = evidences.filter((evidence) =>
@@ -90,11 +90,14 @@ export class DeterministicArtifactGenerator implements ArtifactGenerator {
     }
 
     if (kind === "accessibility_api") {
+      if (/\baccessible\b/i.test(text) && /\bwcag\b/i.test(text)) {
+        return "Built an accessible component library with WCAG practices.";
+      }
       const accessibilitySentence = this.findSentence(
         text,
-        /\b(accessible|accessibility|wcag|api|integration|component library)\b/i,
+        /\b(accessible|accessibility|wcag|component library)\b/i,
       );
-      return this.ensureSentence(accessibilitySentence ?? best);
+      return this.ensureSentence(this.stripApiClaim(accessibilitySentence ?? best));
     }
 
     const performanceSentence = this.findSentence(
@@ -106,7 +109,7 @@ export class DeterministicArtifactGenerator implements ArtifactGenerator {
 
   private findSentence(text: string, pattern: RegExp): string | null {
     const sentences = text
-      .split(/(?<=[.!?。；;])\s+|\r?\n/)
+      .split(/(?<=[.!?;])\s+|\r?\n/)
       .map((sentence) => this.cleanExcerpt(sentence))
       .filter(Boolean);
     return sentences.find((sentence) => pattern.test(sentence)) ?? null;
@@ -137,6 +140,9 @@ export class DeterministicArtifactGenerator implements ArtifactGenerator {
     const contentTokens = new Set(tokenize(input.content));
     const targetIds = input.requirements
       .filter((requirement) => {
+        if (!this.contentCanTargetRequirement(input.content, requirement)) {
+          return false;
+        }
         const skillMatch = requirement.requiredSkillIds.some((skillId) =>
           input.matchedSkillIds.includes(skillId),
         );
@@ -149,6 +155,30 @@ export class DeterministicArtifactGenerator implements ArtifactGenerator {
     return targetIds.length > 0
       ? unique(targetIds)
       : input.requirements.slice(0, 1).map((requirement) => requirement.id);
+  }
+
+  private contentCanTargetRequirement(
+    content: string,
+    requirement: JDRequirement,
+  ): boolean {
+    const description = requirement.description.toLowerCase();
+    if (/\b(api|integration|data[- ]?flow)\b/i.test(description)) {
+      return /\b(api|integration|data[- ]?flow)\b/i.test(content);
+    }
+    if (/\b(accessibility|accessible|wcag|inclusive design)\b/i.test(description)) {
+      return /\b(accessibility|accessible|wcag|a11y)\b/i.test(content);
+    }
+    if (/\b(design system|component library)\b/i.test(description)) {
+      return /\b(design system|component library|components?)\b/i.test(content);
+    }
+    if (/\b(performance|optimization|bundle|measurable impact)\b/i.test(description)) {
+      return /\b(performance|optimization|bundle|reduced|improved|\d+%)\b/i.test(content);
+    }
+    if (/\b(cross-team|collaboration|communication|stakeholder)\b/i.test(description)) {
+      return /\b(cross-team|collaborat\w*|communicat\w*|stakeholder|partnered|worked with)\b/i
+        .test(content);
+    }
+    return true;
   }
 
   private createArtifact(params: CreateArtifactParams): GeneratedArtifact {
@@ -181,7 +211,14 @@ export class DeterministicArtifactGenerator implements ArtifactGenerator {
 
   private ensureSentence(content: string): string {
     const trimmed = this.cleanExcerpt(content);
-    return /[.!?。]$/.test(trimmed) ? trimmed : `${trimmed}.`;
+    return /[.!?]$/.test(trimmed) ? trimmed : `${trimmed}.`;
+  }
+
+  private stripApiClaim(content: string): string {
+    return this.cleanExcerpt(content)
+      .replace(/\s+and shared API integration patterns\b/i, "")
+      .replace(/\s+with shared API integration patterns\b/i, "")
+      .replace(/\s+and API integration patterns\b/i, "");
   }
 }
 

@@ -15,7 +15,7 @@ function makeRetrievedExperience(overrides?: Partial<RetrievedExperience>): Retr
     timeRange: { startDate: null, endDate: null },
     star: { situation: "x", task: "x", action: "x", result: "40% bundle reduction" },
     evidenceIds: ["ev-design", "ev-access", "ev-performance"],
-    skillIds: ["skill-react", "skill-typescript", "skill-access", "skill-perf"],
+    skillIds: ["skill-react", "skill-typescript", "skill-access", "skill-api", "skill-perf"],
     confidence: 0.85,
     createdAt: "2024-01-01T00:00:00Z",
     updatedAt: "2024-01-01T00:00:00Z",
@@ -61,6 +61,7 @@ function makeRetrievedExperience(overrides?: Partial<RetrievedExperience>): Retr
     { id: "skill-react", userId: "user-1", name: "React", category: "technical" as const, evidenceIds: ["ev-design"], createdAt: "2024-01-01T00:00:00Z", updatedAt: "2024-01-01T00:00:00Z" },
     { id: "skill-typescript", userId: "user-1", name: "TypeScript", category: "technical" as const, evidenceIds: ["ev-design"], createdAt: "2024-01-01T00:00:00Z", updatedAt: "2024-01-01T00:00:00Z" },
     { id: "skill-access", userId: "user-1", name: "Accessibility", category: "domain" as const, evidenceIds: ["ev-access"], createdAt: "2024-01-01T00:00:00Z", updatedAt: "2024-01-01T00:00:00Z" },
+    { id: "skill-api", userId: "user-1", name: "API Integration", category: "technical" as const, evidenceIds: ["ev-access"], createdAt: "2024-01-01T00:00:00Z", updatedAt: "2024-01-01T00:00:00Z" },
     { id: "skill-perf", userId: "user-1", name: "Performance Optimization", category: "technical" as const, evidenceIds: ["ev-performance"], createdAt: "2024-01-01T00:00:00Z", updatedAt: "2024-01-01T00:00:00Z" },
   ];
 
@@ -131,8 +132,17 @@ describe("DeterministicArtifactGenerator", () => {
         id: "req-access",
         userId: "user-1",
         jdId: "jd-1",
-        description: "Accessibility API integration",
+        description: "Accessibility implementation",
         requiredSkillIds: ["skill-access"],
+        weight: 1,
+        createdAt: "2024-01-01T00:00:00Z",
+      },
+      {
+        id: "req-api",
+        userId: "user-1",
+        jdId: "jd-1",
+        description: "API integration and frontend data-flow management",
+        requiredSkillIds: ["skill-api"],
         weight: 1,
         createdAt: "2024-01-01T00:00:00Z",
       },
@@ -166,8 +176,11 @@ describe("DeterministicArtifactGenerator", () => {
     expect(design?.targetRequirementIds).toContain("req-design");
     expect(access?.sourceEvidenceIds).toContain("ev-access");
     expect(access?.targetRequirementIds).toContain("req-access");
+    expect(access?.content).not.toMatch(/\bapi|integration\b/i);
+    expect(access?.targetRequirementIds).not.toContain("req-api");
     expect(performance?.sourceEvidenceIds).toContain("ev-performance");
     expect(performance?.targetRequirementIds).toContain("req-performance");
+    expect(performance?.targetRequirementIds).toEqual(["req-performance"]);
   });
 
   it("generates 3 needs_review artifacts when no experiences retrieved", async () => {
