@@ -34,7 +34,7 @@ async function main() {
     requirementRepo,
   );
   const artifactGenerator = new DeterministicArtifactGenerator();
-  const resumeGeneration = new ResumeGenerationService(
+  const resumeGeneration = new ResumeGenerationService({
     requirementExtractor,
     artifactGenerator,
     experienceRepo,
@@ -43,7 +43,7 @@ async function main() {
     requirementRepo,
     artifactRepo,
     retriever,
-  );
+  });
 
   const rawExperience = [
     "As a Senior Frontend Engineer at Acme Corp, I led a design system project for 12 product teams.",

@@ -1,6 +1,7 @@
 import type { FrontDeskDecision } from "../../agents/FrontDeskAgent.js";
 import type {
   ArtifactCritiqueReport,
+  ArtifactCritiqueItem,
 } from "../critique/types.js";
 import type { CoverageGapReport } from "../coverage-gaps/types.js";
 import type { ArtifactCoverageReport } from "../evaluation/types.js";
@@ -17,6 +18,12 @@ import type {
   EvidenceChainSnapshot,
   GraphViewSnapshot,
 } from "../../persistence/repositories.js";
+import type {
+  ArtifactRevisionResult,
+  RevisionInstruction,
+  RevisionTone,
+  UserConfirmation,
+} from "../revision/index.js";
 
 export type DocumentIngestionResult = {
   extractedDocument: ExtractedTextDocument;
@@ -38,6 +45,13 @@ export type FrontDeskRequest = {
   evidenceChainSnapshotId?: string;
   graphScopeType?: GraphViewSnapshot["scopeType"];
   graphScopeId?: string;
+  artifact?: GeneratedArtifact;
+  critiqueItem?: ArtifactCritiqueItem;
+  evidenceChain?: EvidenceChain;
+  revisionInstruction?: RevisionInstruction;
+  customInstruction?: string;
+  userConfirmations?: UserConfirmation[];
+  tone?: RevisionTone;
 };
 
 export type FrontDeskResponse = {
@@ -59,5 +73,6 @@ export type FrontDeskResponse = {
   coverageReport?: ArtifactCoverageReport;
   coverageGapReport?: CoverageGapReport;
   critiqueReport?: ArtifactCritiqueReport;
+  revisionResult?: ArtifactRevisionResult;
   warnings: string[];
 };

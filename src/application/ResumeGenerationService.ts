@@ -61,25 +61,55 @@ export type GenerateResumeResult = {
   createdAt: string;
 };
 
+export type ResumeGenerationServiceOptions = {
+  requirementExtractor: JDRequirementExtractor;
+  artifactGenerator: ArtifactGenerator;
+  experienceRepo: ExperienceRepository;
+  evidenceRepo: EvidenceRepository;
+  skillRepo: SkillRepository;
+  requirementRepo: JDRequirementRepository;
+  artifactRepo: GeneratedArtifactRepository;
+  retriever: ExperienceRetriever;
+  chainBuilder?: EvidenceChainBuilder;
+  graphBuilder?: GraphViewBuilder;
+  coverageEvaluator?: ArtifactCoverageEvaluator;
+  coverageGapAdvisor?: CoverageGapAdvisor;
+  artifactCritic?: ArtifactCritic;
+};
+
 export class ResumeGenerationService {
-  constructor(
-    private readonly requirementExtractor: JDRequirementExtractor,
-    private readonly artifactGenerator: ArtifactGenerator,
-    private readonly experienceRepo: ExperienceRepository,
-    private readonly evidenceRepo: EvidenceRepository,
-    private readonly skillRepo: SkillRepository,
-    private readonly requirementRepo: JDRequirementRepository,
-    private readonly artifactRepo: GeneratedArtifactRepository,
-    private readonly retriever: ExperienceRetriever,
-    private readonly chainBuilder = new EvidenceChainBuilder(
-      experienceRepo,
-      evidenceRepo,
-    ),
-    private readonly graphBuilder = new GraphViewBuilder(),
-    private readonly coverageEvaluator = new ArtifactCoverageEvaluator(),
-    private readonly coverageGapAdvisor: CoverageGapAdvisor = new DeterministicCoverageGapAdvisor(),
-    private readonly artifactCritic: ArtifactCritic = new DeterministicArtifactCritic(),
-  ) {}
+  private readonly requirementExtractor: JDRequirementExtractor;
+  private readonly artifactGenerator: ArtifactGenerator;
+  private readonly experienceRepo: ExperienceRepository;
+  private readonly evidenceRepo: EvidenceRepository;
+  private readonly skillRepo: SkillRepository;
+  private readonly requirementRepo: JDRequirementRepository;
+  private readonly artifactRepo: GeneratedArtifactRepository;
+  private readonly retriever: ExperienceRetriever;
+  private readonly chainBuilder: EvidenceChainBuilder;
+  private readonly graphBuilder: GraphViewBuilder;
+  private readonly coverageEvaluator: ArtifactCoverageEvaluator;
+  private readonly coverageGapAdvisor: CoverageGapAdvisor;
+  private readonly artifactCritic: ArtifactCritic;
+
+  constructor(options: ResumeGenerationServiceOptions) {
+    this.requirementExtractor = options.requirementExtractor;
+    this.artifactGenerator = options.artifactGenerator;
+    this.experienceRepo = options.experienceRepo;
+    this.evidenceRepo = options.evidenceRepo;
+    this.skillRepo = options.skillRepo;
+    this.requirementRepo = options.requirementRepo;
+    this.artifactRepo = options.artifactRepo;
+    this.retriever = options.retriever;
+    this.chainBuilder = options.chainBuilder ?? new EvidenceChainBuilder(
+      options.experienceRepo,
+      options.evidenceRepo,
+    );
+    this.graphBuilder = options.graphBuilder ?? new GraphViewBuilder();
+    this.coverageEvaluator = options.coverageEvaluator ?? new ArtifactCoverageEvaluator();
+    this.coverageGapAdvisor = options.coverageGapAdvisor ?? new DeterministicCoverageGapAdvisor();
+    this.artifactCritic = options.artifactCritic ?? new DeterministicArtifactCritic();
+  }
 
   async generate(input: GenerateResumeInput): Promise<GenerateResumeResult> {
     const createdAt = new Date().toISOString();

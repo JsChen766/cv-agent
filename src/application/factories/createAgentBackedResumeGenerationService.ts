@@ -47,19 +47,16 @@ export function createAgentBackedResumeGenerationService(
       ? new AgentCoverageGapAdvisor(config.coverageGapAgent)
       : undefined;
 
-  return new ResumeGenerationService(
+  return new ResumeGenerationService({
     requirementExtractor,
     artifactGenerator,
-    config.experienceRepo,
-    config.evidenceRepo,
-    config.skillRepo,
-    config.requirementRepo,
-    config.artifactRepo,
-    config.retriever,
-    undefined,
-    undefined,
-    undefined,
+    experienceRepo: config.experienceRepo,
+    evidenceRepo: config.evidenceRepo,
+    skillRepo: config.skillRepo,
+    requirementRepo: config.requirementRepo,
+    artifactRepo: config.artifactRepo,
+    retriever: config.retriever,
     coverageGapAdvisor,
     artifactCritic,
-  );
+  });
 }

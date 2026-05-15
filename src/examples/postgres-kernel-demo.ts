@@ -45,16 +45,16 @@ export async function runPostgresKernelDemo(): Promise<unknown> {
     const documentIngestionService = new DocumentIngestionService(documentLoader, documentRepo);
     const ingestionService = new ExperienceIngestionService(experienceRepo, evidenceRepo, skillRepo);
     const retriever = new KeywordExperienceRetriever(experienceRepo, evidenceRepo, skillRepo);
-    const resumeGenerationService = new ResumeGenerationService(
-      new DeterministicJDRequirementExtractor(skillRepo, requirementRepo),
-      new DeterministicArtifactGenerator(),
+    const resumeGenerationService = new ResumeGenerationService({
+      requirementExtractor: new DeterministicJDRequirementExtractor(skillRepo, requirementRepo),
+      artifactGenerator: new DeterministicArtifactGenerator(),
       experienceRepo,
       evidenceRepo,
       skillRepo,
       requirementRepo,
       artifactRepo,
       retriever,
-    );
+    });
     const modelClient = new ModelClient({
       provider: new MockProvider(),
       defaultModel: "mock-frontdesk",

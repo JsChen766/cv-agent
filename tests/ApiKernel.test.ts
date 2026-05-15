@@ -20,6 +20,7 @@ describe("API kernel", () => {
   const originalExperienceExtractorMode = process.env.EXPERIENCE_EXTRACTOR_MODE;
   const originalArtifactGeneratorMode = process.env.ARTIFACT_GENERATOR_MODE;
   const originalCriticAgentMode = process.env.CRITIC_AGENT_MODE;
+  const originalRevisionAgentMode = process.env.REVISION_AGENT_MODE;
 
   afterEach(() => {
     if (originalDatabaseUrl === undefined) {
@@ -67,6 +68,11 @@ describe("API kernel", () => {
     } else {
       process.env.CRITIC_AGENT_MODE = originalCriticAgentMode;
     }
+    if (originalRevisionAgentMode === undefined) {
+      delete process.env.REVISION_AGENT_MODE;
+    } else {
+      process.env.REVISION_AGENT_MODE = originalRevisionAgentMode;
+    }
   });
 
   it("creates an in-memory kernel with a generation persistence port when DATABASE_URL is absent", async () => {
@@ -76,6 +82,7 @@ describe("API kernel", () => {
     process.env.EXPERIENCE_EXTRACTOR_MODE = "deterministic";
     process.env.ARTIFACT_GENERATOR_MODE = "deterministic";
     process.env.CRITIC_AGENT_MODE = "deterministic";
+    process.env.REVISION_AGENT_MODE = "deterministic";
     process.env.NODE_ENV = "test";
 
     const kernel = await createKernel();
@@ -391,7 +398,104 @@ describe("API kernel", () => {
       await kernel.close();
     }
   });
+
+  it("uses deterministic RevisionAgent mode by default and exposes reviseArtifact", async () => {
+    delete process.env.DATABASE_URL;
+    delete process.env.REVISION_AGENT_MODE;
+    process.env.AGENT_PROVIDER = "deepseek";
+    process.env.FRONTDESK_AGENT_MODE = "mock";
+    process.env.EXPERIENCE_EXTRACTOR_MODE = "deterministic";
+    process.env.ARTIFACT_GENERATOR_MODE = "deterministic";
+    process.env.CRITIC_AGENT_MODE = "deterministic";
+    process.env.ALLOW_MOCK_FALLBACK = "false";
+    process.env.NODE_ENV = "test";
+
+    const kernel = await createKernel();
+    try {
+      const artifact = makeRevisionArtifact();
+      const result = await kernel.cvAgentKernel.generations.reviseArtifact(
+        {
+          user: { id: "user-1" },
+          auth: { mode: "dev_header" },
+          request: { requestId: "req-1", traceId: "trace-1", source: "test" },
+        },
+        {
+          artifact,
+          instruction: "make_more_conservative",
+        },
+      );
+
+      expect(result.revisedArtifact.metadata?.revision).toMatchObject({
+        revisedFromArtifactId: artifact.id,
+        deterministic: true,
+      });
+      expect(kernel.warnings).toEqual([
+        "DATABASE_URL is not set. API is running in in-memory mode.",
+      ]);
+    } finally {
+      await kernel.close();
+    }
+  });
+
+  it("throws when RevisionAgent llm mode uses deepseek without key and fallback is disabled", async () => {
+    delete process.env.DATABASE_URL;
+    delete process.env.DEEPSEEK_API_KEY;
+    process.env.AGENT_PROVIDER = "deepseek";
+    process.env.FRONTDESK_AGENT_MODE = "mock";
+    process.env.EXPERIENCE_EXTRACTOR_MODE = "deterministic";
+    process.env.ARTIFACT_GENERATOR_MODE = "deterministic";
+    process.env.CRITIC_AGENT_MODE = "deterministic";
+    process.env.REVISION_AGENT_MODE = "llm";
+    process.env.ALLOW_MOCK_FALLBACK = "false";
+    process.env.NODE_ENV = "test";
+
+    await expect(createKernel()).rejects.toThrow(
+      "DEEPSEEK_API_KEY is required when AGENT_PROVIDER=deepseek.",
+    );
+  });
+
+  it("allows RevisionAgent llm mode to fall back to mock provider with warning", async () => {
+    delete process.env.DATABASE_URL;
+    delete process.env.DEEPSEEK_API_KEY;
+    process.env.AGENT_PROVIDER = "deepseek";
+    process.env.FRONTDESK_AGENT_MODE = "mock";
+    process.env.EXPERIENCE_EXTRACTOR_MODE = "deterministic";
+    process.env.ARTIFACT_GENERATOR_MODE = "deterministic";
+    process.env.CRITIC_AGENT_MODE = "deterministic";
+    process.env.REVISION_AGENT_MODE = "llm";
+    process.env.ALLOW_MOCK_FALLBACK = "true";
+    process.env.NODE_ENV = "test";
+
+    const kernel = await createKernel();
+    try {
+      expect(kernel.warnings).toContain(
+        "DEEPSEEK_API_KEY is missing. Falling back to MockProvider because allowMockFallback is enabled.",
+      );
+    } finally {
+      await kernel.close();
+    }
+  });
 });
+
+function makeRevisionArtifact() {
+  return {
+    id: "artifact-revision-test",
+    userId: "user-1",
+    type: "resume_bullet" as const,
+    content: "Built reporting dashboards.",
+    sourceExperienceIds: [],
+    sourceEvidenceIds: [],
+    matchedSkillIds: [],
+    targetJDId: "jd-1",
+    targetRequirementIds: ["req-1"],
+    targetRole: "BI Analyst",
+    scores: { overall: 0.4, requirementMatch: 0.4, evidenceStrength: 0.2 },
+    status: "needs_review" as const,
+    metadata: {},
+    createdAt: "2024-01-01T00:00:00.000Z",
+    updatedAt: "2024-01-01T00:00:00.000Z",
+  };
+}
 
 class FakePostgresDatabase {
   public initializeSchemaCalled = false;

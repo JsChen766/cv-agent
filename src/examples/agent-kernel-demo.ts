@@ -37,16 +37,16 @@ export async function runAgentKernelDemo(): Promise<unknown> {
   const documentLoader = new DocumentLoaderTool();
   const ingestionService = new ExperienceIngestionService(experienceRepo, evidenceRepo, skillRepo);
   const retriever = new KeywordExperienceRetriever(experienceRepo, evidenceRepo, skillRepo);
-  const resumeGenerationService = new ResumeGenerationService(
-    new DeterministicJDRequirementExtractor(skillRepo, requirementRepo),
-    new DeterministicArtifactGenerator(),
+  const resumeGenerationService = new ResumeGenerationService({
+    requirementExtractor: new DeterministicJDRequirementExtractor(skillRepo, requirementRepo),
+    artifactGenerator: new DeterministicArtifactGenerator(),
     experienceRepo,
     evidenceRepo,
     skillRepo,
     requirementRepo,
     artifactRepo,
     retriever,
-  );
+  });
   const orchestrator = new FrontDeskOrchestrator(
     frontDeskAgent,
     documentLoader,

@@ -12,6 +12,15 @@ import type {
   GraphViewQueryResult,
 } from "../application/query/index.js";
 import type {
+  ArtifactRevisionResult,
+  RevisionInstruction,
+  RevisionTone,
+  UserConfirmation,
+} from "../application/revision/index.js";
+import type {
+  ArtifactCritiqueItem,
+} from "../application/critique/types.js";
+import type {
   Evidence,
   EvidenceChain,
   Experience,
@@ -72,6 +81,17 @@ export type GraphQuery = {
   scopeId: string;
 };
 
+export type ReviseArtifactInput = {
+  artifact: GeneratedArtifact;
+  critiqueItem?: ArtifactCritiqueItem;
+  evidenceChain?: EvidenceChain;
+  instruction: RevisionInstruction;
+  customInstruction?: string;
+  targetRequirementIds?: string[];
+  userConfirmations?: UserConfirmation[];
+  tone?: RevisionTone;
+};
+
 export type KernelHealth = {
   ok: true;
   mode: KernelMode;
@@ -87,6 +107,7 @@ export type CvAgentKernel = {
     create(ctx: KernelRequestContext, input: CreateGenerationInput): Promise<CreateGenerationResult>;
     getEvidenceChains(ctx: KernelRequestContext, query: EvidenceChainQuery): Promise<EvidenceChainQueryResult>;
     getGraph(ctx: KernelRequestContext, query: GraphQuery): Promise<GraphViewQueryResult>;
+    reviseArtifact(ctx: KernelRequestContext, input: ReviseArtifactInput): Promise<ArtifactRevisionResult>;
   };
   health(): Promise<KernelHealth>;
   close(): Promise<void>;

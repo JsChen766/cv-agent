@@ -37,16 +37,16 @@ function createOrchestrator(extractor?: ExperienceExtractor): FrontDeskOrchestra
     skillRepo,
     extractor,
   );
-  const resumeGenerationService = new ResumeGenerationService(
-    new DeterministicJDRequirementExtractor(skillRepo, requirementRepo),
-    new DeterministicArtifactGenerator(),
+  const resumeGenerationService = new ResumeGenerationService({
+    requirementExtractor: new DeterministicJDRequirementExtractor(skillRepo, requirementRepo),
+    artifactGenerator: new DeterministicArtifactGenerator(),
     experienceRepo,
     evidenceRepo,
     skillRepo,
     requirementRepo,
     artifactRepo,
-    new KeywordExperienceRetriever(experienceRepo, evidenceRepo, skillRepo),
-  );
+    retriever: new KeywordExperienceRetriever(experienceRepo, evidenceRepo, skillRepo),
+  });
 
   return new FrontDeskOrchestrator(
     frontDeskAgent,

@@ -69,7 +69,7 @@ async function createGenerationResult() {
     requirementRepo,
   );
   const artifactGenerator = new DeterministicArtifactGenerator();
-  const service = new ResumeGenerationService(
+  const service = new ResumeGenerationService({
     requirementExtractor,
     artifactGenerator,
     experienceRepo,
@@ -78,7 +78,7 @@ async function createGenerationResult() {
     requirementRepo,
     artifactRepo,
     retriever,
-  );
+  });
 
   return service.generate({
     userId: "user-1",

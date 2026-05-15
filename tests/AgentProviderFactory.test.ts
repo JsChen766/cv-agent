@@ -123,6 +123,7 @@ describe("readAgentModeConfig", () => {
       experienceExtractorMode: "deterministic",
       artifactGeneratorMode: "deterministic",
       criticAgentMode: "deterministic",
+      revisionAgentMode: "deterministic",
     });
   });
 
@@ -132,11 +133,13 @@ describe("readAgentModeConfig", () => {
       EXPERIENCE_EXTRACTOR_MODE: "llm",
       ARTIFACT_GENERATOR_MODE: "llm",
       CRITIC_AGENT_MODE: "llm",
+      REVISION_AGENT_MODE: "llm",
     })).toEqual({
       frontDeskAgentMode: "llm",
       experienceExtractorMode: "llm",
       artifactGeneratorMode: "llm",
       criticAgentMode: "llm",
+      revisionAgentMode: "llm",
     });
   });
 

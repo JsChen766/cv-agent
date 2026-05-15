@@ -14,6 +14,12 @@ import {
   EvidenceChainQueryService,
   GraphViewQueryService,
 } from "../../application/query/index.js";
+import {
+  ArtifactRevisionService,
+  DeterministicArtifactRevisionAgent,
+  LLMArtifactRevisionAgent,
+  type ArtifactRevisionAgent,
+} from "../../application/revision/index.js";
 import { ModelClient } from "../../core/model/ModelClient.js";
 import {
   ExperienceIngestionService,
@@ -155,21 +161,24 @@ function buildKernel(input: BuildKernelInput): ApiKernel {
   const artifactCritic = createArtifactCritic({
     mode: agentModes.criticAgentMode,
   });
-  const resumeGenerationService = new ResumeGenerationService(
-    new DeterministicJDRequirementExtractor(input.skillRepository, input.requirementRepository),
-    artifactGenerator.generator,
-    input.experienceRepository,
-    input.evidenceRepository,
-    input.skillRepository,
-    input.requirementRepository,
-    input.artifactRepository,
-    new KeywordExperienceRetriever(input.experienceRepository, input.evidenceRepository, input.skillRepository),
-    undefined,
-    undefined,
-    undefined,
-    undefined,
-    artifactCritic.critic,
-  );
+  const revisionAgent = createArtifactRevisionAgent({
+    mode: agentModes.revisionAgentMode,
+  });
+  const artifactRevisionService = new ArtifactRevisionService({
+    revisionAgent: revisionAgent.agent,
+    artifactRepository: input.artifactRepository,
+  });
+  const resumeGenerationService = new ResumeGenerationService({
+    requirementExtractor: new DeterministicJDRequirementExtractor(input.skillRepository, input.requirementRepository),
+    artifactGenerator: artifactGenerator.generator,
+    experienceRepo: input.experienceRepository,
+    evidenceRepo: input.evidenceRepository,
+    skillRepo: input.skillRepository,
+    requirementRepo: input.requirementRepository,
+    artifactRepo: input.artifactRepository,
+    retriever: new KeywordExperienceRetriever(input.experienceRepository, input.evidenceRepository, input.skillRepository),
+    artifactCritic: artifactCritic.critic,
+  });
   const evidenceChainQueryService = new EvidenceChainQueryService(input.evidenceChainRepository);
   const graphViewQueryService = new GraphViewQueryService(input.graphViewRepository);
   const generationPersistenceService = input.generationPersistenceService ??
@@ -195,6 +204,7 @@ function buildKernel(input: BuildKernelInput): ApiKernel {
       evidenceChainQueryService,
       graphViewQueryService,
     },
+    artifactRevisionService,
   );
 
   const warnings = uniqueWarnings([
@@ -203,6 +213,7 @@ function buildKernel(input: BuildKernelInput): ApiKernel {
     ...experienceExtractor.warnings,
     ...artifactGenerator.warnings,
     ...artifactCritic.warnings,
+    ...revisionAgent.warnings,
   ]);
   const cvAgentKernel = new DefaultCvAgentKernel({
     mode: input.mode,
@@ -212,6 +223,7 @@ function buildKernel(input: BuildKernelInput): ApiKernel {
     generationPersistenceService,
     evidenceChainQueryService,
     graphViewQueryService,
+    artifactRevisionService,
     close: input.close,
   });
 
@@ -329,6 +341,28 @@ function createArtifactCritic(input: {
   const agentProvider = AgentProviderFactory.create(AgentProviderFactory.fromEnv());
   return {
     critic: new LLMArtifactCritic({
+      modelClient: agentProvider.modelClient,
+    }),
+    warnings: agentProvider.warnings,
+  };
+}
+
+function createArtifactRevisionAgent(input: {
+  mode: "deterministic" | "llm";
+}): {
+  agent: ArtifactRevisionAgent;
+  warnings: string[];
+} {
+  if (input.mode === "deterministic") {
+    return {
+      agent: new DeterministicArtifactRevisionAgent(),
+      warnings: [],
+    };
+  }
+
+  const agentProvider = AgentProviderFactory.create(AgentProviderFactory.fromEnv());
+  return {
+    agent: new LLMArtifactRevisionAgent({
       modelClient: agentProvider.modelClient,
     }),
     warnings: agentProvider.warnings,

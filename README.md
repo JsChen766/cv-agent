@@ -2,7 +2,7 @@
 
 TypeScript agent runtime foundation for Coolto. The project currently focuses on runtime primitives, document ingestion, a deterministic knowledge pipeline, generation persistence, and a thin backend API. It still avoids frontend code, full auth, real vector databases, Neo4j, pgvector, and production file storage.
 
-P8.6 LLM-backed CriticAgent is implemented. The default path remains deterministic; LLM artifact generation and LLM critique are opt-in through `ARTIFACT_GENERATOR_MODE=llm` and `CRITIC_AGENT_MODE=llm`.
+P8.7 RevisionAgent is implemented. The default path remains deterministic; LLM artifact generation, critique, and revision are opt-in through `ARTIFACT_GENERATOR_MODE=llm`, `CRITIC_AGENT_MODE=llm`, and `REVISION_AGENT_MODE=llm`.
 
 ## Framework Goal
 
@@ -353,6 +353,7 @@ Rule-based extraction without any LLM calls. Used by `createInMemoryCooltoDemoSe
 | Coverage evaluation | `ArtifactCoverageEvaluator` | `src/application/evaluation/` |
 | Coverage gap advice | `DeterministicCoverageGapAdvisor` | `src/application/coverage-gaps/` |
 | Artifact critique | `DeterministicArtifactCritic` | `src/application/critique/` |
+| Artifact revision | `DeterministicArtifactRevisionAgent` | `src/application/revision/` |
 
 ### Agent-backed implementation (for real LLM integration)
 
@@ -365,6 +366,7 @@ Calls a `BaseAgent` subclass and validates the JSON output with zod schemas. Thr
 | Artifact generation | `ArchitectAgent` (or any `BaseAgent`) | `AgentArtifactGenerator` | `src/application/generators/` |
 | Coverage gap advice | any `BaseAgent` | `AgentCoverageGapAdvisor` | `src/application/coverage-gaps/` |
 | Artifact critique | `CriticAgent` (or any `BaseAgent`) | `AgentArtifactCritic` | `src/application/critique/` |
+| Artifact revision | Revision model client | `LLMArtifactRevisionAgent` | `src/application/revision/` |
 
 ### Abstracted interfaces (the "what")
 
@@ -374,6 +376,7 @@ Calls a `BaseAgent` subclass and validates the JSON output with zod schemas. Thr
 | `JDRequirementExtractor` | `extract(input) => Promise<ExtractJDRequirementsResult>` | Extract requirements from a job description |
 | `ArtifactGenerator` | `generate(input) => Promise<GenerateArtifactsResult>` | Generate evidence-aware resume artifacts from requirements and experiences |
 | `ArtifactCritic` | `critique(input) => Promise<ArtifactCritiqueReport>` | Review generated artifacts for truthfulness, evidence strength, and rewrite guidance |
+| `ArtifactRevisionAgent` | `revise(input) => Promise<ArtifactRevisionResult>` | Rewrite one artifact from critique, evidence, instruction, and confirmations |
 
 `ResumeGenerationService` now receives these via **constructor dependency injection** and acts purely as an orchestrator. It no longer contains `mockStrategist` or `mockArchitect` methods.
 
@@ -454,6 +457,7 @@ FRONTDESK_AGENT_MODE=mock|llm
 EXPERIENCE_EXTRACTOR_MODE=deterministic|llm
 ARTIFACT_GENERATOR_MODE=deterministic|llm
 CRITIC_AGENT_MODE=deterministic|llm
+REVISION_AGENT_MODE=deterministic|llm
 ```
 
 - `CRITIC_AGENT_MODE=deterministic` is the default stable mode.
@@ -461,7 +465,14 @@ CRITIC_AGENT_MODE=deterministic|llm
 - CriticAgent is not a RevisionAgent. It reviews artifact risk and gives suggestions; it does not rewrite final artifacts.
 - The critic reads `artifact.metadata.enhancement.status`, claim `supportLevel` / `riskLevel`, `confirmationQuestions`, and evidence-chain risk.
 - Critique output includes `verdict`, `unsupportedClaims`, `missingEvidence`, `rewriteSuggestions`, and optional `claimReviews`, `safeRewriteSuggestion`, and `confirmationQuestions`.
+- Deterministic critic also performs a numeric secondary check: numbers in artifact content that are absent from cited evidence require confirmation unless enhancement metadata already marks the claim as `needs_user_confirmation` or `unsupported`.
 - Deterministic no-evidence draft artifacts are marked consistently as `needs_review` with `metadata.enhancement.status=needs_confirmation`.
+- `REVISION_AGENT_MODE=deterministic` is the default safe revision path.
+- `REVISION_AGENT_MODE=llm` uses `AgentProviderFactory` and `LLMArtifactRevisionAgent`.
+- RevisionAgent consumes an artifact, critique item, evidence chain, user instruction, and optional user confirmations, then returns a revised `GeneratedArtifact`.
+- RevisionAgent supports `make_more_conservative`, `remove_unsupported_claims`, `apply_user_confirmation`, `make_more_quantified`, `align_to_requirement`, `rewrite_for_tone`, and `custom`.
+- Revised artifacts preserve `sourceExperienceIds`, `sourceEvidenceIds`, `metadata.enhancement`, and add `metadata.revision`.
+- CriticAgent reviews risk and suggestions; RevisionAgent performs the rewrite.
 
 Common configurations:
 
@@ -472,6 +483,7 @@ FRONTDESK_AGENT_MODE=mock
 EXPERIENCE_EXTRACTOR_MODE=deterministic
 ARTIFACT_GENERATOR_MODE=deterministic
 CRITIC_AGENT_MODE=deterministic
+REVISION_AGENT_MODE=deterministic
 
 # Local FrontDesk LLM fallback test
 FRONTDESK_AGENT_MODE=llm
@@ -485,6 +497,7 @@ FRONTDESK_AGENT_MODE=mock
 EXPERIENCE_EXTRACTOR_MODE=deterministic
 ARTIFACT_GENERATOR_MODE=llm
 CRITIC_AGENT_MODE=deterministic
+REVISION_AGENT_MODE=deterministic
 AGENT_PROVIDER=deepseek
 DEEPSEEK_API_KEY=...
 ALLOW_MOCK_FALLBACK=false
@@ -494,6 +507,7 @@ FRONTDESK_AGENT_MODE=mock
 EXPERIENCE_EXTRACTOR_MODE=deterministic
 ARTIFACT_GENERATOR_MODE=deterministic
 CRITIC_AGENT_MODE=llm
+REVISION_AGENT_MODE=deterministic
 AGENT_PROVIDER=deepseek
 DEEPSEEK_API_KEY=...
 ALLOW_MOCK_FALLBACK=false
@@ -503,6 +517,7 @@ FRONTDESK_AGENT_MODE=mock
 EXPERIENCE_EXTRACTOR_MODE=llm
 ARTIFACT_GENERATOR_MODE=deterministic
 CRITIC_AGENT_MODE=deterministic
+REVISION_AGENT_MODE=deterministic
 AGENT_PROVIDER=deepseek
 DEEPSEEK_API_KEY=...
 ALLOW_MOCK_FALLBACK=false
@@ -512,6 +527,7 @@ FRONTDESK_AGENT_MODE=llm
 EXPERIENCE_EXTRACTOR_MODE=deterministic
 ARTIFACT_GENERATOR_MODE=deterministic
 CRITIC_AGENT_MODE=deterministic
+REVISION_AGENT_MODE=deterministic
 AGENT_PROVIDER=deepseek
 DEEPSEEK_API_KEY=...
 DEEPSEEK_MODEL=deepseek-chat
@@ -522,6 +538,7 @@ FRONTDESK_AGENT_MODE=llm
 EXPERIENCE_EXTRACTOR_MODE=llm
 ARTIFACT_GENERATOR_MODE=llm
 CRITIC_AGENT_MODE=llm
+REVISION_AGENT_MODE=llm
 AGENT_PROVIDER=deepseek
 DEEPSEEK_API_KEY=...
 ALLOW_MOCK_FALLBACK=false
@@ -533,6 +550,7 @@ FRONTDESK_AGENT_MODE=llm
 EXPERIENCE_EXTRACTOR_MODE=llm
 ARTIFACT_GENERATOR_MODE=llm
 CRITIC_AGENT_MODE=llm
+REVISION_AGENT_MODE=llm
 AGENT_PROVIDER=deepseek
 DEEPSEEK_API_KEY=...
 ALLOW_MOCK_FALLBACK=false
@@ -598,6 +616,14 @@ DEEPSEEK_API_KEY=your_api_key npm run dev:critic-llm-smoke
 
 Without `DEEPSEEK_API_KEY`, `npm run dev:critic-llm-smoke` exits cleanly with a skipped message. With a key, it reviews ready, needs-confirmation, and unsafe artifacts and prints verdicts, risks, rewrite suggestions, and confirmation questions without writing to a database.
 
+Optional RevisionAgent LLM smoke demo:
+
+```bash
+DEEPSEEK_API_KEY=your_api_key npm run dev:revision-llm-smoke
+```
+
+Without `DEEPSEEK_API_KEY`, `npm run dev:revision-llm-smoke` exits cleanly with a skipped message. With a key, it revises a needs-confirmation artifact into safer wording and prints revised content, enhancement status, claim support levels, confirmation questions, and warnings without writing to a database.
+
 ## Frontend Contract
 
 Frontend-oriented TypeScript contracts live in `src/api-contracts/`. The minimal Fastify API in `src/api/` is a thin service boundary over the kernel; product-specific frontend contracts remain explicit and reusable.
@@ -613,6 +639,14 @@ Frontend-oriented TypeScript contracts live in `src/api-contracts/`. The minimal
 ```
 
 The same response also includes `coverageReport` for whole-JD requirement coverage, `coverageGapReport` for uncovered-requirement suggestions, and `critiqueReport` for artifact-level review verdicts.
+
+Artifact revision is exposed through:
+
+```http
+POST /generations/artifacts/revise
+```
+
+The request body contains the current `artifact`, optional `critiqueItem`, optional `evidenceChain`, a revision `instruction`, optional `customInstruction`, optional `targetRequirementIds`, optional `userConfirmations`, and optional `tone`. The backend uses the authenticated `ctx.user.id`; if `artifact.userId` does not match the authenticated user, the API returns `FORBIDDEN`.
 
 Contract mappers live in `src/application/mappers/` and translate internal service results into contract responses. `CooltoDemoService` in `src/application/CooltoDemoService.ts` runs the in-memory product demo flow:
 
@@ -658,6 +692,21 @@ Critique reports expose artifact review details. `ArtifactCritiqueItem` always i
   }>;
 }
 ```
+
+Revised artifacts are normal `GeneratedArtifact` records. They preserve lineage fields and add:
+
+```ts
+artifact.metadata?.revision = {
+  revisedFromArtifactId: string,
+  instruction: "make_more_conservative" | "remove_unsupported_claims" | "apply_user_confirmation" | "make_more_quantified" | "align_to_requirement" | "rewrite_for_tone" | "custom",
+  customInstruction?: string,
+  tone?: "professional" | "concise" | "impactful" | "conservative" | "technical",
+  userConfirmations: Array<{ claimText?: string, metric?: string, value?: string, explanation?: string }>,
+  createdAt: string
+}
+```
+
+For frontend review flows, `needs_confirmation` bullets can ask the user for a metric/value and then call the revise endpoint with `instruction=apply_user_confirmation`. The revised artifact can be sent through evidence-chain and critique flows again.
 
 Use `createInMemoryCooltoDemoService()` for local prototypes and tests.
 
@@ -726,6 +775,7 @@ Coverage and critique now happen after artifact generation:
 - `CoverageGapAdvisor` produces a `CoverageGapReport` from the coverage report. For `evidence_available_but_not_used`, it creates conservative supplemental artifact suggestions that cite existing evidence IDs only. For `no_evidence`, it creates evidence request prompts that ask the user to add a real experience or metric instead of forcing a claim into the resume. These suggestions are not added to the main `artifacts` array or saved to the artifact repository.
 - `ArtifactCritic` produces an `ArtifactCritiqueReport`. The default demo path uses `DeterministicArtifactCritic` for stable local output; `CRITIC_AGENT_MODE=llm` uses `LLMArtifactCritic` through `AgentProviderFactory`.
 - `CriticAgent` is JSON-only and reviews artifacts from `artifact.metadata.enhancement`, `EvidenceChain`, and `ArtifactCoverageReport`. It does not edit artifacts or generate replacements; it only returns pass/revise/reject decisions, confirmation questions, claim reviews, and conservative rewrite suggestions.
+- `RevisionAgent` consumes the original artifact, critique item, evidence chain, user instruction, and optional confirmations. It writes a new artifact draft with preserved source ids plus `metadata.enhancement` and `metadata.revision`.
 
 `createAgentBackedCooltoDemoService()` now exists as an in-memory skeleton for the complete agent-backed pipeline. It wires agent-backed ingestion, JD extraction, artifact generation, retrieval, evidence chains, graph views, and contract mapping, but the safer first validation point is still `agent-ingest-demo`.
 

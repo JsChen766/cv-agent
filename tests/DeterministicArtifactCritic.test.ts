@@ -3,6 +3,7 @@ import { DeterministicArtifactCritic } from "../src/application/critique/Determi
 import type { ArtifactCoverageReport } from "../src/application/evaluation/types.js";
 import type {
   EvidenceChain,
+  Evidence,
   GeneratedArtifact,
   JDRequirement,
 } from "../src/knowledge/types.js";
@@ -39,6 +40,7 @@ function makeChain(
     exaggerationWarnings: [],
     notes: [],
   },
+  sourceEvidences: Evidence[] = [],
 ): EvidenceChain {
   return {
     id: `chain-${artifact.id}`,
@@ -46,10 +48,25 @@ function makeChain(
     summary: "summary",
     requirementMatches: [],
     sourceExperiences: [],
-    sourceEvidences: [],
+    sourceEvidences,
     sourceSkills: [],
     risk,
     scores: artifact.scores,
+    createdAt: NOW,
+  };
+}
+
+function makeEvidence(excerpt: string): Evidence {
+  return {
+    id: "ev-1",
+    userId: "user-1",
+    experienceId: "exp-1",
+    sourceType: "manual",
+    evidenceType: "metric",
+    sourceRef: "test",
+    excerpt,
+    confidence: 0.9,
+    metadata: {},
     createdAt: NOW,
   };
 }
@@ -328,5 +345,96 @@ describe("DeterministicArtifactCritic", () => {
       supportLevel: "unsupported",
       verdict: "reject",
     });
+  });
+
+  it("revises artifacts with numeric claims missing from evidence and no enhancement warning", async () => {
+    const artifact = makeArtifact({
+      content: "Improved reporting accuracy by 35%.",
+      metadata: {
+        enhancement: {
+          status: "ready",
+          claims: [{
+            text: "Improved reporting accuracy by 35%.",
+            supportLevel: "supported",
+            riskLevel: "low",
+            evidenceIds: ["ev-1"],
+            sourceExperienceIds: ["exp-1"],
+          }],
+          confirmationQuestions: [],
+          enhancementStrategy: "evidence_rewrite",
+        },
+      },
+    });
+
+    const report = await new DeterministicArtifactCritic().critique({
+      userId: "user-1",
+      jdId: "jd-1",
+      artifacts: [artifact],
+      evidenceChains: [makeChain(artifact, undefined, [makeEvidence("Built reporting dashboards.")])],
+      coverageReport: makeCoverageReport(),
+    });
+
+    expect(report.items[0]?.verdict).toBe("revise");
+    expect(report.items[0]?.truthfulnessRisk).toBe("medium");
+    expect(report.items[0]?.missingEvidence).toContain("Numeric claim requires confirmation: 35%");
+    expect(report.items[0]?.rewriteSuggestions).toContain(
+      "Confirm the numeric metric or rewrite the artifact without unsupported numbers.",
+    );
+    expect(report.items[0]?.claimReviews?.some((claim) =>
+      claim.supportLevel === "needs_user_confirmation" &&
+      claim.reason.includes("35%")
+    )).toBe(true);
+  });
+
+  it("does not upgrade numeric claims already present in evidence", async () => {
+    const artifact = makeArtifact({
+      content: "Improved reporting accuracy by 40%.",
+    });
+
+    const report = await new DeterministicArtifactCritic().critique({
+      userId: "user-1",
+      jdId: "jd-1",
+      artifacts: [artifact],
+      evidenceChains: [makeChain(artifact, undefined, [makeEvidence("Improved reporting accuracy by 40%.")])],
+      coverageReport: makeCoverageReport(),
+    });
+
+    expect(report.items[0]?.verdict).toBe("pass");
+    expect(report.items[0]?.missingEvidence).toEqual([]);
+  });
+
+  it("does not duplicate numeric missing evidence when enhancement already requires confirmation", async () => {
+    const artifact = makeArtifact({
+      content: "Improved reporting accuracy by 35%.",
+      metadata: {
+        enhancement: {
+          status: "needs_confirmation",
+          claims: [{
+            text: "Improved reporting accuracy by 35%.",
+            supportLevel: "needs_user_confirmation",
+            riskLevel: "medium",
+            evidenceIds: [],
+            sourceExperienceIds: [],
+            userConfirmationPrompt: "Can you confirm 35%?",
+          }],
+          confirmationQuestions: ["Can you confirm 35%?"],
+          enhancementStrategy: "confirmation_needed",
+        },
+      },
+    });
+
+    const report = await new DeterministicArtifactCritic().critique({
+      userId: "user-1",
+      jdId: "jd-1",
+      artifacts: [artifact],
+      evidenceChains: [makeChain(artifact, undefined, [makeEvidence("Built reporting dashboards.")])],
+      coverageReport: makeCoverageReport(),
+    });
+
+    expect(report.items[0]?.verdict).toBe("revise");
+    expect(report.items[0]?.missingEvidence.filter((item) =>
+      item.startsWith("Numeric claim requires confirmation")
+    )).toHaveLength(0);
+    expect(report.items[0]?.missingEvidence).toContain("Can you confirm 35%?");
   });
 });

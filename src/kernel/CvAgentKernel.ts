@@ -4,6 +4,10 @@ import type {
   ResumeGenerationService,
 } from "../application/ResumeGenerationService.js";
 import type {
+  ArtifactRevisionResult,
+  ArtifactRevisionService,
+} from "../application/revision/index.js";
+import type {
   EvidenceChainQueryResult,
   EvidenceChainQueryService,
   GraphViewQueryResult,
@@ -21,6 +25,7 @@ import type {
   IngestDocumentResult,
   KernelHealth,
   KernelMode,
+  ReviseArtifactInput,
 } from "./types.js";
 
 export type KernelGenerationPersistencePort = {
@@ -38,6 +43,7 @@ export type DefaultCvAgentKernelInput = {
   generationPersistenceService?: KernelGenerationPersistencePort;
   evidenceChainQueryService: EvidenceChainQueryService;
   graphViewQueryService: GraphViewQueryService;
+  artifactRevisionService?: ArtifactRevisionService;
   close(): Promise<void>;
 };
 
@@ -52,6 +58,7 @@ export class DefaultCvAgentKernel implements CvAgentKernel {
     create: (ctx, input) => this.createGeneration(ctx, input),
     getEvidenceChains: (ctx, query) => this.getEvidenceChains(ctx, query),
     getGraph: (ctx, query) => this.getGraph(ctx, query),
+    reviseArtifact: (ctx, input) => this.reviseArtifact(ctx, input),
   };
 
   private readonly warnings: string[];
@@ -60,6 +67,7 @@ export class DefaultCvAgentKernel implements CvAgentKernel {
   private readonly generationPersistenceService?: KernelGenerationPersistencePort;
   private readonly evidenceChainQueryService: EvidenceChainQueryService;
   private readonly graphViewQueryService: GraphViewQueryService;
+  private readonly artifactRevisionService?: ArtifactRevisionService;
   private readonly closeKernel: () => Promise<void>;
 
   public constructor(input: DefaultCvAgentKernelInput) {
@@ -70,6 +78,7 @@ export class DefaultCvAgentKernel implements CvAgentKernel {
     this.generationPersistenceService = input.generationPersistenceService;
     this.evidenceChainQueryService = input.evidenceChainQueryService;
     this.graphViewQueryService = input.graphViewQueryService;
+    this.artifactRevisionService = input.artifactRevisionService;
     this.closeKernel = input.close;
   }
 
@@ -169,5 +178,26 @@ export class DefaultCvAgentKernel implements CvAgentKernel {
     query: GraphQuery,
   ): Promise<GraphViewQueryResult> {
     return this.graphViewQueryService.listByScope(ctx.user.id, query.scopeType, query.scopeId);
+  }
+
+  private async reviseArtifact(
+    ctx: KernelRequestContext,
+    input: ReviseArtifactInput,
+  ): Promise<ArtifactRevisionResult> {
+    if (!this.artifactRevisionService) {
+      throw new Error("ArtifactRevisionService is not configured.");
+    }
+    return this.artifactRevisionService.revise({
+      userId: ctx.user.id,
+      jdId: input.artifact.targetJDId,
+      artifact: input.artifact,
+      critiqueItem: input.critiqueItem,
+      evidenceChain: input.evidenceChain,
+      instruction: input.instruction,
+      customInstruction: input.customInstruction,
+      targetRequirementIds: input.targetRequirementIds,
+      userConfirmations: input.userConfirmations,
+      tone: input.tone,
+    });
   }
 }

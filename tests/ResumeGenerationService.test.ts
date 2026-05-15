@@ -62,7 +62,7 @@ describe("ResumeGenerationService", () => {
     );
     const artifactGenerator = new DeterministicArtifactGenerator();
 
-    const service = new ResumeGenerationService(
+    const service = new ResumeGenerationService({
       requirementExtractor,
       artifactGenerator,
       experienceRepo,
@@ -71,7 +71,7 @@ describe("ResumeGenerationService", () => {
       requirementRepo,
       artifactRepo,
       retriever,
-    );
+    });
 
     const result = await service.generate({
       userId: "user-1",
@@ -125,7 +125,7 @@ describe("ResumeGenerationService", () => {
     );
     const artifactGenerator = new DeterministicArtifactGenerator();
 
-    const service = new ResumeGenerationService(
+    const service = new ResumeGenerationService({
       requirementExtractor,
       artifactGenerator,
       experienceRepo,
@@ -134,7 +134,7 @@ describe("ResumeGenerationService", () => {
       requirementRepo,
       artifactRepo,
       retriever,
-    );
+    });
 
     const result = await service.generate({
       userId: "user-empty",
@@ -157,23 +157,23 @@ describe("ResumeGenerationService", () => {
   });
 
   it("does not depend on internal mockStrategist or mockArchitect methods", async () => {
-    const service = new ResumeGenerationService(
-      new DeterministicJDRequirementExtractor(
+    const service = new ResumeGenerationService({
+      requirementExtractor: new DeterministicJDRequirementExtractor(
         new InMemorySkillRepository(),
         new InMemoryJDRequirementRepository(),
       ),
-      new DeterministicArtifactGenerator(),
-      new InMemoryExperienceRepository(),
-      new InMemoryEvidenceRepository(),
-      new InMemorySkillRepository(),
-      new InMemoryJDRequirementRepository(),
-      new InMemoryGeneratedArtifactRepository(),
-      new KeywordExperienceRetriever(
+      artifactGenerator: new DeterministicArtifactGenerator(),
+      experienceRepo: new InMemoryExperienceRepository(),
+      evidenceRepo: new InMemoryEvidenceRepository(),
+      skillRepo: new InMemorySkillRepository(),
+      requirementRepo: new InMemoryJDRequirementRepository(),
+      artifactRepo: new InMemoryGeneratedArtifactRepository(),
+      retriever: new KeywordExperienceRetriever(
         new InMemoryExperienceRepository(),
         new InMemoryEvidenceRepository(),
         new InMemorySkillRepository(),
       ),
-    );
+    });
 
     // Verify the service has no mockStrategist or mockArchitect methods
     expect("mockStrategist" in service).toBe(false);
@@ -247,16 +247,16 @@ describe("ResumeGenerationService", () => {
         };
       },
     };
-    const service = new ResumeGenerationService(
-      new DeterministicJDRequirementExtractor(skillRepo, requirementRepo),
-      fakeGenerator,
+    const service = new ResumeGenerationService({
+      requirementExtractor: new DeterministicJDRequirementExtractor(skillRepo, requirementRepo),
+      artifactGenerator: fakeGenerator,
       experienceRepo,
       evidenceRepo,
       skillRepo,
       requirementRepo,
       artifactRepo,
-      new KeywordExperienceRetriever(experienceRepo, evidenceRepo, skillRepo),
-    );
+      retriever: new KeywordExperienceRetriever(experienceRepo, evidenceRepo, skillRepo),
+    });
 
     const result = await service.generate({
       userId: "user-1",
@@ -332,21 +332,17 @@ describe("ResumeGenerationService", () => {
         };
       },
     };
-    const service = new ResumeGenerationService(
-      new DeterministicJDRequirementExtractor(skillRepo, requirementRepo),
-      new DeterministicArtifactGenerator(),
+    const service = new ResumeGenerationService({
+      requirementExtractor: new DeterministicJDRequirementExtractor(skillRepo, requirementRepo),
+      artifactGenerator: new DeterministicArtifactGenerator(),
       experienceRepo,
       evidenceRepo,
       skillRepo,
       requirementRepo,
       artifactRepo,
-      new KeywordExperienceRetriever(experienceRepo, evidenceRepo, skillRepo),
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      fakeCritic,
-    );
+      retriever: new KeywordExperienceRetriever(experienceRepo, evidenceRepo, skillRepo),
+      artifactCritic: fakeCritic,
+    });
 
     const result = await service.generate({
       userId: "user-1",

@@ -7,6 +7,8 @@ import type {
   CreateGenerationResult,
   IngestDocumentResult,
 } from "../src/kernel/index.js";
+import type { ArtifactRevisionResult } from "../src/application/revision/index.js";
+import type { GeneratedArtifact } from "../src/knowledge/types.js";
 import type {
   EvidenceChainQueryResult,
 } from "../src/application/query/index.js";
@@ -206,4 +208,86 @@ describe("API server", () => {
     expect(body.data.evidenceChains).toEqual([]);
     expect(body.data.summary).toContain("Found 0 evidence chains");
   });
+
+  it("rejects artifact revision without x-user-id", async () => {
+    const response = await server.inject({
+      method: "POST",
+      url: "/generations/artifacts/revise",
+      payload: {
+        artifact: makeRevisionArtifact("user-1"),
+        instruction: "make_more_conservative",
+      },
+    });
+
+    expect(response.statusCode).toBe(401);
+  });
+
+  it("rejects artifact revision for another user", async () => {
+    const response = await server.inject({
+      method: "POST",
+      url: "/generations/artifacts/revise",
+      headers: {
+        "x-user-id": "user-1",
+      },
+      payload: {
+        artifact: makeRevisionArtifact("user-2"),
+        instruction: "make_more_conservative",
+      },
+    });
+
+    expect(response.statusCode).toBe(403);
+    expect(response.json()).toMatchObject({
+      ok: false,
+      error: {
+        code: "FORBIDDEN",
+      },
+    });
+  });
+
+  it("revises an artifact through the kernel facade route", async () => {
+    const response = await server.inject({
+      method: "POST",
+      url: "/generations/artifacts/revise",
+      headers: {
+        "x-user-id": "user-1",
+      },
+      payload: {
+        artifact: makeRevisionArtifact("user-1"),
+        instruction: "make_more_conservative",
+      },
+    });
+
+    const body = response.json() as ApiSuccess<ArtifactRevisionResult>;
+
+    expect(response.statusCode).toBe(200);
+    expect(body.ok).toBe(true);
+    expect(body.data.revisedArtifact.metadata?.revision).toMatchObject({
+      revisedFromArtifactId: "artifact-api-revision",
+      deterministic: true,
+    });
+  });
 });
+
+function makeRevisionArtifact(userId: string): GeneratedArtifact {
+  return {
+    id: "artifact-api-revision",
+    userId,
+    type: "resume_bullet",
+    content: "Improved reporting accuracy by 35%.",
+    sourceExperienceIds: [],
+    sourceEvidenceIds: [],
+    matchedSkillIds: [],
+    targetJDId: "jd-1",
+    targetRequirementIds: ["req-1"],
+    targetRole: "BI Analyst",
+    scores: {
+      overall: 0.4,
+      requirementMatch: 0.4,
+      evidenceStrength: 0.2,
+    },
+    status: "needs_review",
+    metadata: {},
+    createdAt: "2024-01-01T00:00:00.000Z",
+    updatedAt: "2024-01-01T00:00:00.000Z",
+  };
+}

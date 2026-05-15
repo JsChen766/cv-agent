@@ -1,6 +1,6 @@
 # Coolto CV Agent Contract
 
-> Status: Draft v0.1, P8.0-P8.6 implemented through LLM-backed FrontDeskAgent, ExperienceExtractor, multi-experience extraction, evidence-aware LLM ArtifactGenerator, and LLM-backed CriticAgent  
+> Status: Draft v0.1, P8.0-P8.7 implemented through LLM-backed FrontDeskAgent, ExperienceExtractor, multi-experience extraction, evidence-aware LLM ArtifactGenerator, LLM-backed CriticAgent, and RevisionAgent  
 > Scope: frontend ↔ backend API ↔ cv-agent kernel / SDK  
 > Principle: backend owns authentication and request context; Agent Kernel owns document ingestion, experience knowledge, generation, evidence chains, and graph projections.
 
@@ -95,6 +95,7 @@ FRONTDESK_AGENT_MODE=mock | llm
 EXPERIENCE_EXTRACTOR_MODE=deterministic | llm
 ARTIFACT_GENERATOR_MODE=deterministic | llm
 CRITIC_AGENT_MODE=deterministic | llm
+REVISION_AGENT_MODE=deterministic | llm
 ```
 
 Default test mode:
@@ -115,9 +116,10 @@ FRONTDESK_AGENT_MODE=llm
 EXPERIENCE_EXTRACTOR_MODE=llm
 ARTIFACT_GENERATOR_MODE=llm
 CRITIC_AGENT_MODE=llm
+REVISION_AGENT_MODE=llm
 ```
 
-P8.1-P8.6 implementation notes:
+P8.1-P8.7 implementation notes:
 
 1. `AgentProviderFactory` creates `ModelClient` instances for `mock` or `deepseek`.
 2. Non-production defaults to `AGENT_PROVIDER=mock`.
@@ -142,6 +144,12 @@ P8.1-P8.6 implementation notes:
 21. LLMArtifactCritic validates JSON, repairs once, and falls back to deterministic critique when fallback is enabled.
 22. CriticAgent is not a RevisionAgent: it reviews risk and suggestions but does not rewrite final artifacts.
 23. Critic output may include `claimReviews`, `confirmationQuestions`, and `safeRewriteSuggestion` in addition to the stable verdict/risk fields.
+24. DeterministicArtifactCritic performs numeric secondary validation against cited evidence excerpts and requires confirmation for unsupported numeric tokens.
+25. `REVISION_AGENT_MODE=deterministic` keeps the default safe revision path.
+26. `REVISION_AGENT_MODE=llm` routes artifact revision through `AgentProviderFactory` and `LLMArtifactRevisionAgent`.
+27. RevisionAgent consumes artifact, critique item, evidence chain, user instruction, and optional user confirmations.
+28. Revised artifacts preserve source experience/evidence IDs, refresh `metadata.enhancement`, and add `metadata.revision`.
+29. The minimal API entrypoint is `POST /generations/artifacts/revise`.
 
 Common local/LLM configurations:
 
@@ -152,9 +160,11 @@ FRONTDESK_AGENT_MODE=mock
 EXPERIENCE_EXTRACTOR_MODE=deterministic
 ARTIFACT_GENERATOR_MODE=deterministic
 CRITIC_AGENT_MODE=deterministic
+REVISION_AGENT_MODE=deterministic
 
 # Critic LLM only
 CRITIC_AGENT_MODE=llm
+REVISION_AGENT_MODE=deterministic
 AGENT_PROVIDER=deepseek
 DEEPSEEK_API_KEY=...
 
@@ -163,6 +173,7 @@ FRONTDESK_AGENT_MODE=llm
 EXPERIENCE_EXTRACTOR_MODE=llm
 ARTIFACT_GENERATOR_MODE=llm
 CRITIC_AGENT_MODE=llm
+REVISION_AGENT_MODE=llm
 AGENT_PROVIDER=deepseek
 DEEPSEEK_API_KEY=...
 ALLOW_MOCK_FALLBACK=false
@@ -947,7 +958,38 @@ Status: implemented.
   - optional `confirmationQuestions`
 - DeterministicArtifactCritic also reads enhancement metadata and can raise risk for `unsafe`, `needs_confirmation`, `unsupported`, or `needs_user_confirmation` claims. Enhancement metadata may raise a verdict/risk; it must not lower evidence-chain risk.
 - Optional smoke demo: `npm run dev:critic-llm-smoke`.
-- This phase does not add RevisionAgent, artifact revision service, feedback loop, vector store, complex chunking, agent run tracing, frontend work, or database foreign keys.
+- This phase does not add feedback loop, vector store, complex chunking, agent run tracing, frontend work, or database foreign keys.
+
+### P8.7 RevisionAgent
+
+Status: implemented.
+
+- `REVISION_AGENT_MODE=deterministic` is the default safe revision path.
+- `REVISION_AGENT_MODE=llm` uses `AgentProviderFactory` and `LLMArtifactRevisionAgent`.
+- RevisionAgent consumes:
+  - original artifact
+  - critique item or critique report item
+  - evidence chain
+  - user instruction
+  - optional user confirmations
+- Supported revision instructions:
+  - `make_more_conservative`
+  - `remove_unsupported_claims`
+  - `apply_user_confirmation`
+  - `make_more_quantified`
+  - `align_to_requirement`
+  - `rewrite_for_tone`
+  - `custom`
+- Revised artifacts are saved as new `GeneratedArtifact` records when a repository is configured.
+- Revised artifacts preserve `sourceExperienceIds`, `sourceEvidenceIds`, and target requirement lineage.
+- Revised artifacts include refreshed `metadata.enhancement` and `metadata.revision.revisedFromArtifactId`.
+- User-confirmed metrics may move a claim out of `needs_user_confirmation`, but unsupported high-risk claims must not become ready.
+- Minimal kernel/API entrypoint:
+  - `CvAgentKernel.generations.reviseArtifact(ctx, input)`
+  - `POST /generations/artifacts/revise`
+- The revise API uses authenticated `ctx.user.id`; mismatched `artifact.userId` returns `FORBIDDEN`.
+- Optional smoke demo: `npm run dev:revision-llm-smoke`.
+- This phase does not add frontend UI, complete user feedback system, vector store, complex chunking, agent run tracing, async job queue, or database foreign keys.
 
 ### P9 Feedback Loop
 

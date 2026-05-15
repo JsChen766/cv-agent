@@ -4,6 +4,7 @@ import type { ExperienceIngestionService } from "../../knowledge/ingestion/Exper
 import type { ResumeGenerationService } from "../ResumeGenerationService.js";
 import type { EvidenceChainQueryService } from "../query/EvidenceChainQueryService.js";
 import type { GraphScopeType, GraphViewQueryService } from "../query/GraphViewQueryService.js";
+import type { ArtifactRevisionService } from "../revision/index.js";
 import { DocumentLoaderTool } from "../../tools/document/DocumentLoaderTool.js";
 import type { DocumentInput, ExtractedTextDocument } from "../../tools/document/types.js";
 import type { DocumentIngestionResult, FrontDeskRequest, FrontDeskResponse } from "./types.js";
@@ -21,6 +22,7 @@ export class FrontDeskOrchestrator {
     private readonly resumeGenerationService: ResumeGenerationService,
     private readonly documentIngestionService?: DocumentIngestionService,
     private readonly queryServices: FrontDeskOrchestratorQueryServices = {},
+    private readonly artifactRevisionService?: ArtifactRevisionService,
   ) {}
 
   public async handle(input: FrontDeskRequest): Promise<FrontDeskResponse> {
@@ -191,6 +193,37 @@ export class FrontDeskOrchestrator {
         graphViewSnapshots: result.graphViews,
         graphExplanation: result.summary,
         warnings: [...warnings, ...result.warnings],
+      };
+    }
+
+    if (decision.intent === "revise_generated_artifact") {
+      if (!this.artifactRevisionService) {
+        return {
+          decision,
+          warnings: ["Artifact revision service is not configured."],
+        };
+      }
+      if (!input.artifact || !input.revisionInstruction) {
+        return {
+          decision,
+          warnings: ["Need artifact and revision instruction to revise generated artifact."],
+        };
+      }
+      const revisionResult = await this.artifactRevisionService.revise({
+        userId: input.userId,
+        jdId: input.artifact.targetJDId,
+        artifact: input.artifact,
+        critiqueItem: input.critiqueItem,
+        evidenceChain: input.evidenceChain,
+        instruction: input.revisionInstruction,
+        customInstruction: input.customInstruction,
+        userConfirmations: input.userConfirmations,
+        tone: input.tone,
+      });
+      return {
+        decision,
+        revisionResult,
+        warnings: [...warnings, ...revisionResult.warnings],
       };
     }
 

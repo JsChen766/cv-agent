@@ -44,16 +44,17 @@ export class DeterministicArtifactCritic implements ArtifactCritic {
     const chain = evidenceChains.find((entry) => entry.artifact.id === artifactId);
     const enhancement = this.readEnhancement(artifact);
     const enhancementAssessment = this.assessEnhancement(enhancement);
+    const numericAssessment = this.assessNumericClaims(artifact, chain, enhancement);
     const verdict = this.maxVerdict(
-      this.verdictForRisk(chain?.risk.level ?? "high"),
+      this.maxVerdict(this.verdictForRisk(chain?.risk.level ?? "high"), numericAssessment.verdict),
       enhancementAssessment.verdict,
     );
     const truthfulnessRisk = this.maxRisk(
-      chain?.risk.truthfulnessRisk ?? "high",
+      this.maxRisk(chain?.risk.truthfulnessRisk ?? "high", numericAssessment.truthfulnessRisk),
       enhancementAssessment.truthfulnessRisk,
     );
     const exaggerationRisk = this.maxRisk(
-      chain?.risk.exaggerationRisk ?? "high",
+      this.maxRisk(chain?.risk.exaggerationRisk ?? "high", numericAssessment.exaggerationRisk),
       enhancementAssessment.exaggerationRisk,
     );
     const unsupportedClaims = unique([
@@ -64,14 +65,20 @@ export class DeterministicArtifactCritic implements ArtifactCritic {
       ...(chain?.risk.missingEvidenceClaims ?? [
         "Generated artifact has no evidence chain.",
       ]),
+      ...numericAssessment.missingEvidence,
       ...enhancementAssessment.missingEvidence,
     ]);
     const rewriteSuggestions = unique([
       ...(verdict === "pass"
         ? []
         : ["Revise the artifact to match only claims supported by linked evidence."]),
+      ...numericAssessment.rewriteSuggestions,
       ...enhancementAssessment.rewriteSuggestions,
     ]);
+    const claimReviews = [
+      ...enhancementAssessment.claimReviews,
+      ...numericAssessment.claimReviews,
+    ];
 
     return {
       artifactId,
@@ -86,8 +93,8 @@ export class DeterministicArtifactCritic implements ArtifactCritic {
       ...(enhancementAssessment.confirmationQuestions.length > 0
         ? { confirmationQuestions: enhancementAssessment.confirmationQuestions }
         : {}),
-      ...(enhancementAssessment.claimReviews.length > 0
-        ? { claimReviews: enhancementAssessment.claimReviews }
+      ...(claimReviews.length > 0
+        ? { claimReviews }
         : {}),
       ...(rewriteSuggestions[0] ? { safeRewriteSuggestion: rewriteSuggestions[0] } : {}),
     };
@@ -182,6 +189,53 @@ export class DeterministicArtifactCritic implements ArtifactCritic {
       rewriteSuggestions: unique(rewriteSuggestions),
       confirmationQuestions: unique(confirmationQuestions),
       claimReviews,
+    };
+  }
+
+  private assessNumericClaims(
+    artifact: GeneratedArtifact,
+    chain: EvidenceChain | undefined,
+    enhancement: ArtifactEnhancement | null,
+  ): NumericAssessment {
+    if (!chain || chain.sourceEvidences.length === 0) {
+      return emptyNumericAssessment();
+    }
+    if (enhancement?.claims.some((claim) =>
+      claim.supportLevel === "needs_user_confirmation" ||
+      claim.supportLevel === "unsupported"
+    )) {
+      return emptyNumericAssessment();
+    }
+
+    const artifactNumbers = extractNumericTokens(artifact.content);
+    if (artifactNumbers.length === 0) {
+      return emptyNumericAssessment();
+    }
+    const evidenceNumbers = new Set(extractNumericTokens(
+      chain.sourceEvidences.map((evidence) => evidence.excerpt).join(" "),
+    ));
+    const unsupportedNumbers = artifactNumbers.filter((number) => !evidenceNumbers.has(number));
+    if (unsupportedNumbers.length === 0) {
+      return emptyNumericAssessment();
+    }
+
+    const message = `Numeric claim requires confirmation: ${unsupportedNumbers.join(", ")}`;
+    return {
+      verdict: "revise",
+      truthfulnessRisk: "medium",
+      exaggerationRisk: "medium",
+      missingEvidence: [message],
+      rewriteSuggestions: [
+        "Confirm the numeric metric or rewrite the artifact without unsupported numbers.",
+      ],
+      claimReviews: [{
+        claimText: artifact.content,
+        supportLevel: "needs_user_confirmation",
+        riskLevel: "medium",
+        verdict: "revise",
+        reason: message,
+        evidenceIds: artifact.sourceEvidenceIds,
+      }],
     };
   }
 
@@ -287,6 +341,15 @@ type EnhancementAssessment = {
   claimReviews: NonNullable<ArtifactCritiqueItem["claimReviews"]>;
 };
 
+type NumericAssessment = {
+  verdict: ArtifactCritiqueVerdict;
+  truthfulnessRisk: RiskLevel;
+  exaggerationRisk: RiskLevel;
+  missingEvidence: string[];
+  rewriteSuggestions: string[];
+  claimReviews: NonNullable<ArtifactCritiqueItem["claimReviews"]>;
+};
+
 function readStatus(value: unknown): ArtifactCandidateStatus | null {
   if (value === "ready" || value === "needs_confirmation" || value === "unsafe") {
     return value;
@@ -344,4 +407,19 @@ function readStringArray(value: unknown): string[] {
 
 function unique(values: string[]): string[] {
   return Array.from(new Set(values));
+}
+
+function emptyNumericAssessment(): NumericAssessment {
+  return {
+    verdict: "pass",
+    truthfulnessRisk: "low",
+    exaggerationRisk: "low",
+    missingEvidence: [],
+    rewriteSuggestions: [],
+    claimReviews: [],
+  };
+}
+
+function extractNumericTokens(text: string): string[] {
+  return Array.from(new Set(text.match(/\$?\d+(?:\.\d+)?%?\+?/g) ?? []));
 }

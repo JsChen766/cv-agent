@@ -38,6 +38,7 @@ export * from "./application/CooltoDemoService.js";
 export * from "./application/evaluation/index.js";
 export * from "./application/critique/index.js";
 export * from "./application/coverage-gaps/index.js";
+export * from "./application/revision/index.js";
 export * from "./application/generators/ArtifactGenerator.js";
 export * from "./application/generators/DeterministicArtifactGenerator.js";
 export * from "./application/generators/LLMArtifactGenerator.js";

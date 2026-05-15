@@ -84,7 +84,7 @@ export function createInMemoryCooltoDemoService(): CooltoDemoService {
 
   const artifactGenerator = new DeterministicArtifactGenerator();
 
-  const resumeGenerationService = new ResumeGenerationService(
+  const resumeGenerationService = new ResumeGenerationService({
     requirementExtractor,
     artifactGenerator,
     experienceRepo,
@@ -93,7 +93,7 @@ export function createInMemoryCooltoDemoService(): CooltoDemoService {
     requirementRepo,
     artifactRepo,
     retriever,
-  );
+  });
 
   return new CooltoDemoService(ingestionService, resumeGenerationService);
 }

@@ -5,6 +5,7 @@ export type AgentModeConfig = {
   experienceExtractorMode: "deterministic" | "llm";
   artifactGeneratorMode: "deterministic" | "llm";
   criticAgentMode: "deterministic" | "llm";
+  revisionAgentMode: "deterministic" | "llm";
 };
 
 export function readAgentModeConfig(env: NodeJS.ProcessEnv = process.env): AgentModeConfig {
@@ -30,6 +31,12 @@ export function readAgentModeConfig(env: NodeJS.ProcessEnv = process.env): Agent
     criticAgentMode: readMode(
       env.CRITIC_AGENT_MODE,
       "CRITIC_AGENT_MODE",
+      ["deterministic", "llm"],
+      "deterministic",
+    ),
+    revisionAgentMode: readMode(
+      env.REVISION_AGENT_MODE,
+      "REVISION_AGENT_MODE",
       ["deterministic", "llm"],
       "deterministic",
     ),
