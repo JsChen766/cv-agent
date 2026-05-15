@@ -6,6 +6,7 @@ import type {
 } from "../application/query/index.js";
 import type { GenerateResumeResult } from "../application/ResumeGenerationService.js";
 import type { GenerationPersistenceResult } from "../persistence/repositories.js";
+import type { CvAgentKernel } from "../kernel/index.js";
 
 export type ApiMode = "postgres" | "in_memory";
 
@@ -19,6 +20,11 @@ export type GenerationPersistencePort = {
 export type ApiKernel = {
   mode: ApiMode;
   warnings: string[];
+  cvAgentKernel: CvAgentKernel;
+  /**
+   * Legacy/internal fields are kept during the API migration.
+   * New routes should call cvAgentKernel instead of these services directly.
+   */
   frontDeskOrchestrator: FrontDeskOrchestrator;
   resumeGenerationService: ResumeGenerationService;
   generationPersistenceService?: GenerationPersistencePort;

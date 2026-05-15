@@ -1,6 +1,6 @@
 # Coolto CV Agent Contract
 
-> Status: Draft v0.1  
+> Status: Draft v0.1, P8.0 contract hardening implemented  
 > Scope: frontend ↔ backend API ↔ cv-agent kernel / SDK  
 > Principle: backend owns authentication and request context; Agent Kernel owns document ingestion, experience knowledge, generation, evidence chains, and graph projections.
 
@@ -73,7 +73,7 @@ Future backend should support:
 AUTH_MODE=dev_header | cookie_session | bearer_token | service
 ```
 
-Current temporary behavior may still use `x-user-id`, but only as development fallback.
+Current implemented behavior uses `x-user-id` only through the `dev_header` resolver. `AUTH_MODE` defaults to `dev_header` for local development and tests; this is not production authentication.
 
 | Mode | Source of user identity | Intended use |
 |---|---|---|
@@ -177,7 +177,7 @@ export type ApiMeta = {
 };
 ```
 
-Current routes may still return direct payloads while the API is early-stage. New production-facing routes should use the envelope.
+Current routes return this envelope for success and failure responses.
 
 ### 3.3 Error Codes
 
@@ -349,7 +349,7 @@ export type CvAgentKernel = {
 };
 ```
 
-Current `ApiKernel` may expose internal services during early development. New backend routes should prefer facade methods once available.
+Current `ApiKernel` still exposes internal services during migration for tests and demos. Backend routes now call `cvAgentKernel` instead of those internal services.
 
 ### 5.3 SDK Boundary Rules
 
@@ -370,7 +370,7 @@ Current `ApiKernel` may expose internal services during early development. New b
 GET /health
 ```
 
-Future response:
+Current response:
 
 ```ts
 {
@@ -380,15 +380,6 @@ Future response:
     mode: "postgres" | "in_memory";
   };
   meta: ApiMeta;
-}
-```
-
-Current early-stage route may return:
-
-```ts
-{
-  ok: true;
-  mode: "postgres" | "in_memory";
 }
 ```
 
@@ -768,11 +759,14 @@ Future API routes should use `/api/v1/...` when exposed outside local developmen
 
 ### P8.0 Contract Hardening
 
-- Add `KernelRequestContext` type.
-- Add `AuthResolver` abstraction.
-- Keep `x-user-id` as dev-only resolver.
-- Add `CvAgentKernel` facade.
-- Move routes toward API envelope.
+Status: implemented.
+
+- Added `KernelRequestContext` type.
+- Added `AuthResolver` abstraction.
+- Kept `x-user-id` behind the dev-only `dev_header` resolver.
+- Added `CvAgentKernel` facade.
+- Moved current routes to the API response envelope.
+- Routes now resolve auth, build `KernelRequestContext`, and call `cvAgentKernel`.
 
 ### P8.1 Real LLM Provider Configuration
 

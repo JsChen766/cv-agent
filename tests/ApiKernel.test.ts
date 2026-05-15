@@ -26,6 +26,8 @@ describe("API kernel", () => {
     const kernel = await createKernel();
     try {
       expect(kernel.mode).toBe("in_memory");
+      expect(kernel.cvAgentKernel.mode).toBe("in_memory");
+      expect(typeof kernel.cvAgentKernel.health).toBe("function");
       expect(typeof kernel.generationPersistenceService?.persist).toBe("function");
     } finally {
       await kernel.close();
@@ -39,6 +41,7 @@ describe("API kernel", () => {
       await kernel.generationPersistenceService?.persist(createMinimalGenerateResumeResult());
 
       expect(kernel.mode).toBe("postgres");
+      expect(kernel.cvAgentKernel.mode).toBe("postgres");
       expect(database.initializeSchemaCalled).toBe(true);
       expect(database.transactionCalled).toBe(true);
       expect(database.client.queries.some((query) => query.sql.includes("INSERT INTO generation_sessions"))).toBe(true);

@@ -105,15 +105,27 @@ It ingests `resume.md` and `project-note.txt`, creates separate experiences, mer
 
 ## Minimal Backend API
 
-The API is intentionally thin. It uses cv-agent as an Agent Kernel / SDK: routes parse HTTP requests, require `x-user-id`, and delegate through `ApiKernel` ports to application services. There is no full auth system, frontend, production file storage, Neo4j, pgvector, Prisma, Drizzle, TypeORM, or database-level foreign keys.
+The API is intentionally thin. It uses cv-agent as an Agent Kernel / SDK: routes parse HTTP requests, resolve identity through an `AuthResolver`, build a `KernelRequestContext`, and delegate to the stable `CvAgentKernel` facade. There is no full auth system, frontend, production file storage, Neo4j, pgvector, Prisma, Drizzle, TypeORM, or database-level foreign keys.
 
 Keep this boundary for future backend work:
 
 ```text
-HTTP layer -> ApiKernel ports -> Agent/Application services -> Repositories
+HTTP layer -> AuthResolver -> KernelRequestContext -> CvAgentKernel -> Agent/Application services -> Repositories
 ```
 
-Routes should depend on ports such as `GenerationPersistencePort`, not concrete persistence classes. In PostgreSQL mode, generation persistence uses `createPostgresGenerationPersistenceService(database)` so generation sessions, evidence-chain snapshots, graph-view snapshots, and bundles are saved in one transaction. In `in_memory` mode, the kernel uses the generic non-transactional `GenerationPersistenceService`.
+Routes should call `kernel.cvAgentKernel`, not low-level repositories or internal services. `ApiKernel` still exposes internal service fields during migration for tests and demos, but they are not the route-facing contract. In PostgreSQL mode, generation persistence uses `createPostgresGenerationPersistenceService(database)` so generation sessions, evidence-chain snapshots, graph-view snapshots, and bundles are saved in one transaction. In `in_memory` mode, the kernel uses the generic non-transactional `GenerationPersistenceService`.
+
+### P8.0 Contract Hardening
+
+This repository now implements the P8.0 contract hardening layer from `docs/CONTRACT.md`:
+
+- `src/kernel/context.ts` defines `KernelRequestContext` and `createTestKernelContext()`.
+- `src/kernel/` exposes the `CvAgentKernel` facade for document ingestion, generation, evidence-chain queries, graph queries, health, and close.
+- `src/api/auth/` defines the `AuthResolver` abstraction. `AUTH_MODE=dev_header` reads `x-user-id` and is development/test only. `AUTH_MODE=cookie_session` is an explicit stub that returns `INVALID_AUTH` until real auth is implemented.
+- API routes return the response envelope `{ ok, data, meta }` or `{ ok: false, error, meta }`.
+- `docs/CONTRACT.md` is the source of truth for backend/API/kernel boundaries.
+
+`AUTH_MODE` defaults to `dev_header` today so local development and tests remain simple. Do not treat `x-user-id` as production authentication.
 
 Run it:
 
@@ -127,6 +139,38 @@ Health:
 
 ```bash
 curl http://127.0.0.1:3000/health
+```
+
+Successful responses use this envelope:
+
+```ts
+{
+  ok: true;
+  data: unknown;
+  meta: {
+    requestId: string;
+    traceId?: string;
+    mode: "postgres" | "in_memory";
+    warnings?: string[];
+  };
+}
+```
+
+Error responses use:
+
+```ts
+{
+  ok: false;
+  error: {
+    code: string;
+    message: string;
+  };
+  meta: {
+    requestId: string;
+    traceId?: string;
+    mode: "postgres" | "in_memory";
+  };
+}
 ```
 
 Ingest a text or Markdown document:

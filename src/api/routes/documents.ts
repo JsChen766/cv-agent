@@ -2,35 +2,33 @@ import type { FastifyInstance, FastifyRequest } from "fastify";
 import { ApiError } from "../errors.js";
 import type { ApiKernel, IngestDocumentJsonBody } from "../types.js";
 import type { DocumentInput } from "../../tools/document/index.js";
+import type { AuthResolver } from "../auth/index.js";
+import { createKernelRequestContext } from "../context.js";
+import { success } from "../response.js";
 
-export async function registerDocumentRoutes(app: FastifyInstance, kernel: ApiKernel): Promise<void> {
+export async function registerDocumentRoutes(
+  app: FastifyInstance,
+  kernel: ApiKernel,
+  authResolver: AuthResolver<FastifyRequest>,
+): Promise<void> {
   app.post("/documents/ingest", async (request) => {
-    const userId = requireUserId(request);
+    const resolvedAuth = await authResolver.resolve(request);
+    const ctx = createKernelRequestContext(request, resolvedAuth);
     const body = parseIngestBody(request.body);
-    const document = toDocumentInput(userId, body);
+    const document = toDocumentInput(ctx.user.id, body);
 
-    const result = await kernel.frontDeskOrchestrator.handle({
-      userId,
+    const result = await kernel.cvAgentKernel.documents.ingest(ctx, {
       message: "Import this resume document.",
       documents: [document],
     });
 
-    return {
-      extractedDocuments: result.extractedDocuments ?? [],
-      experiences: result.experiences ?? [],
-      evidences: result.evidences ?? [],
-      skills: result.skills ?? [],
-      warnings: result.warnings,
-    };
+    return success(result, {
+      requestId: ctx.request.requestId,
+      traceId: ctx.request.traceId,
+      mode: kernel.mode,
+      ...(kernel.warnings.length > 0 ? { warnings: kernel.warnings } : {}),
+    });
   });
-}
-
-function requireUserId(request: FastifyRequest): string {
-  const value = request.headers["x-user-id"];
-  if (typeof value === "string" && value.trim()) {
-    return value;
-  }
-  throw new ApiError("MISSING_USER_ID", "x-user-id header is required.", 400);
 }
 
 function parseIngestBody(body: unknown): IngestDocumentJsonBody {

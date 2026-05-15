@@ -1,7 +1,15 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createServer } from "../src/api/createServer.js";
 import { createKernel } from "../src/api/kernel/createKernel.js";
+import type { ApiSuccess } from "../src/api/response.js";
 import type { ApiKernel } from "../src/api/types.js";
+import type {
+  CreateGenerationResult,
+  IngestDocumentResult,
+} from "../src/kernel/index.js";
+import type {
+  EvidenceChainQueryResult,
+} from "../src/application/query/index.js";
 
 describe("API server", () => {
   let originalDatabaseUrl: string | undefined;
@@ -32,10 +40,14 @@ describe("API server", () => {
     });
 
     expect(response.statusCode).toBe(200);
-    expect(response.json()).toEqual({
+    const body = response.json() as ApiSuccess<{ ok: true; mode: "postgres" | "in_memory" }>;
+    expect(body.ok).toBe(true);
+    expect(body.data).toEqual({
       ok: true,
       mode: "in_memory",
+      warnings: ["DATABASE_URL is not set. API is running in in-memory mode."],
     });
+    expect(body.meta.mode).toBe("in_memory");
   });
 
   it("ingests a document from JSON text with x-user-id", async () => {
@@ -55,20 +67,16 @@ describe("API server", () => {
       },
     });
 
-    const body = response.json() as {
-      extractedDocuments: unknown[];
-      experiences: unknown[];
-      evidences: unknown[];
-      skills: unknown[];
-      warnings: string[];
-    };
+    const body = response.json() as ApiSuccess<IngestDocumentResult>;
 
     expect(response.statusCode).toBe(200);
-    expect(body.extractedDocuments).toHaveLength(1);
-    expect(body.experiences).toHaveLength(1);
-    expect(body.evidences.length).toBeGreaterThan(0);
-    expect(body.skills.length).toBeGreaterThan(0);
-    expect(body.warnings).toEqual([]);
+    expect(body.ok).toBe(true);
+    expect(body.data.extractedDocuments).toHaveLength(1);
+    expect(body.data.experiences).toHaveLength(1);
+    expect(body.data.evidences.length).toBeGreaterThan(0);
+    expect(body.data.skills.length).toBeGreaterThan(0);
+    expect(body.data.warnings).toEqual([]);
+    expect(body.meta.mode).toBe("in_memory");
   });
 
   it("rejects document ingestion without x-user-id", async () => {
@@ -81,13 +89,21 @@ describe("API server", () => {
       },
     });
 
-    expect(response.statusCode).toBe(400);
-    expect(response.json()).toEqual({
+    expect(response.statusCode).toBe(401);
+    const body = response.json() as {
+      ok: false;
       error: {
-        code: "MISSING_USER_ID",
-        message: "x-user-id header is required.",
-      },
+        code: string;
+        message: string;
+      };
+      meta: { mode: string };
+    };
+    expect(body.ok).toBe(false);
+    expect(body.error).toEqual({
+      code: "MISSING_AUTH",
+      message: "x-user-id header is required in dev auth mode.",
     });
+    expect(body.meta.mode).toBe("in_memory");
   });
 
   it("generates resume artifacts with x-user-id", async () => {
@@ -116,31 +132,16 @@ describe("API server", () => {
       },
     });
 
-    const body = response.json() as {
-      artifacts: unknown[];
-      evidenceChains: unknown[];
-      graphViews: unknown[];
-      persistedGeneration?: { sessionId: string };
-    };
+    const body = response.json() as ApiSuccess<CreateGenerationResult>;
 
     expect(response.statusCode).toBe(200);
-    expect(body.artifacts.length).toBeGreaterThan(0);
-    expect(body.evidenceChains.length).toBe(body.artifacts.length);
-    expect(body.graphViews.length).toBe(body.artifacts.length);
-    expect(body.persistedGeneration?.sessionId).toBeTruthy();
+    expect(body.data.artifacts.length).toBeGreaterThan(0);
+    expect(body.data.evidenceChains.length).toBe(body.data.artifacts.length);
+    expect(body.data.graphViews.length).toBe(body.data.artifacts.length);
+    expect(body.data.persistedGeneration?.sessionId).toBeTruthy();
   });
 
-  it("uses the configured generation persistence port", async () => {
-    const originalPersistence = kernel.generationPersistenceService;
-    expect(originalPersistence).toBeDefined();
-    let persistCalled = false;
-    kernel.generationPersistenceService = {
-      persist: async (result, metadata) => {
-        persistCalled = true;
-        return originalPersistence!.persist(result, metadata);
-      },
-    };
-
+  it("creates generations through the cvAgentKernel facade", async () => {
     const response = await server.inject({
       method: "POST",
       url: "/generations",
@@ -154,7 +155,8 @@ describe("API server", () => {
     });
 
     expect(response.statusCode).toBe(200);
-    expect(persistCalled).toBe(true);
+    const body = response.json() as ApiSuccess<CreateGenerationResult>;
+    expect(body.data.persistedGeneration?.sessionId).toBeTruthy();
   });
 
   it("returns empty evidence chain snapshots for a missing session", async () => {
@@ -166,10 +168,10 @@ describe("API server", () => {
       },
     });
 
-    const body = response.json() as { evidenceChains: unknown[]; summary: string };
+    const body = response.json() as ApiSuccess<EvidenceChainQueryResult>;
 
     expect(response.statusCode).toBe(200);
-    expect(body.evidenceChains).toEqual([]);
-    expect(body.summary).toContain("Found 0 evidence chains");
+    expect(body.data.evidenceChains).toEqual([]);
+    expect(body.data.summary).toContain("Found 0 evidence chains");
   });
 });

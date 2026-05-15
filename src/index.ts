@@ -46,6 +46,7 @@ export * from "./application/factories/createAgentBackedExperienceIngestionServi
 export * from "./application/factories/createAgentBackedResumeGenerationService.js";
 export * from "./application/factories/createAgentBackedCooltoDemoService.js";
 export * from "./application/mappers/index.js";
+export * from "./kernel/index.js";
 export * from "./api-contracts/index.js";
 export * as backendApi from "./api/index.js";
 export * from "./knowledge/index.js";

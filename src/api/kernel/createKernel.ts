@@ -46,6 +46,7 @@ import {
   createPostgresGenerationPersistenceService,
 } from "../../persistence/postgres/index.js";
 import { DocumentLoaderTool, type ExtractedTextDocument } from "../../tools/document/index.js";
+import { DefaultCvAgentKernel } from "../../kernel/index.js";
 import type { ApiKernel, GenerationPersistencePort } from "../types.js";
 
 export async function createKernel(): Promise<ApiKernel> {
@@ -167,9 +168,22 @@ function buildKernel(input: BuildKernelInput): ApiKernel {
     },
   );
 
+  const warnings = input.warnings ?? [];
+  const cvAgentKernel = new DefaultCvAgentKernel({
+    mode: input.mode,
+    warnings,
+    frontDeskOrchestrator,
+    resumeGenerationService,
+    generationPersistenceService,
+    evidenceChainQueryService,
+    graphViewQueryService,
+    close: input.close,
+  });
+
   return {
     mode: input.mode,
-    warnings: input.warnings ?? [],
+    warnings,
+    cvAgentKernel,
     frontDeskOrchestrator,
     resumeGenerationService,
     generationPersistenceService,
