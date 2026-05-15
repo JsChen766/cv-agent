@@ -1,6 +1,6 @@
 # Coolto CV Agent Contract
 
-> Status: Draft v0.1, P8.0-P8.5 implemented through LLM-backed FrontDeskAgent, ExperienceExtractor, multi-experience extraction, and evidence-aware LLM ArtifactGenerator  
+> Status: Draft v0.1, P8.0-P8.6 implemented through LLM-backed FrontDeskAgent, ExperienceExtractor, multi-experience extraction, evidence-aware LLM ArtifactGenerator, and LLM-backed CriticAgent  
 > Scope: frontend ↔ backend API ↔ cv-agent kernel / SDK  
 > Principle: backend owns authentication and request context; Agent Kernel owns document ingestion, experience knowledge, generation, evidence chains, and graph projections.
 
@@ -114,9 +114,10 @@ AGENT_PROVIDER=deepseek
 FRONTDESK_AGENT_MODE=llm
 EXPERIENCE_EXTRACTOR_MODE=llm
 ARTIFACT_GENERATOR_MODE=llm
+CRITIC_AGENT_MODE=llm
 ```
 
-P8.1-P8.5 implementation notes:
+P8.1-P8.6 implementation notes:
 
 1. `AgentProviderFactory` creates `ModelClient` instances for `mock` or `deepseek`.
 2. Non-production defaults to `AGENT_PROVIDER=mock`.
@@ -135,7 +136,37 @@ P8.1-P8.5 implementation notes:
 15. `ARTIFACT_GENERATOR_MODE=llm` routes artifact generation through `AgentProviderFactory` and `LLMArtifactGenerator`.
 16. LLMArtifactGenerator validates JSON, repairs once, and falls back to deterministic generation when fallback is enabled.
 17. Generated artifacts include `metadata.enhancement` with status, claims, support levels, risk levels, and confirmation questions.
-18. CriticAgent mode env vars are parsed for future use, but its LLM implementation is not enabled yet.
+18. Deterministic no-evidence draft artifacts are marked consistently as `needs_review` with `metadata.enhancement.status=needs_confirmation`.
+19. `CRITIC_AGENT_MODE=deterministic` keeps the default deterministic critique path.
+20. `CRITIC_AGENT_MODE=llm` routes artifact critique through `AgentProviderFactory` and `LLMArtifactCritic`.
+21. LLMArtifactCritic validates JSON, repairs once, and falls back to deterministic critique when fallback is enabled.
+22. CriticAgent is not a RevisionAgent: it reviews risk and suggestions but does not rewrite final artifacts.
+23. Critic output may include `claimReviews`, `confirmationQuestions`, and `safeRewriteSuggestion` in addition to the stable verdict/risk fields.
+
+Common local/LLM configurations:
+
+```env
+# Default local
+AGENT_PROVIDER=mock
+FRONTDESK_AGENT_MODE=mock
+EXPERIENCE_EXTRACTOR_MODE=deterministic
+ARTIFACT_GENERATOR_MODE=deterministic
+CRITIC_AGENT_MODE=deterministic
+
+# Critic LLM only
+CRITIC_AGENT_MODE=llm
+AGENT_PROVIDER=deepseek
+DEEPSEEK_API_KEY=...
+
+# Full real LLM chain
+FRONTDESK_AGENT_MODE=llm
+EXPERIENCE_EXTRACTOR_MODE=llm
+ARTIFACT_GENERATOR_MODE=llm
+CRITIC_AGENT_MODE=llm
+AGENT_PROVIDER=deepseek
+DEEPSEEK_API_KEY=...
+ALLOW_MOCK_FALLBACK=false
+```
 
 ---
 
@@ -878,6 +909,45 @@ Status: implemented.
   - `confirmationQuestions`
   - source evidence and experience IDs
 - Optional smoke demo: `npm run dev:artifact-llm-smoke`.
+
+### P8.5.1 Deterministic No-evidence Artifact Consistency
+
+Status: implemented.
+
+- Deterministic artifacts with source evidence remain `artifact.status=ready` and `metadata.enhancement.status=ready`.
+- Deterministic artifacts without source evidence are draft-only:
+  - `artifact.status=needs_review`
+  - `metadata.enhancement.status=needs_confirmation`
+  - `metadata.enhancement.enhancementStrategy=confirmation_needed`
+  - claim `supportLevel=needs_user_confirmation`
+  - claim `riskLevel=medium`
+  - `confirmationQuestions` asks the user to provide source evidence before use.
+- No-evidence deterministic drafts must not be treated as ready/supported bullets.
+
+### P8.6 LLM-backed CriticAgent
+
+Status: implemented.
+
+- `CRITIC_AGENT_MODE=deterministic` is the default stable mode.
+- `CRITIC_AGENT_MODE=llm` uses `AgentProviderFactory` and `LLMArtifactCritic`.
+- `LLMArtifactCritic` reviews generated artifacts, but does not act as a RevisionAgent and does not produce final revised artifacts.
+- Critique reads:
+  - `artifact.metadata.enhancement.status`
+  - claim `supportLevel` and `riskLevel`
+  - `confirmationQuestions`
+  - evidence-chain risk, cited evidence, missing evidence, and exaggeration warnings
+  - coverage report context
+- Critique output includes:
+  - `verdict: pass | revise | reject`
+  - `unsupportedClaims`
+  - `missingEvidence`
+  - `rewriteSuggestions`
+  - optional `claimReviews`
+  - optional `safeRewriteSuggestion`
+  - optional `confirmationQuestions`
+- DeterministicArtifactCritic also reads enhancement metadata and can raise risk for `unsafe`, `needs_confirmation`, `unsupported`, or `needs_user_confirmation` claims. Enhancement metadata may raise a verdict/risk; it must not lower evidence-chain risk.
+- Optional smoke demo: `npm run dev:critic-llm-smoke`.
+- This phase does not add RevisionAgent, artifact revision service, feedback loop, vector store, complex chunking, agent run tracing, frontend work, or database foreign keys.
 
 ### P9 Feedback Loop
 

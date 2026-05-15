@@ -212,6 +212,20 @@ describe("DeterministicArtifactGenerator", () => {
       expect(artifact.sourceExperienceIds).toHaveLength(0);
       expect(artifact.sourceEvidenceIds).toHaveLength(0);
       expect(artifact.content).toContain("Draft");
+      const meta = enhancement(artifact);
+      expect(meta.status).toBe("needs_confirmation");
+      expect(meta.enhancementStrategy).toBe("confirmation_needed");
+      expect(meta.confirmationQuestions).toEqual([
+        "Please provide source evidence before using this bullet.",
+      ]);
+      expect(meta.claims).toEqual([
+        expect.objectContaining({
+          supportLevel: "needs_user_confirmation",
+          riskLevel: "medium",
+          evidenceIds: [],
+          sourceExperienceIds: [],
+        }),
+      ]);
     }
   });
 

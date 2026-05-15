@@ -2,7 +2,7 @@
 
 TypeScript agent runtime foundation for Coolto. The project currently focuses on runtime primitives, document ingestion, a deterministic knowledge pipeline, generation persistence, and a thin backend API. It still avoids frontend code, full auth, real vector databases, Neo4j, pgvector, and production file storage.
 
-P8.5 Evidence-aware LLM ArtifactGenerator is implemented. The default path remains deterministic; LLM artifact generation is opt-in through `ARTIFACT_GENERATOR_MODE=llm`.
+P8.6 LLM-backed CriticAgent is implemented. The default path remains deterministic; LLM artifact generation and LLM critique are opt-in through `ARTIFACT_GENERATOR_MODE=llm` and `CRITIC_AGENT_MODE=llm`.
 
 ## Framework Goal
 
@@ -373,6 +373,7 @@ Calls a `BaseAgent` subclass and validates the JSON output with zod schemas. Thr
 | `ExperienceExtractor` | `extract(input) => Promise<ExperienceExtractionResult>` | Extract one or more structured experiences from raw text |
 | `JDRequirementExtractor` | `extract(input) => Promise<ExtractJDRequirementsResult>` | Extract requirements from a job description |
 | `ArtifactGenerator` | `generate(input) => Promise<GenerateArtifactsResult>` | Generate evidence-aware resume artifacts from requirements and experiences |
+| `ArtifactCritic` | `critique(input) => Promise<ArtifactCritiqueReport>` | Review generated artifacts for truthfulness, evidence strength, and rewrite guidance |
 
 `ResumeGenerationService` now receives these via **constructor dependency injection** and acts purely as an orchestrator. It no longer contains `mockStrategist` or `mockArchitect` methods.
 
@@ -446,7 +447,7 @@ Artifact generator mode is also active:
 - `metadata.enhancement.claims[]` includes claim text, `supportLevel`, `riskLevel`, source evidence ids, and source experience ids.
 - Frontends should treat `ready` as directly usable, `needs_confirmation` as requiring user confirmation or extra data, and `unsafe` as not recommended for direct use.
 
-Critic mode is parsed but does not switch implementation yet:
+Critic mode is also active:
 
 ```bash
 FRONTDESK_AGENT_MODE=mock|llm
@@ -455,7 +456,12 @@ ARTIFACT_GENERATOR_MODE=deterministic|llm
 CRITIC_AGENT_MODE=deterministic|llm
 ```
 
-LLM-backed `CriticAgent` is not enabled by this step.
+- `CRITIC_AGENT_MODE=deterministic` is the default stable mode.
+- `CRITIC_AGENT_MODE=llm` uses `AgentProviderFactory` and `LLMArtifactCritic`.
+- CriticAgent is not a RevisionAgent. It reviews artifact risk and gives suggestions; it does not rewrite final artifacts.
+- The critic reads `artifact.metadata.enhancement.status`, claim `supportLevel` / `riskLevel`, `confirmationQuestions`, and evidence-chain risk.
+- Critique output includes `verdict`, `unsupportedClaims`, `missingEvidence`, `rewriteSuggestions`, and optional `claimReviews`, `safeRewriteSuggestion`, and `confirmationQuestions`.
+- Deterministic no-evidence draft artifacts are marked consistently as `needs_review` with `metadata.enhancement.status=needs_confirmation`.
 
 Common configurations:
 
@@ -465,6 +471,7 @@ AGENT_PROVIDER=mock
 FRONTDESK_AGENT_MODE=mock
 EXPERIENCE_EXTRACTOR_MODE=deterministic
 ARTIFACT_GENERATOR_MODE=deterministic
+CRITIC_AGENT_MODE=deterministic
 
 # Local FrontDesk LLM fallback test
 FRONTDESK_AGENT_MODE=llm
@@ -477,6 +484,16 @@ ALLOW_MOCK_FALLBACK=true
 FRONTDESK_AGENT_MODE=mock
 EXPERIENCE_EXTRACTOR_MODE=deterministic
 ARTIFACT_GENERATOR_MODE=llm
+CRITIC_AGENT_MODE=deterministic
+AGENT_PROVIDER=deepseek
+DEEPSEEK_API_KEY=...
+ALLOW_MOCK_FALLBACK=false
+
+# Real DeepSeek CriticAgent only
+FRONTDESK_AGENT_MODE=mock
+EXPERIENCE_EXTRACTOR_MODE=deterministic
+ARTIFACT_GENERATOR_MODE=deterministic
+CRITIC_AGENT_MODE=llm
 AGENT_PROVIDER=deepseek
 DEEPSEEK_API_KEY=...
 ALLOW_MOCK_FALLBACK=false
@@ -485,6 +502,7 @@ ALLOW_MOCK_FALLBACK=false
 FRONTDESK_AGENT_MODE=mock
 EXPERIENCE_EXTRACTOR_MODE=llm
 ARTIFACT_GENERATOR_MODE=deterministic
+CRITIC_AGENT_MODE=deterministic
 AGENT_PROVIDER=deepseek
 DEEPSEEK_API_KEY=...
 ALLOW_MOCK_FALLBACK=false
@@ -493,6 +511,7 @@ ALLOW_MOCK_FALLBACK=false
 FRONTDESK_AGENT_MODE=llm
 EXPERIENCE_EXTRACTOR_MODE=deterministic
 ARTIFACT_GENERATOR_MODE=deterministic
+CRITIC_AGENT_MODE=deterministic
 AGENT_PROVIDER=deepseek
 DEEPSEEK_API_KEY=...
 DEEPSEEK_MODEL=deepseek-chat
@@ -502,6 +521,7 @@ ALLOW_MOCK_FALLBACK=false
 FRONTDESK_AGENT_MODE=llm
 EXPERIENCE_EXTRACTOR_MODE=llm
 ARTIFACT_GENERATOR_MODE=llm
+CRITIC_AGENT_MODE=llm
 AGENT_PROVIDER=deepseek
 DEEPSEEK_API_KEY=...
 ALLOW_MOCK_FALLBACK=false
@@ -512,6 +532,7 @@ AUTH_MODE=cookie_session
 FRONTDESK_AGENT_MODE=llm
 EXPERIENCE_EXTRACTOR_MODE=llm
 ARTIFACT_GENERATOR_MODE=llm
+CRITIC_AGENT_MODE=llm
 AGENT_PROVIDER=deepseek
 DEEPSEEK_API_KEY=...
 ALLOW_MOCK_FALLBACK=false
@@ -569,6 +590,14 @@ DEEPSEEK_API_KEY=your_api_key npm run dev:artifact-llm-smoke
 
 Without `DEEPSEEK_API_KEY`, `npm run dev:artifact-llm-smoke` exits cleanly with a skipped message. With a key, it prints artifact count, content, enhancement status, claim support levels, confirmation questions, and warnings without writing to a database.
 
+Optional CriticAgent LLM smoke demo:
+
+```bash
+DEEPSEEK_API_KEY=your_api_key npm run dev:critic-llm-smoke
+```
+
+Without `DEEPSEEK_API_KEY`, `npm run dev:critic-llm-smoke` exits cleanly with a skipped message. With a key, it reviews ready, needs-confirmation, and unsafe artifacts and prints verdicts, risks, rewrite suggestions, and confirmation questions without writing to a database.
+
 ## Frontend Contract
 
 Frontend-oriented TypeScript contracts live in `src/api-contracts/`. The minimal Fastify API in `src/api/` is a thin service boundary over the kernel; product-specific frontend contracts remain explicit and reusable.
@@ -610,6 +639,23 @@ artifact.metadata?.enhancement = {
   ],
   confirmationQuestions: string[],
   enhancementStrategy: "evidence_rewrite" | "reasonable_inference" | "confirmation_needed" | "unsafe_candidate"
+}
+```
+
+Critique reports expose artifact review details. `ArtifactCritiqueItem` always includes the core verdict, risks, unsupported claims, missing evidence, and rewrite suggestions. LLM-backed critique may also include:
+
+```ts
+{
+  confirmationQuestions?: string[];
+  safeRewriteSuggestion?: string;
+  claimReviews?: Array<{
+    claimText: string;
+    supportLevel: "supported" | "inferred" | "needs_user_confirmation" | "unsupported";
+    riskLevel: "low" | "medium" | "high";
+    verdict: "pass" | "revise" | "reject";
+    reason: string;
+    evidenceIds: string[];
+  }>;
 }
 ```
 
@@ -678,8 +724,8 @@ Coverage and critique now happen after artifact generation:
 - `evidence_available_but_not_used` means retrieved experience/skill evidence exists but no artifact targets the requirement.
 - `no_evidence` means the retrieved experience set does not currently support the requirement.
 - `CoverageGapAdvisor` produces a `CoverageGapReport` from the coverage report. For `evidence_available_but_not_used`, it creates conservative supplemental artifact suggestions that cite existing evidence IDs only. For `no_evidence`, it creates evidence request prompts that ask the user to add a real experience or metric instead of forcing a claim into the resume. These suggestions are not added to the main `artifacts` array or saved to the artifact repository.
-- `ArtifactCritic` produces an `ArtifactCritiqueReport`. The default demo path uses `DeterministicArtifactCritic` for stable local output; future agent-backed critique can use `AgentArtifactCritic` with `CriticAgent`.
-- `CriticAgent` is JSON-only and reviews artifacts from `EvidenceChain` plus `ArtifactCoverageReport`. It does not edit artifacts or generate replacements; it only returns pass/revise/reject decisions and conservative rewrite suggestions.
+- `ArtifactCritic` produces an `ArtifactCritiqueReport`. The default demo path uses `DeterministicArtifactCritic` for stable local output; `CRITIC_AGENT_MODE=llm` uses `LLMArtifactCritic` through `AgentProviderFactory`.
+- `CriticAgent` is JSON-only and reviews artifacts from `artifact.metadata.enhancement`, `EvidenceChain`, and `ArtifactCoverageReport`. It does not edit artifacts or generate replacements; it only returns pass/revise/reject decisions, confirmation questions, claim reviews, and conservative rewrite suggestions.
 
 `createAgentBackedCooltoDemoService()` now exists as an in-memory skeleton for the complete agent-backed pipeline. It wires agent-backed ingestion, JD extraction, artifact generation, retrieval, evidence chains, graph views, and contract mapping, but the safer first validation point is still `agent-ingest-demo`.
 

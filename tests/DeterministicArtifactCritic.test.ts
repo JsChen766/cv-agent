@@ -228,4 +228,105 @@ describe("DeterministicArtifactCritic", () => {
       }),
     ).rejects.toThrow("Cannot critique artifact without artifact.id");
   });
+
+  it("revises needs_confirmation artifacts and includes confirmation questions", async () => {
+    const artifact = makeArtifact({
+      metadata: {
+        enhancement: {
+          status: "needs_confirmation",
+          claims: [{
+            text: "Reduced reporting time by 80%.",
+            supportLevel: "needs_user_confirmation",
+            riskLevel: "medium",
+            evidenceIds: [],
+            sourceExperienceIds: ["exp-1"],
+            userConfirmationPrompt: "Can you confirm the 80% reduction?",
+          }],
+          confirmationQuestions: ["Can you confirm the 80% reduction?"],
+          enhancementStrategy: "confirmation_needed",
+        },
+      },
+    });
+
+    const report = await new DeterministicArtifactCritic().critique({
+      userId: "user-1",
+      jdId: "jd-1",
+      artifacts: [artifact],
+      evidenceChains: [makeChain(artifact)],
+      coverageReport: makeCoverageReport(),
+    });
+
+    expect(report.items[0]?.verdict).toBe("revise");
+    expect(report.items[0]?.truthfulnessRisk).toBe("medium");
+    expect(report.items[0]?.missingEvidence).toContain("Can you confirm the 80% reduction?");
+    expect(report.items[0]?.rewriteSuggestions).toContain("Can you confirm the 80% reduction?");
+    expect(report.items[0]?.confirmationQuestions).toEqual(["Can you confirm the 80% reduction?"]);
+  });
+
+  it("rejects unsafe artifacts from enhancement metadata", async () => {
+    const artifact = makeArtifact({
+      metadata: {
+        enhancement: {
+          status: "unsafe",
+          claims: [{
+            text: "Owned company-wide strategy without evidence.",
+            supportLevel: "unsupported",
+            riskLevel: "high",
+            evidenceIds: [],
+            sourceExperienceIds: [],
+          }],
+          confirmationQuestions: [],
+          enhancementStrategy: "unsafe_candidate",
+        },
+      },
+    });
+
+    const report = await new DeterministicArtifactCritic().critique({
+      userId: "user-1",
+      jdId: "jd-1",
+      artifacts: [artifact],
+      evidenceChains: [makeChain(artifact)],
+      coverageReport: makeCoverageReport(),
+    });
+
+    expect(report.items[0]?.verdict).toBe("reject");
+    expect(report.items[0]?.truthfulnessRisk).toBe("high");
+    expect(report.items[0]?.exaggerationRisk).toBe("high");
+    expect(report.items[0]?.unsupportedClaims).toContain("Owned company-wide strategy without evidence.");
+  });
+
+  it("includes unsupported enhancement claims in unsupportedClaims", async () => {
+    const artifact = makeArtifact({
+      metadata: {
+        enhancement: {
+          status: "ready",
+          claims: [{
+            text: "Unsupported executive ownership claim.",
+            supportLevel: "unsupported",
+            riskLevel: "medium",
+            evidenceIds: [],
+            sourceExperienceIds: [],
+          }],
+          confirmationQuestions: [],
+          enhancementStrategy: "evidence_rewrite",
+        },
+      },
+    });
+
+    const report = await new DeterministicArtifactCritic().critique({
+      userId: "user-1",
+      jdId: "jd-1",
+      artifacts: [artifact],
+      evidenceChains: [makeChain(artifact)],
+      coverageReport: makeCoverageReport(),
+    });
+
+    expect(report.items[0]?.verdict).toBe("reject");
+    expect(report.items[0]?.unsupportedClaims).toContain("Unsupported executive ownership claim.");
+    expect(report.items[0]?.claimReviews?.[0]).toMatchObject({
+      claimText: "Unsupported executive ownership claim.",
+      supportLevel: "unsupported",
+      verdict: "reject",
+    });
+  });
 });

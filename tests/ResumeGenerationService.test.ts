@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { ResumeGenerationService } from "../src/application/ResumeGenerationService.js";
+import type {
+  ArtifactCritic,
+  ArtifactCritiqueReport,
+  CritiqueArtifactsInput,
+} from "../src/application/critique/types.js";
 import { DeterministicJDRequirementExtractor } from "../src/application/extractors/DeterministicJDRequirementExtractor.js";
 import { DeterministicArtifactGenerator } from "../src/application/generators/DeterministicArtifactGenerator.js";
 import type {
@@ -272,6 +277,90 @@ describe("ResumeGenerationService", () => {
           status: "needs_confirmation",
         }),
       },
+    });
+  });
+
+  it("uses an injected ArtifactCritic and preserves optional critique fields", async () => {
+    const experienceRepo = new InMemoryExperienceRepository();
+    const evidenceRepo = new InMemoryEvidenceRepository();
+    const skillRepo = new InMemorySkillRepository();
+    const requirementRepo = new InMemoryJDRequirementRepository();
+    const artifactRepo = new InMemoryGeneratedArtifactRepository();
+    const ingestion = new ExperienceIngestionService(
+      experienceRepo,
+      evidenceRepo,
+      skillRepo,
+    );
+    await ingestion.ingest({
+      userId: "user-1",
+      rawText: "As a Frontend Engineer at Acme Corp, I built React dashboards.",
+    });
+
+    const fakeCritic: ArtifactCritic = {
+      async critique(input: CritiqueArtifactsInput): Promise<ArtifactCritiqueReport> {
+        const artifact = input.artifacts[0];
+        if (!artifact) {
+          throw new Error("Expected artifact.");
+        }
+        return {
+          id: "critique-fake",
+          userId: input.userId,
+          jdId: input.jdId,
+          items: [{
+            artifactId: artifact.id,
+            verdict: "revise",
+            truthfulnessRisk: "medium",
+            exaggerationRisk: "medium",
+            specificityScore: 0.7,
+            evidenceStrengthScore: 0.6,
+            unsupportedClaims: [],
+            missingEvidence: ["Confirm the metric."],
+            rewriteSuggestions: ["Remove unconfirmed metric."],
+            confirmationQuestions: ["Can you confirm the metric?"],
+            safeRewriteSuggestion: "Built React dashboards with cited evidence.",
+            claimReviews: [{
+              claimText: "Unconfirmed metric.",
+              supportLevel: "needs_user_confirmation",
+              riskLevel: "medium",
+              verdict: "revise",
+              reason: "Needs confirmation.",
+              evidenceIds: [],
+            }],
+          }],
+          summary: "Fake critic used.",
+          createdAt: "2026-01-01T00:00:00.000Z",
+        };
+      },
+    };
+    const service = new ResumeGenerationService(
+      new DeterministicJDRequirementExtractor(skillRepo, requirementRepo),
+      new DeterministicArtifactGenerator(),
+      experienceRepo,
+      evidenceRepo,
+      skillRepo,
+      requirementRepo,
+      artifactRepo,
+      new KeywordExperienceRetriever(experienceRepo, evidenceRepo, skillRepo),
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      fakeCritic,
+    );
+
+    const result = await service.generate({
+      userId: "user-1",
+      jdText: "Need React dashboard experience.",
+      targetRole: "Frontend Engineer",
+    });
+
+    expect(result.critiqueReport.summary).toBe("Fake critic used.");
+    expect(result.critiqueReport.items[0]?.confirmationQuestions).toEqual([
+      "Can you confirm the metric?",
+    ]);
+    expect(result.critiqueReport.items[0]?.claimReviews?.[0]).toMatchObject({
+      supportLevel: "needs_user_confirmation",
+      verdict: "revise",
     });
   });
 });

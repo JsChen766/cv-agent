@@ -25,6 +25,7 @@
     "dev:frontdesk-llm-smoke": "tsx src/examples/frontdesk-llm-smoke-demo.ts",
     "dev:experience-llm-smoke": "tsx src/examples/experience-extractor-llm-smoke-demo.ts",
     "dev:artifact-llm-smoke": "tsx src/examples/artifact-generator-llm-smoke-demo.ts",
+    "dev:critic-llm-smoke": "tsx src/examples/critic-llm-smoke-demo.ts",
     "dev:api": "tsx src/api/server.ts",
     "test": "vitest run",
     "typecheck": "tsc --noEmit"

@@ -1,4 +1,7 @@
 import { FrontDeskAgent } from "../../agents/FrontDeskAgent.js";
+import { DeterministicArtifactCritic } from "../../application/critique/DeterministicArtifactCritic.js";
+import { LLMArtifactCritic } from "../../application/critique/LLMArtifactCritic.js";
+import type { ArtifactCritic } from "../../application/critique/types.js";
 import { ResumeGenerationService } from "../../application/ResumeGenerationService.js";
 import { DocumentIngestionService } from "../../application/documents/index.js";
 import { DeterministicJDRequirementExtractor } from "../../application/extractors/DeterministicJDRequirementExtractor.js";
@@ -149,6 +152,9 @@ function buildKernel(input: BuildKernelInput): ApiKernel {
   const artifactGenerator = createArtifactGenerator({
     mode: agentModes.artifactGeneratorMode,
   });
+  const artifactCritic = createArtifactCritic({
+    mode: agentModes.criticAgentMode,
+  });
   const resumeGenerationService = new ResumeGenerationService(
     new DeterministicJDRequirementExtractor(input.skillRepository, input.requirementRepository),
     artifactGenerator.generator,
@@ -158,6 +164,11 @@ function buildKernel(input: BuildKernelInput): ApiKernel {
     input.requirementRepository,
     input.artifactRepository,
     new KeywordExperienceRetriever(input.experienceRepository, input.evidenceRepository, input.skillRepository),
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    artifactCritic.critic,
   );
   const evidenceChainQueryService = new EvidenceChainQueryService(input.evidenceChainRepository);
   const graphViewQueryService = new GraphViewQueryService(input.graphViewRepository);
@@ -191,6 +202,7 @@ function buildKernel(input: BuildKernelInput): ApiKernel {
     ...agentProvider.warnings,
     ...experienceExtractor.warnings,
     ...artifactGenerator.warnings,
+    ...artifactCritic.warnings,
   ]);
   const cvAgentKernel = new DefaultCvAgentKernel({
     mode: input.mode,
@@ -295,6 +307,28 @@ function createArtifactGenerator(input: {
   const agentProvider = AgentProviderFactory.create(AgentProviderFactory.fromEnv());
   return {
     generator: new LLMArtifactGenerator({
+      modelClient: agentProvider.modelClient,
+    }),
+    warnings: agentProvider.warnings,
+  };
+}
+
+function createArtifactCritic(input: {
+  mode: "deterministic" | "llm";
+}): {
+  critic: ArtifactCritic;
+  warnings: string[];
+} {
+  if (input.mode === "deterministic") {
+    return {
+      critic: new DeterministicArtifactCritic(),
+      warnings: [],
+    };
+  }
+
+  const agentProvider = AgentProviderFactory.create(AgentProviderFactory.fromEnv());
+  return {
+    critic: new LLMArtifactCritic({
       modelClient: agentProvider.modelClient,
     }),
     warnings: agentProvider.warnings,

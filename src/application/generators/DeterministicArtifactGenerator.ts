@@ -187,13 +187,16 @@ export class DeterministicArtifactGenerator implements ArtifactGenerator {
 
   private createArtifact(params: CreateArtifactParams): GeneratedArtifact {
     const score = Number(params.score.toFixed(3));
+    const hasEvidence = params.sourceEvidenceIds.length > 0;
+    const sourceEvidenceIds = unique(params.sourceEvidenceIds);
+    const sourceExperienceIds = unique(params.sourceExperienceIds);
     return {
       id: stableId("artifact", `${params.userId}:${params.jdId}:${params.kind}:${params.content}`),
       userId: params.userId,
       type: "resume_bullet",
       content: params.content,
-      sourceExperienceIds: unique(params.sourceExperienceIds),
-      sourceEvidenceIds: unique(params.sourceEvidenceIds),
+      sourceExperienceIds,
+      sourceEvidenceIds,
       matchedSkillIds: unique(params.matchedSkillIds),
       targetJDId: params.jdId,
       targetRequirementIds: unique(params.targetRequirementIds),
@@ -203,21 +206,23 @@ export class DeterministicArtifactGenerator implements ArtifactGenerator {
         requirementMatch: score,
         evidenceStrength: params.evidenceStrength,
       },
-      status: params.sourceEvidenceIds.length > 0 ? "ready" : "needs_review",
+      status: hasEvidence ? "ready" : "needs_review",
       metadata: {
         enhancement: {
-          status: "ready",
+          status: hasEvidence ? "ready" : "needs_confirmation",
           claims: [
             {
               text: params.content,
-              supportLevel: "supported",
-              riskLevel: "low",
-              evidenceIds: unique(params.sourceEvidenceIds),
-              sourceExperienceIds: unique(params.sourceExperienceIds),
+              supportLevel: hasEvidence ? "supported" : "needs_user_confirmation",
+              riskLevel: hasEvidence ? "low" : "medium",
+              evidenceIds: hasEvidence ? sourceEvidenceIds : [],
+              sourceExperienceIds: hasEvidence ? sourceExperienceIds : [],
             },
           ],
-          confirmationQuestions: [],
-          enhancementStrategy: "evidence_rewrite",
+          confirmationQuestions: hasEvidence
+            ? []
+            : ["Please provide source evidence before using this bullet."],
+          enhancementStrategy: hasEvidence ? "evidence_rewrite" : "confirmation_needed",
         },
       },
       createdAt: params.now,
