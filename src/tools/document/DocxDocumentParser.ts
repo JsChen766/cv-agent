@@ -1,5 +1,11 @@
+import mammoth from "mammoth";
 import type { DocumentInput, DocumentParser, DocumentParserInput, ExtractedTextDocument } from "./types.js";
-import { detectDocumentSourceType, readDocumentBytes } from "./documentUtils.js";
+import {
+  buildExtractedTextDocument,
+  detectDocumentSourceType,
+  getOriginalSizeBytes,
+  readDocumentBytes,
+} from "./documentUtils.js";
 
 export class DocxDocumentParser implements DocumentParser {
   public readonly sourceType = "docx" as const;
@@ -9,7 +15,30 @@ export class DocxDocumentParser implements DocumentParser {
   }
 
   public async parse(input: DocumentParserInput): Promise<ExtractedTextDocument> {
-    await readDocumentBytes(input);
-    throw new Error("DocxDocumentParser is registered, but DOCX text extraction is not installed yet. Add mammoth or an equivalent parser before ingesting DOCX files.");
+    const bytes = await readDocumentBytes(input);
+    const buffer = Buffer.from(bytes);
+    const result = await mammoth.extractRawText({ buffer });
+    const text = result.value.trim();
+
+    if (!text) {
+      throw new Error("DOCX contains no extractable text.");
+    }
+
+    const extraMetadata: Record<string, unknown> = {};
+    if (result.messages.length > 0) {
+      extraMetadata.messages = result.messages.map((m) => ({
+        type: m.type,
+        message: m.message,
+      }));
+    }
+
+    return buildExtractedTextDocument({
+      documentInput: input,
+      sourceType: "docx",
+      parser: "DocxDocumentParser",
+      text,
+      originalSizeBytes: await getOriginalSizeBytes(input, bytes),
+      metadata: extraMetadata,
+    });
   }
 }

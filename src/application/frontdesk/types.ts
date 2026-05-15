@@ -13,6 +13,18 @@ import type {
   GraphView,
   Skill,
 } from "../../knowledge/types.js";
+import type {
+  EvidenceChainSnapshot,
+  GraphViewSnapshot,
+} from "../../persistence/repositories.js";
+
+export type DocumentIngestionResult = {
+  extractedDocument: ExtractedTextDocument;
+  experience?: Experience;
+  evidences: Evidence[];
+  skills: Skill[];
+  warnings: string[];
+};
 
 export type FrontDeskRequest = {
   userId: string;
@@ -20,17 +32,29 @@ export type FrontDeskRequest = {
   documents?: DocumentInput[];
   jdText?: string;
   targetRole?: string;
+  sessionId?: string;
+  artifactId?: string;
+  evidenceChainSnapshotId?: string;
+  graphScopeType?: GraphViewSnapshot["scopeType"];
+  graphScopeId?: string;
 };
 
 export type FrontDeskResponse = {
   decision: FrontDeskDecision;
   extractedDocument?: ExtractedTextDocument;
+  extractedDocuments?: ExtractedTextDocument[];
   experience?: Experience;
+  experiences?: Experience[];
   evidences?: Evidence[];
   skills?: Skill[];
+  documentIngestionResults?: DocumentIngestionResult[];
   artifacts?: GeneratedArtifact[];
   evidenceChains?: EvidenceChain[];
+  evidenceChainSnapshots?: EvidenceChainSnapshot[];
+  explanation?: string;
   graphViews?: GraphView[];
+  graphViewSnapshots?: GraphViewSnapshot[];
+  graphExplanation?: string;
   coverageReport?: ArtifactCoverageReport;
   coverageGapReport?: CoverageGapReport;
   critiqueReport?: ArtifactCritiqueReport;

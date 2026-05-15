@@ -107,6 +107,24 @@ export class MockProvider implements LLMProvider {
       };
     }
 
+    if (/\b(evidence chain|explain evidence|why supported|supporting evidence)\b/i.test(message)) {
+      return {
+        intent: "explain_evidence_chain",
+        confidence: 0.84,
+        summary: "User wants to inspect evidence chain snapshots.",
+        requiredActions: [{ type: "query_evidence_chain", target: "EvidenceChainQueryService" }],
+      };
+    }
+
+    if (/\b(graph|experience graph|show graph|relationship map)\b/i.test(message)) {
+      return {
+        intent: "show_experience_graph",
+        confidence: 0.84,
+        summary: "User wants to inspect experience graph snapshots.",
+        requiredActions: [{ type: "query_graph", target: "GraphViewQueryService" }],
+      };
+    }
+
     if (/\b(react|typescript|built|led|reduced|improved|worked|experience)\b/i.test(message)) {
       return {
         intent: "add_experience_text",

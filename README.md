@@ -1,6 +1,6 @@
 # Coolto Agent Runtime
 
-TypeScript agent runtime foundation for Coolto. The project currently focuses on runtime primitives, a deterministic knowledge pipeline, and frontend-facing data contracts. It still avoids real LLM calls, real vector databases, Neo4j, HTTP API servers, and frontend code.
+TypeScript agent runtime foundation for Coolto. The project currently focuses on runtime primitives, document ingestion, a deterministic knowledge pipeline, generation persistence, and a thin backend API. It still avoids frontend code, full auth, real vector databases, Neo4j, pgvector, and production file storage.
 
 ## Framework Goal
 
@@ -48,7 +48,7 @@ Current demos:
 - `npm run dev:tool`: manually constructs `ToolCall` objects and executes them with `ToolExecutor`.
 - `npm run dev:agent-tool-runner`: uses a fake provider to demonstrate an agent returning `toolCalls`, automatic tool execution, tool result messages, and a final answer.
 
-This round does not add PDF, Markdown, GitHub, or other business tools. A next step is to add text extraction tools and register them with a future `FrontDeskAgent`.
+Business document tools now live under `src/tools/document/`. They are still parser-only tools: they do not call agents or write Experience/Evidence records.
 
 ## Text Tool Strategy
 
@@ -74,14 +74,15 @@ Text-reading tools do not call `ArchivistAgent`, write `Experience` or `Evidence
 
 ## Agent Side Product Kernel v0.2
 
-The project now includes a minimal product kernel that can ingest real document inputs before any frontend or HTTP API exists:
+The project now includes a minimal product kernel that can ingest real document inputs and expose them through a thin HTTP API:
 
 - `src/tools/document/` defines `DocumentInput`, `ExtractedTextDocument`, `DocumentParserRegistry`, and `DocumentLoaderTool`.
 - `DocumentLoaderTool` accepts file-facing inputs (`filePath`, `buffer`, future `url`) and routes by `mimeType`, `extension`, or `fileName`.
-- Markdown and plain text parsing are implemented. PDF and DOCX parser interfaces are registered and return clear missing-parser errors until dedicated parser dependencies are added.
+- Markdown, plain text, PDF, and DOCX parsing are implemented. PDF uses text extraction only; scanned/image-only PDFs return `PDF contains no extractable text. Scanned or image-based PDFs are not supported.` DOCX uses Mammoth raw-text extraction and returns warnings in metadata when Mammoth reports them.
 - Document parsing returns full `text`, `textPreview`, `textLength`, `sourceRef`, `sourceType`, and parser metadata. It does not call `ArchivistAgent` and does not write Experience or Evidence records.
 - `FrontDeskAgent` classifies user intent into structured `FrontDeskDecision` JSON, validated with zod.
-- `FrontDeskOrchestrator` executes the decision by calling document loading, `ExperienceIngestionService`, and `ResumeGenerationService`.
+- `FrontDeskOrchestrator` executes the decision by calling document loading, `ExperienceIngestionService`, and `ResumeGenerationService`. It supports multi-document `ingest_resume_document`, keeping first-document compatibility fields while returning `extractedDocuments`, `experiences`, and per-document results.
+- Query services under `src/application/query/` expose persisted evidence-chain and graph-view snapshots for `explain_evidence_chain` and `show_experience_graph`.
 - `src/persistence/sqlite/` provides SQLite-backed repositories for experiences, evidences, skills, JD requirements, and generated artifacts. It uses `sql.js` so the kernel can run on Node 20 without native SQLite bindings.
 - `DocumentIngestionService` is the persistence wrapper for documents. `DocumentLoaderTool` still only parses files; saving the parsed document is an application-service concern.
 - `GenerationPersistenceService` saves generation sessions, evidence-chain snapshots, graph-view snapshots, and artifact bundle links after `ResumeGenerationService` has produced the generation result.
@@ -93,6 +94,59 @@ npm run dev:agent-kernel
 ```
 
 The demo imports a simulated Markdown resume document, extracts text, ingests Experience/Evidence/Skill records into SQLite, generates resume artifacts for a JD, and prints frontend-consumable JSON containing artifacts, evidence chains, graph views, coverage, gap, and critique reports.
+
+Run the multi-document ingestion demo:
+
+```bash
+npm run dev:multi-document-ingestion
+```
+
+It ingests `resume.md` and `project-note.txt`, creates separate experiences, merges evidence and skills, and prints a compact JSON summary with source document ids.
+
+## Minimal Backend API
+
+The API is intentionally thin. It parses requests, requires `x-user-id`, and delegates to the kernel services. There is no full auth system, frontend, production file storage, Neo4j, pgvector, Prisma, Drizzle, TypeORM, or database-level foreign keys.
+
+Run it:
+
+```bash
+npm run dev:api
+```
+
+`DATABASE_URL` is optional. If it is missing, the API starts in `in_memory` mode. If set, the API initializes the PostgreSQL schema and uses Postgres repositories.
+
+Health:
+
+```bash
+curl http://127.0.0.1:3000/health
+```
+
+Ingest a text or Markdown document:
+
+```bash
+curl -X POST http://127.0.0.1:3000/documents/ingest \
+  -H "content-type: application/json" \
+  -H "x-user-id: demo-user" \
+  -d "{\"fileName\":\"resume.md\",\"mimeType\":\"text/markdown\",\"text\":\"# Resume\nBuilt React and TypeScript systems.\"}"
+```
+
+Generate artifacts:
+
+```bash
+curl -X POST http://127.0.0.1:3000/generations \
+  -H "content-type: application/json" \
+  -H "x-user-id: demo-user" \
+  -d "{\"jdText\":\"React TypeScript performance role\",\"targetRole\":\"Frontend Engineer\"}"
+```
+
+Query persisted evidence chains and graph snapshots:
+
+```bash
+curl -H "x-user-id: demo-user" http://127.0.0.1:3000/generations/:sessionId/evidence-chains
+curl -H "x-user-id: demo-user" http://127.0.0.1:3000/graphs/:scopeType/:scopeId
+```
+
+`/documents/ingest` currently supports JSON input with either `text` or `base64`. Multipart upload and production file storage are future work.
 
 ## Persistence Strategy
 
@@ -162,7 +216,7 @@ Run the optional real PostgreSQL integration test:
 RUN_POSTGRES_INTEGRATION=1 DATABASE_URL=postgres://user:pass@localhost:5432/cv_agent npm run test -- PostgresRepositories.integration.test.ts
 ```
 
-Current non-goals remain: no HTTP API, no frontend, no auth system, no real PDF/DOCX parser, no Neo4j, no pgvector, and no real DeepSeek smoke path in this round.
+Current non-goals remain: no frontend, no full auth system, no Neo4j, no pgvector, no production file storage, no database-level foreign keys, and no scanned PDF OCR.
 
 ## Conversation Runtime
 
@@ -313,9 +367,17 @@ const demo = createInMemoryCooltoDemoService();
    ```
 4. Pass them to `createAgentBackedResumeGenerationService()`.
 
+Optional DeepSeek smoke demo:
+
+```bash
+RUN_DEEPSEEK_SMOKE=1 DEEPSEEK_API_KEY=your_api_key npm run dev:deepseek-smoke
+```
+
+Without `DEEPSEEK_API_KEY`, `npm run dev:deepseek-smoke` exits cleanly with a skipped message. The default test suite does not call DeepSeek.
+
 ## Frontend Contract
 
-Frontend-oriented TypeScript contracts live in `src/api-contracts/`. They define request and response shapes only; there is no HTTP server.
+Frontend-oriented TypeScript contracts live in `src/api-contracts/`. The minimal Fastify API in `src/api/` is a thin service boundary over the kernel; product-specific frontend contracts remain explicit and reusable.
 
 `GenerateResumeResponse` uses artifact bundles so the frontend can render a generated bullet and open its right-side evidence panel without joining arrays itself:
 
@@ -405,7 +467,7 @@ Coverage and critique now happen after artifact generation:
 
 `createAgentBackedCooltoDemoService()` now exists as an in-memory skeleton for the complete agent-backed pipeline. It wires agent-backed ingestion, JD extraction, artifact generation, retrieval, evidence chains, graph views, and contract mapping, but the safer first validation point is still `agent-ingest-demo`.
 
-Current non-goals remain unchanged: no frontend, no HTTP API server, no vector database, and no Neo4j. PostgreSQL persistence is implemented as a kernel adapter, not as a backend server.
+Current non-goals remain unchanged where they matter: no frontend, no full auth system, no vector database, no Neo4j, no pgvector, and no production file storage. The backend API is intentionally minimal.
 
 ## Generation Session and User Decisions
 
@@ -415,7 +477,7 @@ Current non-goals remain unchanged: no frontend, no HTTP API server, no vector d
 - `CoverageGapDecision` supports `generate_supplemental_artifact`, `request_more_evidence`, `ignore`, and `mark_not_relevant`, with `undecided` as the default.
 - `SupplementalArtifactDraft` is created only when the user explicitly chooses to generate a supplemental artifact from a coverage gap suggestion. Drafts stay in `supplementalArtifactDrafts`; they are not merged into the main `generation.artifacts` array and are not saved to the artifact repository.
 - Session decision inputs are runtime-validated with zod, so empty IDs and `undecided` user submissions are rejected before state changes.
-- `InMemoryGenerationSessionRepository` remains the deterministic local storage layer, while PostgreSQL repositories provide the production storage adapter. There is still no frontend or HTTP API server.
+- `InMemoryGenerationSessionRepository` remains the deterministic local storage layer, while PostgreSQL repositories provide the production storage adapter. There is still no frontend or full auth system.
 - `src/api-contracts/session.ts` exposes request/response types for future API wiring.
 - Deterministic demo bullets are generated from source evidence excerpts instead of mechanical matched-skill summaries, so local product demos look closer to real resume content.
 
@@ -434,10 +496,13 @@ npm run dev:generation-session-forced-gap
 ## Current Non-Goals
 
 - No frontend.
-- No HTTP API server.
+- No full auth system.
 - No Qdrant / Cloudflare Vectorize integration.
 - No Neo4j or external graph database.
-- No production persistence.
+- No pgvector.
+- No Prisma / Drizzle / TypeORM.
+- No production file storage.
+- No scanned PDF OCR.
 - No complete RAG.
 - No real embedding pipeline.
 - No real user system.
