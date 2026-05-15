@@ -406,7 +406,7 @@ const demo = createInMemoryCooltoDemoService();
 
 ### Agent Provider Factory
 
-P8.1 adds `AgentProviderFactory` under `src/providers/factory/`. It centralizes `ModelClient` creation for future LLM-backed agents while keeping the current deterministic/mock pipeline stable.
+P8.1 adds `AgentProviderFactory` under `src/providers/factory/`. It centralizes `ModelClient` creation for LLM-backed agents while keeping the deterministic/mock pipeline stable.
 
 - `AGENT_PROVIDER=mock|deepseek`
 - Non-production defaults to `mock`.
@@ -415,7 +415,13 @@ P8.1 adds `AgentProviderFactory` under `src/providers/factory/`. It centralizes 
 - `AGENT_TIMEOUT_MS` defaults to `30000`; `AGENT_MAX_RETRIES` defaults to `0`.
 - `ALLOW_MOCK_FALLBACK` defaults to `true` outside production and `false` in production.
 
-Current agent mode environment variables are parsed but do not switch implementations yet:
+FrontDesk mode is now active:
+
+- `FRONTDESK_AGENT_MODE=mock` forces `MockProvider` for `FrontDeskAgent` and does not require `DEEPSEEK_API_KEY`, even if `AGENT_PROVIDER=deepseek`.
+- `FRONTDESK_AGENT_MODE=llm` uses `AgentProviderFactory`; with `AGENT_PROVIDER=deepseek` and a key, FrontDesk intent routing uses DeepSeek.
+- Invalid FrontDesk JSON is parsed robustly, repaired once, then falls back to an `unknown` decision unless fallback is disabled.
+
+Other agent mode environment variables are parsed but do not switch implementations yet:
 
 ```bash
 FRONTDESK_AGENT_MODE=mock|llm
@@ -424,7 +430,35 @@ ARTIFACT_GENERATOR_MODE=deterministic|llm
 CRITIC_AGENT_MODE=deterministic|llm
 ```
 
-This is configuration groundwork only. LLM-backed `FrontDeskAgent`, `ExperienceExtractor`, `ArtifactGenerator`, and `CriticAgent` are not enabled by this step.
+LLM-backed `ExperienceExtractor`, `ArtifactGenerator`, and `CriticAgent` are not enabled by this step.
+
+Common configurations:
+
+```bash
+# Local default
+AGENT_PROVIDER=mock
+FRONTDESK_AGENT_MODE=mock
+
+# Local FrontDesk LLM fallback test
+FRONTDESK_AGENT_MODE=llm
+AGENT_PROVIDER=deepseek
+ALLOW_MOCK_FALLBACK=true
+
+# Real DeepSeek FrontDesk
+FRONTDESK_AGENT_MODE=llm
+AGENT_PROVIDER=deepseek
+DEEPSEEK_API_KEY=...
+DEEPSEEK_MODEL=deepseek-chat
+ALLOW_MOCK_FALLBACK=false
+
+# Production recommendation
+NODE_ENV=production
+AUTH_MODE=cookie_session
+FRONTDESK_AGENT_MODE=llm
+AGENT_PROVIDER=deepseek
+DEEPSEEK_API_KEY=...
+ALLOW_MOCK_FALLBACK=false
+```
 
 ### Connecting real LLMs (DeepSeek / OpenRouter)
 
@@ -452,6 +486,14 @@ RUN_DEEPSEEK_SMOKE=1 DEEPSEEK_API_KEY=your_api_key npm run dev:deepseek-smoke
 ```
 
 Without `DEEPSEEK_API_KEY`, `npm run dev:deepseek-smoke` exits cleanly with a skipped message. The default test suite does not call DeepSeek.
+
+Optional FrontDesk LLM smoke demo:
+
+```bash
+DEEPSEEK_API_KEY=your_api_key npm run dev:frontdesk-llm-smoke
+```
+
+Without `DEEPSEEK_API_KEY`, `npm run dev:frontdesk-llm-smoke` exits cleanly with a skipped message.
 
 ## Frontend Contract
 

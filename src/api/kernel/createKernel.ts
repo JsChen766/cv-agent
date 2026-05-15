@@ -9,6 +9,7 @@ import {
   EvidenceChainQueryService,
   GraphViewQueryService,
 } from "../../application/query/index.js";
+import { ModelClient } from "../../core/model/ModelClient.js";
 import {
   ExperienceIngestionService,
   InMemoryEvidenceRepository,
@@ -18,7 +19,12 @@ import {
   InMemorySkillRepository,
   KeywordExperienceRetriever,
 } from "../../knowledge/index.js";
-import { AgentProviderFactory } from "../../providers/factory/index.js";
+import { MockProvider } from "../../providers/MockProvider.js";
+import {
+  AgentProviderFactory,
+  readAgentModeConfig,
+  type AgentProviderName,
+} from "../../providers/factory/index.js";
 import type {
   DocumentRepository,
   EvidenceChainSnapshot,
@@ -150,7 +156,10 @@ function buildKernel(input: BuildKernelInput): ApiKernel {
       input.graphViewRepository,
       input.bundleRepository,
     );
-  const agentProvider = AgentProviderFactory.create(AgentProviderFactory.fromEnv());
+  const agentModes = readAgentModeConfig();
+  const agentProvider = createFrontDeskModelClient({
+    mode: agentModes.frontDeskAgentMode,
+  });
   const frontDeskAgent = new FrontDeskAgent({
     modelClient: agentProvider.modelClient,
   });
@@ -207,6 +216,33 @@ type BuildKernelInput = {
   generationPersistenceService?: GenerationPersistencePort;
   close(): Promise<void>;
 };
+
+function createFrontDeskModelClient(input: {
+  mode: "mock" | "llm";
+}): {
+  modelClient: ModelClient;
+  warnings: string[];
+  providerName: AgentProviderName;
+} {
+  if (input.mode === "mock") {
+    return {
+      modelClient: new ModelClient({
+        provider: new MockProvider(),
+        defaultModel: "mock",
+        maxRetries: 0,
+      }),
+      warnings: [],
+      providerName: "mock",
+    };
+  }
+
+  const agentProvider = AgentProviderFactory.create(AgentProviderFactory.fromEnv());
+  return {
+    modelClient: agentProvider.modelClient,
+    warnings: agentProvider.warnings,
+    providerName: agentProvider.providerName,
+  };
+}
 
 class InMemoryDocumentRepository implements DocumentRepository {
   private readonly documents = new Map<string, PersistedDocument>();

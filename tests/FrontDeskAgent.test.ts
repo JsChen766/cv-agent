@@ -21,6 +21,7 @@ function createAgent(content: string): FrontDeskAgent {
       defaultModel: "fake",
       maxRetries: 0,
     }),
+    allowFallbackDecision: false,
   });
 }
 
@@ -57,6 +58,6 @@ describe("FrontDeskAgent", () => {
     await expect(agent.decide({
       userId: "user-1",
       message: "hello",
-    })).rejects.toThrow(/FrontDeskAgent validation failed/);
+    })).rejects.toThrow(/FrontDeskAgent decision schema validation failed/);
   });
 });

@@ -22,6 +22,7 @@
     "dev:generation-session-forced-gap": "tsx src/examples/generation-session-forced-gap-demo.ts",
     "dev:multi-document-ingestion": "tsx src/examples/multi-document-ingestion-demo.ts",
     "dev:deepseek-smoke": "tsx src/examples/deepseek-smoke-demo.ts",
+    "dev:frontdesk-llm-smoke": "tsx src/examples/frontdesk-llm-smoke-demo.ts",
     "dev:api": "tsx src/api/server.ts",
     "test": "vitest run",
     "typecheck": "tsc --noEmit"

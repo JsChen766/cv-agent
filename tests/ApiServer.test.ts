@@ -15,6 +15,7 @@ describe("API server", () => {
   let originalDatabaseUrl: string | undefined;
   let originalAuthMode: string | undefined;
   let originalAgentProvider: string | undefined;
+  let originalFrontDeskAgentMode: string | undefined;
   let originalNodeEnv: string | undefined;
   let kernel: ApiKernel;
   let server: Awaited<ReturnType<typeof createServer>>;
@@ -23,10 +24,12 @@ describe("API server", () => {
     originalDatabaseUrl = process.env.DATABASE_URL;
     originalAuthMode = process.env.AUTH_MODE;
     originalAgentProvider = process.env.AGENT_PROVIDER;
+    originalFrontDeskAgentMode = process.env.FRONTDESK_AGENT_MODE;
     originalNodeEnv = process.env.NODE_ENV;
     delete process.env.DATABASE_URL;
     process.env.AUTH_MODE = "dev_header";
     process.env.AGENT_PROVIDER = "mock";
+    process.env.FRONTDESK_AGENT_MODE = "mock";
     process.env.NODE_ENV = "test";
     kernel = await createKernel();
     server = await createServer(kernel);
@@ -49,6 +52,11 @@ describe("API server", () => {
       delete process.env.AGENT_PROVIDER;
     } else {
       process.env.AGENT_PROVIDER = originalAgentProvider;
+    }
+    if (originalFrontDeskAgentMode === undefined) {
+      delete process.env.FRONTDESK_AGENT_MODE;
+    } else {
+      process.env.FRONTDESK_AGENT_MODE = originalFrontDeskAgentMode;
     }
     if (originalNodeEnv === undefined) {
       delete process.env.NODE_ENV;

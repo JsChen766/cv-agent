@@ -16,6 +16,7 @@ describe("API kernel", () => {
   const originalNodeEnv = process.env.NODE_ENV;
   const originalDeepSeekApiKey = process.env.DEEPSEEK_API_KEY;
   const originalAllowMockFallback = process.env.ALLOW_MOCK_FALLBACK;
+  const originalFrontDeskAgentMode = process.env.FRONTDESK_AGENT_MODE;
 
   afterEach(() => {
     if (originalDatabaseUrl === undefined) {
@@ -43,11 +44,17 @@ describe("API kernel", () => {
     } else {
       process.env.ALLOW_MOCK_FALLBACK = originalAllowMockFallback;
     }
+    if (originalFrontDeskAgentMode === undefined) {
+      delete process.env.FRONTDESK_AGENT_MODE;
+    } else {
+      process.env.FRONTDESK_AGENT_MODE = originalFrontDeskAgentMode;
+    }
   });
 
   it("creates an in-memory kernel with a generation persistence port when DATABASE_URL is absent", async () => {
     delete process.env.DATABASE_URL;
     process.env.AGENT_PROVIDER = "mock";
+    process.env.FRONTDESK_AGENT_MODE = "mock";
     process.env.NODE_ENV = "test";
 
     const kernel = await createKernel();
@@ -63,6 +70,7 @@ describe("API kernel", () => {
 
   it("uses transaction-aware generation persistence in postgres kernel mode", async () => {
     process.env.AGENT_PROVIDER = "mock";
+    process.env.FRONTDESK_AGENT_MODE = "mock";
     process.env.NODE_ENV = "test";
     const database = new FakePostgresDatabase();
     expect(createPostgresKernelFromDatabaseForTest).toBe(createPostgresKernelFromDatabase);
@@ -84,6 +92,7 @@ describe("API kernel", () => {
     delete process.env.DATABASE_URL;
     delete process.env.DEEPSEEK_API_KEY;
     process.env.AGENT_PROVIDER = "deepseek";
+    process.env.FRONTDESK_AGENT_MODE = "llm";
     process.env.ALLOW_MOCK_FALLBACK = "true";
     process.env.NODE_ENV = "test";
 
@@ -95,6 +104,57 @@ describe("API kernel", () => {
       expect((await kernel.cvAgentKernel.health()).warnings).toContain(
         "DEEPSEEK_API_KEY is missing. Falling back to MockProvider because allowMockFallback is enabled.",
       );
+    } finally {
+      await kernel.close();
+    }
+  });
+
+  it("keeps FrontDesk on mock mode even when AGENT_PROVIDER=deepseek has no key", async () => {
+    delete process.env.DATABASE_URL;
+    delete process.env.DEEPSEEK_API_KEY;
+    process.env.AGENT_PROVIDER = "deepseek";
+    process.env.FRONTDESK_AGENT_MODE = "mock";
+    process.env.ALLOW_MOCK_FALLBACK = "false";
+    process.env.NODE_ENV = "test";
+
+    const kernel = await createKernel();
+    try {
+      expect(kernel.warnings).not.toContain(
+        "DEEPSEEK_API_KEY is missing. Falling back to MockProvider because allowMockFallback is enabled.",
+      );
+      expect((await kernel.cvAgentKernel.health()).warnings).toEqual([
+        "DATABASE_URL is not set. API is running in in-memory mode.",
+      ]);
+    } finally {
+      await kernel.close();
+    }
+  });
+
+  it("throws when FrontDesk llm mode uses deepseek without key and fallback is disabled", async () => {
+    delete process.env.DATABASE_URL;
+    delete process.env.DEEPSEEK_API_KEY;
+    process.env.AGENT_PROVIDER = "deepseek";
+    process.env.FRONTDESK_AGENT_MODE = "llm";
+    process.env.ALLOW_MOCK_FALLBACK = "false";
+    process.env.NODE_ENV = "test";
+
+    await expect(createKernel()).rejects.toThrow(
+      "DEEPSEEK_API_KEY is required when AGENT_PROVIDER=deepseek.",
+    );
+  });
+
+  it("allows FrontDesk llm mode with mock provider", async () => {
+    delete process.env.DATABASE_URL;
+    process.env.AGENT_PROVIDER = "mock";
+    process.env.FRONTDESK_AGENT_MODE = "llm";
+    process.env.NODE_ENV = "test";
+
+    const kernel = await createKernel();
+    try {
+      expect(kernel.mode).toBe("in_memory");
+      expect((await kernel.cvAgentKernel.health()).warnings).toEqual([
+        "DATABASE_URL is not set. API is running in in-memory mode.",
+      ]);
     } finally {
       await kernel.close();
     }

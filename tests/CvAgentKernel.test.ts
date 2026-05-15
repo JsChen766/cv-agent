@@ -6,9 +6,11 @@ describe("CvAgentKernel", () => {
   it("runs health, document ingestion, and generation through the facade", async () => {
     const originalDatabaseUrl = process.env.DATABASE_URL;
     const originalAgentProvider = process.env.AGENT_PROVIDER;
+    const originalFrontDeskAgentMode = process.env.FRONTDESK_AGENT_MODE;
     const originalNodeEnv = process.env.NODE_ENV;
     delete process.env.DATABASE_URL;
     process.env.AGENT_PROVIDER = "mock";
+    process.env.FRONTDESK_AGENT_MODE = "mock";
     process.env.NODE_ENV = "test";
     const kernel = await createKernel();
 
@@ -68,6 +70,11 @@ describe("CvAgentKernel", () => {
         delete process.env.AGENT_PROVIDER;
       } else {
         process.env.AGENT_PROVIDER = originalAgentProvider;
+      }
+      if (originalFrontDeskAgentMode === undefined) {
+        delete process.env.FRONTDESK_AGENT_MODE;
+      } else {
+        process.env.FRONTDESK_AGENT_MODE = originalFrontDeskAgentMode;
       }
       if (originalNodeEnv === undefined) {
         delete process.env.NODE_ENV;

@@ -1,8 +1,12 @@
 import { z } from "zod";
 import { BaseAgent } from "../core/agent/BaseAgent.js";
 import type { BaseAgentConfig } from "../core/agent/types.js";
-import { parseAgentJson } from "../core/json/index.js";
-import { parseWithSchema } from "../knowledge/schemas/validate.js";
+import {
+  FrontDeskDecisionParseError,
+  buildFrontDeskRepairPrompt,
+  buildFrontDeskSystemPrompt,
+  parseFrontDeskDecision,
+} from "./frontdesk/index.js";
 
 export const FrontDeskIntentSchema = z.enum([
   "ingest_resume_document",
@@ -40,60 +44,99 @@ export type FrontDeskDecisionInput = {
   documentFileNames?: string[];
 };
 
+export type FrontDeskAgentConfig = Omit<
+  BaseAgentConfig,
+  "name" | "role" | "systemPrompt" | "defaultResponseFormat"
+> & {
+  allowJsonRepair?: boolean;
+  allowFallbackDecision?: boolean;
+};
+
 export class FrontDeskAgent extends BaseAgent {
-  public constructor(config: Omit<BaseAgentConfig, "name" | "role" | "systemPrompt" | "defaultResponseFormat">) {
+  private readonly allowJsonRepair: boolean;
+  private readonly allowFallbackDecision: boolean;
+
+  public constructor(config: FrontDeskAgentConfig) {
     super({
       ...config,
       name: "frontdesk",
       role: "Product entry router",
       defaultResponseFormat: "json",
-      systemPrompt: [
-        "You are Coolto's FrontDeskAgent.",
-        "Your job is to classify the user's product intent and output routing JSON only.",
-        "Do not execute business logic.",
-        "Do not generate resume artifacts yourself.",
-        "Do not ingest experience yourself.",
-        "",
-        "Allowed intent values:",
-        "ingest_resume_document",
-        "add_experience_text",
-        "generate_resume_for_jd",
-        "revise_generated_artifact",
-        "explain_evidence_chain",
-        "show_experience_graph",
-        "ask_followup_question",
-        "unknown",
-        "",
-        "Output exactly this JSON shape:",
-        "{",
-        '  "intent": "add_experience_text",',
-        '  "confidence": 0.8,',
-        '  "summary": "string",',
-        '  "requiredActions": [{ "type": "string", "target": "string", "arguments": {} }],',
-        '  "followUpQuestion": "string"',
-        "}",
-        "",
-        "Use ingest_resume_document when a document is attached.",
-        "Use add_experience_text when the user provides resume or experience text directly.",
-        "Use generate_resume_for_jd when the user provides a job description or asks to generate resume bullets for a role.",
-        "Use ask_followup_question when required information is missing.",
-        "Return the JSON object only.",
-      ].join("\n"),
+      systemPrompt: buildFrontDeskSystemPrompt(),
     });
+    this.allowJsonRepair = config.allowJsonRepair ?? true;
+    this.allowFallbackDecision = config.allowFallbackDecision ?? true;
   }
 
   public async decide(input: FrontDeskDecisionInput): Promise<FrontDeskDecision> {
+    const content = this.toDecisionPrompt(input);
     const output = await this.run({
-      content: [
-        `User id: ${input.userId}`,
-        `Has document: ${input.hasDocument ? "yes" : "no"}`,
-        `Document file names: ${(input.documentFileNames ?? []).join(", ") || "(none)"}`,
-        `User message: ${input.message}`,
-      ].join("\n"),
+      content,
       responseFormat: "json",
+      temperature: 0,
+      maxTokens: 800,
     });
 
-    const parsed = parseAgentJson(output.content, { expectedRoot: "object" });
-    return parseWithSchema(FrontDeskDecisionSchema, parsed, "FrontDeskAgent");
+    try {
+      return parseFrontDeskDecision(output.content);
+    } catch (error) {
+      if (!(error instanceof FrontDeskDecisionParseError)) {
+        throw error;
+      }
+      return this.repairOrFallback(input, output.content, error);
+    }
+  }
+
+  private async repairOrFallback(
+    input: FrontDeskDecisionInput,
+    raw: string,
+    parseError: FrontDeskDecisionParseError,
+  ): Promise<FrontDeskDecision> {
+    if (this.allowJsonRepair) {
+      const repairOutput = await this.run({
+        content: buildFrontDeskRepairPrompt({
+          invalidResponse: raw,
+          parseError: parseError.reason,
+        }),
+        responseFormat: "json",
+        temperature: 0,
+        maxTokens: 800,
+      });
+
+      try {
+        return parseFrontDeskDecision(repairOutput.content);
+      } catch (repairError) {
+        if (!this.allowFallbackDecision) {
+          throw repairError;
+        }
+      }
+    }
+
+    if (this.allowFallbackDecision) {
+      return this.createFallbackDecision(input);
+    }
+
+    throw parseError;
+  }
+
+  private createFallbackDecision(input: FrontDeskDecisionInput): FrontDeskDecision {
+    return {
+      intent: "unknown",
+      confidence: 0,
+      summary: "FrontDeskAgent could not parse model output.",
+      requiredActions: [],
+      followUpQuestion: input.hasDocument
+        ? "Do you want me to import this document, generate resume content, or inspect evidence?"
+        : "Do you want to import experience, generate resume content, or inspect evidence?",
+    };
+  }
+
+  private toDecisionPrompt(input: FrontDeskDecisionInput): string {
+    return [
+      `User id: ${input.userId}`,
+      `Has document: ${input.hasDocument ? "yes" : "no"}`,
+      `Document file names: ${(input.documentFileNames ?? []).join(", ") || "(none)"}`,
+      `User message: ${input.message}`,
+    ].join("\n");
   }
 }
