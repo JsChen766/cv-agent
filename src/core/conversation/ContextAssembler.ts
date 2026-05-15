@@ -40,9 +40,11 @@ export class ContextAssembler {
         };
 
     return {
-      messages: trimResult.messages.map(({ id: _id, createdAt: _createdAt, metadata: _metadata, ...message }) => message),
+      messages: trimResult.messages.map((message) => this.toLLMMessage(message)),
       removedMessageIds: trimResult.removedMessages.map((message) => message.id),
-      injectedMessageIds: injectedMessages.map((message) => message.id),
+      injectedMessageIds: trimResult.messages
+        .filter((message) => message.metadata?.isContextInjection)
+        .map((message) => message.id),
       approxTokens: trimResult.approxTokensAfter
     };
   }
@@ -53,12 +55,30 @@ export class ContextAssembler {
       .map((injection) => ({
         role: injection.role ?? "system",
         content: injection.content,
-        id: injection.id,
+        id: this.toInjectionMessageId(injection.id),
         createdAt: new Date().toISOString(),
         metadata: {
           ...injection.metadata,
-          injectionId: injection.id
+          injectionId: injection.id,
+          isContextInjection: true
         }
       }));
+  }
+
+  private toInjectionMessageId(id: string): string {
+    return id.startsWith("ctx-injection:") ? id : `ctx-injection:${id}`;
+  }
+
+  private toLLMMessage(message: ConversationMessage): LLMMessage {
+    const { id: _id, createdAt: _createdAt, metadata, ...llmMessage } = message;
+
+    if (metadata?.isContextInjection) {
+      return {
+        ...llmMessage,
+        metadata
+      };
+    }
+
+    return llmMessage;
   }
 }

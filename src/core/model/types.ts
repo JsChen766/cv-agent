@@ -10,6 +10,7 @@ export type LLMMessage = {
   toolCalls?: ToolCall[];
   reasoningContent?: string;
   raw?: unknown;
+  metadata?: Record<string, unknown>;
 };
 
 export type TokenUsage = {

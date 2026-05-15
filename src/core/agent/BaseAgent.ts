@@ -1,7 +1,8 @@
 import { toToolSchema } from "../tool/ToolDefinition.js";
 import type { ModelClient } from "../model/ModelClient.js";
+import type { LLMMessage } from "../model/types.js";
 import type { ToolDefinition } from "../tool/types.js";
-import type { AgentInput, AgentOutput, BaseAgentConfig } from "./types.js";
+import type { AgentInput, AgentOutput, AgentRunOptions, BaseAgentConfig } from "./types.js";
 
 export abstract class BaseAgent {
   public readonly name: string;
@@ -22,24 +23,43 @@ export abstract class BaseAgent {
 
   public async run(input: AgentInput): Promise<AgentOutput> {
     const messages = [
-      { role: "system" as const, content: this.systemPrompt },
       ...(input.messages ?? []),
       ...(input.skipAppendingUserContent ? [] : [{ role: "user" as const, content: input.content }])
     ];
 
-    const response = await this.modelClient.chat({
+    return this.runWithMessages(messages, {
       model: input.model,
-      messages,
       temperature: input.temperature,
       maxTokens: input.maxTokens,
-      tools: this.tools?.map(toToolSchema),
       toolChoice: input.toolChoice,
-      responseFormat: input.responseFormat ?? this.defaultResponseFormat,
+      responseFormat: input.responseFormat,
       thinking: input.thinking,
+      metadata: input.metadata
+    });
+  }
+
+  public async runWithMessages(
+    messages: LLMMessage[],
+    options: AgentRunOptions = {}
+  ): Promise<AgentOutput> {
+    const requestMessages = [
+      { role: "system" as const, content: this.systemPrompt },
+      ...messages
+    ];
+
+    const response = await this.modelClient.chat({
+      model: options.model,
+      messages: requestMessages,
+      temperature: options.temperature,
+      maxTokens: options.maxTokens,
+      tools: this.tools?.map(toToolSchema),
+      toolChoice: options.toolChoice,
+      responseFormat: options.responseFormat ?? this.defaultResponseFormat,
+      thinking: options.thinking,
       metadata: {
         agentName: this.name,
         agentRole: this.role,
-        ...input.metadata
+        ...options.metadata
       }
     });
 

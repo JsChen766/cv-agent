@@ -83,17 +83,29 @@ const output = await runner.run({
   thinking: true
 });
 
+const finalUserMessages = output.finalMessages.filter((message) => message.role === "user");
+const hasDuplicateUserMessages = new Set(finalUserMessages.map((message) => message.content)).size !== finalUserMessages.length;
+const hasPersistedContinuePrompt = output.finalMessages.some((message) => (
+  message.content.includes("Continue using the tool results above")
+));
+
 console.log("Final content:");
 console.log(output.content);
-console.log("\nSteps:");
-console.log(JSON.stringify(output.steps, null, 2));
-console.log("\nFinal messages:");
-console.log(JSON.stringify(output.finalMessages, null, 2));
 console.log("\nConversation session id:");
 console.log(output.conversationSession.id);
 console.log("\nFinal messages count:");
 console.log(output.finalMessages.length);
-console.log("\nApprox token estimate:");
-console.log(new TokenBudgetManager().estimateMessagesTokens(output.conversationSession.getMessages()));
+console.log("\nFinal user message contents:");
+console.log(JSON.stringify(finalUserMessages.map((message) => message.content), null, 2));
+console.log("\nHas duplicate user messages:");
+console.log(hasDuplicateUserMessages);
+console.log("\nHas persisted continue prompt:");
+console.log(hasPersistedContinuePrompt);
 console.log("\nSession snapshot:");
 console.log(JSON.stringify(output.conversationSession.snapshot(), null, 2));
+console.log("\nSteps:");
+console.log(JSON.stringify(output.steps, null, 2));
+console.log("\nFinal messages:");
+console.log(JSON.stringify(output.finalMessages, null, 2));
+console.log("\nApprox token estimate:");
+console.log(new TokenBudgetManager().estimateMessagesTokens(output.conversationSession.getMessages()));

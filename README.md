@@ -31,7 +31,7 @@ The runtime now supports a complete OpenAI-compatible tool-calling loop:
 
 1. `ToolDefinition` defines a tool name, description, JSON schema parameters, and `execute` function.
 2. `ToolExecutor` registers tools and executes model-returned `ToolCall` objects.
-3. `BaseAgent` passes tool schemas to `ModelClient.chat`.
+3. `BaseAgent` passes tool schemas to `ModelClient.chat`. `runWithMessages()` lets runners and orchestrators provide a complete message context directly while still prepending the agent system prompt.
 4. `AgentToolRunner` runs the loop: agent output `toolCalls` -> execute tools -> append assistant/tool messages -> continue the agent -> final `AgentOutput`.
 
 DeepSeek tool calls follow the OpenAI-compatible function-calling shape:
@@ -41,6 +41,7 @@ DeepSeek tool calls follow the OpenAI-compatible function-calling shape:
 - Assistant messages with tool calls are preserved with `tool_calls`.
 - Tool results are returned as `role: "tool"` messages with `tool_call_id` and JSON-serialized execution results.
 - When reasoning is present, DeepSeek assistant messages can preserve `reasoning_content` through the tool continuation request.
+- `AgentToolRunner` uses `BaseAgent.runWithMessages()` internally, so it does not need runner-specific flags in `AgentInput`. `skipAppendingUserContent` remains available for compatibility, but new runner/orchestrator code should prefer `runWithMessages()`.
 
 Current demos:
 
@@ -54,9 +55,9 @@ This round does not add PDF, Markdown, GitHub, or other business tools. A next s
 The conversation runtime provides the in-memory context layer that tool-calling agents can use before adding larger text-reading tools:
 
 - `ConversationSession` manages single-run or short-term conversation messages. It stores `user`, `assistant`, and `tool` messages with `id` and `createdAt`, and can produce snapshots for future persistence.
-- `AgentToolRunner` can now use a `ConversationSession` to preserve user input, assistant tool-call messages, and tool result messages across tool rounds. `finalMessages` is derived from the session.
+- `AgentToolRunner` can now use a `ConversationSession` to preserve user input, assistant tool-call messages, and tool result messages across tool rounds. `finalMessages` is derived from the session. When a caller provides an existing `ConversationSession`, `input.messages` are not appended by default to avoid duplicating prior history across repeated runs. Set `appendInputMessagesOnRun: true` when the caller explicitly wants to append those messages into the provided session. For runner-created sessions, `input.messages` are still appended by default.
 - `TokenBudgetManager` provides conservative char-based approximate token estimation with trimming by message count and approximate token budget. It defaults to preserving system and recent messages while allowing long tool results to be removed.
-- `ContextAssembler` builds the final model context from a session plus optional injected context. It is the placeholder path for future retrieval chunks, user profiles, style memory, experience evidence, and task constraints.
+- `ContextAssembler` builds the final model context from a session plus optional injected context. Injected context messages use temporary ids prefixed with `ctx-injection:` and keep the original injection id in `metadata.injectionId`, which keeps `removedMessageIds` and `injectedMessageIds` distinct from normal session message ids. It is the placeholder path for future retrieval chunks, user profiles, style memory, experience evidence, and task constraints.
 - `ConversationRepository` and `InMemoryConversationRepository` define the persistence boundary without connecting a database. `ContextProvider` and `NoopContextProvider` define the future retrieval or long-term memory injection boundary.
 
 This is not a long-term memory system yet. It is runtime context management. Future PDF, Markdown, GitHub, or other text-reading tools should avoid permanently stuffing large raw outputs into messages. Large text should be controlled through retrieval and `ContextAssembler` injections.

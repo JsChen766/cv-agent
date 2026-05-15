@@ -4,6 +4,11 @@ import type { ToolCall } from "../tool/types.js";
 export type AgentInput = {
   content: string;
   messages?: LLMMessage[];
+} & AgentRunOptions & {
+  skipAppendingUserContent?: boolean;
+};
+
+export type AgentRunOptions = {
   model?: string;
   temperature?: number;
   maxTokens?: number;
@@ -11,7 +16,6 @@ export type AgentInput = {
   thinking?: boolean;
   toolChoice?: "auto" | "none" | "required" | string;
   metadata?: Record<string, unknown>;
-  skipAppendingUserContent?: boolean;
 };
 
 export type AgentOutput = {

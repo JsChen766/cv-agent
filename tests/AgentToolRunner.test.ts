@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { AgentToolRunner } from "../src/core/agent/AgentToolRunner.js";
 import { BaseAgent } from "../src/core/agent/BaseAgent.js";
 import { ConversationSession } from "../src/core/conversation/ConversationSession.js";
@@ -41,6 +41,7 @@ function createRunner(
   options: {
     maxToolRounds?: number;
     conversationSession?: ConversationSession;
+    appendInputMessagesOnRun?: boolean;
   } = {}
 ): AgentToolRunner {
   const modelClient = new ModelClient({
@@ -56,7 +57,8 @@ function createRunner(
     agent: new TestAgent(modelClient),
     toolExecutor: executor,
     maxToolRounds: options.maxToolRounds,
-    conversationSession: options.conversationSession
+    conversationSession: options.conversationSession,
+    appendInputMessagesOnRun: options.appendInputMessagesOnRun
   });
 }
 
@@ -248,6 +250,104 @@ describe("AgentToolRunner", () => {
     ]);
   });
 
+  it("creates a new session and appends input messages by default", async () => {
+    const provider = new FakeToolCallingProvider(() => ({
+      content: "Done.",
+      raw: {}
+    }));
+    const runner = createRunner(provider);
+
+    const output = await runner.run({
+      messages: [{ role: "assistant", content: "Prior answer." }],
+      content: "Current question."
+    });
+
+    expect(output.finalMessages.map((message) => message.content)).toEqual([
+      "Prior answer.",
+      "Current question.",
+      "Done."
+    ]);
+  });
+
+  it("does not append input messages by default when a session is provided", async () => {
+    const provider = new FakeToolCallingProvider(() => ({
+      content: "Done.",
+      raw: {}
+    }));
+    const conversationSession = new ConversationSession();
+    const runner = createRunner(provider, { conversationSession });
+
+    const output = await runner.run({
+      messages: [{ role: "assistant", content: "Input history." }],
+      content: "Current question."
+    });
+
+    expect(output.finalMessages.map((message) => message.content)).toEqual([
+      "Current question.",
+      "Done."
+    ]);
+  });
+
+  it("appends input messages for provided sessions when explicitly enabled", async () => {
+    const provider = new FakeToolCallingProvider(() => ({
+      content: "Done.",
+      raw: {}
+    }));
+    const conversationSession = new ConversationSession();
+    const runner = createRunner(provider, {
+      conversationSession,
+      appendInputMessagesOnRun: true
+    });
+
+    const output = await runner.run({
+      messages: [{ role: "assistant", content: "Input history." }],
+      content: "Current question."
+    });
+
+    expect(output.finalMessages.map((message) => message.content)).toEqual([
+      "Input history.",
+      "Current question.",
+      "Done."
+    ]);
+  });
+
+  it("does not duplicate input messages across repeated runs with the same provided session", async () => {
+    const provider = new FakeToolCallingProvider(() => ({
+      content: "Done.",
+      raw: {}
+    }));
+    const conversationSession = new ConversationSession();
+    const runner = createRunner(provider, { conversationSession });
+    const inputMessages = [{ role: "assistant" as const, content: "Input history." }];
+
+    await runner.run({ messages: inputMessages, content: "First question." });
+    const secondOutput = await runner.run({ messages: inputMessages, content: "Second question." });
+
+    expect(secondOutput.finalMessages.map((message) => message.content)).toEqual([
+      "First question.",
+      "Done.",
+      "Second question.",
+      "Done."
+    ]);
+    expect(secondOutput.finalMessages.filter((message) => message.content === "Input history.")).toHaveLength(0);
+  });
+
+  it("appends each run's current user content exactly once", async () => {
+    const provider = new FakeToolCallingProvider(() => ({
+      content: "Done.",
+      raw: {}
+    }));
+    const conversationSession = new ConversationSession();
+    const runner = createRunner(provider, { conversationSession });
+
+    await runner.run({ content: "Repeatable question." });
+    const output = await runner.run({ content: "Repeatable question." });
+
+    expect(output.finalMessages.filter((message) => (
+      message.role === "user" && message.content === "Repeatable question."
+    ))).toHaveLength(2);
+  });
+
   it("stores user, assistant, and tool messages in the session", async () => {
     const provider = new FakeToolCallingProvider((_request, call) => call === 1
       ? {
@@ -290,5 +390,54 @@ describe("AgentToolRunner", () => {
       { role: "assistant", content: "Prior answer." },
       { role: "user", content: "Current question." }
     ]);
+  });
+
+  it("does not persist or duplicate the continue prompt in the tool loop", async () => {
+    const provider = new FakeToolCallingProvider((_request, call) => call === 1
+      ? {
+          content: "",
+          toolCalls: [toolCall("echo", { message: "hello" }, "call-1")],
+          raw: {}
+        }
+      : {
+          content: "Final answer.",
+          raw: {}
+        });
+    const runner = createRunner(provider);
+
+    const output = await runner.run({ content: "Use echo." });
+
+    expect(output.finalMessages.map((message) => message.content)).toEqual([
+      "Use echo.",
+      "",
+      "{\"ok\":true,\"toolName\":\"echo\",\"result\":{\"message\":\"hello\"}}",
+      "Final answer."
+    ]);
+    expect(output.finalMessages.some((message) => message.content.includes("Continue using the tool results"))).toBe(false);
+    expect(provider.requests[1].messages.filter((message) => message.content === "Use echo.")).toHaveLength(1);
+    expect(provider.requests[1].messages.filter((message) => message.content.includes("Continue using the tool results"))).toHaveLength(1);
+  });
+
+  it("uses BaseAgent.runWithMessages instead of BaseAgent.run", async () => {
+    const provider = new FakeToolCallingProvider(() => ({
+      content: "Done.",
+      raw: {}
+    }));
+    const modelClient = new ModelClient({
+      provider,
+      defaultModel: "fake-model",
+      maxRetries: 0
+    });
+    const executor = new ToolExecutor();
+    const agent = new TestAgent(modelClient);
+    const runSpy = vi.spyOn(agent, "run");
+    const runner = new AgentToolRunner({
+      agent,
+      toolExecutor: executor
+    });
+
+    await runner.run({ content: "Answer directly." });
+
+    expect(runSpy).not.toHaveBeenCalled();
   });
 });

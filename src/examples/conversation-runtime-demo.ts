@@ -40,6 +40,23 @@ const assembled = assembler.assemble({
   }
 });
 
+const removalDemoSession = new ConversationSession({
+  id: "conversation-runtime-removal-demo",
+  messages: [
+    { id: "shared-id", role: "user", content: "Recent session message stays." }
+  ]
+});
+const removalDemo = assembler.assemble({
+  session: removalDemoSession,
+  injections: [
+    { id: "shared-id", role: "user", content: "Injected context can be trimmed." }
+  ],
+  trimOptions: {
+    maxMessages: 1,
+    preserveRecentMessages: 1
+  }
+});
+
 const tokenBudgetManager = new TokenBudgetManager();
 const trimResult = tokenBudgetManager.trimMessages(session.getMessages(), {
   maxApproxTokens: 80,
@@ -52,6 +69,11 @@ console.log(JSON.stringify({
   assembledMessageCount: assembled.messages.length,
   removedMessageIds: assembled.removedMessageIds,
   injectedMessageIds: assembled.injectedMessageIds,
+  firstInjectedMessageMetadata: assembled.messages.find((message) => message.metadata?.isContextInjection)?.metadata,
+  removedMessageIdDistinctionDemo: {
+    sessionMessageId: "shared-id",
+    removedMessageIds: removalDemo.removedMessageIds
+  },
   approxTokens: assembled.approxTokens,
   directTrimRemovedMessageIds: trimResult.removedMessages.map((message) => message.id),
   snapshot: session.snapshot()

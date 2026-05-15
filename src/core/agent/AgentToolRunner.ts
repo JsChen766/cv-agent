@@ -10,7 +10,7 @@ import type {
   ToolExecutionResult
 } from "../tool/types.js";
 import type { BaseAgent } from "./BaseAgent.js";
-import type { AgentInput, AgentOutput } from "./types.js";
+import type { AgentInput, AgentOutput, AgentRunOptions } from "./types.js";
 
 const DEFAULT_MAX_TOOL_ROUNDS = 3;
 const CONTINUE_WITH_TOOL_RESULTS_PROMPT = "Continue using the tool results above and provide the final answer.";
@@ -24,6 +24,7 @@ export type AgentToolRunnerConfig = {
   contextAssembler?: ContextAssembler;
   trimOptions?: TokenBudgetTrimOptions;
   contextProviders?: ContextProvider[];
+  appendInputMessagesOnRun?: boolean;
 };
 
 export type AgentToolRunnerRunInput = AgentInput & {
@@ -52,6 +53,7 @@ export class AgentToolRunner {
   private readonly contextAssembler?: ContextAssembler;
   private readonly trimOptions?: TokenBudgetTrimOptions;
   private readonly contextProviders: ContextProvider[];
+  private readonly appendInputMessagesOnRun: boolean;
 
   public constructor(config: AgentToolRunnerConfig) {
     this.agent = config.agent;
@@ -62,18 +64,22 @@ export class AgentToolRunner {
     this.contextAssembler = config.contextAssembler;
     this.trimOptions = config.trimOptions;
     this.contextProviders = config.contextProviders ?? [];
+    this.appendInputMessagesOnRun = config.appendInputMessagesOnRun ?? (config.conversationSession === undefined);
   }
 
   public async run(input: AgentToolRunnerRunInput): Promise<AgentToolRunnerOutput> {
     const steps: AgentToolRunStep[] = [];
-    this.conversationSession.appendMany(input.messages ?? []);
+
+    if (this.appendInputMessagesOnRun) {
+      this.conversationSession.appendMany(input.messages ?? []);
+    }
+
     this.conversationSession.append({ role: "user", content: input.content });
 
-    let output = await this.agent.run({
-      ...input,
-      messages: await this.assembleMessages(input),
-      skipAppendingUserContent: true
-    });
+    let output = await this.agent.runWithMessages(
+      await this.assembleMessages(input),
+      this.toAgentRunOptions(input)
+    );
 
     while (true) {
       const toolCalls = this.normalizeToolCalls(output.toolCalls ?? [], steps.length + 1);
@@ -107,13 +113,29 @@ export class AgentToolRunner {
         toolResults
       });
 
-      output = await this.agent.run({
-        ...input,
-        messages: await this.assembleMessages(input),
-        content: CONTINUE_WITH_TOOL_RESULTS_PROMPT,
-        toolChoice: "auto"
-      });
+      output = await this.agent.runWithMessages(
+        [
+          ...(await this.assembleMessages(input)),
+          { role: "user", content: CONTINUE_WITH_TOOL_RESULTS_PROMPT }
+        ],
+        {
+          ...this.toAgentRunOptions(input),
+          toolChoice: "auto"
+        }
+      );
     }
+  }
+
+  private toAgentRunOptions(input: AgentToolRunnerRunInput): AgentRunOptions {
+    return {
+      model: input.model,
+      temperature: input.temperature,
+      maxTokens: input.maxTokens,
+      responseFormat: input.responseFormat,
+      thinking: input.thinking,
+      metadata: input.metadata,
+      toolChoice: input.toolChoice
+    };
   }
 
   private async assembleMessages(input: AgentToolRunnerRunInput): Promise<LLMMessage[]> {
