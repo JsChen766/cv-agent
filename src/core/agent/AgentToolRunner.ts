@@ -1,4 +1,8 @@
 import type { LLMMessage } from "../model/types.js";
+import { ContextAssembler } from "../conversation/ContextAssembler.js";
+import { ConversationSession } from "../conversation/ConversationSession.js";
+import type { ContextProvider } from "../conversation/ContextProvider.js";
+import type { TokenBudgetTrimOptions } from "../conversation/TokenBudgetManager.js";
 import type { ToolExecutor } from "../tool/ToolExecutor.js";
 import type {
   ToolCall,
@@ -16,6 +20,10 @@ export type AgentToolRunnerConfig = {
   toolExecutor: ToolExecutor;
   maxToolRounds?: number;
   toolExecutionContext?: ToolExecutionContext;
+  conversationSession?: ConversationSession;
+  contextAssembler?: ContextAssembler;
+  trimOptions?: TokenBudgetTrimOptions;
+  contextProviders?: ContextProvider[];
 };
 
 export type AgentToolRunnerRunInput = AgentInput & {
@@ -32,6 +40,7 @@ export type AgentToolRunStep = {
 export type AgentToolRunnerOutput = AgentOutput & {
   steps: AgentToolRunStep[];
   finalMessages: LLMMessage[];
+  conversationSession: ConversationSession;
 };
 
 export class AgentToolRunner {
@@ -39,46 +48,56 @@ export class AgentToolRunner {
   private readonly toolExecutor: ToolExecutor;
   private readonly maxToolRounds: number;
   private readonly toolExecutionContext?: ToolExecutionContext;
+  private readonly conversationSession: ConversationSession;
+  private readonly contextAssembler?: ContextAssembler;
+  private readonly trimOptions?: TokenBudgetTrimOptions;
+  private readonly contextProviders: ContextProvider[];
 
   public constructor(config: AgentToolRunnerConfig) {
     this.agent = config.agent;
     this.toolExecutor = config.toolExecutor;
     this.maxToolRounds = config.maxToolRounds ?? DEFAULT_MAX_TOOL_ROUNDS;
     this.toolExecutionContext = config.toolExecutionContext;
+    this.conversationSession = config.conversationSession ?? new ConversationSession();
+    this.contextAssembler = config.contextAssembler;
+    this.trimOptions = config.trimOptions;
+    this.contextProviders = config.contextProviders ?? [];
   }
 
   public async run(input: AgentToolRunnerRunInput): Promise<AgentToolRunnerOutput> {
     const steps: AgentToolRunStep[] = [];
-    const finalMessages: LLMMessage[] = [
-      ...(input.messages ?? []),
-      { role: "user", content: input.content }
-    ];
+    this.conversationSession.appendMany(input.messages ?? []);
+    this.conversationSession.append({ role: "user", content: input.content });
 
-    let output = await this.agent.run(input);
+    let output = await this.agent.run({
+      ...input,
+      messages: await this.assembleMessages(input),
+      skipAppendingUserContent: true
+    });
 
     while (true) {
       const toolCalls = this.normalizeToolCalls(output.toolCalls ?? [], steps.length + 1);
 
       if (toolCalls.length === 0) {
-        finalMessages.push(this.toAssistantMessage(output));
-        return this.toRunnerOutput(output, steps, finalMessages);
+        this.conversationSession.append(this.toAssistantMessage(output));
+        return this.toRunnerOutput(output, steps);
       }
 
       if (steps.length >= this.maxToolRounds) {
-        finalMessages.push(this.toAssistantMessage(output, toolCalls));
-        return this.toRunnerOutput(output, steps, finalMessages, {
+        this.conversationSession.append(this.toAssistantMessage(output, toolCalls));
+        return this.toRunnerOutput(output, steps, {
           toolLoopStopped: "max_tool_rounds"
         });
       }
 
-      finalMessages.push(this.toAssistantMessage(output, toolCalls));
+      this.conversationSession.append(this.toAssistantMessage(output, toolCalls));
 
       const toolResults = await Promise.all(
         toolCalls.map((toolCall) => this.toolExecutor.executeToolCall(toolCall, this.toolExecutionContext))
       );
 
-      finalMessages.push(
-        ...toolCalls.map((toolCall, index) => this.toToolMessage(toolCall, toolResults[index]))
+      this.conversationSession.appendMany(
+        toolCalls.map((toolCall, index) => this.toToolMessage(toolCall, toolResults[index]))
       );
 
       steps.push({
@@ -90,11 +109,31 @@ export class AgentToolRunner {
 
       output = await this.agent.run({
         ...input,
-        messages: finalMessages,
+        messages: await this.assembleMessages(input),
         content: CONTINUE_WITH_TOOL_RESULTS_PROMPT,
         toolChoice: "auto"
       });
     }
+  }
+
+  private async assembleMessages(input: AgentToolRunnerRunInput): Promise<LLMMessage[]> {
+    const injections = (await Promise.all(
+      this.contextProviders.map((provider) => provider.getContext({
+        sessionId: this.conversationSession.id,
+        task: input.content,
+        metadata: input.metadata
+      }))
+    )).flat();
+
+    if (this.contextAssembler || injections.length || this.trimOptions) {
+      return (this.contextAssembler ?? new ContextAssembler()).assemble({
+        session: this.conversationSession,
+        injections,
+        trimOptions: this.trimOptions
+      }).messages;
+    }
+
+    return this.conversationSession.getLLMMessages();
   }
 
   private normalizeToolCalls(toolCalls: ToolCall[], round: number): ToolCall[] {
@@ -125,7 +164,6 @@ export class AgentToolRunner {
   private toRunnerOutput(
     output: AgentOutput,
     steps: AgentToolRunStep[],
-    finalMessages: LLMMessage[],
     metadata?: Record<string, unknown>
   ): AgentToolRunnerOutput {
     const toolErrors = steps
@@ -140,7 +178,8 @@ export class AgentToolRunner {
         ...metadata
       },
       steps,
-      finalMessages
+      finalMessages: this.conversationSession.getLLMMessages(),
+      conversationSession: this.conversationSession
     };
   }
 }

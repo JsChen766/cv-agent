@@ -49,6 +49,24 @@ Current demos:
 
 This round does not add PDF, Markdown, GitHub, or other business tools. A next step is to add text extraction tools and register them with a future `FrontDeskAgent`.
 
+## Conversation Runtime
+
+The conversation runtime provides the in-memory context layer that tool-calling agents can use before adding larger text-reading tools:
+
+- `ConversationSession` manages single-run or short-term conversation messages. It stores `user`, `assistant`, and `tool` messages with `id` and `createdAt`, and can produce snapshots for future persistence.
+- `AgentToolRunner` can now use a `ConversationSession` to preserve user input, assistant tool-call messages, and tool result messages across tool rounds. `finalMessages` is derived from the session.
+- `TokenBudgetManager` provides conservative char-based approximate token estimation with trimming by message count and approximate token budget. It defaults to preserving system and recent messages while allowing long tool results to be removed.
+- `ContextAssembler` builds the final model context from a session plus optional injected context. It is the placeholder path for future retrieval chunks, user profiles, style memory, experience evidence, and task constraints.
+- `ConversationRepository` and `InMemoryConversationRepository` define the persistence boundary without connecting a database. `ContextProvider` and `NoopContextProvider` define the future retrieval or long-term memory injection boundary.
+
+This is not a long-term memory system yet. It is runtime context management. Future PDF, Markdown, GitHub, or other text-reading tools should avoid permanently stuffing large raw outputs into messages. Large text should be controlled through retrieval and `ContextAssembler` injections.
+
+Demo:
+
+```bash
+npm run dev:conversation-runtime
+```
+
 Knowledge pipeline modules:
 
 ```text

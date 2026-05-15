@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { AgentToolRunner } from "../src/core/agent/AgentToolRunner.js";
 import { BaseAgent } from "../src/core/agent/BaseAgent.js";
+import { ConversationSession } from "../src/core/conversation/ConversationSession.js";
 import { ModelClient } from "../src/core/model/ModelClient.js";
 import type { LLMProvider } from "../src/core/model/LLMProvider.js";
 import type { LLMChatRequest, LLMChatResponse } from "../src/core/model/types.js";
@@ -35,7 +36,13 @@ class FakeToolCallingProvider implements LLMProvider {
   }
 }
 
-function createRunner(provider: FakeToolCallingProvider, maxToolRounds?: number): AgentToolRunner {
+function createRunner(
+  provider: FakeToolCallingProvider,
+  options: {
+    maxToolRounds?: number;
+    conversationSession?: ConversationSession;
+  } = {}
+): AgentToolRunner {
   const modelClient = new ModelClient({
     provider,
     defaultModel: "fake-model",
@@ -48,7 +55,8 @@ function createRunner(provider: FakeToolCallingProvider, maxToolRounds?: number)
   return new AgentToolRunner({
     agent: new TestAgent(modelClient),
     toolExecutor: executor,
-    maxToolRounds
+    maxToolRounds: options.maxToolRounds,
+    conversationSession: options.conversationSession
   });
 }
 
@@ -76,6 +84,8 @@ describe("AgentToolRunner", () => {
     expect(output.content).toBe("No tools needed.");
     expect(output.steps).toHaveLength(0);
     expect(output.finalMessages.map((message) => message.role)).toEqual(["user", "assistant"]);
+    expect(output.conversationSession).toBeInstanceOf(ConversationSession);
+    expect(provider.requests[0].messages.map((message) => message.role)).toEqual(["system", "user"]);
   });
 
   it("executes a single tool call and continues to a final answer", async () => {
@@ -182,7 +192,7 @@ describe("AgentToolRunner", () => {
       toolCalls: [toolCall("echo", { message: "again" }, "call-loop")],
       raw: {}
     }));
-    const runner = createRunner(provider, 1);
+    const runner = createRunner(provider, { maxToolRounds: 1 });
 
     const output = await runner.run({ content: "Keep calling tools." });
 
@@ -216,5 +226,69 @@ describe("AgentToolRunner", () => {
     expect(toolMessage?.toolCallId).toBe("call-1");
     expect(provider.requests[1].messages.some((message) => message.toolCalls?.length)).toBe(true);
     expect(provider.requests[1].messages.some((message) => message.toolCallId === "call-1")).toBe(true);
+  });
+
+  it("uses a provided ConversationSession", async () => {
+    const provider = new FakeToolCallingProvider(() => ({
+      content: "Done.",
+      raw: {}
+    }));
+    const conversationSession = new ConversationSession({ id: "provided-session" });
+    conversationSession.append({ role: "assistant", content: "Earlier context." });
+    const runner = createRunner(provider, { conversationSession });
+
+    const output = await runner.run({ content: "Continue." });
+
+    expect(output.conversationSession).toBe(conversationSession);
+    expect(output.conversationSession.id).toBe("provided-session");
+    expect(output.finalMessages.map((message) => message.content)).toEqual([
+      "Earlier context.",
+      "Continue.",
+      "Done."
+    ]);
+  });
+
+  it("stores user, assistant, and tool messages in the session", async () => {
+    const provider = new FakeToolCallingProvider((_request, call) => call === 1
+      ? {
+          content: "",
+          toolCalls: [toolCall("echo", { message: "hello" }, "call-1")],
+          raw: {}
+        }
+      : {
+          content: "Final answer.",
+          raw: {}
+        });
+    const runner = createRunner(provider);
+
+    const output = await runner.run({ content: "Use echo." });
+
+    expect(output.conversationSession.getLLMMessages().map((message) => message.role)).toEqual([
+      "user",
+      "assistant",
+      "tool",
+      "assistant"
+    ]);
+    expect(output.finalMessages).toEqual(output.conversationSession.getLLMMessages());
+    expect(output.conversationSession.getLLMMessages().find((message) => message.role === "tool")?.toolCallId).toBe("call-1");
+  });
+
+  it("does not duplicate the current user message in model requests", async () => {
+    const provider = new FakeToolCallingProvider(() => ({
+      content: "Done.",
+      raw: {}
+    }));
+    const runner = createRunner(provider);
+
+    await runner.run({
+      messages: [{ role: "assistant", content: "Prior answer." }],
+      content: "Current question."
+    });
+
+    expect(provider.requests[0].messages).toEqual([
+      { role: "system", content: "Use tools when useful." },
+      { role: "assistant", content: "Prior answer." },
+      { role: "user", content: "Current question." }
+    ]);
   });
 });

@@ -9,6 +9,7 @@
     "dev:multi": "tsx src/examples/multi-agent-demo.ts",
     "dev:tool": "tsx src/examples/tool-call-demo.ts",
     "dev:agent-tool-runner": "tsx src/examples/agent-tool-runner-demo.ts",
+    "dev:conversation-runtime": "tsx src/examples/conversation-runtime-demo.ts",
     "dev:memory": "tsx src/examples/memory-demo.ts",
     "dev:knowledge": "tsx src/examples/knowledge-demo.ts",
     "dev:knowledge-pipeline": "tsx src/examples/knowledge-pipeline-demo.ts",

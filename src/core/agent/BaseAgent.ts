@@ -24,7 +24,7 @@ export abstract class BaseAgent {
     const messages = [
       { role: "system" as const, content: this.systemPrompt },
       ...(input.messages ?? []),
-      { role: "user" as const, content: input.content }
+      ...(input.skipAppendingUserContent ? [] : [{ role: "user" as const, content: input.content }])
     ];
 
     const response = await this.modelClient.chat({

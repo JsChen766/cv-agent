@@ -11,6 +11,7 @@ export type AgentInput = {
   thinking?: boolean;
   toolChoice?: "auto" | "none" | "required" | string;
   metadata?: Record<string, unknown>;
+  skipAppendingUserContent?: boolean;
 };
 
 export type AgentOutput = {

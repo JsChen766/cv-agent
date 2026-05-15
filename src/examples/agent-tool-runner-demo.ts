@@ -1,5 +1,6 @@
 import { AgentToolRunner } from "../core/agent/AgentToolRunner.js";
 import { BaseAgent } from "../core/agent/BaseAgent.js";
+import { TokenBudgetManager } from "../core/conversation/TokenBudgetManager.js";
 import { ModelClient } from "../core/model/ModelClient.js";
 import type { LLMProvider } from "../core/model/LLMProvider.js";
 import type { LLMChatRequest, LLMChatResponse } from "../core/model/types.js";
@@ -88,3 +89,11 @@ console.log("\nSteps:");
 console.log(JSON.stringify(output.steps, null, 2));
 console.log("\nFinal messages:");
 console.log(JSON.stringify(output.finalMessages, null, 2));
+console.log("\nConversation session id:");
+console.log(output.conversationSession.id);
+console.log("\nFinal messages count:");
+console.log(output.finalMessages.length);
+console.log("\nApprox token estimate:");
+console.log(new TokenBudgetManager().estimateMessagesTokens(output.conversationSession.getMessages()));
+console.log("\nSession snapshot:");
+console.log(JSON.stringify(output.conversationSession.snapshot(), null, 2));

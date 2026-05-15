@@ -10,6 +10,7 @@ export * from "./core/errors/AgentRuntimeError.js";
 export * from "./core/memory/ConversationContext.js";
 export * from "./core/memory/MemoryManager.js";
 export * from "./core/memory/types.js";
+export * from "./core/conversation/index.js";
 export * from "./core/model/LLMProvider.js";
 export * from "./core/model/ModelClient.js";
 export * from "./core/model/types.js";
