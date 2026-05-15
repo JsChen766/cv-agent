@@ -89,6 +89,9 @@ export class DefaultCvAgentKernel implements CvAgentKernel {
     ctx: KernelRequestContext,
     input: IngestDocumentInput,
   ): Promise<IngestDocumentResult> {
+    // API command path: reuse FrontDeskOrchestrator for now while keeping the facade stable.
+    // TODO: split this into a direct DocumentIngestionService + ExperienceIngestionService
+    // command pipeline. Full FrontDeskAgent intent handling should remain the chat path.
     const response = await this.frontDeskOrchestrator.handle({
       userId: ctx.user.id,
       message: input.message ?? "Import these resume documents.",

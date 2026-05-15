@@ -125,7 +125,7 @@ This repository now implements the P8.0 contract hardening layer from `docs/CONT
 - API routes return the response envelope `{ ok, data, meta }` or `{ ok: false, error, meta }`.
 - `docs/CONTRACT.md` is the source of truth for backend/API/kernel boundaries.
 
-`AUTH_MODE` defaults to `dev_header` today so local development and tests remain simple. Do not treat `x-user-id` as production authentication.
+`AUTH_MODE` defaults to `dev_header` outside production so local development and tests remain simple. In `NODE_ENV=production`, `AUTH_MODE` must be set explicitly. `bearer_token` and `service` are reserved but not implemented yet. Do not treat `x-user-id` as production authentication.
 
 Run it:
 
@@ -404,13 +404,39 @@ import { createInMemoryCooltoDemoService } from "./application/CooltoDemoService
 const demo = createInMemoryCooltoDemoService();
 ```
 
+### Agent Provider Factory
+
+P8.1 adds `AgentProviderFactory` under `src/providers/factory/`. It centralizes `ModelClient` creation for future LLM-backed agents while keeping the current deterministic/mock pipeline stable.
+
+- `AGENT_PROVIDER=mock|deepseek`
+- Non-production defaults to `mock`.
+- Production defaults to `deepseek` and requires `DEEPSEEK_API_KEY`.
+- `DEEPSEEK_MODEL` defaults to `deepseek-chat`.
+- `AGENT_TIMEOUT_MS` defaults to `30000`; `AGENT_MAX_RETRIES` defaults to `0`.
+- `ALLOW_MOCK_FALLBACK` defaults to `true` outside production and `false` in production.
+
+Current agent mode environment variables are parsed but do not switch implementations yet:
+
+```bash
+FRONTDESK_AGENT_MODE=mock|llm
+EXPERIENCE_EXTRACTOR_MODE=deterministic|llm
+ARTIFACT_GENERATOR_MODE=deterministic|llm
+CRITIC_AGENT_MODE=deterministic|llm
+```
+
+This is configuration groundwork only. LLM-backed `FrontDeskAgent`, `ExperienceExtractor`, `ArtifactGenerator`, and `CriticAgent` are not enabled by this step.
+
 ### Connecting real LLMs (DeepSeek / OpenRouter)
 
 1. Set API keys in `.env`: `DEEPSEEK_API_KEY` or `OPENROUTER_API_KEY`.
-2. Create a `ModelClient` with the real provider:
+2. Create a `ModelClient` through `AgentProviderFactory` for DeepSeek:
    ```ts
-   const provider = new DeepSeekProvider({ apiKey: process.env.DEEPSEEK_API_KEY! });
-   const modelClient = new ModelClient({ provider, defaultModel: "deepseek-v4-pro" });
+   const { modelClient } = AgentProviderFactory.create({
+     provider: "deepseek",
+     apiKey: process.env.DEEPSEEK_API_KEY,
+     model: process.env.DEEPSEEK_MODEL ?? "deepseek-chat",
+     allowMockFallback: false,
+   });
    ```
 3. Create agents with that client:
    ```ts

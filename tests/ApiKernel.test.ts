@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import {
   createKernel,
+  createPostgresKernelFromDatabase,
   createPostgresKernelFromDatabaseForTest,
 } from "../src/api/kernel/createKernel.js";
 import type { GenerateResumeResult } from "../src/application/ResumeGenerationService.js";
@@ -11,6 +12,10 @@ import type {
 
 describe("API kernel", () => {
   const originalDatabaseUrl = process.env.DATABASE_URL;
+  const originalAgentProvider = process.env.AGENT_PROVIDER;
+  const originalNodeEnv = process.env.NODE_ENV;
+  const originalDeepSeekApiKey = process.env.DEEPSEEK_API_KEY;
+  const originalAllowMockFallback = process.env.ALLOW_MOCK_FALLBACK;
 
   afterEach(() => {
     if (originalDatabaseUrl === undefined) {
@@ -18,10 +23,32 @@ describe("API kernel", () => {
     } else {
       process.env.DATABASE_URL = originalDatabaseUrl;
     }
+    if (originalAgentProvider === undefined) {
+      delete process.env.AGENT_PROVIDER;
+    } else {
+      process.env.AGENT_PROVIDER = originalAgentProvider;
+    }
+    if (originalNodeEnv === undefined) {
+      delete process.env.NODE_ENV;
+    } else {
+      process.env.NODE_ENV = originalNodeEnv;
+    }
+    if (originalDeepSeekApiKey === undefined) {
+      delete process.env.DEEPSEEK_API_KEY;
+    } else {
+      process.env.DEEPSEEK_API_KEY = originalDeepSeekApiKey;
+    }
+    if (originalAllowMockFallback === undefined) {
+      delete process.env.ALLOW_MOCK_FALLBACK;
+    } else {
+      process.env.ALLOW_MOCK_FALLBACK = originalAllowMockFallback;
+    }
   });
 
   it("creates an in-memory kernel with a generation persistence port when DATABASE_URL is absent", async () => {
     delete process.env.DATABASE_URL;
+    process.env.AGENT_PROVIDER = "mock";
+    process.env.NODE_ENV = "test";
 
     const kernel = await createKernel();
     try {
@@ -35,8 +62,11 @@ describe("API kernel", () => {
   });
 
   it("uses transaction-aware generation persistence in postgres kernel mode", async () => {
+    process.env.AGENT_PROVIDER = "mock";
+    process.env.NODE_ENV = "test";
     const database = new FakePostgresDatabase();
-    const kernel = await createPostgresKernelFromDatabaseForTest(database);
+    expect(createPostgresKernelFromDatabaseForTest).toBe(createPostgresKernelFromDatabase);
+    const kernel = await createPostgresKernelFromDatabase(database);
     try {
       await kernel.generationPersistenceService?.persist(createMinimalGenerateResumeResult());
 
@@ -45,6 +75,26 @@ describe("API kernel", () => {
       expect(database.initializeSchemaCalled).toBe(true);
       expect(database.transactionCalled).toBe(true);
       expect(database.client.queries.some((query) => query.sql.includes("INSERT INTO generation_sessions"))).toBe(true);
+    } finally {
+      await kernel.close();
+    }
+  });
+
+  it("merges agent provider warnings into kernel warnings", async () => {
+    delete process.env.DATABASE_URL;
+    delete process.env.DEEPSEEK_API_KEY;
+    process.env.AGENT_PROVIDER = "deepseek";
+    process.env.ALLOW_MOCK_FALLBACK = "true";
+    process.env.NODE_ENV = "test";
+
+    const kernel = await createKernel();
+    try {
+      expect(kernel.warnings).toContain(
+        "DEEPSEEK_API_KEY is missing. Falling back to MockProvider because allowMockFallback is enabled.",
+      );
+      expect((await kernel.cvAgentKernel.health()).warnings).toContain(
+        "DEEPSEEK_API_KEY is missing. Falling back to MockProvider because allowMockFallback is enabled.",
+      );
     } finally {
       await kernel.close();
     }

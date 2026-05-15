@@ -1,6 +1,6 @@
 # Coolto CV Agent Contract
 
-> Status: Draft v0.1, P8.0 contract hardening implemented  
+> Status: Draft v0.1, P8.0 contract hardening and P8.1 provider factory implemented  
 > Scope: frontend ↔ backend API ↔ cv-agent kernel / SDK  
 > Principle: backend owns authentication and request context; Agent Kernel owns document ingestion, experience knowledge, generation, evidence chains, and graph projections.
 
@@ -73,7 +73,7 @@ Future backend should support:
 AUTH_MODE=dev_header | cookie_session | bearer_token | service
 ```
 
-Current implemented behavior uses `x-user-id` only through the `dev_header` resolver. `AUTH_MODE` defaults to `dev_header` for local development and tests; this is not production authentication.
+Current implemented behavior uses `x-user-id` only through the `dev_header` resolver. `AUTH_MODE` defaults to `dev_header` for local development and tests. In `NODE_ENV=production`, `AUTH_MODE` must be set explicitly. `bearer_token` and `service` are reserved but not implemented yet.
 
 | Mode | Source of user identity | Intended use |
 |---|---|---|
@@ -114,6 +114,14 @@ AGENT_PROVIDER=deepseek
 FRONTDESK_AGENT_MODE=llm
 EXPERIENCE_EXTRACTOR_MODE=llm
 ```
+
+P8.1 implementation notes:
+
+1. `AgentProviderFactory` creates `ModelClient` instances for `mock` or `deepseek`.
+2. Non-production defaults to `AGENT_PROVIDER=mock`.
+3. Production defaults to `AGENT_PROVIDER=deepseek` and requires `DEEPSEEK_API_KEY`.
+4. `ALLOW_MOCK_FALLBACK` defaults to true outside production and false in production.
+5. Agent mode env vars are parsed for future use, but LLM-backed FrontDesk, ExperienceExtractor, ArtifactGenerator, and CriticAgent are not enabled yet.
 
 ---
 
@@ -617,7 +625,7 @@ Use for legacy/local demo adapter. Do not expand SQLite as the main product stor
 
 ### 9.1 Provider Selection
 
-Future `AgentProviderFactory` should provide:
+`AgentProviderFactory` now provides:
 
 ```ts
 export type AgentProviderConfig = {
@@ -626,15 +634,18 @@ export type AgentProviderConfig = {
   apiKey?: string;
   timeoutMs?: number;
   maxRetries?: number;
+  allowMockFallback?: boolean;
+  runtimeMode?: "test" | "development" | "production";
 };
 ```
 
 Rules:
 
-1. Missing DeepSeek key should fall back only if fallback is explicitly enabled.
-2. Tests must default to mock.
+1. Missing DeepSeek key falls back only if `allowMockFallback` is enabled.
+2. Tests and non-production default to mock.
 3. Smoke demos may use real API.
-4. Production must fail fast if configured for real LLM without key.
+4. Production defaults to DeepSeek and fails fast without `DEEPSEEK_API_KEY`.
+5. The factory must not make network requests; it only creates providers and `ModelClient`.
 
 ### 9.2 LLM Output Validation
 
@@ -764,15 +775,22 @@ Status: implemented.
 - Added `KernelRequestContext` type.
 - Added `AuthResolver` abstraction.
 - Kept `x-user-id` behind the dev-only `dev_header` resolver.
+- Production now requires explicit `AUTH_MODE`.
+- `bearer_token` and `service` return reserved-but-not-implemented errors.
 - Added `CvAgentKernel` facade.
 - Moved current routes to the API response envelope.
 - Routes now resolve auth, build `KernelRequestContext`, and call `cvAgentKernel`.
 
 ### P8.1 Real LLM Provider Configuration
 
-- Add `AgentProviderFactory`.
-- Support `AGENT_PROVIDER=mock|deepseek`.
-- Keep tests deterministic.
+Status: implemented.
+
+- Added `AgentProviderFactory`.
+- Supports `AGENT_PROVIDER=mock|deepseek`.
+- Production defaults to DeepSeek and requires `DEEPSEEK_API_KEY`.
+- Non-production defaults to MockProvider.
+- Added agent mode env parsing for future LLM-backed rollout.
+- Default tests remain deterministic and do not call DeepSeek.
 
 ### P8.2 LLM-backed FrontDeskAgent
 

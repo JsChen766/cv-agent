@@ -13,12 +13,21 @@ import type {
 
 describe("API server", () => {
   let originalDatabaseUrl: string | undefined;
+  let originalAuthMode: string | undefined;
+  let originalAgentProvider: string | undefined;
+  let originalNodeEnv: string | undefined;
   let kernel: ApiKernel;
   let server: Awaited<ReturnType<typeof createServer>>;
 
   beforeEach(async () => {
     originalDatabaseUrl = process.env.DATABASE_URL;
+    originalAuthMode = process.env.AUTH_MODE;
+    originalAgentProvider = process.env.AGENT_PROVIDER;
+    originalNodeEnv = process.env.NODE_ENV;
     delete process.env.DATABASE_URL;
+    process.env.AUTH_MODE = "dev_header";
+    process.env.AGENT_PROVIDER = "mock";
+    process.env.NODE_ENV = "test";
     kernel = await createKernel();
     server = await createServer(kernel);
   });
@@ -30,6 +39,21 @@ describe("API server", () => {
       delete process.env.DATABASE_URL;
     } else {
       process.env.DATABASE_URL = originalDatabaseUrl;
+    }
+    if (originalAuthMode === undefined) {
+      delete process.env.AUTH_MODE;
+    } else {
+      process.env.AUTH_MODE = originalAuthMode;
+    }
+    if (originalAgentProvider === undefined) {
+      delete process.env.AGENT_PROVIDER;
+    } else {
+      process.env.AGENT_PROVIDER = originalAgentProvider;
+    }
+    if (originalNodeEnv === undefined) {
+      delete process.env.NODE_ENV;
+    } else {
+      process.env.NODE_ENV = originalNodeEnv;
     }
   });
 

@@ -27,6 +27,7 @@ export * from "./core/workflow/types.js";
 export * from "./providers/DeepSeekProvider.js";
 export * from "./providers/OpenRouterProvider.js";
 export * from "./providers/MockProvider.js";
+export * from "./providers/factory/index.js";
 export * from "./tools/echoTool.js";
 export * from "./tools/getCurrentTimeTool.js";
 export * from "./tools/text/types.js";

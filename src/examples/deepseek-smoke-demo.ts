@@ -1,6 +1,5 @@
 import { fileURLToPath } from "node:url";
-import { ModelClient } from "../core/model/ModelClient.js";
-import { DeepSeekProvider } from "../providers/DeepSeekProvider.js";
+import { AgentProviderFactory } from "../providers/factory/index.js";
 
 export async function runDeepSeekSmokeDemo(): Promise<unknown> {
   const apiKey = process.env.DEEPSEEK_API_KEY;
@@ -11,12 +10,15 @@ export async function runDeepSeekSmokeDemo(): Promise<unknown> {
     };
   }
 
-  const modelClient = new ModelClient({
-    provider: new DeepSeekProvider({ apiKey }),
-    defaultModel: process.env.DEEPSEEK_MODEL ?? "deepseek-chat",
+  const agentProvider = AgentProviderFactory.create({
+    provider: "deepseek",
+    apiKey,
+    model: process.env.DEEPSEEK_MODEL ?? "deepseek-chat",
+    allowMockFallback: false,
     maxRetries: 0,
     timeoutMs: 30_000,
   });
+  const { modelClient } = agentProvider;
 
   const textResponse = await modelClient.chat({
     messages: [

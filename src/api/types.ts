@@ -20,10 +20,14 @@ export type GenerationPersistencePort = {
 export type ApiKernel = {
   mode: ApiMode;
   warnings: string[];
+  /**
+   * Stable backend-facing SDK facade. New API routes must call this facade.
+   */
   cvAgentKernel: CvAgentKernel;
   /**
-   * Legacy/internal fields are kept during the API migration.
-   * New routes should call cvAgentKernel instead of these services directly.
+   * Legacy/transitional internal service fields.
+   * They remain for compatibility with existing tests and demos, but should not
+   * be used by new API routes.
    */
   frontDeskOrchestrator: FrontDeskOrchestrator;
   resumeGenerationService: ResumeGenerationService;

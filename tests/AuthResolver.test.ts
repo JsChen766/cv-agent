@@ -9,12 +9,18 @@ import {
 
 describe("AuthResolver", () => {
   const originalAuthMode = process.env.AUTH_MODE;
+  const originalNodeEnv = process.env.NODE_ENV;
 
   afterEach(() => {
     if (originalAuthMode === undefined) {
       delete process.env.AUTH_MODE;
     } else {
       process.env.AUTH_MODE = originalAuthMode;
+    }
+    if (originalNodeEnv === undefined) {
+      delete process.env.NODE_ENV;
+    } else {
+      process.env.NODE_ENV = originalNodeEnv;
     }
   });
 
@@ -59,11 +65,43 @@ describe("AuthResolver", () => {
       } satisfies Partial<ApiError>);
   });
 
-  it("creates resolver from AUTH_MODE", () => {
+  it("defaults to dev header auth outside production", () => {
+    delete process.env.AUTH_MODE;
+    process.env.NODE_ENV = "test";
+
+    expect(createAuthResolver()).toBeInstanceOf(DevHeaderAuthResolver);
+  });
+
+  it("requires AUTH_MODE in production", () => {
+    delete process.env.AUTH_MODE;
+    process.env.NODE_ENV = "production";
+
+    expect(() => createAuthResolver()).toThrow(
+      "AUTH_MODE must be set in production. Supported values are dev_header and cookie_session.",
+    );
+  });
+
+  it("creates resolver from implemented AUTH_MODE values", () => {
     process.env.AUTH_MODE = "cookie_session";
     expect(createAuthResolver()).toBeInstanceOf(StubCookieSessionAuthResolver);
 
     process.env.AUTH_MODE = "dev_header";
     expect(createAuthResolver()).toBeInstanceOf(DevHeaderAuthResolver);
+  });
+
+  it("rejects reserved auth modes", () => {
+    process.env.AUTH_MODE = "bearer_token";
+    expect(() => createAuthResolver()).toThrow("AUTH_MODE bearer_token is reserved but not implemented yet.");
+
+    process.env.AUTH_MODE = "service";
+    expect(() => createAuthResolver()).toThrow("AUTH_MODE service is reserved but not implemented yet.");
+  });
+
+  it("rejects unknown auth modes", () => {
+    process.env.AUTH_MODE = "unknown";
+
+    expect(() => createAuthResolver()).toThrow(
+      'Unknown AUTH_MODE "unknown". Supported values are dev_header and cookie_session.',
+    );
   });
 });

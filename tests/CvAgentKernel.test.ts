@@ -5,7 +5,11 @@ import { createTestKernelContext } from "../src/kernel/index.js";
 describe("CvAgentKernel", () => {
   it("runs health, document ingestion, and generation through the facade", async () => {
     const originalDatabaseUrl = process.env.DATABASE_URL;
+    const originalAgentProvider = process.env.AGENT_PROVIDER;
+    const originalNodeEnv = process.env.NODE_ENV;
     delete process.env.DATABASE_URL;
+    process.env.AGENT_PROVIDER = "mock";
+    process.env.NODE_ENV = "test";
     const kernel = await createKernel();
 
     try {
@@ -59,6 +63,16 @@ describe("CvAgentKernel", () => {
         delete process.env.DATABASE_URL;
       } else {
         process.env.DATABASE_URL = originalDatabaseUrl;
+      }
+      if (originalAgentProvider === undefined) {
+        delete process.env.AGENT_PROVIDER;
+      } else {
+        process.env.AGENT_PROVIDER = originalAgentProvider;
+      }
+      if (originalNodeEnv === undefined) {
+        delete process.env.NODE_ENV;
+      } else {
+        process.env.NODE_ENV = originalNodeEnv;
       }
     }
   });

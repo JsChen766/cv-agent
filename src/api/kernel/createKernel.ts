@@ -9,7 +9,6 @@ import {
   EvidenceChainQueryService,
   GraphViewQueryService,
 } from "../../application/query/index.js";
-import { ModelClient } from "../../core/model/ModelClient.js";
 import {
   ExperienceIngestionService,
   InMemoryEvidenceRepository,
@@ -19,7 +18,7 @@ import {
   InMemorySkillRepository,
   KeywordExperienceRetriever,
 } from "../../knowledge/index.js";
-import { MockProvider } from "../../providers/MockProvider.js";
+import { AgentProviderFactory } from "../../providers/factory/index.js";
 import type {
   DocumentRepository,
   EvidenceChainSnapshot,
@@ -56,10 +55,10 @@ export async function createKernel(): Promise<ApiKernel> {
 
 async function createPostgresKernel(databaseUrl: string): Promise<ApiKernel> {
   const database = new PostgresDatabase({ connectionString: databaseUrl });
-  return createPostgresKernelFromDatabaseForTest(database);
+  return createPostgresKernelFromDatabase(database);
 }
 
-export async function createPostgresKernelFromDatabaseForTest(
+export async function createPostgresKernelFromDatabase(
   database: Pick<PostgresDatabase, "initializeSchema" | "query" | "transaction" | "close">,
 ): Promise<ApiKernel> {
   await database.initializeSchema();
@@ -92,6 +91,8 @@ export async function createPostgresKernelFromDatabaseForTest(
     close: () => database.close(),
   });
 }
+
+export const createPostgresKernelFromDatabaseForTest = createPostgresKernelFromDatabase;
 
 function createInMemoryKernel(): ApiKernel {
   const documentRepository = new InMemoryDocumentRepository();
@@ -149,12 +150,9 @@ function buildKernel(input: BuildKernelInput): ApiKernel {
       input.graphViewRepository,
       input.bundleRepository,
     );
+  const agentProvider = AgentProviderFactory.create(AgentProviderFactory.fromEnv());
   const frontDeskAgent = new FrontDeskAgent({
-    modelClient: new ModelClient({
-      provider: new MockProvider(),
-      defaultModel: "mock",
-      maxRetries: 0,
-    }),
+    modelClient: agentProvider.modelClient,
   });
   const frontDeskOrchestrator = new FrontDeskOrchestrator(
     frontDeskAgent,
@@ -168,7 +166,7 @@ function buildKernel(input: BuildKernelInput): ApiKernel {
     },
   );
 
-  const warnings = input.warnings ?? [];
+  const warnings = [...(input.warnings ?? []), ...agentProvider.warnings];
   const cvAgentKernel = new DefaultCvAgentKernel({
     mode: input.mode,
     warnings,
