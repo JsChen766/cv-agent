@@ -1,8 +1,9 @@
 import type { FrontDeskAgent } from "../../agents/FrontDeskAgent.js";
+import type { DocumentIngestionService } from "../documents/DocumentIngestionService.js";
 import type { ExperienceIngestionService } from "../../knowledge/ingestion/ExperienceIngestionService.js";
 import type { ResumeGenerationService } from "../ResumeGenerationService.js";
 import { DocumentLoaderTool } from "../../tools/document/DocumentLoaderTool.js";
-import type { DocumentInput } from "../../tools/document/types.js";
+import type { DocumentInput, ExtractedTextDocument } from "../../tools/document/types.js";
 import type { FrontDeskRequest, FrontDeskResponse } from "./types.js";
 
 export class FrontDeskOrchestrator {
@@ -11,6 +12,7 @@ export class FrontDeskOrchestrator {
     private readonly documentLoader: DocumentLoaderTool,
     private readonly ingestionService: ExperienceIngestionService,
     private readonly resumeGenerationService: ResumeGenerationService,
+    private readonly documentIngestionService?: DocumentIngestionService,
   ) {}
 
   public async handle(input: FrontDeskRequest): Promise<FrontDeskResponse> {
@@ -30,7 +32,7 @@ export class FrontDeskOrchestrator {
           warnings: ["FrontDeskAgent requested document ingestion, but no document input was provided."],
         };
       }
-      const extractedDocument = await this.documentLoader.load(documentInput);
+      const extractedDocument = await this.loadDocument(documentInput);
       const ingestResult = await this.ingestionService.ingest({
         userId: input.userId,
         rawText: extractedDocument.text,
@@ -49,7 +51,7 @@ export class FrontDeskOrchestrator {
 
     if (decision.intent === "add_experience_text") {
       const documentInput = this.toPlainTextDocumentInput(input);
-      const extractedDocument = await this.documentLoader.load(documentInput);
+      const extractedDocument = await this.loadDocument(documentInput);
       const ingestResult = await this.ingestionService.ingest({
         userId: input.userId,
         rawText: extractedDocument.text,
@@ -102,6 +104,12 @@ export class FrontDeskOrchestrator {
         source: "chat",
       },
     };
+  }
+
+  private async loadDocument(input: DocumentInput): Promise<ExtractedTextDocument> {
+    return this.documentIngestionService
+      ? this.documentIngestionService.ingest(input)
+      : this.documentLoader.load(input);
   }
 
   private extractStringArgument(

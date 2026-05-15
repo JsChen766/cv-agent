@@ -83,6 +83,8 @@ The project now includes a minimal product kernel that can ingest real document 
 - `FrontDeskAgent` classifies user intent into structured `FrontDeskDecision` JSON, validated with zod.
 - `FrontDeskOrchestrator` executes the decision by calling document loading, `ExperienceIngestionService`, and `ResumeGenerationService`.
 - `src/persistence/sqlite/` provides SQLite-backed repositories for experiences, evidences, skills, JD requirements, and generated artifacts. It uses `sql.js` so the kernel can run on Node 20 without native SQLite bindings.
+- `DocumentIngestionService` is the persistence wrapper for documents. `DocumentLoaderTool` still only parses files; saving the parsed document is an application-service concern.
+- `GenerationPersistenceService` saves generation sessions, evidence-chain snapshots, graph-view snapshots, and artifact bundle links after `ResumeGenerationService` has produced the generation result.
 
 Run the kernel demo:
 
@@ -91,6 +93,31 @@ npm run dev:agent-kernel
 ```
 
 The demo imports a simulated Markdown resume document, extracts text, ingests Experience/Evidence/Skill records into SQLite, generates resume artifacts for a JD, and prints frontend-consumable JSON containing artifacts, evidence chains, graph views, coverage, gap, and critique reports.
+
+## Persistence Strategy
+
+- `InMemory` repositories are for deterministic tests and small demos.
+- `SQLite/sql.js` repositories are the local demo adapter. They remain in place and are not the production storage target.
+- `PostgreSQL` is the production storage direction. The current adapter uses lightweight SQL through `pg`, not Prisma, Drizzle, TypeORM, or an HTTP server.
+- Graph DB is not introduced yet. `GraphView` is currently a projection/snapshot persisted for frontend display, not a Neo4j-backed graph model.
+
+PostgreSQL schema lives in `src/persistence/postgres/schema.sql` and is repeatable with `CREATE TABLE IF NOT EXISTS` / `CREATE INDEX IF NOT EXISTS`. It includes:
+
+- `documents` for uploaded source metadata, extracted text, parser status, previews, and parser metadata.
+- `experiences`, `evidences`, `skills`, `jd_requirements`, and `generated_artifacts` for the core knowledge records.
+- `jd_profiles` for preserving a JD input separately from extracted requirements.
+- `generation_sessions`, `generation_artifact_bundles`, `evidence_chain_snapshots`, and `graph_view_snapshots` for reloadable generation records that a future frontend can show without recomputing every chain or graph.
+- `artifact_decisions`, `coverage_gap_decisions`, and `agent_runs` for future review workflow and audit/debug data.
+
+Run the PostgreSQL kernel demo:
+
+```bash
+DATABASE_URL=postgres://user:pass@localhost:5432/cv_agent npm run dev:postgres-kernel
+```
+
+If `DATABASE_URL` is not set, the demo exits cleanly with a setup hint. It still uses deterministic/mock agents and does not call DeepSeek.
+
+Current non-goals remain: no HTTP API, no frontend, no auth system, no real PDF/DOCX parser, no Neo4j, no pgvector, and no real DeepSeek smoke path in this round.
 
 ## Conversation Runtime
 

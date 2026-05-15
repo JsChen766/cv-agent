@@ -17,6 +17,7 @@
     "dev:agent-ingest": "tsx src/examples/agent-ingest-demo.ts",
     "dev:agent-coolto": "tsx src/examples/agent-coolto-demo.ts",
     "dev:agent-kernel": "tsx src/examples/agent-kernel-demo.ts",
+    "dev:postgres-kernel": "tsx src/examples/postgres-kernel-demo.ts",
     "dev:generation-session": "tsx src/examples/generation-session-demo.ts",
     "dev:generation-session-forced-gap": "tsx src/examples/generation-session-forced-gap-demo.ts",
     "test": "vitest run",
@@ -24,11 +25,13 @@
   },
   "dependencies": {
     "dotenv": "^16.4.7",
+    "pg": "^8.20.0",
     "sql.js": "^1.14.1",
     "zod": "^4.4.3"
   },
   "devDependencies": {
     "@types/node": "^20.17.10",
+    "@types/pg": "^8.20.0",
     "tsx": "^4.19.2",
     "typescript": "^5.7.2",
     "vitest": "^2.1.8"
