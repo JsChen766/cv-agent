@@ -13,6 +13,9 @@ import type {
   PersistedGenerationSessionRepository,
 } from "../../persistence/repositories.js";
 
+// This generic service does not own transaction boundaries.
+// Database-specific factories should wrap it in a transaction.
+// For PostgreSQL, use createPostgresGenerationPersistenceService.
 export class GenerationPersistenceService {
   public constructor(
     private readonly sessionRepository: PersistedGenerationSessionRepository,

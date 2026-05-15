@@ -1,0 +1,8 @@
+-- 0001_initial_schema
+-- The initial PostgreSQL schema for the cv-agent product kernel.
+-- For new databases, schema.sql contains the full current schema.
+-- This migration file records the baseline version; run schema.sql first, then
+-- apply incremental migrations from this directory in filename order.
+--
+-- This migration is a no-op marker for the initial schema baseline.
+-- The actual schema creation is handled by schema.sql via initializeSchema().

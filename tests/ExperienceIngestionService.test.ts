@@ -109,9 +109,52 @@ describe("ExperienceIngestionService", () => {
     });
 
     expect(result.experience.sourceDocumentId).toBe("doc-1");
-    expect(result.experience.metadata).toEqual({ sourceDocumentId: "doc-1" });
+    expect(result.experience.metadata?.sourceDocumentId).toBe("doc-1");
+    expect(result.experience.metadata?.ingestion).toBeDefined();
     expect(result.evidences[0].sourceDocumentId).toBe("doc-1");
-    expect(result.evidences[0].metadata).toEqual({ sourceDocumentId: "doc-1" });
+    expect(result.evidences[0].metadata?.sourceDocumentId).toBe("doc-1");
+    expect(result.evidences[0].metadata?.chunk).toBeDefined();
+  });
+
+  it("enriches metadata with document and chunk info when documentMetadata is passed", async () => {
+    const service = new ExperienceIngestionService(
+      new InMemoryExperienceRepository(),
+      new InMemoryEvidenceRepository(),
+      new InMemorySkillRepository(),
+    );
+
+    const result = await service.ingest({
+      userId: "user-1",
+      rawText: "Built a React component library.",
+      sourceDocumentId: "doc-1",
+      sourceRef: "upload:resume.md",
+      sourceType: "resume",
+      documentMetadata: {
+        documentId: "doc-1",
+        fileName: "resume.md",
+        sourceType: "markdown",
+        sourceRef: "upload:resume.md",
+        parser: "markdown",
+        textLength: 33,
+      },
+    });
+
+    // experience metadata
+    expect(result.experience.sourceDocumentId).toBe("doc-1");
+    expect(result.experience.metadata?.sourceDocumentId).toBe("doc-1");
+    expect(result.experience.metadata?.sourceRef).toBe("upload:resume.md");
+    expect(result.experience.metadata?.sourceType).toBe("resume");
+    expect((result.experience.metadata?.document as Record<string, unknown>)?.fileName).toBe("resume.md");
+    expect((result.experience.metadata?.document as Record<string, unknown>)?.parser).toBe("markdown");
+    expect(result.experience.metadata?.ingestion).toBeDefined();
+
+    // evidence metadata
+    const evidence = result.evidences[0];
+    expect(evidence.sourceDocumentId).toBe("doc-1");
+    expect(evidence.metadata?.sourceDocumentId).toBe("doc-1");
+    expect((evidence.metadata?.chunk as Record<string, unknown>)?.evidenceIndex).toBe(0);
+    expect((evidence.metadata?.chunk as Record<string, unknown>)?.excerptLength).toBeGreaterThan(0);
+    expect((evidence.metadata?.document as Record<string, unknown>)?.parser).toBe("markdown");
   });
 
   it("completes omitted WCAG and API evidence from raw text", async () => {

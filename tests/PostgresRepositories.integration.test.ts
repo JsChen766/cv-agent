@@ -104,9 +104,26 @@ async function cleanupUser(database: PostgresDatabase, userId: string): Promise<
 }
 
 function createFixture(userId: string) {
+  const suffix = userId;
   const now = "2024-01-01T00:00:00.000Z";
+  const documentId = `doc-${suffix}`;
+  const experienceId = `exp-${suffix}`;
+  const evidenceId = `evidence-${suffix}`;
+  const skillId = `skill-${suffix}`;
+  const requirementId = `req-${suffix}`;
+  const artifactId = `artifact-${suffix}`;
+  const sessionId = `session-${suffix}`;
+  const chainId = `chain-${suffix}`;
+  const chainSnapshotId = `chain-snapshot-${suffix}`;
+  const graphSnapshotId = `graph-snapshot-${suffix}`;
+  const bundleId = `bundle-${suffix}`;
+  const jdId = `jd-${suffix}`;
+  const coverageId = `coverage-${suffix}`;
+  const gapId = `gap-${suffix}`;
+  const critiqueId = `critique-${suffix}`;
+
   const document: ExtractedTextDocument = {
-    documentId: "doc-integration",
+    documentId,
     userId,
     sourceType: "markdown",
     fileName: "resume.md",
@@ -114,12 +131,12 @@ function createFixture(userId: string) {
     text: "Built React systems.",
     textPreview: "Built React systems.",
     textLength: 20,
-    sourceRef: "upload:resume.md",
+    sourceRef: `upload:${suffix}:resume.md`,
     metadata: { parser: "integration", source: "test" },
     createdAt: now,
   };
   const experience: Experience = {
-    id: "exp-integration",
+    id: experienceId,
     userId,
     type: "work",
     organization: "Acme",
@@ -127,55 +144,55 @@ function createFixture(userId: string) {
     summary: "Built React systems.",
     timeRange: { startDate: null, endDate: null },
     star: { situation: "s", task: "t", action: "a", result: "r" },
-    evidenceIds: ["evidence-integration"],
-    skillIds: ["skill-integration"],
+    evidenceIds: [evidenceId],
+    skillIds: [skillId],
     confidence: 0.9,
-    sourceDocumentId: document.documentId,
-    metadata: { sourceDocumentId: document.documentId },
+    sourceDocumentId: documentId,
+    metadata: { sourceDocumentId: documentId },
     createdAt: now,
     updatedAt: now,
   };
   const evidence: Evidence = {
-    id: "evidence-integration",
+    id: evidenceId,
     userId,
-    experienceId: experience.id,
+    experienceId,
     sourceType: "resume",
     evidenceType: "project",
     sourceRef: document.sourceRef,
     excerpt: "Built React systems.",
     confidence: 0.9,
-    sourceDocumentId: document.documentId,
-    metadata: { sourceDocumentId: document.documentId },
+    sourceDocumentId: documentId,
+    metadata: { sourceDocumentId: documentId },
     createdAt: now,
   };
   const skill: Skill = {
-    id: "skill-integration",
+    id: skillId,
     userId,
     name: "React",
     category: "technical",
-    evidenceIds: [evidence.id],
+    evidenceIds: [evidenceId],
     createdAt: now,
     updatedAt: now,
   };
   const requirement: JDRequirement = {
-    id: "req-integration",
+    id: requirementId,
     userId,
-    jdId: "jd-integration",
+    jdId,
     description: "React experience",
-    requiredSkillIds: [skill.id],
+    requiredSkillIds: [skillId],
     weight: 1,
     createdAt: now,
   };
   const artifact: GeneratedArtifact = {
-    id: "artifact-integration",
+    id: artifactId,
     userId,
     type: "resume_bullet",
     content: "Built React systems.",
-    sourceExperienceIds: [experience.id],
-    sourceEvidenceIds: [evidence.id],
-    matchedSkillIds: [skill.id],
-    targetJDId: requirement.jdId,
-    targetRequirementIds: [requirement.id],
+    sourceExperienceIds: [experienceId],
+    sourceEvidenceIds: [evidenceId],
+    matchedSkillIds: [skillId],
+    targetJDId: jdId,
+    targetRequirementIds: [requirementId],
     targetRole: "Frontend Engineer",
     scores: { overall: 0.9, requirementMatch: 0.9, evidenceStrength: 0.9 },
     status: "ready",
@@ -183,7 +200,7 @@ function createFixture(userId: string) {
     updatedAt: now,
   };
   const chain: EvidenceChain = {
-    id: "chain-integration",
+    id: chainId,
     artifact,
     summary: "Supported.",
     requirementMatches: [],
@@ -202,27 +219,27 @@ function createFixture(userId: string) {
     createdAt: now,
   };
   const graph: GraphView = {
-    nodes: [{ id: artifact.id, type: "artifact", label: "Artifact", detail: artifact.content }],
+    nodes: [{ id: artifactId, type: "artifact", label: "Artifact", detail: artifact.content }],
     edges: [],
   };
   const session: GenerationSession = {
-    id: "session-integration",
+    id: sessionId,
     userId,
-    jdId: requirement.jdId,
+    jdId,
     generation: {
       userId,
-      jdId: requirement.jdId,
+      jdId,
       jdText: "Need React.",
       targetRole: "Frontend Engineer",
       requirements: [requirement],
       retrievedExperiences: [],
       artifacts: [{ artifact, evidenceChain: chain, graphView: graph }],
       coverageReport: {
-        id: "coverage-integration",
-        jdId: requirement.jdId,
+        id: coverageId,
+        jdId,
         userId,
         totalRequirements: 1,
-        coveredRequirementIds: [requirement.id],
+        coveredRequirementIds: [requirementId],
         weaklyCoveredRequirementIds: [],
         evidenceAvailableButNotUsedRequirementIds: [],
         noEvidenceRequirementIds: [],
@@ -232,9 +249,9 @@ function createFixture(userId: string) {
         createdAt: now,
       },
       coverageGapReport: {
-        id: "gap-integration",
+        id: gapId,
         userId,
-        jdId: requirement.jdId,
+        jdId,
         items: [],
         supplementalArtifactCount: 0,
         evidenceRequestCount: 0,
@@ -242,9 +259,9 @@ function createFixture(userId: string) {
         createdAt: now,
       },
       critiqueReport: {
-        id: "critique-integration",
+        id: critiqueId,
         userId,
-        jdId: requirement.jdId,
+        jdId,
         items: [],
         summary: "Pass.",
         createdAt: now,
@@ -268,30 +285,30 @@ function createFixture(userId: string) {
     artifact,
     session,
     chainSnapshot: {
-      id: "chain-snapshot-integration",
+      id: chainSnapshotId,
       userId,
-      sessionId: session.id,
-      artifactId: artifact.id,
+      sessionId,
+      artifactId,
       chain,
       createdAt: now,
       updatedAt: now,
     },
     graphSnapshot: {
-      id: "graph-snapshot-integration",
+      id: graphSnapshotId,
       userId,
       scopeType: "artifact" as const,
-      scopeId: artifact.id,
+      scopeId: artifactId,
       graph,
       createdAt: now,
       updatedAt: now,
     },
     bundle: {
-      id: "bundle-integration",
+      id: bundleId,
       userId,
-      sessionId: session.id,
-      artifactId: artifact.id,
-      evidenceChainSnapshotId: "chain-snapshot-integration",
-      graphViewSnapshotId: "graph-snapshot-integration",
+      sessionId,
+      artifactId,
+      evidenceChainSnapshotId: chainSnapshotId,
+      graphViewSnapshotId: graphSnapshotId,
       decisionStatus: "undecided" as const,
       metadata: {},
       createdAt: now,

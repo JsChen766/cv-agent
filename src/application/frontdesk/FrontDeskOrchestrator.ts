@@ -39,6 +39,14 @@ export class FrontDeskOrchestrator {
         sourceRef: extractedDocument.sourceRef,
         sourceType: "resume",
         sourceDocumentId: extractedDocument.documentId,
+        documentMetadata: {
+          documentId: extractedDocument.documentId,
+          fileName: extractedDocument.fileName,
+          sourceType: extractedDocument.sourceType,
+          sourceRef: extractedDocument.sourceRef,
+          parser: extractedDocument.metadata.parser,
+          textLength: extractedDocument.textLength,
+        },
       });
       return {
         decision,
@@ -59,6 +67,14 @@ export class FrontDeskOrchestrator {
         sourceRef: extractedDocument.sourceRef,
         sourceType: "manual",
         sourceDocumentId: extractedDocument.documentId,
+        documentMetadata: {
+          documentId: extractedDocument.documentId,
+          fileName: extractedDocument.fileName,
+          sourceType: extractedDocument.sourceType,
+          sourceRef: extractedDocument.sourceRef,
+          parser: extractedDocument.metadata.parser,
+          textLength: extractedDocument.textLength,
+        },
       });
       return {
         decision,

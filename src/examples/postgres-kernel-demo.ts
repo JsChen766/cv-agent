@@ -92,6 +92,14 @@ export async function runPostgresKernelDemo(): Promise<unknown> {
       sourceRef: extractedDocument.sourceRef,
       sourceType: "resume",
       sourceDocumentId: extractedDocument.documentId,
+      documentMetadata: {
+        documentId: extractedDocument.documentId,
+        fileName: extractedDocument.fileName,
+        sourceType: extractedDocument.sourceType,
+        sourceRef: extractedDocument.sourceRef,
+        parser: extractedDocument.metadata.parser,
+        textLength: extractedDocument.textLength,
+      },
     });
 
     const jdText = [
@@ -122,6 +130,9 @@ export async function runPostgresKernelDemo(): Promise<unknown> {
         evidenceCount: ingestResult.evidences.length,
         firstEvidenceSourceDocumentId: ingestResult.evidences[0]?.sourceDocumentId,
         skillCount: ingestResult.skills.length,
+        experienceDocFileName: (ingestResult.experience.metadata?.document as Record<string, unknown>)?.fileName,
+        firstEvidenceChunkIndex: (ingestResult.evidences[0]?.metadata?.chunk as Record<string, unknown>)?.evidenceIndex,
+        firstEvidenceDocParser: (ingestResult.evidences[0]?.metadata?.document as Record<string, unknown>)?.parser,
       },
       generation: {
         sessionId: persistedGeneration.session.id,

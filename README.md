@@ -100,8 +100,37 @@ The demo imports a simulated Markdown resume document, extracts text, ingests Ex
 - `SQLite/sql.js` repositories are the local demo adapter. They remain in place and are not the production storage target.
 - `PostgreSQL` is the production storage direction. The current adapter uses lightweight SQL through `pg`, not Prisma, Drizzle, TypeORM, or an HTTP server.
 - Graph DB is not introduced yet. `GraphView` is currently a projection/snapshot persisted for frontend display, not a Neo4j-backed graph model.
-- Document ingestion now links parsed documents to generated `Experience` and `Evidence` records through `sourceDocumentId`.
-- Future backend/API code must use user-scoped repository methods such as `getByIdForUser(userId, id)` and `deleteForUser(userId, id)` instead of exposing legacy `getById(id)` methods directly.
+
+### No database-level foreign keys
+
+The PostgreSQL schema intentionally avoids database foreign keys. Referential integrity is enforced at the application/service layer. The reason: historical agent snapshots, evidence chains, graph projections, and generated artifacts must stay stable even if source records are edited or deleted. Do not add FOREIGN KEY / REFERENCES unless the persistence strategy is explicitly changed.
+
+### API-safe repository usage
+
+Future backend/API code must use user-scoped repository methods such as `getByIdForUser(userId, id)` and `deleteForUser(userId, id)` instead of exposing legacy `getById(id)` / `delete(id)` methods directly. Legacy methods exist only to satisfy current repository interfaces and are annotated as such. See `PostgresExperienceRepository`, `PostgresEvidenceRepository`, `PostgresGeneratedArtifactRepository`, `PostgresSkillRepository`, and `PostgresJDRequirementRepository` for the annotation pattern.
+
+### Document lineage
+
+Document ingestion links parsed documents to generated `Experience` and `Evidence` records through `sourceDocumentId`. Experience and Evidence metadata now stores document, parser, source, and chunk information from the ingestion pipeline:
+
+- `Experience.metadata.document`: file name, source type, parser, text length.
+- `Evidence.metadata.chunk`: evidence index and excerpt length within the source document.
+- `Evidence.metadata.document`: same document metadata for direct evidence-to-document traceability.
+
+`FrontDeskOrchestrator` and `postgres-kernel-demo` pass `documentMetadata` from `DocumentIngestionService` results into `ExperienceIngestionService.ingest()` so the full document lineage is recorded.
+
+### Generation persistence
+
+The generic `GenerationPersistenceService` does not own transaction boundaries — it performs sequential writes through the provided repositories. For PostgreSQL, always use `createPostgresGenerationPersistenceService(database)` so that all session, snapshot, and bundle writes share the same transaction. The factory creates transaction-scoped repositories inside `database.transaction`.
+
+### Migrations
+
+`schema.sql` is the full schema for new databases. The `migrations/` directory under `src/persistence/postgres/` is reserved for incremental schema changes:
+
+- `0001_initial_schema.sql` — baseline marker (new databases use schema.sql).
+- `0002_add_generation_session_generation.sql` — example incremental migration for the generation column.
+
+`PostgresDatabase.initializeSchema()` runs `schema.sql`. `PostgresDatabase.runMigrations()` runs `schema.sql` plus all `*.sql` files in `migrations/` in filename order. Migration statements are split on semicolons for simple multi-statement execution. For future migrations, add a new numbered file in `migrations/` and call `runMigrations()`.
 
 PostgreSQL schema lives in `src/persistence/postgres/schema.sql` and is repeatable with `CREATE TABLE IF NOT EXISTS` / `CREATE INDEX IF NOT EXISTS`. It includes:
 

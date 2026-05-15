@@ -30,6 +30,15 @@ export type IngestExperienceInput = {
   sourceRef?: string;
   sourceType?: EvidenceSourceType;
   sourceDocumentId?: string;
+  metadata?: Record<string, unknown>;
+  documentMetadata?: {
+    documentId?: string;
+    fileName?: string;
+    sourceType?: string;
+    sourceRef?: string;
+    parser?: string;
+    textLength?: number;
+  };
 };
 
 export type IngestExperienceResult = {
@@ -65,23 +74,50 @@ export class ExperienceIngestionService {
     const now = new Date().toISOString();
     const experienceId = stableId("exp", `${input.userId}:${input.rawText}`);
 
-    const evidences = evidenceExcerpts.map((excerpt, index) => ({
-      id: `${experienceId}-ev-${index + 1}`,
-      userId: input.userId,
-      experienceId,
-      sourceType: input.sourceType ?? "raw_input",
-      evidenceType: this.detectEvidenceType(excerpt),
-      sourceRef: input.sourceRef ?? "raw-experience-input",
-      excerpt,
-      confidence: this.detectEvidenceConfidence(excerpt),
-      ...(input.sourceDocumentId ? {
-        sourceDocumentId: input.sourceDocumentId,
-        metadata: { sourceDocumentId: input.sourceDocumentId },
-      } : {}),
-      createdAt: now,
-    }));
+    const evidences = evidenceExcerpts.map((excerpt, index) => {
+      const evidenceMetadata: Record<string, unknown> = {
+        ...input.metadata,
+        ...(input.sourceDocumentId ? { sourceDocumentId: input.sourceDocumentId } : {}),
+        sourceRef: input.sourceRef ?? "raw-experience-input",
+        sourceType: input.sourceType ?? "raw_input",
+        ...(input.documentMetadata ? { document: input.documentMetadata } : {}),
+        chunk: {
+          evidenceIndex: index,
+          excerptLength: excerpt.length,
+        },
+        ingestion: {
+          createdFrom: "ExperienceIngestionService",
+          extractor: this.extractor.constructor.name,
+        },
+      };
+      return {
+        id: `${experienceId}-ev-${index + 1}`,
+        userId: input.userId,
+        experienceId,
+        sourceType: input.sourceType ?? "raw_input",
+        evidenceType: this.detectEvidenceType(excerpt),
+        sourceRef: input.sourceRef ?? "raw-experience-input",
+        excerpt,
+        confidence: this.detectEvidenceConfidence(excerpt),
+        ...(input.sourceDocumentId ? { sourceDocumentId: input.sourceDocumentId } : {}),
+        metadata: evidenceMetadata,
+        createdAt: now,
+      };
+    });
 
     const skills = await this.upsertSkills(input.userId, input.rawText, evidences, now);
+
+    const experienceMetadata: Record<string, unknown> = {
+      ...input.metadata,
+      ...(input.sourceDocumentId ? { sourceDocumentId: input.sourceDocumentId } : {}),
+      sourceRef: input.sourceRef ?? "raw-experience-input",
+      sourceType: input.sourceType ?? "raw_input",
+      ...(input.documentMetadata ? { document: input.documentMetadata } : {}),
+      ingestion: {
+        createdFrom: "ExperienceIngestionService",
+        extractor: this.extractor.constructor.name,
+      },
+    };
 
     const experience: Experience = {
       id: experienceId,
@@ -102,10 +138,8 @@ export class ExperienceIngestionService {
       evidenceIds: evidences.map((e) => e.id),
       skillIds: skills.map((s) => s.id),
       confidence: evidences.length > 1 ? 0.82 : 0.68,
-      ...(input.sourceDocumentId ? {
-        sourceDocumentId: input.sourceDocumentId,
-        metadata: { sourceDocumentId: input.sourceDocumentId },
-      } : {}),
+      ...(input.sourceDocumentId ? { sourceDocumentId: input.sourceDocumentId } : {}),
+      metadata: experienceMetadata,
       createdAt: now,
       updatedAt: now,
     };

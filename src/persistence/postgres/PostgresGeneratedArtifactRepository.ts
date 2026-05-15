@@ -6,6 +6,8 @@ import { jsonValue, optionalText, text, timestamp, type PgRow } from "./rowUtils
 export class PostgresGeneratedArtifactRepository implements GeneratedArtifactRepository {
   public constructor(private readonly database: Pick<PostgresDatabase, "query">) {}
 
+  // Legacy interface method. Do not expose through backend/API.
+  // Prefer getByIdForUser.
   public async getById(id: string): Promise<GeneratedArtifact | null> {
     const result = await this.database.query<PgRow>(
       "SELECT * FROM generated_artifacts WHERE id = $1 LIMIT 1",
@@ -81,6 +83,8 @@ export class PostgresGeneratedArtifactRepository implements GeneratedArtifactRep
     );
   }
 
+  // Legacy interface method. Do not expose through backend/API.
+  // Prefer deleteForUser.
   public async delete(id: string): Promise<void> {
     await this.database.query("DELETE FROM generated_artifacts WHERE id = $1", [id]);
   }

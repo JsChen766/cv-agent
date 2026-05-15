@@ -71,6 +71,35 @@ export class PostgresDatabase {
 
   public async runMigrations(): Promise<void> {
     await this.initializeSchema();
+    await this.executeMigrationFiles();
+  }
+
+  private async executeMigrationFiles(): Promise<void> {
+    const migrationsDir = join(dirname(fileURLToPath(import.meta.url)), "migrations");
+    let entries: string[];
+    try {
+      const fs = await import("node:fs/promises");
+      entries = await fs.readdir(migrationsDir);
+    } catch {
+      // migrations directory does not exist or cannot be read; skip
+      return;
+    }
+    const sqlFiles = entries
+      .filter((name) => name.endsWith(".sql"))
+      .sort();
+    for (const file of sqlFiles) {
+      const filePath = join(migrationsDir, file);
+      const content = readFileSync(filePath, "utf8").trim();
+      if (content.length === 0) continue;
+      // split by semicolons for multi-statement files (simple lightweight approach)
+      const statements = content
+        .split(";")
+        .map((s) => s.trim())
+        .filter((s) => s.length > 0);
+      for (const stmt of statements) {
+        await this.query(stmt);
+      }
+    }
   }
 
   public async close(): Promise<void> {

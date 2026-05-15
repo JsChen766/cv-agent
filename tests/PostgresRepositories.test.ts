@@ -110,6 +110,20 @@ describe("PostgreSQL repositories", () => {
     expect(database.queries[1].params).toEqual(["user-1", "artifact-1"]);
   });
 
+  it("uses user-scoped delete SQL with WHERE user_id = $1 AND id = $2", async () => {
+    const database = new FakePostgresDatabase();
+    const experiences = new PostgresExperienceRepository(database);
+    const artifacts = new PostgresGeneratedArtifactRepository(database);
+
+    await experiences.deleteForUser("user-1", "exp-1");
+    await artifacts.deleteForUser("user-1", "artifact-1");
+
+    expect(database.queries[0].sql).toContain("WHERE user_id = $1 AND id = $2");
+    expect(database.queries[0].params).toEqual(["user-1", "exp-1"]);
+    expect(database.queries[1].sql).toContain("WHERE user_id = $1 AND id = $2");
+    expect(database.queries[1].params).toEqual(["user-1", "artifact-1"]);
+  });
+
   it("stores generation_sessions with separate input summary and generation snapshot", async () => {
     const database = new FakePostgresDatabase();
     const repository = new PostgresGenerationSessionRepository(database);

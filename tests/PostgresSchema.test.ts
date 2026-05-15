@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
@@ -35,4 +35,27 @@ describe("PostgreSQL schema", () => {
     expect(schema).toContain("CREATE INDEX IF NOT EXISTS idx_generation_sessions_status");
     expect(schema).toContain("CREATE INDEX IF NOT EXISTS idx_graph_view_snapshots_scope");
   });
+
+  it("does not contain mixed ALTER statements", () => {
+    const stripped = stripSqlComments(schema);
+    expect(stripped).not.toMatch(/ALTER\s+TABLE\s+generation_sessions\s+ADD\s+COLUMN\s+IF\s+NOT\s+EXISTS\s+generation/i);
+  });
+
+  it("has a migrations directory", () => {
+    const migrationsDir = join(process.cwd(), "src", "persistence", "postgres", "migrations");
+    expect(existsSync(migrationsDir)).toBe(true);
+  });
+
+  it("has 0002 migration with generation column addition", () => {
+    const migrationPath = join(process.cwd(), "src", "persistence", "postgres", "migrations", "0002_add_generation_session_generation.sql");
+    expect(existsSync(migrationPath)).toBe(true);
+    const content = readFileSync(migrationPath, "utf8");
+    expect(content).toMatch(/ADD\s+COLUMN\s+IF\s+NOT\s+EXISTS\s+generation/i);
+  });
 });
+
+function stripSqlComments(sql: string): string {
+  return sql
+    .replace(/\/\*[\s\S]*?\*\//g, "") // block comments
+    .replace(/--.*$/gm, ""); // line comments
+}

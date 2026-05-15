@@ -16,6 +16,9 @@ export type PostgresGenerationPersistenceService = {
   ): Promise<GenerationPersistenceResult>;
 };
 
+// Creates a PostgreSQL generation persistence service where all
+// session, snapshot, and bundle writes share the same transaction.
+// Transaction-scoped repositories are created inside database.transaction.
 export function createPostgresGenerationPersistenceService(
   database: Pick<PostgresDatabase, "transaction">,
 ): PostgresGenerationPersistenceService {

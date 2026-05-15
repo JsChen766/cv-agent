@@ -6,6 +6,8 @@ import { jsonValue, numberValue, optionalText, text, timestamp } from "./rowUtil
 export class PostgresExperienceRepository implements ExperienceRepository {
   public constructor(private readonly database: Pick<PostgresDatabase, "query">) {}
 
+  // Legacy interface method. Do not expose through backend/API.
+  // Prefer getByIdForUser.
   public async getById(id: string): Promise<Experience | null> {
     const result = await this.database.query("SELECT * FROM experiences WHERE id = $1", [id]);
     return result.rows[0] ? this.toExperience(result.rows[0]) : null;
@@ -65,6 +67,8 @@ export class PostgresExperienceRepository implements ExperienceRepository {
     );
   }
 
+  // Legacy interface method. Do not expose through backend/API.
+  // Prefer deleteForUser.
   public async delete(id: string): Promise<void> {
     await this.database.query("DELETE FROM experiences WHERE id = $1", [id]);
   }

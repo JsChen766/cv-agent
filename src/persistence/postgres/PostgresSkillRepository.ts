@@ -6,6 +6,8 @@ import { jsonValue, text, timestamp } from "./rowUtils.js";
 export class PostgresSkillRepository implements SkillRepository {
   public constructor(private readonly database: Pick<PostgresDatabase, "query">) {}
 
+  // Legacy interface method. Do not expose through backend/API.
+  // Prefer getByIdForUser.
   public async getById(id: string): Promise<Skill | null> {
     const result = await this.database.query("SELECT * FROM skills WHERE id = $1", [id]);
     return result.rows[0] ? this.toSkill(result.rows[0]) : null;
@@ -51,6 +53,8 @@ export class PostgresSkillRepository implements SkillRepository {
     );
   }
 
+  // Legacy interface method. Do not expose through backend/API.
+  // Prefer deleteForUser.
   public async delete(id: string): Promise<void> {
     await this.database.query("DELETE FROM skills WHERE id = $1", [id]);
   }

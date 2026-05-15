@@ -1,3 +1,9 @@
+-- This schema intentionally does not use database-level foreign keys.
+-- Referential integrity is enforced at the application/service layer.
+-- The reason is to keep agent-generated snapshots, evidence chains, graph projections,
+-- and historical generation records stable across edits/deletions.
+-- Do not add FOREIGN KEY / REFERENCES unless the persistence strategy is explicitly changed.
+
 CREATE TABLE IF NOT EXISTS users (
   id TEXT PRIMARY KEY,
   email TEXT UNIQUE,
@@ -148,8 +154,6 @@ CREATE INDEX IF NOT EXISTS idx_generation_sessions_user_id ON generation_session
 CREATE INDEX IF NOT EXISTS idx_generation_sessions_jd_id ON generation_sessions(jd_id);
 CREATE INDEX IF NOT EXISTS idx_generation_sessions_status ON generation_sessions(status);
 CREATE INDEX IF NOT EXISTS idx_generation_sessions_created_at ON generation_sessions(created_at);
-ALTER TABLE generation_sessions ADD COLUMN IF NOT EXISTS generation JSONB NOT NULL DEFAULT '{}'::jsonb;
-
 CREATE TABLE IF NOT EXISTS generation_artifact_bundles (
   id TEXT PRIMARY KEY,
   user_id TEXT NOT NULL,
