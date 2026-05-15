@@ -105,7 +105,15 @@ It ingests `resume.md` and `project-note.txt`, creates separate experiences, mer
 
 ## Minimal Backend API
 
-The API is intentionally thin. It parses requests, requires `x-user-id`, and delegates to the kernel services. There is no full auth system, frontend, production file storage, Neo4j, pgvector, Prisma, Drizzle, TypeORM, or database-level foreign keys.
+The API is intentionally thin. It uses cv-agent as an Agent Kernel / SDK: routes parse HTTP requests, require `x-user-id`, and delegate through `ApiKernel` ports to application services. There is no full auth system, frontend, production file storage, Neo4j, pgvector, Prisma, Drizzle, TypeORM, or database-level foreign keys.
+
+Keep this boundary for future backend work:
+
+```text
+HTTP layer -> ApiKernel ports -> Agent/Application services -> Repositories
+```
+
+Routes should depend on ports such as `GenerationPersistencePort`, not concrete persistence classes. In PostgreSQL mode, generation persistence uses `createPostgresGenerationPersistenceService(database)` so generation sessions, evidence-chain snapshots, graph-view snapshots, and bundles are saved in one transaction. In `in_memory` mode, the kernel uses the generic non-transactional `GenerationPersistenceService`.
 
 Run it:
 
@@ -175,7 +183,7 @@ Document ingestion links parsed documents to generated `Experience` and `Evidenc
 
 ### Generation persistence
 
-The generic `GenerationPersistenceService` does not own transaction boundaries — it performs sequential writes through the provided repositories. For PostgreSQL, always use `createPostgresGenerationPersistenceService(database)` so that all session, snapshot, and bundle writes share the same transaction. The factory creates transaction-scoped repositories inside `database.transaction`.
+The generic `GenerationPersistenceService` does not own transaction boundaries; it performs sequential writes through the provided repositories. For PostgreSQL, always use `createPostgresGenerationPersistenceService(database)` so that all session, snapshot, and bundle writes share the same transaction. The factory creates transaction-scoped repositories inside `database.transaction`. The backend API's Postgres kernel path uses this factory through the `GenerationPersistencePort` interface.
 
 ### Migrations
 

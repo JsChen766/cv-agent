@@ -43,9 +43,10 @@ import {
   PostgresGraphViewSnapshotRepository,
   PostgresJDRequirementRepository,
   PostgresSkillRepository,
+  createPostgresGenerationPersistenceService,
 } from "../../persistence/postgres/index.js";
 import { DocumentLoaderTool, type ExtractedTextDocument } from "../../tools/document/index.js";
-import type { ApiKernel } from "../types.js";
+import type { ApiKernel, GenerationPersistencePort } from "../types.js";
 
 export async function createKernel(): Promise<ApiKernel> {
   const databaseUrl = process.env.DATABASE_URL;
@@ -54,6 +55,12 @@ export async function createKernel(): Promise<ApiKernel> {
 
 async function createPostgresKernel(databaseUrl: string): Promise<ApiKernel> {
   const database = new PostgresDatabase({ connectionString: databaseUrl });
+  return createPostgresKernelFromDatabaseForTest(database);
+}
+
+export async function createPostgresKernelFromDatabaseForTest(
+  database: Pick<PostgresDatabase, "initializeSchema" | "query" | "transaction" | "close">,
+): Promise<ApiKernel> {
   await database.initializeSchema();
 
   const documentRepository = new PostgresDocumentRepository(database);
@@ -66,6 +73,7 @@ async function createPostgresKernel(databaseUrl: string): Promise<ApiKernel> {
   const evidenceChainRepository = new PostgresEvidenceChainSnapshotRepository(database);
   const graphViewRepository = new PostgresGraphViewSnapshotRepository(database);
   const bundleRepository = new PostgresGenerationArtifactBundleRepository(database);
+  const generationPersistenceService = createPostgresGenerationPersistenceService(database);
 
   return buildKernel({
     mode: "postgres",
@@ -79,6 +87,7 @@ async function createPostgresKernel(databaseUrl: string): Promise<ApiKernel> {
     evidenceChainRepository,
     graphViewRepository,
     bundleRepository,
+    generationPersistenceService,
     close: () => database.close(),
   });
 }
@@ -132,12 +141,13 @@ function buildKernel(input: BuildKernelInput): ApiKernel {
   );
   const evidenceChainQueryService = new EvidenceChainQueryService(input.evidenceChainRepository);
   const graphViewQueryService = new GraphViewQueryService(input.graphViewRepository);
-  const generationPersistenceService = new GenerationPersistenceService(
-    input.sessionRepository,
-    input.evidenceChainRepository,
-    input.graphViewRepository,
-    input.bundleRepository,
-  );
+  const generationPersistenceService = input.generationPersistenceService ??
+    new GenerationPersistenceService(
+      input.sessionRepository,
+      input.evidenceChainRepository,
+      input.graphViewRepository,
+      input.bundleRepository,
+    );
   const frontDeskAgent = new FrontDeskAgent({
     modelClient: new ModelClient({
       provider: new MockProvider(),
@@ -182,6 +192,7 @@ type BuildKernelInput = {
   evidenceChainRepository: EvidenceChainSnapshotRepository;
   graphViewRepository: GraphViewSnapshotRepository;
   bundleRepository: GenerationArtifactBundleRepository;
+  generationPersistenceService?: GenerationPersistencePort;
   close(): Promise<void>;
 };
 

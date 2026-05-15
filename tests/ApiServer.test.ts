@@ -130,6 +130,33 @@ describe("API server", () => {
     expect(body.persistedGeneration?.sessionId).toBeTruthy();
   });
 
+  it("uses the configured generation persistence port", async () => {
+    const originalPersistence = kernel.generationPersistenceService;
+    expect(originalPersistence).toBeDefined();
+    let persistCalled = false;
+    kernel.generationPersistenceService = {
+      persist: async (result, metadata) => {
+        persistCalled = true;
+        return originalPersistence!.persist(result, metadata);
+      },
+    };
+
+    const response = await server.inject({
+      method: "POST",
+      url: "/generations",
+      headers: {
+        "x-user-id": "user-1",
+      },
+      payload: {
+        jdText: "React TypeScript role.",
+        targetRole: "Frontend Engineer",
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(persistCalled).toBe(true);
+  });
+
   it("returns empty evidence chain snapshots for a missing session", async () => {
     const response = await server.inject({
       method: "GET",

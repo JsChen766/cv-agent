@@ -1,19 +1,27 @@
 import type { FrontDeskOrchestrator } from "../application/frontdesk/index.js";
 import type { ResumeGenerationService } from "../application/ResumeGenerationService.js";
-import type { GenerationPersistenceService } from "../application/generation/index.js";
 import type {
   EvidenceChainQueryService,
   GraphViewQueryService,
 } from "../application/query/index.js";
+import type { GenerateResumeResult } from "../application/ResumeGenerationService.js";
+import type { GenerationPersistenceResult } from "../persistence/repositories.js";
 
 export type ApiMode = "postgres" | "in_memory";
+
+export type GenerationPersistencePort = {
+  persist(
+    result: GenerateResumeResult,
+    metadata?: Record<string, unknown>,
+  ): Promise<GenerationPersistenceResult>;
+};
 
 export type ApiKernel = {
   mode: ApiMode;
   warnings: string[];
   frontDeskOrchestrator: FrontDeskOrchestrator;
   resumeGenerationService: ResumeGenerationService;
-  generationPersistenceService?: GenerationPersistenceService;
+  generationPersistenceService?: GenerationPersistencePort;
   evidenceChainQueryService: EvidenceChainQueryService;
   graphViewQueryService: GraphViewQueryService;
   close(): Promise<void>;
