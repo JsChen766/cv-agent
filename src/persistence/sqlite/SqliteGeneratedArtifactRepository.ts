@@ -27,8 +27,8 @@ export class SqliteGeneratedArtifactRepository implements GeneratedArtifactRepos
       `INSERT OR REPLACE INTO generated_artifacts (
         id, user_id, type, content, source_experience_ids_json, source_evidence_ids_json,
         matched_skill_ids_json, target_jd_id, target_requirement_ids_json, target_role,
-        scores_json, status, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        scores_json, status, metadata_json, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         artifact.id,
         artifact.userId,
@@ -42,6 +42,7 @@ export class SqliteGeneratedArtifactRepository implements GeneratedArtifactRepos
         artifact.targetRole,
         JSON.stringify(artifact.scores),
         artifact.status,
+        JSON.stringify(artifact.metadata ?? {}),
         artifact.createdAt,
         artifact.updatedAt,
       ],
@@ -55,6 +56,7 @@ export class SqliteGeneratedArtifactRepository implements GeneratedArtifactRepos
   }
 
   private toArtifact(row: Record<string, import("sql.js").SqlValue>): GeneratedArtifact {
+    const metadata = jsonValue<Record<string, unknown>>(row, "metadata_json");
     return {
       id: text(row, "id"),
       userId: text(row, "user_id"),
@@ -68,6 +70,7 @@ export class SqliteGeneratedArtifactRepository implements GeneratedArtifactRepos
       targetRole: text(row, "target_role"),
       scores: jsonValue(row, "scores_json"),
       status: text(row, "status") as GeneratedArtifact["status"],
+      ...(Object.keys(metadata).length > 0 ? { metadata } : {}),
       createdAt: text(row, "created_at"),
       updatedAt: text(row, "updated_at"),
     };

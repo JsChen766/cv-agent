@@ -4,6 +4,14 @@ import { GeneratedArtifactSchema } from "../src/knowledge/schemas/GeneratedArtif
 import type { JDRequirement, Evidence, Experience } from "../src/knowledge/types.js";
 import type { RetrievedExperience } from "../src/knowledge/retrieval/ExperienceRetriever.js";
 
+function enhancement(artifact: { metadata?: Record<string, unknown> }): Record<string, unknown> {
+  const value = artifact.metadata?.enhancement;
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new Error("Missing enhancement metadata.");
+  }
+  return value as Record<string, unknown>;
+}
+
 function makeRetrievedExperience(overrides?: Partial<RetrievedExperience>): RetrievedExperience {
   const experience: Experience = {
     id: "exp-1",
@@ -94,7 +102,7 @@ describe("DeterministicArtifactGenerator", () => {
       createdAt: "2024-01-01T00:00:00Z",
     };
 
-    const result = await generator.generate({
+    const { artifacts: result } = await generator.generate({
       userId: "user-1",
       jdId: "jd-1",
       jdText: "Looking for React experience.",
@@ -112,6 +120,8 @@ describe("DeterministicArtifactGenerator", () => {
       expect(artifact.sourceExperienceIds).toHaveLength(1);
       expect(artifact.sourceEvidenceIds.length).toBeGreaterThan(0);
       expect(artifact.targetJDId).toBe("jd-1");
+      expect(enhancement(artifact).status).toBe("ready");
+      expect(enhancement(artifact).confirmationQuestions).toEqual([]);
     }
     expect(new Set(result.map((a) => a.id)).size).toBe(3);
   });
@@ -157,7 +167,7 @@ describe("DeterministicArtifactGenerator", () => {
       },
     ];
 
-    const result = await generator.generate({
+    const { artifacts: result } = await generator.generate({
       userId: "user-1",
       jdId: "jd-1",
       jdText: "Looking for frontend platform experience.",
@@ -186,7 +196,7 @@ describe("DeterministicArtifactGenerator", () => {
   it("generates 3 needs_review artifacts when no experiences retrieved", async () => {
     const generator = new DeterministicArtifactGenerator();
 
-    const result = await generator.generate({
+    const { artifacts: result } = await generator.generate({
       userId: "user-1",
       jdId: "jd-1",
       jdText: "Looking for React experience.",
@@ -217,7 +227,7 @@ describe("DeterministicArtifactGenerator", () => {
       createdAt: "2024-01-01T00:00:00Z",
     };
 
-    const result = await generator.generate({
+    const { artifacts: result } = await generator.generate({
       userId: "user-1",
       jdId: "jd-1",
       jdText: "test",
@@ -229,6 +239,19 @@ describe("DeterministicArtifactGenerator", () => {
     for (const artifact of result) {
       const parsed = GeneratedArtifactSchema.safeParse(artifact);
       expect(parsed.success).toBe(true);
+      const meta = enhancement(artifact);
+      expect(meta.status).toBe("ready");
+      expect(meta.enhancementStrategy).toBe("evidence_rewrite");
+      expect(meta.confirmationQuestions).toEqual([]);
+      expect(meta.claims).toEqual([
+        expect.objectContaining({
+          text: artifact.content,
+          supportLevel: "supported",
+          riskLevel: "low",
+          evidenceIds: artifact.sourceEvidenceIds,
+          sourceExperienceIds: artifact.sourceExperienceIds,
+        }),
+      ]);
     }
   });
 });

@@ -405,7 +405,7 @@ describe("AgentArtifactGenerator", () => {
     const agent = new ArchitectAgent({ modelClient });
     const generator = new AgentArtifactGenerator(agent);
 
-    const result = await generator.generate({
+    const { artifacts: result } = await generator.generate({
       userId: "user-1",
       jdId: "jd-1",
       jdText: "Looking for React experience.",
@@ -457,7 +457,7 @@ describe("AgentArtifactGenerator", () => {
     const agent = new ArchitectAgent({ modelClient });
     const generator = new AgentArtifactGenerator(agent);
 
-    const result = await generator.generate({
+    const { artifacts: result } = await generator.generate({
       userId: "user-1",
       jdId: "jd-1",
       jdText: "test",
@@ -549,7 +549,7 @@ describe("AgentArtifactGenerator", () => {
     const agent = new ArchitectAgent({ modelClient });
     const generator = new AgentArtifactGenerator(agent);
 
-    const result = await generator.generate({
+    const { artifacts: result } = await generator.generate({
       userId: "user-1",
       jdId: "jd-1",
       jdText: "test",
@@ -601,7 +601,7 @@ describe("AgentArtifactGenerator", () => {
       modelClient: new ModelClient({ provider, defaultModel: "fake" }),
     }));
 
-    const result = await generator.generate({
+    const { artifacts: result } = await generator.generate({
       userId: "user-1",
       jdId: "jd-1",
       jdText: "Looking for React, TypeScript, and performance optimization.",
@@ -646,7 +646,7 @@ describe("AgentArtifactGenerator", () => {
       modelClient: new ModelClient({ provider, defaultModel: "fake" }),
     }));
 
-    const result = await generator.generate({
+    const { artifacts: result } = await generator.generate({
       userId: "user-1",
       jdId: "jd-1",
       jdText: "Looking for React, TypeScript, accessibility, and performance.",
@@ -705,7 +705,7 @@ describe("AgentArtifactGenerator", () => {
       modelClient: new ModelClient({ provider, defaultModel: "fake" }),
     }));
 
-    const result = await generator.generate({
+    const { artifacts: result } = await generator.generate({
       userId: "user-1",
       jdId: "jd-1",
       jdText: "Looking for frontend platform impact and collaboration.",
@@ -758,7 +758,7 @@ describe("AgentArtifactGenerator", () => {
       modelClient: new ModelClient({ provider, defaultModel: "fake" }),
     }));
 
-    const result = await generator.generate({
+    const { artifacts: result } = await generator.generate({
       userId: "user-1",
       jdId: "jd-1",
       jdText: "Looking for accessibility and API integration.",
@@ -808,7 +808,7 @@ describe("AgentArtifactGenerator", () => {
       modelClient: new ModelClient({ provider, defaultModel: "fake" }),
     }));
 
-    const result = await generator.generate({
+    const { artifacts: result } = await generator.generate({
       userId: "user-1",
       jdId: "jd-1",
       jdText: "Performance role.",
@@ -854,7 +854,7 @@ describe("AgentArtifactGenerator", () => {
       modelClient: new ModelClient({ provider, defaultModel: "fake" }),
     }));
 
-    const result = await generator.generate({
+    const { artifacts: result } = await generator.generate({
       userId: "user-1",
       jdId: "jd-1",
       jdText: "React role.",

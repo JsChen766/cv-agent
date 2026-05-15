@@ -2,6 +2,11 @@ import { describe, expect, it } from "vitest";
 import { ResumeGenerationService } from "../src/application/ResumeGenerationService.js";
 import { DeterministicJDRequirementExtractor } from "../src/application/extractors/DeterministicJDRequirementExtractor.js";
 import { DeterministicArtifactGenerator } from "../src/application/generators/DeterministicArtifactGenerator.js";
+import type {
+  ArtifactGenerator,
+  GenerateArtifactsInput,
+  GenerateArtifactsResult,
+} from "../src/application/generators/ArtifactGenerator.js";
 import {
   ExperienceIngestionService,
   InMemoryEvidenceRepository,
@@ -168,5 +173,105 @@ describe("ResumeGenerationService", () => {
     // Verify the service has no mockStrategist or mockArchitect methods
     expect("mockStrategist" in service).toBe(false);
     expect("mockArchitect" in service).toBe(false);
+  });
+
+  it("preserves needs_confirmation artifact metadata from injected generator", async () => {
+    const experienceRepo = new InMemoryExperienceRepository();
+    const evidenceRepo = new InMemoryEvidenceRepository();
+    const skillRepo = new InMemorySkillRepository();
+    const requirementRepo = new InMemoryJDRequirementRepository();
+    const artifactRepo = new InMemoryGeneratedArtifactRepository();
+    const ingestion = new ExperienceIngestionService(
+      experienceRepo,
+      evidenceRepo,
+      skillRepo,
+    );
+    await ingestion.ingest({
+      userId: "user-1",
+      rawText: [
+        "As a BI Developer at Acme Corp, I built Power BI dashboards.",
+        "Reduced report preparation time from 2 hours to 20 minutes.",
+      ].join("\n"),
+    });
+
+    const fakeGenerator: ArtifactGenerator = {
+      async generate(input: GenerateArtifactsInput): Promise<GenerateArtifactsResult> {
+        const evidence = input.evidences?.[0];
+        const experience = input.experiences?.[0];
+        if (!evidence || !experience) {
+          throw new Error("Expected generator context.");
+        }
+        const now = "2026-01-01T00:00:00.000Z";
+        return {
+          artifacts: [{
+            id: "artifact-confirmation",
+            userId: input.userId,
+            type: "resume_bullet",
+            content: "Improved reporting efficiency by 80%.",
+            sourceExperienceIds: [experience.id],
+            sourceEvidenceIds: [evidence.id],
+            matchedSkillIds: [],
+            targetJDId: input.jdId,
+            targetRequirementIds: input.requirements.slice(0, 1).map((requirement) => requirement.id),
+            targetRole: input.targetRole,
+            scores: {
+              overall: 0.55,
+              requirementMatch: 0.55,
+              evidenceStrength: 0.8,
+            },
+            status: "needs_review",
+            metadata: {
+              enhancement: {
+                status: "needs_confirmation",
+                claims: [{
+                  text: "Improved reporting efficiency by 80%.",
+                  supportLevel: "needs_user_confirmation",
+                  riskLevel: "medium",
+                  evidenceIds: [evidence.id],
+                  sourceExperienceIds: [experience.id],
+                  userConfirmationPrompt: "Can you confirm the 80% improvement?",
+                }],
+                confirmationQuestions: ["Can you confirm the 80% improvement?"],
+                enhancementStrategy: "confirmation_needed",
+              },
+            },
+            createdAt: now,
+            updatedAt: now,
+          }],
+          warnings: [],
+        };
+      },
+    };
+    const service = new ResumeGenerationService(
+      new DeterministicJDRequirementExtractor(skillRepo, requirementRepo),
+      fakeGenerator,
+      experienceRepo,
+      evidenceRepo,
+      skillRepo,
+      requirementRepo,
+      artifactRepo,
+      new KeywordExperienceRetriever(experienceRepo, evidenceRepo, skillRepo),
+    );
+
+    const result = await service.generate({
+      userId: "user-1",
+      jdText: "Need Power BI reporting and SQL experience.",
+      targetRole: "BI Analyst",
+    });
+
+    expect(result.artifacts).toHaveLength(1);
+    expect(result.artifacts[0]?.metadata?.enhancement).toMatchObject({
+      status: "needs_confirmation",
+      enhancementStrategy: "confirmation_needed",
+    });
+    expect(result.evidenceChains).toHaveLength(1);
+    expect(result.graphViews).toHaveLength(1);
+    await expect(artifactRepo.getById("artifact-confirmation")).resolves.toMatchObject({
+      metadata: {
+        enhancement: expect.objectContaining({
+          status: "needs_confirmation",
+        }),
+      },
+    });
   });
 });

@@ -3,6 +3,8 @@ import { ResumeGenerationService } from "../../application/ResumeGenerationServi
 import { DocumentIngestionService } from "../../application/documents/index.js";
 import { DeterministicJDRequirementExtractor } from "../../application/extractors/DeterministicJDRequirementExtractor.js";
 import { DeterministicArtifactGenerator } from "../../application/generators/DeterministicArtifactGenerator.js";
+import { LLMArtifactGenerator } from "../../application/generators/LLMArtifactGenerator.js";
+import type { ArtifactGenerator } from "../../application/generators/ArtifactGenerator.js";
 import { FrontDeskOrchestrator } from "../../application/frontdesk/index.js";
 import { GenerationPersistenceService } from "../../application/generation/index.js";
 import {
@@ -144,9 +146,12 @@ function buildKernel(input: BuildKernelInput): ApiKernel {
     input.skillRepository,
     experienceExtractor.extractor,
   );
+  const artifactGenerator = createArtifactGenerator({
+    mode: agentModes.artifactGeneratorMode,
+  });
   const resumeGenerationService = new ResumeGenerationService(
     new DeterministicJDRequirementExtractor(input.skillRepository, input.requirementRepository),
-    new DeterministicArtifactGenerator(),
+    artifactGenerator.generator,
     input.experienceRepository,
     input.evidenceRepository,
     input.skillRepository,
@@ -185,6 +190,7 @@ function buildKernel(input: BuildKernelInput): ApiKernel {
     ...(input.warnings ?? []),
     ...agentProvider.warnings,
     ...experienceExtractor.warnings,
+    ...artifactGenerator.warnings,
   ]);
   const cvAgentKernel = new DefaultCvAgentKernel({
     mode: input.mode,
@@ -267,6 +273,28 @@ function createExperienceExtractor(input: {
   const agentProvider = AgentProviderFactory.create(AgentProviderFactory.fromEnv());
   return {
     extractor: new LLMExperienceExtractor({
+      modelClient: agentProvider.modelClient,
+    }),
+    warnings: agentProvider.warnings,
+  };
+}
+
+function createArtifactGenerator(input: {
+  mode: "deterministic" | "llm";
+}): {
+  generator: ArtifactGenerator;
+  warnings: string[];
+} {
+  if (input.mode === "deterministic") {
+    return {
+      generator: new DeterministicArtifactGenerator(),
+      warnings: [],
+    };
+  }
+
+  const agentProvider = AgentProviderFactory.create(AgentProviderFactory.fromEnv());
+  return {
+    generator: new LLMArtifactGenerator({
       modelClient: agentProvider.modelClient,
     }),
     warnings: agentProvider.warnings,

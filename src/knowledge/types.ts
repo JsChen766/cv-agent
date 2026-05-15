@@ -139,6 +139,7 @@ export type GeneratedArtifact = {
   targetRole: string;
   scores: ArtifactScores;
   status: GeneratedArtifactStatus;
+  metadata?: Record<string, unknown>;
   createdAt: string;
   updatedAt: string;
 };

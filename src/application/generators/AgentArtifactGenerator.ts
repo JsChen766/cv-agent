@@ -5,7 +5,7 @@ import { parseWithSchema } from "../../knowledge/schemas/validate.js";
 import type { BaseAgent } from "../../core/agent/BaseAgent.js";
 import { parseAgentJson } from "../../core/json/index.js";
 import type { GeneratedArtifact, JDRequirement } from "../../knowledge/types.js";
-import type { ArtifactGenerator, GenerateArtifactsInput } from "./ArtifactGenerator.js";
+import type { ArtifactGenerator, GenerateArtifactsInput, GenerateArtifactsResult } from "./ArtifactGenerator.js";
 
 const AgentArtifactItemSchema = z.object({
   type: GeneratedArtifactTypeSchema,
@@ -25,7 +25,7 @@ const MAX_ALIGNED_EVIDENCE_IDS = 3;
 export class AgentArtifactGenerator implements ArtifactGenerator {
   constructor(private readonly agent: BaseAgent) {}
 
-  async generate(input: GenerateArtifactsInput): Promise<GeneratedArtifact[]> {
+  async generate(input: GenerateArtifactsInput): Promise<GenerateArtifactsResult> {
     const now = new Date().toISOString();
     const prompt = this.buildPrompt(input);
 
@@ -62,7 +62,7 @@ export class AgentArtifactGenerator implements ArtifactGenerator {
       ),
     );
 
-    return validated.map((item, index) => {
+    const artifacts = validated.map((item, index) => {
       const sourceExperienceIds = item.sourceExperienceIds.filter((id) => allowedExperienceIds.has(id));
       const matchedSkillIds = item.matchedSkillIds.filter((id) => allowedSkillIds.has(id));
       const initialTargetRequirementIds = item.targetRequirementIds.filter((id) => allowedRequirementIds.has(id));
@@ -91,7 +91,7 @@ export class AgentArtifactGenerator implements ArtifactGenerator {
       const evidenceStrength = hasEvidence ? 0.85 : 0.2;
       const score = hasEvidence ? 0.7 : 0.1;
 
-      return {
+      const artifact: GeneratedArtifact = {
         id: stableId("artifact", `${input.userId}:${input.jdId}:agent-${index}:${item.content}`),
         userId: input.userId,
         type: item.type,
@@ -108,10 +108,31 @@ export class AgentArtifactGenerator implements ArtifactGenerator {
           evidenceStrength,
         },
         status: hasEvidence ? "ready" : "needs_review",
+        metadata: {
+          enhancement: {
+            status: "ready",
+            claims: [
+              {
+                text: item.content,
+                supportLevel: "supported",
+                riskLevel: "low",
+                evidenceIds: sourceEvidenceIds,
+                sourceExperienceIds,
+              },
+            ],
+            confirmationQuestions: [],
+            enhancementStrategy: "evidence_rewrite",
+          },
+        },
         createdAt: now,
         updatedAt: now,
       };
+      return artifact;
     });
+    return {
+      artifacts,
+      warnings: [],
+    };
   }
 
   private alignEvidenceIds(input: {

@@ -2,6 +2,8 @@
 
 TypeScript agent runtime foundation for Coolto. The project currently focuses on runtime primitives, document ingestion, a deterministic knowledge pipeline, generation persistence, and a thin backend API. It still avoids frontend code, full auth, real vector databases, Neo4j, pgvector, and production file storage.
 
+P8.5 Evidence-aware LLM ArtifactGenerator is implemented. The default path remains deterministic; LLM artifact generation is opt-in through `ARTIFACT_GENERATOR_MODE=llm`.
+
 ## Framework Goal
 
 - Data ingestion layer: collect raw experience text and turn it into structured experience knowledge.
@@ -370,7 +372,7 @@ Calls a `BaseAgent` subclass and validates the JSON output with zod schemas. Thr
 |---|---|---|
 | `ExperienceExtractor` | `extract(input) => Promise<ExperienceExtractionResult>` | Extract one or more structured experiences from raw text |
 | `JDRequirementExtractor` | `extract(input) => Promise<ExtractJDRequirementsResult>` | Extract requirements from a job description |
-| `ArtifactGenerator` | `generate(input) => Promise<GeneratedArtifact[]>` | Generate resume artifacts from requirements and experiences |
+| `ArtifactGenerator` | `generate(input) => Promise<GenerateArtifactsResult>` | Generate evidence-aware resume artifacts from requirements and experiences |
 
 `ResumeGenerationService` now receives these via **constructor dependency injection** and acts purely as an orchestrator. It no longer contains `mockStrategist` or `mockArchitect` methods.
 
@@ -433,7 +435,18 @@ Experience extractor mode is also active:
 - Long text may still be truncated before LLM extraction; this is not complex chunking, vector retrieval, or vector-store ingestion.
 - FrontDesk and ExperienceExtractor modes are independent.
 
-Artifact and critic modes are parsed but do not switch implementations yet:
+Artifact generator mode is also active:
+
+- `ARTIFACT_GENERATOR_MODE=deterministic` is the default stable mode.
+- `ARTIFACT_GENERATOR_MODE=llm` uses `AgentProviderFactory` and `LLMArtifactGenerator`.
+- LLM artifact generation allows evidence-grounded rewriting, reasonable inference, and user-confirmable enhancement candidates.
+- It does not allow unsupported high-risk claims to be marked as ready-to-use bullets.
+- Every generated artifact includes `sourceExperienceIds`, `sourceEvidenceIds`, and `metadata.enhancement`.
+- `metadata.enhancement.status` is `ready`, `needs_confirmation`, or `unsafe`.
+- `metadata.enhancement.claims[]` includes claim text, `supportLevel`, `riskLevel`, source evidence ids, and source experience ids.
+- Frontends should treat `ready` as directly usable, `needs_confirmation` as requiring user confirmation or extra data, and `unsafe` as not recommended for direct use.
+
+Critic mode is parsed but does not switch implementation yet:
 
 ```bash
 FRONTDESK_AGENT_MODE=mock|llm
@@ -442,7 +455,7 @@ ARTIFACT_GENERATOR_MODE=deterministic|llm
 CRITIC_AGENT_MODE=deterministic|llm
 ```
 
-LLM-backed `ArtifactGenerator` and `CriticAgent` are not enabled by this step.
+LLM-backed `CriticAgent` is not enabled by this step.
 
 Common configurations:
 
@@ -451,16 +464,27 @@ Common configurations:
 AGENT_PROVIDER=mock
 FRONTDESK_AGENT_MODE=mock
 EXPERIENCE_EXTRACTOR_MODE=deterministic
+ARTIFACT_GENERATOR_MODE=deterministic
 
 # Local FrontDesk LLM fallback test
 FRONTDESK_AGENT_MODE=llm
 EXPERIENCE_EXTRACTOR_MODE=deterministic
+ARTIFACT_GENERATOR_MODE=deterministic
 AGENT_PROVIDER=deepseek
 ALLOW_MOCK_FALLBACK=true
+
+# Real DeepSeek ArtifactGenerator only
+FRONTDESK_AGENT_MODE=mock
+EXPERIENCE_EXTRACTOR_MODE=deterministic
+ARTIFACT_GENERATOR_MODE=llm
+AGENT_PROVIDER=deepseek
+DEEPSEEK_API_KEY=...
+ALLOW_MOCK_FALLBACK=false
 
 # Real DeepSeek ExperienceExtractor only
 FRONTDESK_AGENT_MODE=mock
 EXPERIENCE_EXTRACTOR_MODE=llm
+ARTIFACT_GENERATOR_MODE=deterministic
 AGENT_PROVIDER=deepseek
 DEEPSEEK_API_KEY=...
 ALLOW_MOCK_FALLBACK=false
@@ -468,14 +492,16 @@ ALLOW_MOCK_FALLBACK=false
 # Real DeepSeek FrontDesk
 FRONTDESK_AGENT_MODE=llm
 EXPERIENCE_EXTRACTOR_MODE=deterministic
+ARTIFACT_GENERATOR_MODE=deterministic
 AGENT_PROVIDER=deepseek
 DEEPSEEK_API_KEY=...
 DEEPSEEK_MODEL=deepseek-chat
 ALLOW_MOCK_FALLBACK=false
 
-# Real DeepSeek FrontDesk and ExperienceExtractor
+# Real DeepSeek full P8 chain
 FRONTDESK_AGENT_MODE=llm
 EXPERIENCE_EXTRACTOR_MODE=llm
+ARTIFACT_GENERATOR_MODE=llm
 AGENT_PROVIDER=deepseek
 DEEPSEEK_API_KEY=...
 ALLOW_MOCK_FALLBACK=false
@@ -485,6 +511,7 @@ NODE_ENV=production
 AUTH_MODE=cookie_session
 FRONTDESK_AGENT_MODE=llm
 EXPERIENCE_EXTRACTOR_MODE=llm
+ARTIFACT_GENERATOR_MODE=llm
 AGENT_PROVIDER=deepseek
 DEEPSEEK_API_KEY=...
 ALLOW_MOCK_FALLBACK=false
@@ -534,6 +561,14 @@ DEEPSEEK_API_KEY=your_api_key npm run dev:experience-llm-smoke
 Without `DEEPSEEK_API_KEY`, `npm run dev:experience-llm-smoke` exits cleanly with a skipped message.
 With a key, the smoke demo uses a short two-experience input and prints `experienceCount`, experience summaries, `evidenceCount`, skill names, and warnings without writing to a database.
 
+Optional ArtifactGenerator LLM smoke demo:
+
+```bash
+DEEPSEEK_API_KEY=your_api_key npm run dev:artifact-llm-smoke
+```
+
+Without `DEEPSEEK_API_KEY`, `npm run dev:artifact-llm-smoke` exits cleanly with a skipped message. With a key, it prints artifact count, content, enhancement status, claim support levels, confirmation questions, and warnings without writing to a database.
+
 ## Frontend Contract
 
 Frontend-oriented TypeScript contracts live in `src/api-contracts/`. The minimal Fastify API in `src/api/` is a thin service boundary over the kernel; product-specific frontend contracts remain explicit and reusable.
@@ -557,6 +592,26 @@ raw experience -> IngestExperienceResponse -> GenerateResumeResponse
 ```
 
 `IngestExperienceResponse` and `/documents/ingest` expose `experiences[]`. The `experience` field is kept for compatibility and is always the first item when any experiences were extracted.
+
+Generated artifacts expose evidence-aware enhancement metadata:
+
+```ts
+artifact.metadata?.enhancement = {
+  status: "ready" | "needs_confirmation" | "unsafe",
+  claims: [
+    {
+      text: string,
+      supportLevel: "supported" | "inferred" | "needs_user_confirmation" | "unsupported",
+      riskLevel: "low" | "medium" | "high",
+      evidenceIds: string[],
+      sourceExperienceIds: string[],
+      userConfirmationPrompt?: string
+    }
+  ],
+  confirmationQuestions: string[],
+  enhancementStrategy: "evidence_rewrite" | "reasonable_inference" | "confirmation_needed" | "unsafe_candidate"
+}
+```
 
 Use `createInMemoryCooltoDemoService()` for local prototypes and tests.
 

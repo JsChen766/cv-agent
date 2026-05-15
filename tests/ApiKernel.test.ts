@@ -18,6 +18,7 @@ describe("API kernel", () => {
   const originalAllowMockFallback = process.env.ALLOW_MOCK_FALLBACK;
   const originalFrontDeskAgentMode = process.env.FRONTDESK_AGENT_MODE;
   const originalExperienceExtractorMode = process.env.EXPERIENCE_EXTRACTOR_MODE;
+  const originalArtifactGeneratorMode = process.env.ARTIFACT_GENERATOR_MODE;
 
   afterEach(() => {
     if (originalDatabaseUrl === undefined) {
@@ -55,6 +56,11 @@ describe("API kernel", () => {
     } else {
       process.env.EXPERIENCE_EXTRACTOR_MODE = originalExperienceExtractorMode;
     }
+    if (originalArtifactGeneratorMode === undefined) {
+      delete process.env.ARTIFACT_GENERATOR_MODE;
+    } else {
+      process.env.ARTIFACT_GENERATOR_MODE = originalArtifactGeneratorMode;
+    }
   });
 
   it("creates an in-memory kernel with a generation persistence port when DATABASE_URL is absent", async () => {
@@ -62,6 +68,7 @@ describe("API kernel", () => {
     process.env.AGENT_PROVIDER = "mock";
     process.env.FRONTDESK_AGENT_MODE = "mock";
     process.env.EXPERIENCE_EXTRACTOR_MODE = "deterministic";
+    process.env.ARTIFACT_GENERATOR_MODE = "deterministic";
     process.env.NODE_ENV = "test";
 
     const kernel = await createKernel();
@@ -211,6 +218,81 @@ describe("API kernel", () => {
     process.env.AGENT_PROVIDER = "deepseek";
     process.env.FRONTDESK_AGENT_MODE = "mock";
     process.env.EXPERIENCE_EXTRACTOR_MODE = "llm";
+    process.env.ALLOW_MOCK_FALLBACK = "true";
+    process.env.NODE_ENV = "test";
+
+    const kernel = await createKernel();
+    try {
+      expect((await kernel.cvAgentKernel.health()).warnings).toContain(
+        "DEEPSEEK_API_KEY is missing. Falling back to MockProvider because allowMockFallback is enabled.",
+      );
+    } finally {
+      await kernel.close();
+    }
+  });
+
+  it("uses deterministic ArtifactGenerator mode by default", async () => {
+    delete process.env.DATABASE_URL;
+    delete process.env.ARTIFACT_GENERATOR_MODE;
+    process.env.AGENT_PROVIDER = "deepseek";
+    process.env.FRONTDESK_AGENT_MODE = "mock";
+    process.env.EXPERIENCE_EXTRACTOR_MODE = "deterministic";
+    process.env.ALLOW_MOCK_FALLBACK = "false";
+    process.env.NODE_ENV = "test";
+
+    const kernel = await createKernel();
+    try {
+      expect(kernel.mode).toBe("in_memory");
+      expect(kernel.warnings).toEqual([
+        "DATABASE_URL is not set. API is running in in-memory mode.",
+      ]);
+    } finally {
+      await kernel.close();
+    }
+  });
+
+  it("throws when ArtifactGenerator llm mode uses deepseek without key and fallback is disabled", async () => {
+    delete process.env.DATABASE_URL;
+    delete process.env.DEEPSEEK_API_KEY;
+    process.env.AGENT_PROVIDER = "deepseek";
+    process.env.FRONTDESK_AGENT_MODE = "mock";
+    process.env.EXPERIENCE_EXTRACTOR_MODE = "deterministic";
+    process.env.ARTIFACT_GENERATOR_MODE = "llm";
+    process.env.ALLOW_MOCK_FALLBACK = "false";
+    process.env.NODE_ENV = "test";
+
+    await expect(createKernel()).rejects.toThrow(
+      "DEEPSEEK_API_KEY is required when AGENT_PROVIDER=deepseek.",
+    );
+  });
+
+  it("allows ArtifactGenerator llm mode to fall back to mock provider with warning", async () => {
+    delete process.env.DATABASE_URL;
+    delete process.env.DEEPSEEK_API_KEY;
+    process.env.AGENT_PROVIDER = "deepseek";
+    process.env.FRONTDESK_AGENT_MODE = "mock";
+    process.env.EXPERIENCE_EXTRACTOR_MODE = "deterministic";
+    process.env.ARTIFACT_GENERATOR_MODE = "llm";
+    process.env.ALLOW_MOCK_FALLBACK = "true";
+    process.env.NODE_ENV = "test";
+
+    const kernel = await createKernel();
+    try {
+      expect(kernel.warnings).toContain(
+        "DEEPSEEK_API_KEY is missing. Falling back to MockProvider because allowMockFallback is enabled.",
+      );
+    } finally {
+      await kernel.close();
+    }
+  });
+
+  it("keeps FrontDesk, ExperienceExtractor, and ArtifactGenerator modes independently controlled", async () => {
+    delete process.env.DATABASE_URL;
+    delete process.env.DEEPSEEK_API_KEY;
+    process.env.AGENT_PROVIDER = "deepseek";
+    process.env.FRONTDESK_AGENT_MODE = "mock";
+    process.env.EXPERIENCE_EXTRACTOR_MODE = "deterministic";
+    process.env.ARTIFACT_GENERATOR_MODE = "llm";
     process.env.ALLOW_MOCK_FALLBACK = "true";
     process.env.NODE_ENV = "test";
 

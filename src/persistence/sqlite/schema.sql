@@ -59,6 +59,7 @@ CREATE TABLE IF NOT EXISTS generated_artifacts (
   target_role TEXT NOT NULL,
   scores_json TEXT NOT NULL,
   status TEXT NOT NULL,
+  metadata_json TEXT NOT NULL DEFAULT '{}',
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );

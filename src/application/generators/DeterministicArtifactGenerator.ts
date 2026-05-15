@@ -6,17 +6,17 @@ import type {
   Skill,
 } from "../../knowledge/types.js";
 import type { RetrievedExperience } from "../../knowledge/retrieval/ExperienceRetriever.js";
-import type { ArtifactGenerator, GenerateArtifactsInput } from "./ArtifactGenerator.js";
+import type { ArtifactGenerator, GenerateArtifactsInput, GenerateArtifactsResult } from "./ArtifactGenerator.js";
 
 type ArtifactKind = "design_system" | "accessibility_api" | "performance";
 
 export class DeterministicArtifactGenerator implements ArtifactGenerator {
-  async generate(input: GenerateArtifactsInput): Promise<GeneratedArtifact[]> {
+  async generate(input: GenerateArtifactsInput): Promise<GenerateArtifactsResult> {
     const now = new Date().toISOString();
     const evidenceContext = this.collectEvidenceContext(input.retrievedExperiences);
     const kinds: ArtifactKind[] = ["design_system", "accessibility_api", "performance"];
 
-    return kinds.map((kind) => {
+    const artifacts = kinds.map((kind) => {
       const evidences = this.selectEvidencesForKind(kind, evidenceContext.evidences);
       const content = evidences.length > 0
         ? this.renderEvidenceBullet(kind, evidences)
@@ -44,6 +44,10 @@ export class DeterministicArtifactGenerator implements ArtifactGenerator {
         now,
       });
     });
+    return {
+      artifacts,
+      warnings: [],
+    };
   }
 
   private collectEvidenceContext(retrievedExperiences: RetrievedExperience[]) {
@@ -200,6 +204,22 @@ export class DeterministicArtifactGenerator implements ArtifactGenerator {
         evidenceStrength: params.evidenceStrength,
       },
       status: params.sourceEvidenceIds.length > 0 ? "ready" : "needs_review",
+      metadata: {
+        enhancement: {
+          status: "ready",
+          claims: [
+            {
+              text: params.content,
+              supportLevel: "supported",
+              riskLevel: "low",
+              evidenceIds: unique(params.sourceEvidenceIds),
+              sourceExperienceIds: unique(params.sourceExperienceIds),
+            },
+          ],
+          confirmationQuestions: [],
+          enhancementStrategy: "evidence_rewrite",
+        },
+      },
       createdAt: params.now,
       updatedAt: params.now,
     };

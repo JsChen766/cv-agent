@@ -1,7 +1,9 @@
 import { EvidenceChainBuilder } from "../knowledge/EvidenceChainBuilder.js";
 import { GraphViewBuilder } from "../knowledge/GraphViewBuilder.js";
 import type {
+  Evidence,
   EvidenceChain,
+  Experience,
   GeneratedArtifact,
   GraphView,
   JDRequirement,
@@ -94,14 +96,19 @@ export class ResumeGenerationService {
       limit: 3,
     });
 
-    const artifacts = await this.artifactGenerator.generate({
+    const generatorContext = this.toGeneratorContext(retrievedExperiences);
+    const artifactGeneration = await this.artifactGenerator.generate({
       userId: input.userId,
       jdId,
       jdText: input.jdText,
       targetRole: input.targetRole,
       requirements,
+      experiences: generatorContext.experiences,
+      evidences: generatorContext.evidences,
+      skills: generatorContext.skills,
       retrievedExperiences,
     });
+    const artifacts = artifactGeneration.artifacts;
 
     const evidenceChains: EvidenceChain[] = [];
     const graphViews: GraphView[] = [];
@@ -166,5 +173,35 @@ export class ResumeGenerationService {
   ): Promise<Skill[]> {
     const userSkills = await this.skillRepo.listByUserId(userId);
     return userSkills.filter((skill) => artifact.matchedSkillIds.includes(skill.id));
+  }
+
+  private toGeneratorContext(retrievedExperiences: RetrievedExperience[]): {
+    experiences: Experience[];
+    evidences: Evidence[];
+    skills: Skill[];
+  } {
+    const experiences = new Map<string, Experience>();
+    const evidences = new Map<string, Evidence>();
+    const skills = new Map<string, Skill>();
+    for (const retrieved of retrievedExperiences) {
+      experiences.set(retrieved.experience.id, retrieved.experience);
+      for (const evidence of retrieved.evidences) {
+        evidences.set(evidence.id, evidence);
+      }
+      for (const evidence of retrieved.matchedEvidences) {
+        evidences.set(evidence.id, evidence);
+      }
+      for (const skill of retrieved.skills) {
+        skills.set(skill.id, skill);
+      }
+      for (const skill of retrieved.matchedSkills) {
+        skills.set(skill.id, skill);
+      }
+    }
+    return {
+      experiences: Array.from(experiences.values()),
+      evidences: Array.from(evidences.values()),
+      skills: Array.from(skills.values()),
+    };
   }
 }

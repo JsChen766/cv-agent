@@ -37,6 +37,7 @@ export const GeneratedArtifactSchema = z.object({
   targetRole: z.string(),
   scores: ArtifactScoresSchema,
   status: GeneratedArtifactStatusSchema,
+  metadata: z.record(z.string(), z.unknown()).optional(),
   createdAt: z.string(),
   updatedAt: z.string(),
 }) satisfies z.ZodType<GeneratedArtifact>;

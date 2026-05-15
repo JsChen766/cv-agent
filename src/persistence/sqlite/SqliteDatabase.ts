@@ -20,6 +20,7 @@ export class SqliteDatabase {
       : undefined;
     const database = new SqliteDatabase(new SQL.Database(data), config.filePath);
     database.run(SCHEMA_SQL);
+    database.ensureMigrations();
     database.persist();
     return database;
   }
@@ -70,6 +71,17 @@ export class SqliteDatabase {
     }
     mkdirSync(dirname(this.filePath), { recursive: true });
     writeFileSync(this.filePath, this.db.export());
+  }
+
+  private ensureMigrations(): void {
+    try {
+      this.db.run("ALTER TABLE generated_artifacts ADD COLUMN metadata_json TEXT NOT NULL DEFAULT '{}'");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (!message.toLowerCase().includes("duplicate column")) {
+        throw error;
+      }
+    }
   }
 }
 

@@ -1,6 +1,6 @@
 # Coolto CV Agent Contract
 
-> Status: Draft v0.1, P8.0-P8.4 implemented through LLM-backed FrontDeskAgent, ExperienceExtractor, and multi-experience extraction  
+> Status: Draft v0.1, P8.0-P8.5 implemented through LLM-backed FrontDeskAgent, ExperienceExtractor, multi-experience extraction, and evidence-aware LLM ArtifactGenerator  
 > Scope: frontend ↔ backend API ↔ cv-agent kernel / SDK  
 > Principle: backend owns authentication and request context; Agent Kernel owns document ingestion, experience knowledge, generation, evidence chains, and graph projections.
 
@@ -113,9 +113,10 @@ Production / staging may gradually enable:
 AGENT_PROVIDER=deepseek
 FRONTDESK_AGENT_MODE=llm
 EXPERIENCE_EXTRACTOR_MODE=llm
+ARTIFACT_GENERATOR_MODE=llm
 ```
 
-P8.1-P8.4 implementation notes:
+P8.1-P8.5 implementation notes:
 
 1. `AgentProviderFactory` creates `ModelClient` instances for `mock` or `deepseek`.
 2. Non-production defaults to `AGENT_PROVIDER=mock`.
@@ -130,7 +131,11 @@ P8.1-P8.4 implementation notes:
 11. ExperienceExtractor.extract returns ExperienceExtractionResult with experiences[] and warnings.
 12. LLMExperienceExtractor preserves all returned experiences instead of ingesting only the first.
 13. A single source document can create multiple Experience records with separate Evidence records and merged/de-duplicated Skill records.
-14. ArtifactGenerator and CriticAgent mode env vars are parsed for future use, but their LLM implementations are not enabled yet.
+14. `ARTIFACT_GENERATOR_MODE=deterministic` keeps the default deterministic generation path.
+15. `ARTIFACT_GENERATOR_MODE=llm` routes artifact generation through `AgentProviderFactory` and `LLMArtifactGenerator`.
+16. LLMArtifactGenerator validates JSON, repairs once, and falls back to deterministic generation when fallback is enabled.
+17. Generated artifacts include `metadata.enhancement` with status, claims, support levels, risk levels, and confirmation questions.
+18. CriticAgent mode env vars are parsed for future use, but its LLM implementation is not enabled yet.
 
 ---
 
@@ -490,7 +495,12 @@ Rules:
 1. PostgreSQL mode must use transaction-aware generation persistence.
 2. In-memory mode may use generic non-transactional persistence.
 3. Every generated artifact must be traceable to evidence IDs where possible.
-4. Future LLM generation must not fabricate unsupported claims.
+4. ArtifactGenerator may rewrite, infer, or propose user-confirmable enhancements, but unsupported high-risk claims must not be marked ready.
+5. `GeneratedArtifact.metadata.enhancement.status` guides frontend use:
+   - `ready`: can be used directly.
+   - `needs_confirmation`: ask user to confirm or provide missing data first.
+   - `unsafe`: do not use directly.
+6. Each enhancement claim records `supportLevel`, `riskLevel`, `evidenceIds`, and `sourceExperienceIds`.
 
 ### 6.4 List Evidence Chains by Session
 
@@ -845,7 +855,29 @@ Status: implemented.
 - Experience and Evidence metadata include `ingestion.experienceIndex` and `ingestion.totalExtractedExperiences`.
 - Evidence metadata keeps `chunk.evidenceIndex` as the evidence index within that experience.
 - FrontDeskResponse, CvAgentKernel `documents.ingest`, and `/documents/ingest` expose `experiences[]`; `experience` remains the first experience for compatibility.
-- This phase does not add complex chunking, vector retrieval, vector-store persistence, database foreign keys, or LLM-backed ArtifactGenerator/CriticAgent behavior.
+- This phase does not add complex chunking, vector retrieval, vector-store persistence, database foreign keys, or LLM-backed CriticAgent behavior.
+
+### P8.5 Evidence-aware LLM ArtifactGenerator
+
+Status: implemented.
+
+- Adds an `ArtifactGenerator` interface returning `GenerateArtifactsResult`.
+- `DeterministicArtifactGenerator` and `LLMArtifactGenerator` both implement the interface.
+- `ResumeGenerationService` depends on the interface and keeps its public `generate()` result shape unchanged.
+- `ARTIFACT_GENERATOR_MODE=deterministic` is the default stable mode.
+- `ARTIFACT_GENERATOR_MODE=llm` uses `AgentProviderFactory`.
+- LLMArtifactGenerator supports evidence-grounded rewriting, reasonable inference, and user-confirmable enhancement candidates.
+- It rejects ready artifacts with unsupported claims or high-risk confirmation claims.
+- Numeric claims not present in cited evidence must be marked `needs_user_confirmation` or `unsupported`.
+- Every generated artifact includes source experience IDs and source evidence IDs.
+- `GeneratedArtifact.metadata.enhancement` includes:
+  - `status: ready | needs_confirmation | unsafe`
+  - `claims[]`
+  - `supportLevel`
+  - `riskLevel`
+  - `confirmationQuestions`
+  - source evidence and experience IDs
+- Optional smoke demo: `npm run dev:artifact-llm-smoke`.
 
 ### P9 Feedback Loop
 

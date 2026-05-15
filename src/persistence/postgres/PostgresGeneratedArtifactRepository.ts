@@ -76,7 +76,7 @@ export class PostgresGeneratedArtifactRepository implements GeneratedArtifactRep
         artifact.targetRole,
         JSON.stringify(artifact.scores),
         artifact.status,
-        JSON.stringify({}),
+        JSON.stringify(artifact.metadata ?? {}),
         artifact.createdAt,
         artifact.updatedAt,
       ],
@@ -95,6 +95,7 @@ export class PostgresGeneratedArtifactRepository implements GeneratedArtifactRep
 }
 
 function toGeneratedArtifact(row: PgRow): GeneratedArtifact {
+  const metadata = jsonValue<Record<string, unknown>>(row, "metadata", {});
   return {
     id: text(row, "id"),
     userId: text(row, "user_id"),
@@ -112,6 +113,7 @@ function toGeneratedArtifact(row: PgRow): GeneratedArtifact {
       evidenceStrength: 0,
     }),
     status: text(row, "status") as GeneratedArtifact["status"],
+    ...(Object.keys(metadata).length > 0 ? { metadata } : {}),
     createdAt: timestamp(row, "created_at"),
     updatedAt: optionalText(row, "updated_at") ?? timestamp(row, "created_at"),
   };
