@@ -72,6 +72,26 @@ Text tools may return the full `text`, but agents and orchestrators should not p
 
 Text-reading tools do not call `ArchivistAgent`, write `Experience` or `Evidence` records, or decide whether text is resume experience. Those decisions belong to `FrontDeskAgent`, an orchestrator, or `ExperienceIngestionService`.
 
+## Agent Side Product Kernel v0.2
+
+The project now includes a minimal product kernel that can ingest real document inputs before any frontend or HTTP API exists:
+
+- `src/tools/document/` defines `DocumentInput`, `ExtractedTextDocument`, `DocumentParserRegistry`, and `DocumentLoaderTool`.
+- `DocumentLoaderTool` accepts file-facing inputs (`filePath`, `buffer`, future `url`) and routes by `mimeType`, `extension`, or `fileName`.
+- Markdown and plain text parsing are implemented. PDF and DOCX parser interfaces are registered and return clear missing-parser errors until dedicated parser dependencies are added.
+- Document parsing returns full `text`, `textPreview`, `textLength`, `sourceRef`, `sourceType`, and parser metadata. It does not call `ArchivistAgent` and does not write Experience or Evidence records.
+- `FrontDeskAgent` classifies user intent into structured `FrontDeskDecision` JSON, validated with zod.
+- `FrontDeskOrchestrator` executes the decision by calling document loading, `ExperienceIngestionService`, and `ResumeGenerationService`.
+- `src/persistence/sqlite/` provides SQLite-backed repositories for experiences, evidences, skills, JD requirements, and generated artifacts. It uses `sql.js` so the kernel can run on Node 20 without native SQLite bindings.
+
+Run the kernel demo:
+
+```bash
+npm run dev:agent-kernel
+```
+
+The demo imports a simulated Markdown resume document, extracts text, ingests Experience/Evidence/Skill records into SQLite, generates resume artifacts for a JD, and prints frontend-consumable JSON containing artifacts, evidence chains, graph views, coverage, gap, and critique reports.
+
 ## Conversation Runtime
 
 The conversation runtime provides the in-memory context layer that tool-calling agents can use before adding larger text-reading tools:

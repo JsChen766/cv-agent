@@ -78,7 +78,51 @@ export class MockProvider implements LLMProvider {
       return this.mockArtifactResponse(userContent);
     }
 
+    if (agentName === "frontdesk") {
+      return this.mockFrontDeskResponse(userContent);
+    }
+
     return { provider: this.name, input: userContent, model: request.model };
+  }
+
+  private mockFrontDeskResponse(userContent: string): Record<string, unknown> {
+    const hasDocument = /Has document:\s*yes/i.test(userContent);
+    const message = this.extractUserMessage(userContent);
+
+    if (hasDocument) {
+      return {
+        intent: "ingest_resume_document",
+        confidence: 0.92,
+        summary: "User attached a document to ingest.",
+        requiredActions: [{ type: "load_document", target: "documentLoader" }],
+      };
+    }
+
+    if (/\b(job description|jd|generate|resume for|target role)\b/i.test(message)) {
+      return {
+        intent: "generate_resume_for_jd",
+        confidence: 0.86,
+        summary: "User wants resume artifacts for a job description.",
+        requiredActions: [{ type: "generate_resume", target: "ResumeGenerationService" }],
+      };
+    }
+
+    if (/\b(react|typescript|built|led|reduced|improved|worked|experience)\b/i.test(message)) {
+      return {
+        intent: "add_experience_text",
+        confidence: 0.82,
+        summary: "User provided experience text.",
+        requiredActions: [{ type: "ingest_experience", target: "ExperienceIngestionService" }],
+      };
+    }
+
+    return {
+      intent: "ask_followup_question",
+      confidence: 0.55,
+      summary: "More information is needed.",
+      requiredActions: [],
+      followUpQuestion: "Do you want to import experience, generate resume content, or inspect evidence?",
+    };
   }
 
   private mockArtifactResponse(userContent: string): Array<Record<string, unknown>> {
@@ -121,6 +165,15 @@ export class MockProvider implements LLMProvider {
     const markerIndex = userContent.indexOf(marker);
     if (markerIndex === -1) {
       return userContent.trim();
+    }
+    return userContent.slice(markerIndex + marker.length).trim();
+  }
+
+  private extractUserMessage(userContent: string): string {
+    const marker = "User message:";
+    const markerIndex = userContent.indexOf(marker);
+    if (markerIndex === -1) {
+      return userContent;
     }
     return userContent.slice(markerIndex + marker.length).trim();
   }
