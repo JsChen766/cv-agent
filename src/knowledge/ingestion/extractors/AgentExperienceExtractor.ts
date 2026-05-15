@@ -3,12 +3,12 @@ import type { BaseAgent } from "../../../core/agent/BaseAgent.js";
 import { parseAgentJson } from "../../../core/json/index.js";
 import type { IngestExperienceInput } from "../ExperienceIngestionService.js";
 import { AgentExtractedExperienceSchema } from "./types.js";
-import type { ExperienceExtractor, ExtractedExperience } from "./types.js";
+import type { ExperienceExtractionResult, ExperienceExtractor } from "./types.js";
 
 export class AgentExperienceExtractor implements ExperienceExtractor {
   constructor(private readonly agent: BaseAgent) {}
 
-  async extract(input: IngestExperienceInput): Promise<ExtractedExperience> {
+  async extract(input: IngestExperienceInput): Promise<ExperienceExtractionResult> {
     const prompt = [
       `userId: ${input.userId}`,
       `sourceType: ${input.sourceType ?? "raw_input"}`,
@@ -29,6 +29,9 @@ export class AgentExperienceExtractor implements ExperienceExtractor {
       "AgentExperienceExtractor",
     );
 
-    return validated;
+    return {
+      experiences: [validated],
+      warnings: [],
+    };
   }
 }

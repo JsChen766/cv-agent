@@ -56,19 +56,19 @@ export class FrontDeskOrchestrator {
           documentIngestionResults.push({
             extractedDocument,
             experience: ingestResult.experience,
+            experiences: ingestResult.experiences,
             evidences: ingestResult.evidences,
             skills: ingestResult.skills,
-            warnings: [],
+            warnings: ingestResult.warnings,
           });
+          warnings.push(...ingestResult.warnings);
         } catch (error) {
           warnings.push(`Failed to ingest ${documentInput.fileName}: ${this.errorMessage(error)}`);
         }
       }
 
       const extractedDocuments = documentIngestionResults.map((result) => result.extractedDocument);
-      const experiences = documentIngestionResults.flatMap((result) => (
-        result.experience ? [result.experience] : []
-      ));
+      const experiences = documentIngestionResults.flatMap((result) => result.experiences);
       const evidences = documentIngestionResults.flatMap((result) => result.evidences);
       const skills = documentIngestionResults.flatMap((result) => result.skills);
 
@@ -100,9 +100,10 @@ export class FrontDeskOrchestrator {
         decision,
         extractedDocument,
         experience: ingestResult.experience,
+        experiences: ingestResult.experiences,
         evidences: ingestResult.evidences,
         skills: ingestResult.skills,
-        warnings,
+        warnings: [...warnings, ...ingestResult.warnings],
       };
     }
 

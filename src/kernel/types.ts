@@ -34,6 +34,7 @@ export type IngestDocumentInput = {
 
 export type IngestDocumentResult = {
   extractedDocuments: ExtractedTextDocument[];
+  experience?: Experience;
   experiences: Experience[];
   evidences: Evidence[];
   skills: Skill[];

@@ -100,6 +100,7 @@ export class DefaultCvAgentKernel implements CvAgentKernel {
 
     return {
       extractedDocuments: response.extractedDocuments ?? [],
+      experience: response.experience,
       experiences: response.experiences ?? [],
       evidences: response.evidences ?? [],
       skills: response.skills ?? [],

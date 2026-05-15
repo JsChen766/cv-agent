@@ -24,26 +24,39 @@ export async function runExperienceExtractorLlmSmokeDemo(): Promise<unknown> {
     allowFallbackToDeterministic: false,
   });
 
-  const extracted = await extractor.extract({
+  const extraction = await extractor.extract({
     userId: "smoke-user",
-    rawText: "Built a React dashboard for internal analytics, reduced report preparation time from 2 hours to 20 minutes, and used TypeScript and PostgreSQL.",
+    rawText: [
+      "Built a React dashboard for internal analytics using TypeScript, improving product manager visibility into weekly adoption metrics.",
+      "Automated PostgreSQL reporting workflows that reduced report preparation time from 2 hours to 20 minutes.",
+    ].join("\n"),
     sourceRef: "smoke:experience",
     sourceType: "manual",
   });
+  const skillNames = Array.from(new Set(
+    extraction.experiences.flatMap((experience) =>
+      (experience.skillNames ?? []).map((skill) => skill.name),
+    ),
+  ));
 
   return {
     skipped: false,
     provider: agentProvider.providerName,
     model: agentProvider.model,
-    experience: {
-      type: extracted.type,
-      organization: extracted.organization,
-      role: extracted.role,
-      summary: extracted.summary,
-      evidenceCount: extracted.evidenceExcerpts.length,
-      skills: extracted.skillNames?.map((skill) => skill.name) ?? [],
-      warnings: extracted.warnings ?? [],
-    },
+    experienceCount: extraction.experiences.length,
+    experiences: extraction.experiences.map((experience) => ({
+      type: experience.type,
+      organization: experience.organization,
+      role: experience.role,
+      summary: experience.summary,
+      evidenceCount: experience.evidenceExcerpts.length,
+    })),
+    evidenceCount: extraction.experiences.reduce(
+      (count, experience) => count + experience.evidenceExcerpts.length,
+      0,
+    ),
+    skills: skillNames,
+    warnings: extraction.warnings,
   };
 }
 

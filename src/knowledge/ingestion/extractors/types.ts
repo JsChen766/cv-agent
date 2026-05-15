@@ -19,8 +19,14 @@ export type ExtractedExperience = {
   metadata?: Record<string, unknown>;
 };
 
+export type ExperienceExtractionResult = {
+  experiences: ExtractedExperience[];
+  warnings: string[];
+  metadata?: Record<string, unknown>;
+};
+
 export interface ExperienceExtractor {
-  extract(input: IngestExperienceInput): Promise<ExtractedExperience>;
+  extract(input: IngestExperienceInput): Promise<ExperienceExtractionResult>;
 }
 
 // Agent-output zod schema for validating JSON from AgentExperienceExtractor

@@ -1,19 +1,24 @@
 import type { ExperienceType } from "../../types.js";
 import { splitEvidenceText } from "../../keywordUtils.js";
 import type { IngestExperienceInput } from "../ExperienceIngestionService.js";
-import type { ExperienceExtractor, ExtractedExperience } from "./types.js";
+import type { ExperienceExtractionResult, ExperienceExtractor, ExtractedExperience } from "./types.js";
 
 export class DeterministicExperienceExtractor implements ExperienceExtractor {
-  async extract(input: IngestExperienceInput): Promise<ExtractedExperience> {
+  async extract(input: IngestExperienceInput): Promise<ExperienceExtractionResult> {
     const evidenceExcerpts = splitEvidenceText(input.rawText).slice(0, 5);
     const firstExcerpt = evidenceExcerpts[0] ?? input.rawText.trim();
 
-    return {
+    const experience: ExtractedExperience = {
       type: this.detectType(input.rawText),
       organization: this.detectOrganization(input.rawText),
       role: this.detectRole(input.rawText),
       summary: firstExcerpt,
       evidenceExcerpts: evidenceExcerpts.length > 0 ? evidenceExcerpts : [input.rawText.trim()],
+    };
+    return {
+      experiences: [experience],
+      warnings: experience.warnings ?? [],
+      metadata: experience.metadata,
     };
   }
 

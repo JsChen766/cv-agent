@@ -81,7 +81,7 @@ The project now includes a minimal product kernel that can ingest real document 
 - Markdown, plain text, PDF, and DOCX parsing are implemented. PDF uses text extraction only; scanned/image-only PDFs return `PDF contains no extractable text. Scanned or image-based PDFs are not supported.` DOCX uses Mammoth raw-text extraction and returns warnings in metadata when Mammoth reports them.
 - Document parsing returns full `text`, `textPreview`, `textLength`, `sourceRef`, `sourceType`, and parser metadata. It does not call `ArchivistAgent` and does not write Experience or Evidence records.
 - `FrontDeskAgent` classifies user intent into structured `FrontDeskDecision` JSON, validated with zod.
-- `FrontDeskOrchestrator` executes the decision by calling document loading, `ExperienceIngestionService`, and `ResumeGenerationService`. It supports multi-document `ingest_resume_document`, keeping first-document compatibility fields while returning `extractedDocuments`, `experiences`, and per-document results.
+- `FrontDeskOrchestrator` executes the decision by calling document loading, `ExperienceIngestionService`, and `ResumeGenerationService`. It supports multi-document `ingest_resume_document` and multiple experiences per document, keeping first-experience compatibility fields while returning `extractedDocuments`, `experiences`, and per-document results.
 - Query services under `src/application/query/` expose persisted evidence-chain and graph-view snapshots for `explain_evidence_chain` and `show_experience_graph`.
 - `src/persistence/sqlite/` provides SQLite-backed repositories for experiences, evidences, skills, JD requirements, and generated artifacts. It uses `sql.js` so the kernel can run on Node 20 without native SQLite bindings.
 - `DocumentIngestionService` is the persistence wrapper for documents. `DocumentLoaderTool` still only parses files; saving the parsed document is an application-service concern.
@@ -101,7 +101,7 @@ Run the multi-document ingestion demo:
 npm run dev:multi-document-ingestion
 ```
 
-It ingests `resume.md` and `project-note.txt`, creates separate experiences, merges evidence and skills, and prints a compact JSON summary with source document ids.
+It ingests `resume.md` and `project-note.txt`, creates one or more experiences per source document, merges evidence and skills, and prints a compact JSON summary with source document ids.
 
 ## Minimal Backend API
 
@@ -368,7 +368,7 @@ Calls a `BaseAgent` subclass and validates the JSON output with zod schemas. Thr
 
 | Interface | Method | Purpose |
 |---|---|---|
-| `ExperienceExtractor` | `extract(input) => Promise<ExtractedExperience>` | Extract structured experience from raw text |
+| `ExperienceExtractor` | `extract(input) => Promise<ExperienceExtractionResult>` | Extract one or more structured experiences from raw text |
 | `JDRequirementExtractor` | `extract(input) => Promise<ExtractJDRequirementsResult>` | Extract requirements from a job description |
 | `ArtifactGenerator` | `generate(input) => Promise<GeneratedArtifact[]>` | Generate resume artifacts from requirements and experiences |
 
@@ -426,6 +426,11 @@ Experience extractor mode is also active:
 - `EXPERIENCE_EXTRACTOR_MODE=deterministic` is the default stable mode.
 - `EXPERIENCE_EXTRACTOR_MODE=llm` uses `AgentProviderFactory` and `LLMExperienceExtractor`.
 - LLM extraction parses JSON, validates with zod, repairs once, and falls back to deterministic extraction when fallback is enabled.
+- `ExperienceExtractor.extract()` returns `ExperienceExtractionResult` with `experiences[]`; deterministic and agent-backed extractors wrap their single extraction in that result.
+- `LLMExperienceExtractor` preserves every returned LLM experience instead of ingesting only the first.
+- One document import can create multiple `Experience` records with separate `Evidence` records and merged/de-duplicated `Skill` records.
+- `experience` remains a compatibility field for the first experience, but frontend code should prefer `experiences[]`. `documentIngestionResults[n].experiences` contains the experiences created from that source document.
+- Long text may still be truncated before LLM extraction; this is not complex chunking, vector retrieval, or vector-store ingestion.
 - FrontDesk and ExperienceExtractor modes are independent.
 
 Artifact and critic modes are parsed but do not switch implementations yet:
@@ -527,6 +532,7 @@ DEEPSEEK_API_KEY=your_api_key npm run dev:experience-llm-smoke
 ```
 
 Without `DEEPSEEK_API_KEY`, `npm run dev:experience-llm-smoke` exits cleanly with a skipped message.
+With a key, the smoke demo uses a short two-experience input and prints `experienceCount`, experience summaries, `evidenceCount`, skill names, and warnings without writing to a database.
 
 ## Frontend Contract
 
@@ -549,6 +555,8 @@ Contract mappers live in `src/application/mappers/` and translate internal servi
 ```text
 raw experience -> IngestExperienceResponse -> GenerateResumeResponse
 ```
+
+`IngestExperienceResponse` and `/documents/ingest` expose `experiences[]`. The `experience` field is kept for compatibility and is always the first item when any experiences were extracted.
 
 Use `createInMemoryCooltoDemoService()` for local prototypes and tests.
 

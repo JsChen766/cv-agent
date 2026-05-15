@@ -1,6 +1,6 @@
 # Coolto CV Agent Contract
 
-> Status: Draft v0.1, P8.0-P8.3 implemented through LLM-backed FrontDeskAgent and ExperienceExtractor  
+> Status: Draft v0.1, P8.0-P8.4 implemented through LLM-backed FrontDeskAgent, ExperienceExtractor, and multi-experience extraction  
 > Scope: frontend ↔ backend API ↔ cv-agent kernel / SDK  
 > Principle: backend owns authentication and request context; Agent Kernel owns document ingestion, experience knowledge, generation, evidence chains, and graph projections.
 
@@ -115,7 +115,7 @@ FRONTDESK_AGENT_MODE=llm
 EXPERIENCE_EXTRACTOR_MODE=llm
 ```
 
-P8.1-P8.3 implementation notes:
+P8.1-P8.4 implementation notes:
 
 1. `AgentProviderFactory` creates `ModelClient` instances for `mock` or `deepseek`.
 2. Non-production defaults to `AGENT_PROVIDER=mock`.
@@ -127,7 +127,10 @@ P8.1-P8.3 implementation notes:
 8. `EXPERIENCE_EXTRACTOR_MODE=deterministic` keeps the default deterministic ingestion path.
 9. `EXPERIENCE_EXTRACTOR_MODE=llm` routes experience extraction through `AgentProviderFactory`.
 10. LLMExperienceExtractor validates JSON, repairs once, and falls back to deterministic extraction when fallback is enabled.
-11. ArtifactGenerator and CriticAgent mode env vars are parsed for future use, but their LLM implementations are not enabled yet.
+11. ExperienceExtractor.extract returns ExperienceExtractionResult with experiences[] and warnings.
+12. LLMExperienceExtractor preserves all returned experiences instead of ingesting only the first.
+13. A single source document can create multiple Experience records with separate Evidence records and merged/de-duplicated Skill records.
+14. ArtifactGenerator and CriticAgent mode env vars are parsed for future use, but their LLM implementations are not enabled yet.
 
 ---
 
@@ -430,6 +433,7 @@ Response data:
 ```ts
 export type IngestDocumentResult = {
   extractedDocuments: ExtractedTextDocument[];
+  experience?: Experience;
   experiences: Experience[];
   evidences: Evidence[];
   skills: Skill[];
@@ -444,6 +448,8 @@ Rules:
 3. Kernel parses document and ingests experience.
 4. Document lineage must include `sourceDocumentId` and `documentMetadata`.
 5. Parser must not write Experience/Evidence directly.
+6. `experiences[]` is the primary output. `experience` is a compatibility alias for the first extracted experience.
+7. `documentIngestionResults[n].experiences` identifies the experiences created from each source document.
 
 ### 6.3 Create Generation
 
@@ -826,6 +832,20 @@ Status: implemented.
 - Falls back to deterministic extraction when fallback is enabled.
 - Preserves sourceDocumentId and document metadata through ingestion metadata.
 - Includes optional `dev:experience-llm-smoke` demo.
+
+### P8.4 Multi-experience Extraction
+
+Status: implemented.
+
+- `ExperienceExtractor.extract(input)` returns `ExperienceExtractionResult`.
+- `ExperienceExtractionResult.experiences` may contain multiple `ExtractedExperience` records from one document.
+- `DeterministicExperienceExtractor` and `AgentExperienceExtractor` keep their single-experience behavior by returning a one-item `experiences[]`.
+- `LLMExperienceExtractor` returns all schema-valid LLM experiences and no longer warns that only the first was ingested.
+- `ExperienceIngestionService.ingest()` creates one `Experience` per extracted experience, with evidence IDs scoped to each experience ID.
+- Experience and Evidence metadata include `ingestion.experienceIndex` and `ingestion.totalExtractedExperiences`.
+- Evidence metadata keeps `chunk.evidenceIndex` as the evidence index within that experience.
+- FrontDeskResponse, CvAgentKernel `documents.ingest`, and `/documents/ingest` expose `experiences[]`; `experience` remains the first experience for compatibility.
+- This phase does not add complex chunking, vector retrieval, vector-store persistence, database foreign keys, or LLM-backed ArtifactGenerator/CriticAgent behavior.
 
 ### P9 Feedback Loop
 

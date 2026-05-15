@@ -21,6 +21,7 @@ import type {
 export type DocumentIngestionResult = {
   extractedDocument: ExtractedTextDocument;
   experience?: Experience;
+  experiences: Experience[];
   evidences: Evidence[];
   skills: Skill[];
   warnings: string[];

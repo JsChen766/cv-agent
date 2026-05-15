@@ -16,6 +16,7 @@ export type IngestExperienceRequest = {
 
 export type IngestExperienceResponse = {
   experience: Experience;
+  experiences: Experience[];
   evidences: Evidence[];
   skills: Skill[];
   warnings: string[];

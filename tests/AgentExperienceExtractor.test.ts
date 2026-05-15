@@ -4,6 +4,15 @@ import { ModelClient } from "../src/core/model/ModelClient.js";
 import type { LLMProvider } from "../src/core/model/LLMProvider.js";
 import type { LLMChatRequest, LLMChatResponse } from "../src/core/model/types.js";
 import { ArchivistAgent } from "../src/agents/ArchivistAgent.js";
+import type { ExtractedExperience } from "../src/knowledge/ingestion/extractors/types.js";
+
+function firstExperience(result: { experiences: ExtractedExperience[] }): ExtractedExperience {
+  const experience = result.experiences[0];
+  if (!experience) {
+    throw new Error("Expected one extracted experience.");
+  }
+  return experience;
+}
 
 function fakeProvider(response: string): LLMProvider {
   return {
@@ -45,11 +54,13 @@ describe("AgentExperienceExtractor", () => {
       rawText: "As a Frontend Engineer at Acme Corp, I built a React design system. Reduced bundle size by 40%. Improved accessibility.",
     });
 
-    expect(result.type).toBe("work");
-    expect(result.organization).toBe("Acme Corp");
-    expect(result.role).toBe("Frontend Engineer");
-    expect(result.summary).toContain("Acme Corp");
-    expect(result.evidenceExcerpts).toHaveLength(3);
+    expect(result.experiences).toHaveLength(1);
+    const experience = firstExperience(result);
+    expect(experience.type).toBe("work");
+    expect(experience.organization).toBe("Acme Corp");
+    expect(experience.role).toBe("Frontend Engineer");
+    expect(experience.summary).toContain("Acme Corp");
+    expect(experience.evidenceExcerpts).toHaveLength(3);
   });
 
   it("throws when agent returns invalid JSON", async () => {
@@ -101,7 +112,8 @@ describe("AgentExperienceExtractor", () => {
       rawText: "Studied computer science at MIT.",
     });
 
-    expect(result.type).toBe("education");
-    expect(result.organization).toBe("MIT");
+    const experience = firstExperience(result);
+    expect(experience.type).toBe("education");
+    expect(experience.organization).toBe("MIT");
   });
 });

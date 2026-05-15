@@ -10,9 +10,10 @@ export function toIngestExperienceResponse(
 ): IngestExperienceResponse {
   return {
     experience: result.experience,
+    experiences: result.experiences,
     evidences: result.evidences,
     skills: result.skills,
-    warnings: [],
+    warnings: result.warnings,
   };
 }
 

@@ -13,11 +13,12 @@ import {
   InMemoryJDRequirementRepository,
   InMemorySkillRepository,
   KeywordExperienceRetriever,
+  type ExperienceExtractor,
 } from "../src/knowledge/index.js";
 import { MockProvider } from "../src/providers/MockProvider.js";
 import { DocumentLoaderTool } from "../src/tools/document/index.js";
 
-function createOrchestrator(): FrontDeskOrchestrator {
+function createOrchestrator(extractor?: ExperienceExtractor): FrontDeskOrchestrator {
   const experienceRepo = new InMemoryExperienceRepository();
   const evidenceRepo = new InMemoryEvidenceRepository();
   const skillRepo = new InMemorySkillRepository();
@@ -30,7 +31,12 @@ function createOrchestrator(): FrontDeskOrchestrator {
       maxRetries: 0,
     }),
   });
-  const ingestionService = new ExperienceIngestionService(experienceRepo, evidenceRepo, skillRepo);
+  const ingestionService = new ExperienceIngestionService(
+    experienceRepo,
+    evidenceRepo,
+    skillRepo,
+    extractor,
+  );
   const resumeGenerationService = new ResumeGenerationService(
     new DeterministicJDRequirementExtractor(skillRepo, requirementRepo),
     new DeterministicArtifactGenerator(),
@@ -76,5 +82,51 @@ describe("FrontDeskOrchestrator", () => {
     expect(response.evidences?.length).toBeGreaterThan(0);
     expect(response.skills?.map((skill) => skill.name)).toContain("React");
     expect(response.warnings).toEqual([]);
+  });
+
+  it("returns all experiences from a single ingested document", async () => {
+    const extractor: ExperienceExtractor = {
+      async extract() {
+        return {
+          experiences: [
+            {
+              type: "project",
+              organization: "Acme Corp",
+              role: "Frontend Engineer",
+              summary: "Built a React dashboard.",
+              evidenceExcerpts: ["Built a React dashboard."],
+              skillNames: [{ name: "React", category: "technical" }],
+            },
+            {
+              type: "project",
+              organization: "Beta Inc",
+              role: "Data Engineer",
+              summary: "Automated PostgreSQL reports.",
+              evidenceExcerpts: ["Automated PostgreSQL reports."],
+              skillNames: [{ name: "PostgreSQL", category: "technical" }],
+            },
+          ],
+          warnings: [],
+        };
+      },
+    };
+    const orchestrator = createOrchestrator(extractor);
+
+    const response = await orchestrator.handle({
+      userId: "user-1",
+      message: "Import this resume.",
+      documents: [{
+        userId: "user-1",
+        fileName: "resume.md",
+        mimeType: "text/markdown",
+        sourceRef: "upload:resume.md",
+        buffer: new TextEncoder().encode("Resume text."),
+      }],
+    });
+
+    expect(response.extractedDocuments).toHaveLength(1);
+    expect(response.experiences).toHaveLength(2);
+    expect(response.experience).toBe(response.experiences?.[0]);
+    expect(response.documentIngestionResults?.[0]?.experiences).toHaveLength(2);
   });
 });

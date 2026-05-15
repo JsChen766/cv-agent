@@ -161,14 +161,19 @@ describe("ExperienceIngestionService", () => {
     const extractor: ExperienceExtractor = {
       async extract() {
         return {
-          type: "work",
-          organization: "Acme Corp",
-          role: "Senior Frontend Engineer",
-          summary: "Led a React and TypeScript design system for 12 product teams and reduced bundle size by 40%.",
-          evidenceExcerpts: [
-            "As a Senior Frontend Engineer at Acme Corp, I led a React and TypeScript design system project for 12 product teams.",
-            "Reduced bundle size by 40% through performance optimization, tree-shaking, and lazy loading.",
+          experiences: [
+            {
+              type: "work",
+              organization: "Acme Corp",
+              role: "Senior Frontend Engineer",
+              summary: "Led a React and TypeScript design system for 12 product teams and reduced bundle size by 40%.",
+              evidenceExcerpts: [
+                "As a Senior Frontend Engineer at Acme Corp, I led a React and TypeScript design system project for 12 product teams.",
+                "Reduced bundle size by 40% through performance optimization, tree-shaking, and lazy loading.",
+              ],
+            },
           ],
+          warnings: [],
         };
       },
     };
@@ -205,12 +210,22 @@ describe("ExperienceIngestionService", () => {
     const extractor: ExperienceExtractor = {
       async extract() {
         return {
-          type: "project",
-          organization: "Demo Org",
-          role: "Builder",
-          summary: "Built an analytics dashboard.",
-          evidenceExcerpts: ["Built an analytics dashboard with PostgreSQL."],
-          skillNames: [{ name: "PostgreSQL", category: "technical" }],
+          experiences: [
+            {
+              type: "project",
+              organization: "Demo Org",
+              role: "Builder",
+              summary: "Built an analytics dashboard.",
+              evidenceExcerpts: ["Built an analytics dashboard with PostgreSQL."],
+              skillNames: [{ name: "PostgreSQL", category: "technical" }],
+              warnings: ["fake extractor warning"],
+              metadata: {
+                llm: {
+                  provider: "fake",
+                },
+              },
+            },
+          ],
           warnings: ["fake extractor warning"],
           metadata: {
             llm: {
@@ -236,10 +251,98 @@ describe("ExperienceIngestionService", () => {
     });
 
     expect(result.experience.organization).toBe("Demo Org");
+    expect(result.experiences).toHaveLength(1);
     expect(result.skills.map((skill) => skill.name)).toContain("PostgreSQL");
     expect(result.warnings).toEqual(["fake extractor warning"]);
     await expect(experienceRepo.listByUserId("user-1")).resolves.toHaveLength(1);
     await expect(evidenceRepo.listByUserId("user-1")).resolves.toHaveLength(1);
     await expect(skillRepo.listByUserId("user-1")).resolves.toHaveLength(1);
+  });
+
+  it("ingests multiple extracted experiences with distinct evidence and merged skills", async () => {
+    const extractor: ExperienceExtractor = {
+      async extract() {
+        return {
+          experiences: [
+            {
+              type: "project",
+              organization: "Acme Corp",
+              role: "Frontend Engineer",
+              summary: "Built a React analytics dashboard.",
+              evidenceExcerpts: ["Built a React analytics dashboard for product teams."],
+              skillNames: [{ name: "React", category: "technical" }],
+              metadata: { extractorExperience: "dashboard" },
+            },
+            {
+              type: "project",
+              organization: "Acme Corp",
+              role: "Data Engineer",
+              summary: "Automated PostgreSQL reporting.",
+              evidenceExcerpts: ["Automated PostgreSQL reporting with React status views."],
+              skillNames: [
+                { name: "PostgreSQL", category: "technical" },
+                { name: "React", category: "technical" },
+              ],
+              metadata: { extractorExperience: "reporting" },
+            },
+          ],
+          warnings: ["extractor-level warning"],
+          metadata: { batchId: "batch-1" },
+        };
+      },
+    };
+    const experienceRepo = new InMemoryExperienceRepository();
+    const evidenceRepo = new InMemoryEvidenceRepository();
+    const skillRepo = new InMemorySkillRepository();
+    const service = new ExperienceIngestionService(
+      experienceRepo,
+      evidenceRepo,
+      skillRepo,
+      extractor,
+    );
+
+    const result = await service.ingest({
+      userId: "user-1",
+      rawText: "Dashboard work.\nReporting work.",
+      sourceDocumentId: "doc-1",
+      sourceRef: "upload:resume.md",
+      sourceType: "resume",
+    });
+
+    expect(result.experiences).toHaveLength(2);
+    expect(result.experience).toBe(result.experiences[0]);
+    expect(new Set(result.experiences.map((experience) => experience.id)).size).toBe(2);
+    expect(result.evidences).toHaveLength(2);
+    expect(result.evidences[0]?.experienceId).toBe(result.experiences[0]?.id);
+    expect(result.evidences[1]?.experienceId).toBe(result.experiences[1]?.id);
+    expect(result.evidences[0]?.id).not.toBe(result.evidences[1]?.id);
+    expect(result.experiences[0]?.metadata?.ingestion).toMatchObject({
+      experienceIndex: 0,
+      totalExtractedExperiences: 2,
+    });
+    expect(result.experiences[1]?.metadata?.ingestion).toMatchObject({
+      experienceIndex: 1,
+      totalExtractedExperiences: 2,
+    });
+    expect(result.evidences[0]?.metadata?.ingestion).toMatchObject({
+      experienceIndex: 0,
+      totalExtractedExperiences: 2,
+    });
+    expect(result.evidences[1]?.metadata?.ingestion).toMatchObject({
+      experienceIndex: 1,
+      totalExtractedExperiences: 2,
+    });
+    expect(result.evidences[0]?.metadata?.chunk).toMatchObject({ evidenceIndex: 0 });
+    expect(result.skills.map((skill) => skill.name).sort()).toEqual(["PostgreSQL", "React"]);
+    expect(result.skills.find((skill) => skill.name === "React")?.evidenceIds).toEqual(
+      expect.arrayContaining([
+        result.evidences[0]?.id,
+        result.evidences[1]?.id,
+      ]),
+    );
+    expect(result.warnings).toEqual(["extractor-level warning"]);
+    await expect(experienceRepo.listByUserId("user-1")).resolves.toHaveLength(2);
+    await expect(evidenceRepo.listByUserId("user-1")).resolves.toHaveLength(2);
+    await expect(skillRepo.listByUserId("user-1")).resolves.toHaveLength(2);
   });
 });

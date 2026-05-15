@@ -1,5 +1,14 @@
 import { describe, expect, it } from "vitest";
 import { DeterministicExperienceExtractor } from "../src/knowledge/ingestion/extractors/DeterministicExperienceExtractor.js";
+import type { ExtractedExperience } from "../src/knowledge/ingestion/extractors/types.js";
+
+function firstExperience(result: { experiences: ExtractedExperience[] }): ExtractedExperience {
+  const experience = result.experiences[0];
+  if (!experience) {
+    throw new Error("Expected one extracted experience.");
+  }
+  return experience;
+}
 
 describe("DeterministicExperienceExtractor", () => {
   it("extracts work experience from raw text", async () => {
@@ -13,12 +22,15 @@ describe("DeterministicExperienceExtractor", () => {
       ].join("\n"),
     });
 
-    expect(result.type).toBe("project");
-    expect(result.organization).toBe("Acme Corp");
-    expect(result.role).toBe("Frontend Engineer");
-    expect(result.summary).toContain("Frontend Engineer");
-    expect(result.evidenceExcerpts).toHaveLength(3);
-    expect(result.evidenceExcerpts[0]).toContain("Frontend Engineer");
+    expect(result.experiences).toHaveLength(1);
+    expect(result.warnings).toEqual([]);
+    const experience = firstExperience(result);
+    expect(experience.type).toBe("project");
+    expect(experience.organization).toBe("Acme Corp");
+    expect(experience.role).toBe("Frontend Engineer");
+    expect(experience.summary).toContain("Frontend Engineer");
+    expect(experience.evidenceExcerpts).toHaveLength(3);
+    expect(experience.evidenceExcerpts[0]).toContain("Frontend Engineer");
   });
 
   it("detects education type from university keyword", async () => {
@@ -28,8 +40,9 @@ describe("DeterministicExperienceExtractor", () => {
       rawText: "Studied at Harvard University, took CS courses.",
     });
 
-    expect(result.type).toBe("education");
-    expect(result.organization).toBe("Harvard University");
+    const experience = firstExperience(result);
+    expect(experience.type).toBe("education");
+    expect(experience.organization).toBe("Harvard University");
   });
 
   it("detects project type from built keyword", async () => {
@@ -39,7 +52,7 @@ describe("DeterministicExperienceExtractor", () => {
       rawText: "Built a React project at Acme Corp.",
     });
 
-    expect(result.type).toBe("project");
+    expect(firstExperience(result).type).toBe("project");
   });
 
   it("returns Unknown Organization when no org pattern found", async () => {
@@ -49,8 +62,9 @@ describe("DeterministicExperienceExtractor", () => {
       rawText: "I worked on React components and improved performance.",
     });
 
-    expect(result.organization).toBe("Unknown Organization");
-    expect(result.role).toBe("Frontend Engineer");
+    const experience = firstExperience(result);
+    expect(experience.organization).toBe("Unknown Organization");
+    expect(experience.role).toBe("Frontend Engineer");
   });
 
   it("returns Contributor when role cannot be detected", async () => {
@@ -60,7 +74,7 @@ describe("DeterministicExperienceExtractor", () => {
       rawText: "I helped my team with documentation at Acme Corp.",
     });
 
-    expect(result.role).toBe("Contributor");
+    expect(firstExperience(result).role).toBe("Contributor");
   });
 
   it("handles single-line input as single evidence excerpt", async () => {
@@ -70,8 +84,9 @@ describe("DeterministicExperienceExtractor", () => {
       rawText: "As a Backend Engineer at Beta Inc, I built APIs.",
     });
 
-    expect(result.type).toBe("project");
-    expect(result.organization).toBe("Beta Inc");
-    expect(result.evidenceExcerpts).toHaveLength(1);
+    const experience = firstExperience(result);
+    expect(experience.type).toBe("project");
+    expect(experience.organization).toBe("Beta Inc");
+    expect(experience.evidenceExcerpts).toHaveLength(1);
   });
 });

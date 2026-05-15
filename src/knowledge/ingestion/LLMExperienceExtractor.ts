@@ -2,7 +2,11 @@ import type { ModelClient } from "../../core/model/ModelClient.js";
 import type { ExperienceType, SkillCategory } from "../types.js";
 import type { IngestExperienceInput } from "./ExperienceIngestionService.js";
 import { DeterministicExperienceExtractor } from "./extractors/DeterministicExperienceExtractor.js";
-import type { ExperienceExtractor, ExtractedExperience, ExtractedSkill } from "./extractors/types.js";
+import type {
+  ExperienceExtractionResult,
+  ExperienceExtractor,
+  ExtractedSkill,
+} from "./extractors/types.js";
 import {
   LLMExperienceExtractionParseError,
   parseLLMExperienceExtraction,
@@ -35,7 +39,7 @@ export class LLMExperienceExtractor implements ExperienceExtractor {
     this.allowFallbackToDeterministic = options.allowFallbackToDeterministic ?? true;
   }
 
-  public async extract(input: IngestExperienceInput): Promise<ExtractedExperience> {
+  public async extract(input: IngestExperienceInput): Promise<ExperienceExtractionResult> {
     const prompt = buildLLMExperienceExtractionUserPrompt(input);
     const response = await this.modelClient.chat({
       messages: [
@@ -58,7 +62,7 @@ export class LLMExperienceExtractor implements ExperienceExtractor {
     });
 
     try {
-      return this.toExtractedExperience(
+      return this.toExtractionResult(
         parseLLMExperienceExtraction(response.content),
         input,
         {
@@ -80,7 +84,7 @@ export class LLMExperienceExtractor implements ExperienceExtractor {
     raw: string,
     parseError: LLMExperienceExtractionParseError,
     truncated: boolean,
-  ): Promise<ExtractedExperience> {
+  ): Promise<ExperienceExtractionResult> {
     if (this.allowJsonRepair) {
       const repairResponse = await this.modelClient.chat({
         messages: [
@@ -107,7 +111,7 @@ export class LLMExperienceExtractor implements ExperienceExtractor {
       });
 
       try {
-        return this.toExtractedExperience(
+        return this.toExtractionResult(
           parseLLMExperienceExtraction(repairResponse.content),
           input,
           {
@@ -125,18 +129,35 @@ export class LLMExperienceExtractor implements ExperienceExtractor {
 
     if (this.allowFallbackToDeterministic) {
       const fallback = await this.deterministicExtractor.extract(input);
+      const fallbackWarning = `LLMExperienceExtractor fell back to deterministic extraction: ${parseError.reason}`;
+      const totalExtractedExperiences = fallback.experiences.length;
       return {
         ...fallback,
-        warnings: [
-          ...(fallback.warnings ?? []),
-          `LLMExperienceExtractor fell back to deterministic extraction: ${parseError.reason}`,
-        ],
+        experiences: fallback.experiences.map((experience, experienceIndex) => ({
+          ...experience,
+          warnings: [
+            ...(experience.warnings ?? []),
+            ...(experienceIndex === 0 ? [fallbackWarning] : []),
+          ],
+          metadata: {
+            ...(experience.metadata ?? {}),
+            llm: {
+              repaired: this.allowJsonRepair,
+              fallbackUsed: true,
+              truncated,
+              experienceIndex,
+              totalExtractedExperiences,
+            },
+          },
+        })),
+        warnings: [...fallback.warnings, fallbackWarning],
         metadata: {
           ...(fallback.metadata ?? {}),
           llm: {
             repaired: this.allowJsonRepair,
             fallbackUsed: true,
             truncated,
+            totalExtractedExperiences,
           },
         },
       };
@@ -145,7 +166,7 @@ export class LLMExperienceExtractor implements ExperienceExtractor {
     throw parseError;
   }
 
-  private toExtractedExperience(
+  private toExtractionResult(
     output: LLMExperienceExtractionOutput,
     input: IngestExperienceInput,
     flags: {
@@ -153,32 +174,45 @@ export class LLMExperienceExtractor implements ExperienceExtractor {
       fallbackUsed: boolean;
       truncated: boolean;
     },
-  ): ExtractedExperience {
-    const primary = output.experiences[0];
-    if (!primary) {
+  ): ExperienceExtractionResult {
+    if (output.experiences.length === 0) {
       throw new LLMExperienceExtractionParseError(
         "LLM experience extraction returned no experiences.",
         "experiences: empty",
         "",
       );
     }
+    const totalExtractedExperiences = output.experiences.length;
     const warnings = [
       ...output.warnings,
-      ...(output.experiences.length > 1
-        ? [`LLM returned ${output.experiences.length} experiences; only the first was ingested.`]
+      ...(totalExtractedExperiences > 1
+        ? [`LLM returned ${totalExtractedExperiences} experiences.`]
         : []),
       ...(flags.truncated ? ["Source text was truncated before LLM extraction."] : []),
     ];
 
     return {
-      type: this.normalizeExperienceType(primary.type),
-      organization: primary.organization?.trim() || "Unknown Organization",
-      role: primary.role?.trim() || "Contributor",
-      summary: primary.summary,
-      evidenceExcerpts: primary.evidences.length > 0
-        ? primary.evidences.map((evidence) => evidence.excerpt)
-        : [primary.summary],
-      skillNames: this.extractSkills(primary),
+      experiences: output.experiences.map((experience, experienceIndex) => ({
+        type: this.normalizeExperienceType(experience.type),
+        organization: experience.organization?.trim() || "Unknown Organization",
+        role: experience.role?.trim() || "Contributor",
+        summary: experience.summary,
+        evidenceExcerpts: experience.evidences.length > 0
+          ? experience.evidences.map((evidence) => evidence.excerpt)
+          : [experience.summary],
+        skillNames: this.extractSkills(experience),
+        metadata: {
+          llm: {
+            provider: this.modelClient.getProviderName(),
+            repaired: flags.repaired,
+            fallbackUsed: flags.fallbackUsed,
+            truncated: flags.truncated,
+            experienceIndex,
+            totalExtractedExperiences,
+          },
+          ...(input.sourceDocumentId ? { sourceDocumentId: input.sourceDocumentId } : {}),
+        },
+      })),
       warnings,
       metadata: {
         llm: {
@@ -186,6 +220,7 @@ export class LLMExperienceExtractor implements ExperienceExtractor {
           repaired: flags.repaired,
           fallbackUsed: flags.fallbackUsed,
           truncated: flags.truncated,
+          totalExtractedExperiences,
         },
         ...(input.sourceDocumentId ? { sourceDocumentId: input.sourceDocumentId } : {}),
       },

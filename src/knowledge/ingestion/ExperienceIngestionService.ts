@@ -44,12 +44,18 @@ export type IngestExperienceInput = {
 
 export type IngestExperienceResult = {
   experience: Experience;
+  experiences: Experience[];
   evidences: Evidence[];
   skills: Skill[];
   warnings: string[];
 };
 
-export type { ExperienceExtractor } from "./extractors/types.js";
+export type {
+  ExperienceExtractionResult,
+  ExperienceExtractor,
+  ExtractedExperience,
+  ExtractedSkill,
+} from "./extractors/types.js";
 
 export class ExperienceIngestionService {
   private readonly extractor: ExperienceExtractor;
@@ -67,100 +73,157 @@ export class ExperienceIngestionService {
   }
 
   async ingest(input: IngestExperienceInput): Promise<IngestExperienceResult> {
-    const extracted = await this.extractor.extract(input);
-    const completed = this.evidenceCompletenessGuard.complete({
-      rawText: input.rawText,
-      evidenceExcerpts: extracted.evidenceExcerpts,
-    });
-    const evidenceExcerpts = completed.evidenceExcerpts;
-    const warnings = extracted.warnings ?? [];
+    const extractionResult = await this.extractor.extract(input);
+    if (extractionResult.experiences.length === 0) {
+      throw new Error("Experience extraction returned no experiences.");
+    }
+
+    const warnings: string[] = [];
+    const addWarning = (warning: string): void => {
+      if (!warnings.includes(warning)) {
+        warnings.push(warning);
+      }
+    };
+    for (const warning of extractionResult.warnings) {
+      addWarning(warning);
+    }
+
     const now = new Date().toISOString();
-    const experienceId = stableId("exp", `${input.userId}:${input.rawText}`);
-    const extractionMetadata = extracted.metadata ?? {};
     const createdFrom = this.extractor.constructor.name === "LLMExperienceExtractor"
       ? "LLMExperienceExtractor"
       : "ExperienceIngestionService";
+    const totalExtractedExperiences = extractionResult.experiences.length;
+    const experiences: Experience[] = [];
+    const evidences: Evidence[] = [];
+    const skillsById = new Map<string, Skill>();
 
-    const evidences = evidenceExcerpts.map((excerpt, index) => {
-      const evidenceMetadata: Record<string, unknown> = {
+    for (const [experienceIndex, extracted] of extractionResult.experiences.entries()) {
+      for (const warning of extracted.warnings ?? []) {
+        addWarning(warning);
+      }
+
+      const completed = this.evidenceCompletenessGuard.complete({
+        rawText: input.rawText,
+        evidenceExcerpts: extracted.evidenceExcerpts,
+      });
+      const evidenceExcerpts = completed.evidenceExcerpts;
+      const extractionMetadata = {
+        ...(extractionResult.metadata ?? {}),
+        ...(extracted.metadata ?? {}),
+      };
+      const experienceId = stableId(
+        "exp",
+        [
+          input.userId,
+          input.sourceDocumentId ?? input.sourceRef ?? "",
+          String(experienceIndex),
+          extracted.summary,
+        ].join(":"),
+      );
+      const ingestionMetadata = {
+        createdFrom,
+        extractor: this.extractor.constructor.name,
+        experienceIndex,
+        totalExtractedExperiences,
+      };
+
+      const experienceEvidences = evidenceExcerpts.map((excerpt, evidenceIndex) => {
+        const evidenceMetadata: Record<string, unknown> = {
+          ...input.metadata,
+          ...extractionMetadata,
+          ...(input.sourceDocumentId ? { sourceDocumentId: input.sourceDocumentId } : {}),
+          sourceRef: input.sourceRef ?? "raw-experience-input",
+          sourceType: input.sourceType ?? "raw_input",
+          ...(input.documentMetadata ? { document: input.documentMetadata } : {}),
+          chunk: {
+            evidenceIndex,
+            excerptLength: excerpt.length,
+          },
+          ingestion: ingestionMetadata,
+        };
+        return {
+          id: `${experienceId}-ev-${evidenceIndex + 1}`,
+          userId: input.userId,
+          experienceId,
+          sourceType: input.sourceType ?? "raw_input",
+          evidenceType: this.detectEvidenceType(excerpt),
+          sourceRef: input.sourceRef ?? "raw-experience-input",
+          excerpt,
+          confidence: this.detectEvidenceConfidence(excerpt),
+          ...(input.sourceDocumentId ? { sourceDocumentId: input.sourceDocumentId } : {}),
+          metadata: evidenceMetadata,
+          createdAt: now,
+        };
+      });
+
+      const skillSourceText = [
+        extracted.summary,
+        ...evidenceExcerpts,
+        ...(extracted.skillNames ?? []).map((skill) => skill.name),
+      ].join("\n");
+      const experienceSkills = await this.upsertSkills(
+        input.userId,
+        skillSourceText,
+        experienceEvidences,
+        now,
+        extracted.skillNames ?? [],
+      );
+      for (const skill of experienceSkills) {
+        skillsById.set(skill.id, skill);
+      }
+
+      const experienceMetadata: Record<string, unknown> = {
         ...input.metadata,
         ...extractionMetadata,
         ...(input.sourceDocumentId ? { sourceDocumentId: input.sourceDocumentId } : {}),
         sourceRef: input.sourceRef ?? "raw-experience-input",
         sourceType: input.sourceType ?? "raw_input",
         ...(input.documentMetadata ? { document: input.documentMetadata } : {}),
-        chunk: {
-          evidenceIndex: index,
-          excerptLength: excerpt.length,
-        },
-        ingestion: {
-          createdFrom,
-          extractor: this.extractor.constructor.name,
-        },
+        ingestion: ingestionMetadata,
       };
-      return {
-        id: `${experienceId}-ev-${index + 1}`,
+
+      const experience: Experience = {
+        id: experienceId,
         userId: input.userId,
-        experienceId,
-        sourceType: input.sourceType ?? "raw_input",
-        evidenceType: this.detectEvidenceType(excerpt),
-        sourceRef: input.sourceRef ?? "raw-experience-input",
-        excerpt,
-        confidence: this.detectEvidenceConfidence(excerpt),
-        ...(input.sourceDocumentId ? { sourceDocumentId: input.sourceDocumentId } : {}),
-        metadata: evidenceMetadata,
-        createdAt: now,
-      };
-    });
-
-    const skills = await this.upsertSkills(input.userId, input.rawText, evidences, now, extracted.skillNames ?? []);
-
-    const experienceMetadata: Record<string, unknown> = {
-      ...input.metadata,
-      ...extractionMetadata,
-      ...(input.sourceDocumentId ? { sourceDocumentId: input.sourceDocumentId } : {}),
-      sourceRef: input.sourceRef ?? "raw-experience-input",
-      sourceType: input.sourceType ?? "raw_input",
-      ...(input.documentMetadata ? { document: input.documentMetadata } : {}),
-      ingestion: {
-        createdFrom,
-        extractor: this.extractor.constructor.name,
-      },
-    };
-
-    const experience: Experience = {
-      id: experienceId,
-      userId: input.userId,
-      type: extracted.type,
-      organization: extracted.organization,
-      role: extracted.role,
-      summary: extracted.summary,
-      timeRange: {
-        startDate: null,
-        endDate: null,
-      },
-      star: this.buildStar({
+        type: extracted.type,
+        organization: extracted.organization,
+        role: extracted.role,
         summary: extracted.summary,
-        evidenceExcerpts,
-        evidences,
-      }),
-      evidenceIds: evidences.map((e) => e.id),
-      skillIds: skills.map((s) => s.id),
-      confidence: evidences.length > 1 ? 0.82 : 0.68,
-      ...(input.sourceDocumentId ? { sourceDocumentId: input.sourceDocumentId } : {}),
-      metadata: experienceMetadata,
-      createdAt: now,
-      updatedAt: now,
-    };
+        timeRange: {
+          startDate: null,
+          endDate: null,
+        },
+        star: this.buildStar({
+          summary: extracted.summary,
+          evidenceExcerpts,
+          evidences: experienceEvidences,
+        }),
+        evidenceIds: experienceEvidences.map((evidence) => evidence.id),
+        skillIds: experienceSkills.map((skill) => skill.id),
+        confidence: experienceEvidences.length > 1 ? 0.82 : 0.68,
+        ...(input.sourceDocumentId ? { sourceDocumentId: input.sourceDocumentId } : {}),
+        metadata: experienceMetadata,
+        createdAt: now,
+        updatedAt: now,
+      };
 
-    validateExperience(experience);
-    await this.experienceRepo.save(experience);
-    for (const evidence of evidences) {
-      validateEvidence(evidence);
-      await this.evidenceRepo.save(evidence);
+      validateExperience(experience);
+      await this.experienceRepo.save(experience);
+      for (const evidence of experienceEvidences) {
+        validateEvidence(evidence);
+        await this.evidenceRepo.save(evidence);
+      }
+      experiences.push(experience);
+      evidences.push(...experienceEvidences);
     }
 
-    return { experience, evidences, skills, warnings };
+    return {
+      experience: experiences[0],
+      experiences,
+      evidences,
+      skills: Array.from(skillsById.values()),
+      warnings,
+    };
   }
 
   private detectEvidenceType(excerpt: string): EvidenceType {
