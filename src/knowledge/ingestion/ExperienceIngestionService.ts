@@ -23,6 +23,7 @@ import {
 import { DeterministicExperienceExtractor } from "./extractors/DeterministicExperienceExtractor.js";
 import type { ExperienceExtractor } from "./extractors/types.js";
 import { EvidenceCompletenessGuard } from "./EvidenceCompletenessGuard.js";
+import type { ExtractedSkill } from "./extractors/types.js";
 
 export type IngestExperienceInput = {
   userId: string;
@@ -45,6 +46,7 @@ export type IngestExperienceResult = {
   experience: Experience;
   evidences: Evidence[];
   skills: Skill[];
+  warnings: string[];
 };
 
 export type { ExperienceExtractor } from "./extractors/types.js";
@@ -71,12 +73,18 @@ export class ExperienceIngestionService {
       evidenceExcerpts: extracted.evidenceExcerpts,
     });
     const evidenceExcerpts = completed.evidenceExcerpts;
+    const warnings = extracted.warnings ?? [];
     const now = new Date().toISOString();
     const experienceId = stableId("exp", `${input.userId}:${input.rawText}`);
+    const extractionMetadata = extracted.metadata ?? {};
+    const createdFrom = this.extractor.constructor.name === "LLMExperienceExtractor"
+      ? "LLMExperienceExtractor"
+      : "ExperienceIngestionService";
 
     const evidences = evidenceExcerpts.map((excerpt, index) => {
       const evidenceMetadata: Record<string, unknown> = {
         ...input.metadata,
+        ...extractionMetadata,
         ...(input.sourceDocumentId ? { sourceDocumentId: input.sourceDocumentId } : {}),
         sourceRef: input.sourceRef ?? "raw-experience-input",
         sourceType: input.sourceType ?? "raw_input",
@@ -86,7 +94,7 @@ export class ExperienceIngestionService {
           excerptLength: excerpt.length,
         },
         ingestion: {
-          createdFrom: "ExperienceIngestionService",
+          createdFrom,
           extractor: this.extractor.constructor.name,
         },
       };
@@ -105,16 +113,17 @@ export class ExperienceIngestionService {
       };
     });
 
-    const skills = await this.upsertSkills(input.userId, input.rawText, evidences, now);
+    const skills = await this.upsertSkills(input.userId, input.rawText, evidences, now, extracted.skillNames ?? []);
 
     const experienceMetadata: Record<string, unknown> = {
       ...input.metadata,
+      ...extractionMetadata,
       ...(input.sourceDocumentId ? { sourceDocumentId: input.sourceDocumentId } : {}),
       sourceRef: input.sourceRef ?? "raw-experience-input",
       sourceType: input.sourceType ?? "raw_input",
       ...(input.documentMetadata ? { document: input.documentMetadata } : {}),
       ingestion: {
-        createdFrom: "ExperienceIngestionService",
+        createdFrom,
         extractor: this.extractor.constructor.name,
       },
     };
@@ -151,7 +160,7 @@ export class ExperienceIngestionService {
       await this.evidenceRepo.save(evidence);
     }
 
-    return { experience, evidences, skills };
+    return { experience, evidences, skills, warnings };
   }
 
   private detectEvidenceType(excerpt: string): EvidenceType {
@@ -347,8 +356,9 @@ export class ExperienceIngestionService {
     rawText: string,
     evidences: Evidence[],
     now: string,
+    extractedSkills: ExtractedSkill[],
   ): Promise<Skill[]> {
-    const detected = detectKnownSkills(rawText);
+    const detected = this.mergeSkills(detectKnownSkills(rawText), extractedSkills);
     const skills: Skill[] = [];
 
     for (const detectedSkill of detected) {
@@ -389,6 +399,28 @@ export class ExperienceIngestionService {
 
   private evidenceMentionsSkill(excerpt: string, skillName: string): boolean {
     const normalized = excerpt.toLowerCase();
-    return detectKnownSkills(normalized).some((skill) => skill.name === skillName);
+    return detectKnownSkills(normalized).some((skill) => skill.name === skillName) ||
+      normalized.includes(skillName.toLowerCase());
+  }
+
+  private mergeSkills(
+    detectedSkills: ExtractedSkill[],
+    extractedSkills: ExtractedSkill[],
+  ): Array<Required<ExtractedSkill>> {
+    const merged = new Map<string, Required<ExtractedSkill>>();
+    for (const skill of [...detectedSkills, ...extractedSkills]) {
+      const name = skill.name.trim();
+      if (!name) {
+        continue;
+      }
+      const key = name.toLowerCase();
+      if (!merged.has(key)) {
+        merged.set(key, {
+          name,
+          category: skill.category ?? "technical",
+        });
+      }
+    }
+    return Array.from(merged.values());
   }
 }

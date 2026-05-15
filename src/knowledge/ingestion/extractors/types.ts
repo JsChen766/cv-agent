@@ -1,6 +1,11 @@
 import { z } from "zod";
-import type { ExperienceType } from "../../types.js";
+import type { ExperienceType, SkillCategory } from "../../types.js";
 import type { IngestExperienceInput } from "../ExperienceIngestionService.js";
+
+export type ExtractedSkill = {
+  name: string;
+  category?: SkillCategory;
+};
 
 // Reuse the ExtractedExperience type definition here since it's shared
 export type ExtractedExperience = {
@@ -9,6 +14,9 @@ export type ExtractedExperience = {
   role: string;
   summary: string;
   evidenceExcerpts: string[];
+  skillNames?: ExtractedSkill[];
+  warnings?: string[];
+  metadata?: Record<string, unknown>;
 };
 
 export interface ExperienceExtractor {

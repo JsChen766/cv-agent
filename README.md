@@ -421,7 +421,14 @@ FrontDesk mode is now active:
 - `FRONTDESK_AGENT_MODE=llm` uses `AgentProviderFactory`; with `AGENT_PROVIDER=deepseek` and a key, FrontDesk intent routing uses DeepSeek.
 - Invalid FrontDesk JSON is parsed robustly, repaired once, then falls back to an `unknown` decision unless fallback is disabled.
 
-Other agent mode environment variables are parsed but do not switch implementations yet:
+Experience extractor mode is also active:
+
+- `EXPERIENCE_EXTRACTOR_MODE=deterministic` is the default stable mode.
+- `EXPERIENCE_EXTRACTOR_MODE=llm` uses `AgentProviderFactory` and `LLMExperienceExtractor`.
+- LLM extraction parses JSON, validates with zod, repairs once, and falls back to deterministic extraction when fallback is enabled.
+- FrontDesk and ExperienceExtractor modes are independent.
+
+Artifact and critic modes are parsed but do not switch implementations yet:
 
 ```bash
 FRONTDESK_AGENT_MODE=mock|llm
@@ -430,7 +437,7 @@ ARTIFACT_GENERATOR_MODE=deterministic|llm
 CRITIC_AGENT_MODE=deterministic|llm
 ```
 
-LLM-backed `ExperienceExtractor`, `ArtifactGenerator`, and `CriticAgent` are not enabled by this step.
+LLM-backed `ArtifactGenerator` and `CriticAgent` are not enabled by this step.
 
 Common configurations:
 
@@ -438,23 +445,41 @@ Common configurations:
 # Local default
 AGENT_PROVIDER=mock
 FRONTDESK_AGENT_MODE=mock
+EXPERIENCE_EXTRACTOR_MODE=deterministic
 
 # Local FrontDesk LLM fallback test
 FRONTDESK_AGENT_MODE=llm
+EXPERIENCE_EXTRACTOR_MODE=deterministic
 AGENT_PROVIDER=deepseek
 ALLOW_MOCK_FALLBACK=true
 
+# Real DeepSeek ExperienceExtractor only
+FRONTDESK_AGENT_MODE=mock
+EXPERIENCE_EXTRACTOR_MODE=llm
+AGENT_PROVIDER=deepseek
+DEEPSEEK_API_KEY=...
+ALLOW_MOCK_FALLBACK=false
+
 # Real DeepSeek FrontDesk
 FRONTDESK_AGENT_MODE=llm
+EXPERIENCE_EXTRACTOR_MODE=deterministic
 AGENT_PROVIDER=deepseek
 DEEPSEEK_API_KEY=...
 DEEPSEEK_MODEL=deepseek-chat
+ALLOW_MOCK_FALLBACK=false
+
+# Real DeepSeek FrontDesk and ExperienceExtractor
+FRONTDESK_AGENT_MODE=llm
+EXPERIENCE_EXTRACTOR_MODE=llm
+AGENT_PROVIDER=deepseek
+DEEPSEEK_API_KEY=...
 ALLOW_MOCK_FALLBACK=false
 
 # Production recommendation
 NODE_ENV=production
 AUTH_MODE=cookie_session
 FRONTDESK_AGENT_MODE=llm
+EXPERIENCE_EXTRACTOR_MODE=llm
 AGENT_PROVIDER=deepseek
 DEEPSEEK_API_KEY=...
 ALLOW_MOCK_FALLBACK=false
@@ -494,6 +519,14 @@ DEEPSEEK_API_KEY=your_api_key npm run dev:frontdesk-llm-smoke
 ```
 
 Without `DEEPSEEK_API_KEY`, `npm run dev:frontdesk-llm-smoke` exits cleanly with a skipped message.
+
+Optional ExperienceExtractor LLM smoke demo:
+
+```bash
+DEEPSEEK_API_KEY=your_api_key npm run dev:experience-llm-smoke
+```
+
+Without `DEEPSEEK_API_KEY`, `npm run dev:experience-llm-smoke` exits cleanly with a skipped message.
 
 ## Frontend Contract
 

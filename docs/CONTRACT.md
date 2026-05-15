@@ -1,6 +1,6 @@
 # Coolto CV Agent Contract
 
-> Status: Draft v0.1, P8.0-P8.2 implemented through LLM-backed FrontDeskAgent  
+> Status: Draft v0.1, P8.0-P8.3 implemented through LLM-backed FrontDeskAgent and ExperienceExtractor  
 > Scope: frontend ↔ backend API ↔ cv-agent kernel / SDK  
 > Principle: backend owns authentication and request context; Agent Kernel owns document ingestion, experience knowledge, generation, evidence chains, and graph projections.
 
@@ -115,7 +115,7 @@ FRONTDESK_AGENT_MODE=llm
 EXPERIENCE_EXTRACTOR_MODE=llm
 ```
 
-P8.1/P8.2 implementation notes:
+P8.1-P8.3 implementation notes:
 
 1. `AgentProviderFactory` creates `ModelClient` instances for `mock` or `deepseek`.
 2. Non-production defaults to `AGENT_PROVIDER=mock`.
@@ -124,7 +124,10 @@ P8.1/P8.2 implementation notes:
 5. `FRONTDESK_AGENT_MODE=mock` forces MockProvider and ignores DeepSeek config for FrontDesk routing.
 6. `FRONTDESK_AGENT_MODE=llm` routes FrontDeskAgent through `AgentProviderFactory`.
 7. FrontDeskAgent validates JSON, repairs once, and falls back to an `unknown` decision unless fallback is disabled.
-8. ExperienceExtractor, ArtifactGenerator, and CriticAgent mode env vars are parsed for future use, but their LLM implementations are not enabled yet.
+8. `EXPERIENCE_EXTRACTOR_MODE=deterministic` keeps the default deterministic ingestion path.
+9. `EXPERIENCE_EXTRACTOR_MODE=llm` routes experience extraction through `AgentProviderFactory`.
+10. LLMExperienceExtractor validates JSON, repairs once, and falls back to deterministic extraction when fallback is enabled.
+11. ArtifactGenerator and CriticAgent mode env vars are parsed for future use, but their LLM implementations are not enabled yet.
 
 ---
 
@@ -812,9 +815,17 @@ Status: implemented.
 
 ### P8.3 LLM-backed ExperienceExtractor
 
-- Convert raw document text to Experience/Evidence/Skill via LLM.
-- Validate with zod.
-- Preserve sourceDocumentId and documentMetadata.
+Status: implemented.
+
+- Converts raw document text into extracted experience, evidence excerpts, and skills through LLM mode.
+- Keeps deterministic extraction as the default.
+- FrontDesk and ExperienceExtractor modes are independently controlled.
+- Validates LLM extraction JSON with zod.
+- Parses raw JSON, fenced JSON, and JSON surrounded by prose.
+- Repairs invalid extraction JSON once.
+- Falls back to deterministic extraction when fallback is enabled.
+- Preserves sourceDocumentId and document metadata through ingestion metadata.
+- Includes optional `dev:experience-llm-smoke` demo.
 
 ### P9 Feedback Loop
 

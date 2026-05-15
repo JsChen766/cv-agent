@@ -23,8 +23,10 @@ import { MockProvider } from "../../providers/MockProvider.js";
 import {
   AgentProviderFactory,
   readAgentModeConfig,
-  type AgentProviderName,
 } from "../../providers/factory/index.js";
+import { LLMExperienceExtractor } from "../../knowledge/ingestion/LLMExperienceExtractor.js";
+import { DeterministicExperienceExtractor } from "../../knowledge/ingestion/extractors/DeterministicExperienceExtractor.js";
+import type { ExperienceExtractor } from "../../knowledge/ingestion/extractors/types.js";
 import type {
   DocumentRepository,
   EvidenceChainSnapshot,
@@ -130,12 +132,17 @@ function createInMemoryKernel(): ApiKernel {
 }
 
 function buildKernel(input: BuildKernelInput): ApiKernel {
+  const agentModes = readAgentModeConfig();
   const documentLoader = new DocumentLoaderTool();
   const documentIngestionService = new DocumentIngestionService(documentLoader, input.documentRepository);
+  const experienceExtractor = createExperienceExtractor({
+    mode: agentModes.experienceExtractorMode,
+  });
   const ingestionService = new ExperienceIngestionService(
     input.experienceRepository,
     input.evidenceRepository,
     input.skillRepository,
+    experienceExtractor.extractor,
   );
   const resumeGenerationService = new ResumeGenerationService(
     new DeterministicJDRequirementExtractor(input.skillRepository, input.requirementRepository),
@@ -156,7 +163,6 @@ function buildKernel(input: BuildKernelInput): ApiKernel {
       input.graphViewRepository,
       input.bundleRepository,
     );
-  const agentModes = readAgentModeConfig();
   const agentProvider = createFrontDeskModelClient({
     mode: agentModes.frontDeskAgentMode,
   });
@@ -175,7 +181,11 @@ function buildKernel(input: BuildKernelInput): ApiKernel {
     },
   );
 
-  const warnings = [...(input.warnings ?? []), ...agentProvider.warnings];
+  const warnings = uniqueWarnings([
+    ...(input.warnings ?? []),
+    ...agentProvider.warnings,
+    ...experienceExtractor.warnings,
+  ]);
   const cvAgentKernel = new DefaultCvAgentKernel({
     mode: input.mode,
     warnings,
@@ -222,7 +232,6 @@ function createFrontDeskModelClient(input: {
 }): {
   modelClient: ModelClient;
   warnings: string[];
-  providerName: AgentProviderName;
 } {
   if (input.mode === "mock") {
     return {
@@ -232,7 +241,6 @@ function createFrontDeskModelClient(input: {
         maxRetries: 0,
       }),
       warnings: [],
-      providerName: "mock",
     };
   }
 
@@ -240,8 +248,33 @@ function createFrontDeskModelClient(input: {
   return {
     modelClient: agentProvider.modelClient,
     warnings: agentProvider.warnings,
-    providerName: agentProvider.providerName,
   };
+}
+
+function createExperienceExtractor(input: {
+  mode: "deterministic" | "llm";
+}): {
+  extractor: ExperienceExtractor;
+  warnings: string[];
+} {
+  if (input.mode === "deterministic") {
+    return {
+      extractor: new DeterministicExperienceExtractor(),
+      warnings: [],
+    };
+  }
+
+  const agentProvider = AgentProviderFactory.create(AgentProviderFactory.fromEnv());
+  return {
+    extractor: new LLMExperienceExtractor({
+      modelClient: agentProvider.modelClient,
+    }),
+    warnings: agentProvider.warnings,
+  };
+}
+
+function uniqueWarnings(warnings: string[]): string[] {
+  return Array.from(new Set(warnings));
 }
 
 class InMemoryDocumentRepository implements DocumentRepository {

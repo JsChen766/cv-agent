@@ -200,4 +200,46 @@ describe("ExperienceIngestionService", () => {
     );
     expect(result.experience.star.task).not.toBe(result.experience.star.situation);
   });
+
+  it("saves output from an injected extractor", async () => {
+    const extractor: ExperienceExtractor = {
+      async extract() {
+        return {
+          type: "project",
+          organization: "Demo Org",
+          role: "Builder",
+          summary: "Built an analytics dashboard.",
+          evidenceExcerpts: ["Built an analytics dashboard with PostgreSQL."],
+          skillNames: [{ name: "PostgreSQL", category: "technical" }],
+          warnings: ["fake extractor warning"],
+          metadata: {
+            llm: {
+              provider: "fake",
+            },
+          },
+        };
+      },
+    };
+    const experienceRepo = new InMemoryExperienceRepository();
+    const evidenceRepo = new InMemoryEvidenceRepository();
+    const skillRepo = new InMemorySkillRepository();
+    const service = new ExperienceIngestionService(
+      experienceRepo,
+      evidenceRepo,
+      skillRepo,
+      extractor,
+    );
+
+    const result = await service.ingest({
+      userId: "user-1",
+      rawText: "source text",
+    });
+
+    expect(result.experience.organization).toBe("Demo Org");
+    expect(result.skills.map((skill) => skill.name)).toContain("PostgreSQL");
+    expect(result.warnings).toEqual(["fake extractor warning"]);
+    await expect(experienceRepo.listByUserId("user-1")).resolves.toHaveLength(1);
+    await expect(evidenceRepo.listByUserId("user-1")).resolves.toHaveLength(1);
+    await expect(skillRepo.listByUserId("user-1")).resolves.toHaveLength(1);
+  });
 });
