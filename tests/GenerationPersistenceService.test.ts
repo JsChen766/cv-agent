@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { GenerationPersistenceService } from "../src/application/generation/index.js";
 import type { GenerateResumeResult } from "../src/application/ResumeGenerationService.js";
+import { createPostgresGenerationPersistenceService } from "../src/persistence/postgres/index.js";
+import type { PostgresQueryable, PostgresQueryResult } from "../src/persistence/postgres/PostgresDatabase.js";
 import type {
   EvidenceChainSnapshot,
   EvidenceChainSnapshotRepository,
@@ -48,6 +50,12 @@ class FakeEvidenceChainSnapshotRepository implements EvidenceChainSnapshotReposi
 
   public async listByArtifactId(_userId: string, _artifactId: string): Promise<EvidenceChainSnapshot[]> {
     return [];
+  }
+}
+
+class ThrowingEvidenceChainSnapshotRepository extends FakeEvidenceChainSnapshotRepository {
+  public override async save(_snapshot: EvidenceChainSnapshot): Promise<void> {
+    throw new Error("snapshot save failed");
   }
 }
 
@@ -99,7 +107,53 @@ describe("GenerationPersistenceService", () => {
     expect(bundles.saved[0].graphViewSnapshotId).toBe(graphs.saved[0].id);
     expect(bundles.saved[0].metadata).toEqual({ source: "test" });
   });
+
+  it("stops later saves when a snapshot repository fails", async () => {
+    const sessions = new FakeSessionRepository();
+    const chains = new ThrowingEvidenceChainSnapshotRepository();
+    const graphs = new FakeGraphViewSnapshotRepository();
+    const bundles = new FakeBundleRepository();
+    const service = new GenerationPersistenceService(sessions, chains, graphs, bundles);
+
+    await expect(service.persist(createGenerateResumeResult())).rejects.toThrow("snapshot save failed");
+    expect(sessions.saved).toHaveLength(1);
+    expect(graphs.saved).toHaveLength(0);
+    expect(bundles.saved).toHaveLength(0);
+  });
+
+  it("uses a PostgreSQL transaction-aware factory for generation persistence", async () => {
+    const database = new FakeTransactionDatabase();
+    const service = createPostgresGenerationPersistenceService(database);
+
+    await service.persist(createGenerateResumeResult());
+
+    expect(database.transactionCalled).toBe(true);
+    expect(database.client.queries.some((query) => query.sql.includes("INSERT INTO generation_sessions"))).toBe(true);
+    expect(database.client.queries.some((query) => query.sql.includes("INSERT INTO evidence_chain_snapshots"))).toBe(true);
+  });
 });
+
+class FakeTransactionDatabase {
+  public transactionCalled = false;
+  public readonly client = new FakeTransactionClient();
+
+  public async transaction<T>(callback: (client: PostgresQueryable) => Promise<T>): Promise<T> {
+    this.transactionCalled = true;
+    return callback(this.client);
+  }
+}
+
+class FakeTransactionClient implements PostgresQueryable {
+  public readonly queries: Array<{ sql: string; params: unknown[] }> = [];
+
+  public async query<Row extends Record<string, unknown> = Record<string, unknown>>(
+    sql: string,
+    params: unknown[] = [],
+  ): Promise<PostgresQueryResult<Row>> {
+    this.queries.push({ sql, params });
+    return { rows: [], rowCount: 0 };
+  }
+}
 
 function createGenerateResumeResult(): GenerateResumeResult {
   const now = "2024-01-01T00:00:00.000Z";

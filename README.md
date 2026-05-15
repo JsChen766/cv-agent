@@ -100,6 +100,8 @@ The demo imports a simulated Markdown resume document, extracts text, ingests Ex
 - `SQLite/sql.js` repositories are the local demo adapter. They remain in place and are not the production storage target.
 - `PostgreSQL` is the production storage direction. The current adapter uses lightweight SQL through `pg`, not Prisma, Drizzle, TypeORM, or an HTTP server.
 - Graph DB is not introduced yet. `GraphView` is currently a projection/snapshot persisted for frontend display, not a Neo4j-backed graph model.
+- Document ingestion now links parsed documents to generated `Experience` and `Evidence` records through `sourceDocumentId`.
+- Future backend/API code must use user-scoped repository methods such as `getByIdForUser(userId, id)` and `deleteForUser(userId, id)` instead of exposing legacy `getById(id)` methods directly.
 
 PostgreSQL schema lives in `src/persistence/postgres/schema.sql` and is repeatable with `CREATE TABLE IF NOT EXISTS` / `CREATE INDEX IF NOT EXISTS`. It includes:
 
@@ -109,6 +111,14 @@ PostgreSQL schema lives in `src/persistence/postgres/schema.sql` and is repeatab
 - `generation_sessions`, `generation_artifact_bundles`, `evidence_chain_snapshots`, and `graph_view_snapshots` for reloadable generation records that a future frontend can show without recomputing every chain or graph.
 - `artifact_decisions`, `coverage_gap_decisions`, and `agent_runs` for future review workflow and audit/debug data.
 
+`generation_sessions` keeps distinct JSONB fields:
+
+- `input`: lightweight input summary for querying and audit.
+- `generation`: complete generated result snapshot.
+- `result_summary`: list-page/query summary counts.
+
+Use `createPostgresGenerationPersistenceService(database)` for PostgreSQL generation persistence so session, evidence-chain snapshots, graph snapshots, and bundle rows are written in one transaction.
+
 Run the PostgreSQL kernel demo:
 
 ```bash
@@ -116,6 +126,12 @@ DATABASE_URL=postgres://user:pass@localhost:5432/cv_agent npm run dev:postgres-k
 ```
 
 If `DATABASE_URL` is not set, the demo exits cleanly with a setup hint. It still uses deterministic/mock agents and does not call DeepSeek.
+
+Run the optional real PostgreSQL integration test:
+
+```bash
+RUN_POSTGRES_INTEGRATION=1 DATABASE_URL=postgres://user:pass@localhost:5432/cv_agent npm run test -- PostgresRepositories.integration.test.ts
+```
 
 Current non-goals remain: no HTTP API, no frontend, no auth system, no real PDF/DOCX parser, no Neo4j, no pgvector, and no real DeepSeek smoke path in this round.
 
@@ -360,7 +376,7 @@ Coverage and critique now happen after artifact generation:
 
 `createAgentBackedCooltoDemoService()` now exists as an in-memory skeleton for the complete agent-backed pipeline. It wires agent-backed ingestion, JD extraction, artifact generation, retrieval, evidence chains, graph views, and contract mapping, but the safer first validation point is still `agent-ingest-demo`.
 
-Current non-goals remain unchanged: no frontend, no HTTP API server, no vector database, no Neo4j, and no production persistence.
+Current non-goals remain unchanged: no frontend, no HTTP API server, no vector database, and no Neo4j. PostgreSQL persistence is implemented as a kernel adapter, not as a backend server.
 
 ## Generation Session and User Decisions
 
@@ -370,7 +386,7 @@ Current non-goals remain unchanged: no frontend, no HTTP API server, no vector d
 - `CoverageGapDecision` supports `generate_supplemental_artifact`, `request_more_evidence`, `ignore`, and `mark_not_relevant`, with `undecided` as the default.
 - `SupplementalArtifactDraft` is created only when the user explicitly chooses to generate a supplemental artifact from a coverage gap suggestion. Drafts stay in `supplementalArtifactDrafts`; they are not merged into the main `generation.artifacts` array and are not saved to the artifact repository.
 - Session decision inputs are runtime-validated with zod, so empty IDs and `undecided` user submissions are rejected before state changes.
-- `InMemoryGenerationSessionRepository` is the current storage layer. There is no database, frontend, or HTTP API server.
+- `InMemoryGenerationSessionRepository` remains the deterministic local storage layer, while PostgreSQL repositories provide the production storage adapter. There is still no frontend or HTTP API server.
 - `src/api-contracts/session.ts` exposes request/response types for future API wiring.
 - Deterministic demo bullets are generated from source evidence excerpts instead of mechanical matched-skill summaries, so local product demos look closer to real resume content.
 

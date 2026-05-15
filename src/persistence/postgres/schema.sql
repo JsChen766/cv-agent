@@ -137,7 +137,8 @@ CREATE TABLE IF NOT EXISTS generation_sessions (
   jd_id TEXT,
   target_role TEXT,
   status TEXT NOT NULL CHECK (status IN ('active', 'completed', 'archived')),
-  input JSONB NOT NULL,
+  input JSONB NOT NULL DEFAULT '{}'::jsonb,
+  generation JSONB NOT NULL,
   result_summary JSONB NOT NULL DEFAULT '{}'::jsonb,
   metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
   created_at TIMESTAMPTZ NOT NULL,
@@ -147,6 +148,7 @@ CREATE INDEX IF NOT EXISTS idx_generation_sessions_user_id ON generation_session
 CREATE INDEX IF NOT EXISTS idx_generation_sessions_jd_id ON generation_sessions(jd_id);
 CREATE INDEX IF NOT EXISTS idx_generation_sessions_status ON generation_sessions(status);
 CREATE INDEX IF NOT EXISTS idx_generation_sessions_created_at ON generation_sessions(created_at);
+ALTER TABLE generation_sessions ADD COLUMN IF NOT EXISTS generation JSONB NOT NULL DEFAULT '{}'::jsonb;
 
 CREATE TABLE IF NOT EXISTS generation_artifact_bundles (
   id TEXT PRIMARY KEY,

@@ -11,6 +11,11 @@ export class PostgresSkillRepository implements SkillRepository {
     return result.rows[0] ? this.toSkill(result.rows[0]) : null;
   }
 
+  public async getByIdForUser(userId: string, id: string): Promise<Skill | null> {
+    const result = await this.database.query("SELECT * FROM skills WHERE user_id = $1 AND id = $2", [userId, id]);
+    return result.rows[0] ? this.toSkill(result.rows[0]) : null;
+  }
+
   public async findByName(userId: string, name: string): Promise<Skill | null> {
     const result = await this.database.query(
       "SELECT * FROM skills WHERE user_id = $1 AND lower(name) = lower($2) LIMIT 1",
@@ -48,6 +53,10 @@ export class PostgresSkillRepository implements SkillRepository {
 
   public async delete(id: string): Promise<void> {
     await this.database.query("DELETE FROM skills WHERE id = $1", [id]);
+  }
+
+  public async deleteForUser(userId: string, id: string): Promise<void> {
+    await this.database.query("DELETE FROM skills WHERE user_id = $1 AND id = $2", [userId, id]);
   }
 
   private toSkill(row: Record<string, unknown>): Skill {

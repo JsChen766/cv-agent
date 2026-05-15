@@ -1,4 +1,5 @@
 import type { GenerationSession } from "../../application/sessions/types.js";
+import type { GenerateResumeResponse } from "../../api-contracts/generation.js";
 import type {
   GenerationArtifactBundleRecord,
   GenerationArtifactBundleRepository,
@@ -13,15 +14,16 @@ export class PostgresGenerationSessionRepository implements PersistedGenerationS
   public async save(session: GenerationSession): Promise<void> {
     await this.database.query(
       `INSERT INTO generation_sessions (
-        id, user_id, jd_id, target_role, status, input, result_summary, metadata, created_at, updated_at
+        id, user_id, jd_id, target_role, status, input, generation, result_summary, metadata, created_at, updated_at
       ) VALUES (
-        $1, $2, $3, $4, $5, $6::jsonb, $7::jsonb, $8::jsonb, $9, $10
+        $1, $2, $3, $4, $5, $6::jsonb, $7::jsonb, $8::jsonb, $9::jsonb, $10, $11
       )
       ON CONFLICT (id) DO UPDATE SET
         jd_id = EXCLUDED.jd_id,
         target_role = EXCLUDED.target_role,
         status = EXCLUDED.status,
         input = EXCLUDED.input,
+        generation = EXCLUDED.generation,
         result_summary = EXCLUDED.result_summary,
         metadata = EXCLUDED.metadata,
         updated_at = EXCLUDED.updated_at`,
@@ -31,9 +33,10 @@ export class PostgresGenerationSessionRepository implements PersistedGenerationS
         session.jdId,
         session.generation.targetRole,
         session.status,
-        JSON.stringify(session),
+        JSON.stringify(toInputSummary(session)),
+        JSON.stringify(session.generation),
         JSON.stringify(toResultSummary(session)),
-        JSON.stringify({}),
+        JSON.stringify(toMetadata(session)),
         session.createdAt,
         session.updatedAt,
       ],
@@ -112,59 +115,25 @@ export class PostgresGenerationArtifactBundleRepository implements GenerationArt
 }
 
 function toGenerationSession(row: PgRow): GenerationSession {
-  return jsonValue<GenerationSession>(row, "input", {
+  const metadata = jsonValue<Record<string, unknown>>(row, "metadata", {});
+  return {
     id: text(row, "id"),
     userId: text(row, "user_id"),
     jdId: optionalText(row, "jd_id") ?? "",
-    generation: {
-      userId: text(row, "user_id"),
-      jdId: optionalText(row, "jd_id") ?? "",
-      jdText: "",
-      targetRole: optionalText(row, "target_role") ?? "",
-      requirements: [],
-      retrievedExperiences: [],
-      artifacts: [],
-      coverageReport: {
-        id: "",
-        userId: text(row, "user_id"),
-        jdId: optionalText(row, "jd_id") ?? "",
-        totalRequirements: 0,
-        coveredRequirementIds: [],
-        weaklyCoveredRequirementIds: [],
-        evidenceAvailableButNotUsedRequirementIds: [],
-        noEvidenceRequirementIds: [],
-        notTargetedRequirementIds: [],
-        items: [],
-        summary: "",
-        createdAt: timestamp(row, "created_at"),
-      },
-      coverageGapReport: {
-        id: "",
-        userId: text(row, "user_id"),
-        jdId: optionalText(row, "jd_id") ?? "",
-        items: [],
-        supplementalArtifactCount: 0,
-        evidenceRequestCount: 0,
-        summary: "",
-        createdAt: timestamp(row, "created_at"),
-      },
-      critiqueReport: {
-        id: "",
-        userId: text(row, "user_id"),
-        jdId: optionalText(row, "jd_id") ?? "",
-        items: [],
-        summary: "",
-        createdAt: timestamp(row, "created_at"),
-      },
-      createdAt: timestamp(row, "created_at"),
-    },
-    artifactDecisions: [],
-    coverageGapDecisions: [],
-    supplementalArtifactDrafts: [],
+    generation: jsonValue<GenerateResumeResponse>(row, "generation"),
+    artifactDecisions: Array.isArray(metadata.artifactDecisions)
+      ? metadata.artifactDecisions as GenerationSession["artifactDecisions"]
+      : [],
+    coverageGapDecisions: Array.isArray(metadata.coverageGapDecisions)
+      ? metadata.coverageGapDecisions as GenerationSession["coverageGapDecisions"]
+      : [],
+    supplementalArtifactDrafts: Array.isArray(metadata.supplementalArtifactDrafts)
+      ? metadata.supplementalArtifactDrafts as GenerationSession["supplementalArtifactDrafts"]
+      : [],
     status: text(row, "status") as GenerationSession["status"],
     createdAt: timestamp(row, "created_at"),
     updatedAt: optionalText(row, "updated_at") ?? timestamp(row, "created_at"),
-  });
+  };
 }
 
 function toBundle(row: PgRow): GenerationArtifactBundleRecord {
@@ -188,5 +157,22 @@ function toResultSummary(session: GenerationSession): Record<string, unknown> {
     evidenceChainCount: session.generation.artifacts.length,
     graphViewCount: session.generation.artifacts.length,
     coverageGapCount: session.generation.coverageGapReport.items.length,
+  };
+}
+
+function toInputSummary(session: GenerationSession): Record<string, unknown> {
+  return {
+    jdId: session.jdId,
+    targetRole: session.generation.targetRole,
+    artifactCount: session.generation.artifacts.length,
+    createdFrom: "GenerationPersistenceService",
+  };
+}
+
+function toMetadata(session: GenerationSession): Record<string, unknown> {
+  return {
+    artifactDecisions: session.artifactDecisions,
+    coverageGapDecisions: session.coverageGapDecisions,
+    supplementalArtifactDrafts: session.supplementalArtifactDrafts,
   };
 }

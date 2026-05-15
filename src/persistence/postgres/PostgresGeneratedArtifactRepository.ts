@@ -14,6 +14,14 @@ export class PostgresGeneratedArtifactRepository implements GeneratedArtifactRep
     return result.rows[0] ? toGeneratedArtifact(result.rows[0]) : null;
   }
 
+  public async getByIdForUser(userId: string, id: string): Promise<GeneratedArtifact | null> {
+    const result = await this.database.query<PgRow>(
+      "SELECT * FROM generated_artifacts WHERE user_id = $1 AND id = $2 LIMIT 1",
+      [userId, id],
+    );
+    return result.rows[0] ? toGeneratedArtifact(result.rows[0]) : null;
+  }
+
   public async getByExperienceId(experienceId: string): Promise<GeneratedArtifact[]> {
     const result = await this.database.query<PgRow>(
       "SELECT * FROM generated_artifacts WHERE source_experience_ids @> $1::jsonb ORDER BY created_at ASC",
@@ -75,6 +83,10 @@ export class PostgresGeneratedArtifactRepository implements GeneratedArtifactRep
 
   public async delete(id: string): Promise<void> {
     await this.database.query("DELETE FROM generated_artifacts WHERE id = $1", [id]);
+  }
+
+  public async deleteForUser(userId: string, id: string): Promise<void> {
+    await this.database.query("DELETE FROM generated_artifacts WHERE user_id = $1 AND id = $2", [userId, id]);
   }
 }
 

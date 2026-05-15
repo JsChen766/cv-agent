@@ -33,6 +33,8 @@ export const ExperienceSchema = z.object({
   evidenceIds: z.array(z.string()),
   skillIds: z.array(z.string()),
   confidence: z.number(),
+  sourceDocumentId: z.string().optional(),
+  metadata: z.record(z.string(), z.unknown()).optional(),
   createdAt: z.string(),
   updatedAt: z.string(),
 }) satisfies z.ZodType<Experience>;

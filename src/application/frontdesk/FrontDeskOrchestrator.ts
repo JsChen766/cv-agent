@@ -38,6 +38,7 @@ export class FrontDeskOrchestrator {
         rawText: extractedDocument.text,
         sourceRef: extractedDocument.sourceRef,
         sourceType: "resume",
+        sourceDocumentId: extractedDocument.documentId,
       });
       return {
         decision,
@@ -57,6 +58,7 @@ export class FrontDeskOrchestrator {
         rawText: extractedDocument.text,
         sourceRef: extractedDocument.sourceRef,
         sourceType: "manual",
+        sourceDocumentId: extractedDocument.documentId,
       });
       return {
         decision,

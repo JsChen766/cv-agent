@@ -27,6 +27,7 @@ describe("PostgreSQL schema", () => {
     }
 
     expect(schema).toContain("metadata JSONB NOT NULL DEFAULT '{}'::jsonb");
+    expect(schema).toContain("generation JSONB NOT NULL");
     expect(schema).toContain("chain JSONB NOT NULL");
     expect(schema).toContain("graph JSONB NOT NULL");
     expect(schema).toContain("CREATE INDEX IF NOT EXISTS idx_documents_user_id");

@@ -29,6 +29,7 @@ export type IngestExperienceInput = {
   rawText: string;
   sourceRef?: string;
   sourceType?: EvidenceSourceType;
+  sourceDocumentId?: string;
 };
 
 export type IngestExperienceResult = {
@@ -73,6 +74,10 @@ export class ExperienceIngestionService {
       sourceRef: input.sourceRef ?? "raw-experience-input",
       excerpt,
       confidence: this.detectEvidenceConfidence(excerpt),
+      ...(input.sourceDocumentId ? {
+        sourceDocumentId: input.sourceDocumentId,
+        metadata: { sourceDocumentId: input.sourceDocumentId },
+      } : {}),
       createdAt: now,
     }));
 
@@ -97,6 +102,10 @@ export class ExperienceIngestionService {
       evidenceIds: evidences.map((e) => e.id),
       skillIds: skills.map((s) => s.id),
       confidence: evidences.length > 1 ? 0.82 : 0.68,
+      ...(input.sourceDocumentId ? {
+        sourceDocumentId: input.sourceDocumentId,
+        metadata: { sourceDocumentId: input.sourceDocumentId },
+      } : {}),
       createdAt: now,
       updatedAt: now,
     };

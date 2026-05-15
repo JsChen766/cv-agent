@@ -6,6 +6,7 @@ export * from "./PostgresSkillRepository.js";
 export * from "./PostgresJDRequirementRepository.js";
 export * from "./PostgresGeneratedArtifactRepository.js";
 export * from "./PostgresGenerationSessionRepository.js";
+export * from "./PostgresGenerationPersistenceService.js";
 export * from "./PostgresEvidenceChainSnapshotRepository.js";
 export * from "./PostgresGraphViewSnapshotRepository.js";
 export * from "./PostgresArtifactDecisionRepository.js";

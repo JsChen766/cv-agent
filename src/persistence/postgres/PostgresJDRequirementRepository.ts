@@ -11,6 +11,11 @@ export class PostgresJDRequirementRepository implements JDRequirementRepository 
     return result.rows[0] ? this.toRequirement(result.rows[0]) : null;
   }
 
+  public async getByIdForUser(userId: string, id: string): Promise<JDRequirement | null> {
+    const result = await this.database.query("SELECT * FROM jd_requirements WHERE user_id = $1 AND id = $2", [userId, id]);
+    return result.rows[0] ? this.toRequirement(result.rows[0]) : null;
+  }
+
   public async listByUserId(userId: string): Promise<JDRequirement[]> {
     const result = await this.database.query("SELECT * FROM jd_requirements WHERE user_id = $1 ORDER BY created_at", [userId]);
     return result.rows.map((row) => this.toRequirement(row));
@@ -47,6 +52,10 @@ export class PostgresJDRequirementRepository implements JDRequirementRepository 
 
   public async delete(id: string): Promise<void> {
     await this.database.query("DELETE FROM jd_requirements WHERE id = $1", [id]);
+  }
+
+  public async deleteForUser(userId: string, id: string): Promise<void> {
+    await this.database.query("DELETE FROM jd_requirements WHERE user_id = $1 AND id = $2", [userId, id]);
   }
 
   private toRequirement(row: Record<string, unknown>): JDRequirement {

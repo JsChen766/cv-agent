@@ -29,6 +29,8 @@ export type Experience = {
   evidenceIds: string[];
   skillIds: string[];
   confidence: number;
+  sourceDocumentId?: string;
+  metadata?: Record<string, unknown>;
   createdAt: string;
   updatedAt: string;
 };
@@ -61,6 +63,8 @@ export type Evidence = {
   sourceRef: string;
   excerpt: string;
   confidence: number;
+  sourceDocumentId?: string;
+  metadata?: Record<string, unknown>;
   createdAt: string;
 };
 

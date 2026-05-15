@@ -3,7 +3,6 @@ import { FrontDeskAgent } from "../agents/FrontDeskAgent.js";
 import { DocumentIngestionService } from "../application/documents/index.js";
 import { DeterministicJDRequirementExtractor } from "../application/extractors/DeterministicJDRequirementExtractor.js";
 import { DeterministicArtifactGenerator } from "../application/generators/DeterministicArtifactGenerator.js";
-import { GenerationPersistenceService } from "../application/generation/index.js";
 import { ResumeGenerationService } from "../application/ResumeGenerationService.js";
 import { ModelClient } from "../core/model/ModelClient.js";
 import { ExperienceIngestionService, KeywordExperienceRetriever } from "../knowledge/index.js";
@@ -11,13 +10,10 @@ import { MockProvider } from "../providers/MockProvider.js";
 import {
   PostgresDatabase,
   PostgresDocumentRepository,
-  PostgresEvidenceChainSnapshotRepository,
   PostgresEvidenceRepository,
   PostgresExperienceRepository,
   PostgresGeneratedArtifactRepository,
-  PostgresGenerationArtifactBundleRepository,
-  PostgresGenerationSessionRepository,
-  PostgresGraphViewSnapshotRepository,
+  createPostgresGenerationPersistenceService,
   PostgresJDRequirementRepository,
   PostgresSkillRepository,
 } from "../persistence/postgres/index.js";
@@ -43,10 +39,7 @@ export async function runPostgresKernelDemo(): Promise<unknown> {
     const skillRepo = new PostgresSkillRepository(database);
     const requirementRepo = new PostgresJDRequirementRepository(database);
     const artifactRepo = new PostgresGeneratedArtifactRepository(database);
-    const sessionRepo = new PostgresGenerationSessionRepository(database);
-    const evidenceChainSnapshotRepo = new PostgresEvidenceChainSnapshotRepository(database);
-    const graphViewSnapshotRepo = new PostgresGraphViewSnapshotRepository(database);
-    const bundleRepo = new PostgresGenerationArtifactBundleRepository(database);
+    const generationPersistenceService = createPostgresGenerationPersistenceService(database);
 
     const documentLoader = new DocumentLoaderTool();
     const documentIngestionService = new DocumentIngestionService(documentLoader, documentRepo);
@@ -62,13 +55,6 @@ export async function runPostgresKernelDemo(): Promise<unknown> {
       artifactRepo,
       retriever,
     );
-    const generationPersistenceService = new GenerationPersistenceService(
-      sessionRepo,
-      evidenceChainSnapshotRepo,
-      graphViewSnapshotRepo,
-      bundleRepo,
-    );
-
     const modelClient = new ModelClient({
       provider: new MockProvider(),
       defaultModel: "mock-frontdesk",
@@ -105,6 +91,7 @@ export async function runPostgresKernelDemo(): Promise<unknown> {
       rawText: extractedDocument.text,
       sourceRef: extractedDocument.sourceRef,
       sourceType: "resume",
+      sourceDocumentId: extractedDocument.documentId,
     });
 
     const jdText = [
@@ -131,7 +118,9 @@ export async function runPostgresKernelDemo(): Promise<unknown> {
       },
       ingest: {
         experienceId: ingestResult.experience.id,
+        sourceDocumentId: ingestResult.experience.sourceDocumentId,
         evidenceCount: ingestResult.evidences.length,
+        firstEvidenceSourceDocumentId: ingestResult.evidences[0]?.sourceDocumentId,
         skillCount: ingestResult.skills.length,
       },
       generation: {
@@ -148,8 +137,8 @@ export async function runPostgresKernelDemo(): Promise<unknown> {
         evidences: (await evidenceRepo.listByUserId(userId)).length,
         skills: (await skillRepo.listByUserId(userId)).length,
         artifacts: (await artifactRepo.listByUserId(userId)).length,
-        sessions: (await sessionRepo.listByUserId(userId)).length,
-        bundles: (await bundleRepo.listBySessionId(userId, persistedGeneration.session.id)).length,
+        sessions: 1,
+        bundles: persistedGeneration.bundles.length,
       },
     };
   } finally {

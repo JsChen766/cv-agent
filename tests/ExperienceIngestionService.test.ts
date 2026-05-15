@@ -95,6 +95,25 @@ describe("ExperienceIngestionService", () => {
     expect(result.experience.star.task).toBe("Build a React component library.");
   });
 
+  it("preserves sourceDocumentId on generated experience and evidence", async () => {
+    const service = new ExperienceIngestionService(
+      new InMemoryExperienceRepository(),
+      new InMemoryEvidenceRepository(),
+      new InMemorySkillRepository(),
+    );
+
+    const result = await service.ingest({
+      userId: "user-1",
+      rawText: "Built a React component library.",
+      sourceDocumentId: "doc-1",
+    });
+
+    expect(result.experience.sourceDocumentId).toBe("doc-1");
+    expect(result.experience.metadata).toEqual({ sourceDocumentId: "doc-1" });
+    expect(result.evidences[0].sourceDocumentId).toBe("doc-1");
+    expect(result.evidences[0].metadata).toEqual({ sourceDocumentId: "doc-1" });
+  });
+
   it("completes omitted WCAG and API evidence from raw text", async () => {
     const extractor: ExperienceExtractor = {
       async extract() {

@@ -15,7 +15,7 @@ export type PostgresQueryResult<Row extends pg.QueryResultRow = pg.QueryResultRo
   rowCount: number;
 };
 
-type Queryable = {
+export type PostgresQueryable = {
   query<Row extends pg.QueryResultRow = pg.QueryResultRow>(sql: string, params?: unknown[]): Promise<PostgresQueryResult<Row>>;
 };
 
@@ -41,7 +41,7 @@ export class PostgresDatabase {
   }
 
   public async transaction<T>(
-    callback: (client: Queryable) => Promise<T>,
+    callback: (client: PostgresQueryable) => Promise<T>,
   ): Promise<T> {
     const client = await this.pool.connect();
     try {

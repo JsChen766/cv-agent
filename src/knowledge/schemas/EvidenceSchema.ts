@@ -35,5 +35,7 @@ export const EvidenceSchema = z.object({
   sourceRef: z.string(),
   excerpt: z.string(),
   confidence: z.number(),
+  sourceDocumentId: z.string().optional(),
+  metadata: z.record(z.string(), z.unknown()).optional(),
   createdAt: z.string(),
 }) satisfies z.ZodType<Evidence>;
