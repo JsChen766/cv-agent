@@ -50,6 +50,28 @@ Current demos:
 
 This round does not add PDF, Markdown, GitHub, or other business tools. A next step is to add text extraction tools and register them with a future `FrontDeskAgent`.
 
+## Text Tool Strategy
+
+Future text-reading tools should return `ExtractedTextDocument` from `src/tools/text/types.ts`:
+
+```ts
+{
+  documentId: string;
+  sourceType: "manual_text" | "markdown" | "pdf_text" | "docx_text" | "github_text";
+  title?: string;
+  text: string;
+  textPreview: string;
+  textLength: number;
+  sourceRef: string;
+  metadata: Record<string, unknown>;
+  createdAt: string;
+}
+```
+
+Text tools may return the full `text`, but agents and orchestrators should not permanently stuff large extracted text into `ConversationSession`. Long text should be controlled before it enters the model context through `TokenBudgetManager`, `ContextAssembler`, and a future `ExtractedDocumentStore` or retrieval layer. Tool responses should include `textPreview`, `textLength`, `metadata`, `sourceRef`, and `sourceType` so callers can inspect and route large documents without relying on the full text every turn.
+
+Text-reading tools do not call `ArchivistAgent`, write `Experience` or `Evidence` records, or decide whether text is resume experience. Those decisions belong to `FrontDeskAgent`, an orchestrator, or `ExperienceIngestionService`.
+
 ## Conversation Runtime
 
 The conversation runtime provides the in-memory context layer that tool-calling agents can use before adding larger text-reading tools:

@@ -16,6 +16,7 @@ export type ToolDefinition = {
   description: string;
   parameters: JSONSchema;
   strict?: boolean;
+  validate?: (args: unknown) => unknown;
   execute: (args: unknown, context?: ToolExecutionContext) => Promise<unknown>;
 };
 

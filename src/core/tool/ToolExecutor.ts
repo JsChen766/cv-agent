@@ -33,7 +33,8 @@ export class ToolExecutor {
 
     try {
       const tool = this.get(toolName);
-      const args = this.parseArguments(toolCall.function.arguments);
+      const parsedArgs = this.parseArguments(toolCall.function.arguments);
+      const args = tool.validate ? tool.validate(parsedArgs) : parsedArgs;
       const result = await tool.execute(args, context);
       return { ok: true, toolName, result };
     } catch (error) {

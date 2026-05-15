@@ -28,6 +28,7 @@ export * from "./providers/OpenRouterProvider.js";
 export * from "./providers/MockProvider.js";
 export * from "./tools/echoTool.js";
 export * from "./tools/getCurrentTimeTool.js";
+export * from "./tools/text/types.js";
 export * from "./workflows/resumeWorkflow.js";
 export * from "./application/ResumeGenerationService.js";
 export * from "./application/CooltoDemoService.js";
