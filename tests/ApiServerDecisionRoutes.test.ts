@@ -35,15 +35,42 @@ describe("API server artifact decision routes", () => {
     restoreEnv("FRONTDESK_AGENT_MODE", originalFrontDeskAgentMode);
   });
 
-  it("records and lists artifact decisions", async () => {
-    const postResponse = await server.inject({
+  it("records accept decisions with authenticated user scope", async () => {
+    const response = await server.inject({
       method: "POST",
       url: "/generations/artifacts/decisions",
       headers: {
-        "x-user-id": "user-1",
+        "x-user-id": "test-user",
       },
       payload: {
         userId: "attacker",
+        artifactId: "artifact-1",
+        sessionId: "session-1",
+        decision: "accept",
+        reason: "Best variant.",
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+    const body = response.json() as ApiSuccess<ArtifactDecisionRecord>;
+    expect(body.ok).toBe(true);
+    expect(body.data).toMatchObject({
+      userId: "test-user",
+      artifactId: "artifact-1",
+      sessionId: "session-1",
+      decision: "accept",
+      reason: "Best variant.",
+    });
+  });
+
+  it("records confirm_metric details", async () => {
+    const response = await server.inject({
+      method: "POST",
+      url: "/generations/artifacts/decisions",
+      headers: {
+        "x-user-id": "test-user",
+      },
+      payload: {
         artifactId: "artifact-1",
         sessionId: "session-1",
         decision: "confirm_metric",
@@ -55,33 +82,67 @@ describe("API server artifact decision routes", () => {
       },
     });
 
-    expect(postResponse.statusCode).toBe(200);
-    const posted = postResponse.json() as ApiSuccess<ArtifactDecisionRecord>;
-    expect(posted.data.userId).toBe("user-1");
-    expect(posted.data.decision).toBe("confirm_metric");
+    expect(response.statusCode).toBe(200);
+    const body = response.json() as ApiSuccess<ArtifactDecisionRecord>;
+    expect(body.data.confirmation).toEqual({
+      metric: "report preparation time",
+      value: "from 2 hours to 20 minutes",
+      explanation: "Confirmed by internal workflow logs.",
+    });
+  });
+
+  it("lists artifact decisions by artifact and user", async () => {
+    const first = await postDecision("test-user", {
+      artifactId: "artifact-1",
+      sessionId: "session-1",
+      decision: "accept",
+      reason: "Best variant.",
+    }, server);
+    const second = await postDecision("test-user", {
+      artifactId: "artifact-1",
+      sessionId: "session-1",
+      decision: "reject",
+      reason: "Changed my mind.",
+    }, server);
+    await postDecision("other-user", {
+      artifactId: "artifact-1",
+      sessionId: "session-1",
+      decision: "accept",
+    }, server);
 
     const artifactResponse = await server.inject({
       method: "GET",
       url: "/generations/artifacts/artifact-1/decisions",
       headers: {
-        "x-user-id": "user-1",
+        "x-user-id": "test-user",
       },
     });
     const artifactBody = artifactResponse.json() as ApiSuccess<ArtifactDecisionRecord[]>;
     expect(artifactResponse.statusCode).toBe(200);
-    expect(artifactBody.data).toHaveLength(1);
-    expect(artifactBody.data[0]?.id).toBe(posted.data.id);
+    expect(artifactBody.data).toHaveLength(2);
+    expect(artifactBody.data.map((record) => record.id)).toEqual([first.id, second.id]);
+    expect(artifactBody.data.every((record) => record.userId === "test-user")).toBe(true);
+  });
+
+  it("lists artifact decisions by session", async () => {
+    const posted = await postDecision("test-user", {
+      artifactId: "artifact-1",
+      sessionId: "session-1",
+      decision: "prefer_variant",
+      selectedVariantId: "artifact-variant-1",
+    }, server);
 
     const sessionResponse = await server.inject({
       method: "GET",
       url: "/generations/session-1/artifact-decisions",
       headers: {
-        "x-user-id": "user-1",
+        "x-user-id": "test-user",
       },
     });
     const sessionBody = sessionResponse.json() as ApiSuccess<ArtifactDecisionRecord[]>;
     expect(sessionResponse.statusCode).toBe(200);
     expect(sessionBody.data).toHaveLength(1);
+    expect(sessionBody.data[0]?.id).toBe(posted.id);
   });
 
   it("rejects decision writes without x-user-id", async () => {
@@ -95,8 +156,53 @@ describe("API server artifact decision routes", () => {
     });
 
     expect(response.statusCode).toBe(401);
+    expect(response.json()).toMatchObject({
+      ok: false,
+      error: {
+        code: "MISSING_AUTH",
+      },
+    });
+  });
+
+  it("rejects invalid decisions", async () => {
+    const response = await server.inject({
+      method: "POST",
+      url: "/generations/artifacts/decisions",
+      headers: {
+        "x-user-id": "test-user",
+      },
+      payload: {
+        artifactId: "artifact-1",
+        decision: "unknown",
+      },
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.json()).toMatchObject({
+      ok: false,
+      error: {
+        code: "INVALID_DECISION_REQUEST",
+      },
+    });
   });
 });
+
+async function postDecision(
+  userId: string,
+  payload: Record<string, unknown>,
+  server: Awaited<ReturnType<typeof createServer>>,
+): Promise<ArtifactDecisionRecord> {
+  const response = await server.inject({
+    method: "POST",
+    url: "/generations/artifacts/decisions",
+    headers: {
+      "x-user-id": userId,
+    },
+    payload,
+  });
+  expect(response.statusCode).toBe(200);
+  return (response.json() as ApiSuccess<ArtifactDecisionRecord>).data;
+}
 
 function restoreEnv(name: string, value: string | undefined): void {
   if (value === undefined) {

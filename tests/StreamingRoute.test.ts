@@ -41,8 +41,8 @@ describe("Streaming generation route", () => {
         "x-user-id": "user-1",
       },
       payload: {
-        jdText: "React TypeScript role.",
-        targetRole: "Frontend Engineer",
+        jdText: "We need a data analyst with SQL and dashboard experience.",
+        targetRole: "Data Analyst",
       },
     });
 
@@ -51,6 +51,7 @@ describe("Streaming generation route", () => {
     expect(response.body).toContain("\"event\"");
     expect(response.body).toContain("\"kernel.started\"");
     expect(response.body).toContain("\"kernel.completed\"");
+    expect(response.body).toContain("\"artifact.candidate.created\"");
     expect(response.body).toContain("\"final\"");
   });
 
@@ -65,6 +66,13 @@ describe("Streaming generation route", () => {
     });
 
     expect(response.statusCode).toBe(401);
+    expect(response.headers["content-type"]).not.toContain("application/x-ndjson");
+    expect(response.json()).toMatchObject({
+      ok: false,
+      error: {
+        code: "MISSING_AUTH",
+      },
+    });
   });
 
   it("rejects invalid bodies before opening the stream", async () => {
@@ -76,7 +84,7 @@ describe("Streaming generation route", () => {
       },
       payload: {
         jdText: "",
-        targetRole: "Frontend Engineer",
+        targetRole: "",
       },
     });
 

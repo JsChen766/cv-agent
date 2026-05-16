@@ -14,14 +14,7 @@ export class PostgresArtifactDecisionRepository implements ArtifactDecisionRepos
         id, user_id, artifact_id, session_id, decision, reason, selected_variant_id, confirmation_json, created_at
       ) VALUES (
         $1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9
-      )
-      ON CONFLICT (id) DO UPDATE SET
-        artifact_id = EXCLUDED.artifact_id,
-        session_id = EXCLUDED.session_id,
-        decision = EXCLUDED.decision,
-        reason = EXCLUDED.reason,
-        selected_variant_id = EXCLUDED.selected_variant_id,
-        confirmation_json = EXCLUDED.confirmation_json`,
+      )`,
       [
         record.id,
         record.userId,

@@ -4,8 +4,8 @@ import type { LLMProvider } from "../src/core/model/LLMProvider.js";
 import { ModelClient } from "../src/core/model/ModelClient.js";
 import { collectStreamPreview } from "../src/core/model/streamPreview.js";
 
-describe("collectStreamPreview", () => {
-  it("collects streamed content deltas", async () => {
+describe("collectStreamPreview experimental helper", () => {
+  it("collects streamed content deltas for future safe previews", async () => {
     const client = createStreamingClient([
       { contentDelta: "Hello " },
       { contentDelta: "world." },
@@ -44,7 +44,7 @@ describe("collectStreamPreview", () => {
     expect(seenDeltas).toEqual([{ contentDelta: "Public answer." }]);
   });
 
-  it("returns reasoning preview only when requested", async () => {
+  it("returns reasoning preview only when explicitly requested", async () => {
     const seenDeltas: Array<{ contentDelta?: string; reasoningDelta?: string }> = [];
     const client = createStreamingClient([
       { contentDelta: "Answer.", reasoningDelta: "Reasoning summary." },

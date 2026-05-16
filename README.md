@@ -692,17 +692,21 @@ Example request:
 
 Response data includes `revisedArtifact`, `metadata.revision`, `metadata.enhancement`, and `warnings`. The current minimal API allows the frontend to pass `artifact`, `evidenceChain`, and `critiqueItem` directly; a production version should prefer `artifactId`/`sessionId` and load records server-side by authenticated `userId`.
 
-### Agent Event Stream
+### Streaming Strategy
+
+Current production-facing streaming strategy is the Agent Event Stream. `POST /generations/stream` emits public backend process events such as `kernel.started`, `agent.started`, `tool.completed`, `artifact.candidate.created`, `artifact.critique.completed`, `artifact.revision.completed`, `decision.required`, `kernel.completed`, followed by the final generation result. It is not LLM token streaming.
 
 The kernel can emit public agent events for frontend progress display. These events intentionally do not expose model raw chain-of-thought. They may include public step summaries such as `agent.started`, `agent.completed`, `tool.started`, `tool.completed`, `llm.delta`, `llm.preview.completed`, `artifact.candidate.created`, `artifact.critique.completed`, `artifact.revision.completed`, `decision.required`, and `warning`.
 
 `POST /generations/stream` is the experimental NDJSON endpoint for this stream. Each event contains ids, timestamps, request/trace ids, agent/tool names, step, status, message, and safe summary data such as counts, artifact ids, statuses, short previews capped at 120 characters, and warnings.
 
-Provider-level token streaming is separate. `ModelClient.stream()` and `DeepSeekProvider.stream()` can produce token deltas, and `collectStreamPreview()` can collect a bounded safe preview. Structured JSON agents still use `chat()` by default so schema validation, repair, and deterministic fallback remain stable. `reasoningDelta` is not surfaced by default; future UI work should show public summaries or event summaries rather than raw hidden reasoning.
+Provider-level token streaming is separate. `ModelClient.stream()` and `DeepSeekProvider.stream()` can produce token deltas, and `collectStreamPreview()` is retained as an experimental/future helper for bounded safe previews. It is not wired into `FrontDeskAgent`, `ExperienceExtractor`, `ArtifactGenerator`, `CriticAgent`, or `RevisionAgent` main workflows. Structured JSON agents still use `chat()` by default so parse, zod validation, post-validation, repair, and deterministic fallback remain stable. Unvalidated token deltas should not be shown as final user-facing output, and `reasoningDelta` is not surfaced by default.
+
+Frontend validation should use `POST /generations/stream` for agent progress, `POST /generations` for non-streaming generation, `POST /generations/artifacts/revise` for artifact edits, and `POST /generations/artifacts/decisions` for accept/reject/request_revision/confirm_metric/prefer_variant feedback.
 
 ### Artifact Decisions and Variants
 
-Artifact decisions are recorded through `POST /generations/artifacts/decisions` with one of `accept`, `reject`, `request_revision`, `confirm_metric`, `mark_unsafe`, or `prefer_variant`. Decision records are scoped to the authenticated user and can be listed by artifact or session. In-memory mode uses `InMemoryArtifactDecisionRepository`; PostgreSQL mode uses `PostgresArtifactDecisionRepository` and the `artifact_decisions` table without database foreign keys.
+Artifact decisions are append-only event records created through `POST /generations/artifacts/decisions` with one of `accept`, `reject`, `request_revision`, `confirm_metric`, `mark_unsafe`, or `prefer_variant`. Decision records are scoped to the authenticated user and can be listed by artifact or session. If a user changes from reject to accept, the backend records a new decision instead of overwriting the old one. Frontend code can sort by `createdAt` and treat the last record as current state. In-memory mode uses `InMemoryArtifactDecisionRepository`; PostgreSQL mode uses `PostgresArtifactDecisionRepository` and the `artifact_decisions` table without database foreign keys. A future projection such as `current_decision_status` can be added without changing the append-only log.
 
 Frontend variant display should treat `artifacts[]` as same-generation candidates and `revisedArtifact` as a new candidate. `artifact.metadata.revision.revisedFromArtifactId` links version lineage. `metadata.enhancement.status=ready` means the candidate can be used, `needs_confirmation` means the user should confirm first, and `unsafe` means it should not be used directly. Decision records preserve whether the user accepted, rejected, requested revision, confirmed a metric, marked unsafe, or preferred a variant.
 

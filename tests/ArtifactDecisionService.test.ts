@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  type ArtifactDecisionRecord,
   ArtifactDecisionService,
   InMemoryArtifactDecisionRepository,
 } from "../src/application/decisions/index.js";
@@ -23,6 +24,7 @@ describe("ArtifactDecisionService", () => {
     });
 
     expect(accepted.id).toMatch(/^decision-/);
+    expect(accepted.id).not.toBe(rejected.id);
     expect(rejected.reason).toBe("Too broad.");
     await expect(service.listByArtifactId("user-1", "artifact-1")).resolves.toEqual([
       accepted,
@@ -52,5 +54,23 @@ describe("ArtifactDecisionService", () => {
     });
     await expect(service.listBySessionId("user-1", "session-1")).resolves.toEqual([record]);
     await expect(service.listBySessionId("user-2", "session-1")).resolves.toEqual([]);
+  });
+
+  it("rejects duplicate decision ids in the in-memory repository", async () => {
+    const repository = new InMemoryArtifactDecisionRepository();
+    const record: ArtifactDecisionRecord = {
+      id: "decision-duplicate",
+      userId: "user-1",
+      artifactId: "artifact-1",
+      decision: "accept",
+      createdAt: "2024-01-01T00:00:00.000Z",
+    };
+
+    await repository.save(record);
+    await expect(repository.save({
+      ...record,
+      decision: "reject",
+    })).rejects.toThrow("Artifact decision already exists: decision-duplicate");
+    await expect(repository.listByArtifactId("user-1", "artifact-1")).resolves.toEqual([record]);
   });
 });

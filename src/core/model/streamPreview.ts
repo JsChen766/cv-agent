@@ -1,6 +1,12 @@
 import type { ModelClient } from "./ModelClient.js";
 import type { ModelClientChatRequest } from "./types.js";
 
+/**
+ * Experimental/future helper for safe model stream previews.
+ * Structured agent workflows should still use chat() plus JSON parse,
+ * schema validation, repair, post-validation, and fallback.
+ * Do not expose raw reasoning by default.
+ */
 export type StreamPreviewDelta = {
   contentDelta?: string;
   reasoningDelta?: string;

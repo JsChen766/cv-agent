@@ -7,6 +7,9 @@ export class InMemoryArtifactDecisionRepository implements ArtifactDecisionRepos
   private readonly records = new Map<string, ArtifactDecisionRecord>();
 
   public async save(record: ArtifactDecisionRecord): Promise<void> {
+    if (this.records.has(record.id)) {
+      throw new Error(`Artifact decision already exists: ${record.id}`);
+    }
     this.records.set(record.id, record);
   }
 

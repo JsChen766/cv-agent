@@ -17,12 +17,22 @@ import type { ArtifactDecisionRecord } from "../src/application/decisions/index.
 class FakePostgresDatabase {
   public readonly queries: Array<{ sql: string; params: unknown[] }> = [];
   public nextRows: QueryResultRow[] = [];
+  private readonly artifactDecisionIds = new Set<string>();
 
   public async query<Row extends QueryResultRow = QueryResultRow>(
     sql: string,
     params: unknown[] = [],
   ): Promise<PostgresQueryResult<Row>> {
     this.queries.push({ sql, params });
+    if (sql.includes("INSERT INTO artifact_decisions")) {
+      const id = params[0];
+      if (typeof id === "string") {
+        if (this.artifactDecisionIds.has(id)) {
+          throw new Error(`duplicate key value violates unique constraint artifact_decisions_pkey: ${id}`);
+        }
+        this.artifactDecisionIds.add(id);
+      }
+    }
     return {
       rows: this.nextRows as Row[],
       rowCount: this.nextRows.length,
@@ -162,6 +172,7 @@ describe("PostgreSQL repositories", () => {
     expect(database.queries[0].sql).toContain("decision");
     expect(database.queries[0].sql).toContain("selected_variant_id");
     expect(database.queries[0].sql).toContain("confirmation_json");
+    expect(database.queries[0].sql).not.toContain("ON CONFLICT");
     expect(database.queries[0].params).toEqual([
       "decision-1",
       "user-1",
@@ -193,6 +204,30 @@ describe("PostgreSQL repositories", () => {
     await repository.listBySessionId("user-1", "session-1");
     expect(database.queries[2].sql).toContain("WHERE user_id = $1 AND session_id = $2");
     expect(database.queries[2].params).toEqual(["user-1", "session-1"]);
+  });
+
+  it("lets PostgreSQL primary key reject duplicate artifact decision ids", async () => {
+    const database = new FakePostgresDatabase();
+    const repository = new PostgresArtifactDecisionRepository(database);
+    const record: ArtifactDecisionRecord = {
+      id: "decision-duplicate",
+      userId: "user-1",
+      artifactId: "artifact-1",
+      decision: "accept",
+      createdAt: "2024-01-01T00:00:00.000Z",
+    };
+
+    await repository.save(record);
+    await expect(repository.save({
+      ...record,
+      decision: "reject",
+    })).rejects.toThrow("duplicate key value violates unique constraint artifact_decisions_pkey");
+
+    expect(database.queries).toHaveLength(2);
+    expect(database.queries[0].sql).not.toContain("ON CONFLICT");
+    expect(database.queries[1].sql).not.toContain("ON CONFLICT");
+    expect(database.queries[0].params[0]).toBe("decision-duplicate");
+    expect(database.queries[1].params[0]).toBe("decision-duplicate");
   });
 });
 
