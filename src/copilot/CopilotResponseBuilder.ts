@@ -28,6 +28,8 @@ export type BuildVariantInput = {
   critiqueItems?: ArtifactCritiqueItem[];
   evidenceChains?: EvidenceChain[];
   targetRole?: string | null;
+  allVariants?: GeneratedArtifact[];
+  bestScore?: number;
 };
 
 export class CopilotResponseBuilder {
@@ -36,16 +38,23 @@ export class CopilotResponseBuilder {
     const critiques = input.critiqueItems ?? [];
     const evidenceChains = input.evidenceChains ?? [];
 
+    // Find best score for role assignment
+    const bestScore = artifacts.reduce((max, a) => Math.max(max, a.scores?.overall ?? 0), 0);
+
     const variants = artifacts.map((artifact) =>
       this.buildVariant({
         artifact,
         critiqueItems: critiques,
         evidenceChains,
         targetRole: input.targetRole,
+        allVariants: artifacts,
+        bestScore,
       }),
     );
 
-    const workspaceSummary = this.buildWorkspaceSummary(variants, critiques);
+    // Mark recommended variant
+    this.markRecommended(variants, bestScore);
+
     const workspaceStatus = this.resolveWorkspaceStatus(variants);
 
     const workspace: CopilotWorkspace = {
@@ -54,13 +63,12 @@ export class CopilotResponseBuilder {
       activeVariantId: variants.length > 0 ? variants[0].id : null,
       variants,
       status: workspaceStatus,
-      summary: workspaceSummary,
+      summary: this.buildWorkspaceSummary(variants, critiques),
       updatedAt: new Date().toISOString(),
     };
 
     const assistantMessage = this.buildAssistantMessage(input, variants, critiques);
     const timeline = this.buildTimeline(input, artifacts);
-    const nextActions = this.buildNextActions({ variants, workspaceStatus });
 
     return {
       sessionId: input.sessionId,
@@ -68,11 +76,11 @@ export class CopilotResponseBuilder {
       assistantMessage,
       timeline,
       workspace,
-      nextActions,
+      nextActions: [],
       raw: {
         artifactIds: artifacts.map((a) => a.id),
         evidenceChainIds: evidenceChains.map((ec) => ec.id),
-        critiqueItemIds: critiques.map((c) => c.artifactId).filter(Boolean),
+        critiqueItemIds: critiques.map((c) => c.artifactId).filter(Boolean) as string[],
         decisionIds: (input.decisions ?? []).map((d) => d.id),
       },
     };
@@ -86,151 +94,241 @@ export class CopilotResponseBuilder {
     );
 
     const enhancementStatus = readEnhancementStatus(artifact);
+    const status = mapEnhancementToStatus(enhancementStatus);
 
+    // Badges
     const badges: ProductVariant["badges"] = [];
-    if (enhancementStatus === "ready") {
-      badges.push({ label: "Ready to use", tone: "positive" });
-    } else if (enhancementStatus === "needs_confirmation") {
-      badges.push({ label: "Needs confirmation", tone: "warning" });
-    } else if (enhancementStatus === "unsafe") {
-      badges.push({ label: "Unsafe", tone: "danger" });
-    }
+    if (status === "ready") badges.push({ label: "Ready to use", tone: "positive" });
+    else if (status === "needs_confirmation") badges.push({ label: "Needs confirmation", tone: "warning" });
+    else if (status === "unsafe") badges.push({ label: "Unsafe", tone: "danger" });
+    else if (status === "accepted") badges.push({ label: "Accepted", tone: "positive" });
+    else if (status === "rejected") badges.push({ label: "Rejected", tone: "danger" });
+
     if (critique) {
-      if (critique.verdict === "pass") badges.push({ label: "Critique: pass", tone: "positive" });
-      if (critique.verdict === "revise") badges.push({ label: "Critique: revise", tone: "warning" });
-      if (critique.verdict === "reject") badges.push({ label: "Critique: reject", tone: "danger" });
+      if (critique.verdict === "pass") badges.push({ label: "Vetted", tone: "positive" });
+      else if (critique.verdict === "revise") badges.push({ label: "Needs revision", tone: "warning" });
+      else if (critique.verdict === "reject") badges.push({ label: "Not recommended", tone: "danger" });
     }
 
-    const highlights: ProductVariant["highlights"] = [];
-    if (critique?.claimReviews) {
-      for (const claim of critique.claimReviews.slice(0, 3)) {
-        highlights.push({
-          label: claim.supportLevel ?? "unknown",
-          text: claim.claimText ?? "",
-        });
-      }
-    }
+    // Score
+    const score: ProductVariant["score"] = {
+      overall: artifact.scores?.overall,
+      relevance: artifact.scores?.requirementMatch,
+      evidenceStrength: artifact.scores?.evidenceStrength,
+    };
 
-    const critiqueSummary = critique
-      ? {
-          strengths: critique.rewriteSuggestions?.slice(0, 2) ?? [],
-          risks: [
-            ...(critique.unsupportedClaims ?? []),
-            ...(critique.missingEvidence ?? []),
-          ],
-          suggestions: critique.rewriteSuggestions ?? [],
-        }
-      : undefined;
-
-    const evidenceItems = (evidence?.sourceEvidences ?? []).map((ev) => ({
+    // Evidence summary (natural language)
+    const sourceEvidences = evidence?.sourceEvidences ?? [];
+    const evidenceItems = sourceEvidences.map((ev) => ({
       id: ev.id,
-      title: ev.excerpt ? truncate(ev.excerpt, 80) : "Evidence",
+      title: ev.excerpt ? truncate(ev.excerpt, 80) : "Evidence item",
       quote: ev.excerpt ?? undefined,
-      explanation: ev.sourceRef ?? "",
+      explanation: ev.sourceRef ?? "Source reference",
       confidence: ev.confidence,
     }));
 
-    const evidenceSummary = evidence
-      ? {
-          coverageLabel:
-            evidenceItems.length > 0
-              ? `${evidenceItems.length} source items`
-              : "No direct evidence",
-          items: evidenceItems,
-        }
-      : undefined;
+    const evidenceCoverageLabel = evidenceItems.length > 0
+      ? `${evidenceItems.length} evidence sources support this version`
+      : "No direct evidence linked";
+
+    // Risk summary (natural language)
+    const unsupportedClaims = critique?.unsupportedClaims ?? [];
+    const missingEvidence = critique?.missingEvidence ?? [];
+    const riskWarnings: string[] = [];
+    if (critique?.truthfulnessRisk && critique.truthfulnessRisk !== "low") {
+      riskWarnings.push(`Truthfulness risk: ${critique.truthfulnessRisk}`);
+    }
+    if (critique?.exaggerationRisk && critique.exaggerationRisk !== "low") {
+      riskWarnings.push(`Exaggeration risk: ${critique.exaggerationRisk}`);
+    }
+    const riskLevel = critique?.truthfulnessRisk === "high" || critique?.exaggerationRisk === "high"
+      ? "high" : (unsupportedClaims.length > 0 ? "medium" : "low");
+
+    // Missing info (natural language)
+    const missingInfo: string[] = [];
+    if (critique?.confirmationQuestions) {
+      missingInfo.push(...critique.confirmationQuestions);
+    }
+    for (const claim of (critique?.claimReviews ?? [])) {
+      if (claim.supportLevel === "needs_user_confirmation" || claim.supportLevel === "unsupported") {
+        missingInfo.push(`"${truncate(claim.claimText ?? "", 60)}" — ${claim.reason ?? "needs verification"}`);
+      }
+    }
+
+    // Reason (frontend-displayable)
+    const reason = this.computeReason(artifact, critique, score, evidenceItems.length, input);
+
+    // Per-variant actions
+    const actions = this.buildVariantActions(artifact.id, status);
+
+    // Source IDs
+    const sourceExperienceIds = artifact.sourceExperienceIds ?? [];
+    const sourceEvidenceIds = artifact.sourceEvidenceIds ?? [];
+
+    // Raw (safe debug data, nothing sensitive)
+    const raw: Record<string, unknown> = {
+      artifactId: artifact.id,
+      critiqueVerdict: critique?.verdict ?? null,
+      enhancementStatus: enhancementStatus ?? null,
+    };
 
     return {
       id: artifact.id,
       artifactId: artifact.id,
       title: artifact.content
         ? truncate(artifact.content.replace(/\s+/g, " ").trim(), 80)
-        : "Untitled variant",
-      subtitle: artifact.type ?? null,
-      after: artifact.content ?? "",
-      targetRole: input.targetRole ?? artifact.targetRole ?? null,
-      score: {
-        overall: artifact.scores?.overall,
-        relevance: artifact.scores?.requirementMatch,
-        evidenceStrength: artifact.scores?.evidenceStrength,
-      },
+        : "Untitled",
+      content: artifact.content ?? "",
+      role: "alternative",
+      status,
+      score,
       badges,
-      highlights,
-      critiqueSummary,
-      evidenceSummary,
-      decisionState: "undecided",
+      reason,
+      evidenceSummary: {
+        coverageLabel: evidenceCoverageLabel,
+        items: evidenceItems,
+      },
+      riskSummary: {
+        level: riskLevel,
+        unsupportedClaims,
+        missingEvidence,
+        warnings: riskWarnings,
+      },
+      missingInfo,
+      sourceExperienceIds,
+      sourceEvidenceIds,
+      actions,
+      raw,
       createdAt: artifact.createdAt ?? new Date().toISOString(),
+      after: artifact.content ?? "",
     };
   }
 
-  public buildNextActions(input: {
-    variants: ProductVariant[];
-    workspaceStatus: CopilotWorkspace["status"];
-  }): ProductAction[] {
-    const actions: ProductAction[] = [];
+  public buildClarifyingQuestion(sessionId: string, turnId: string, question: string): CopilotChatResponse {
+    const now = new Date().toISOString();
+    return {
+      sessionId,
+      turnId,
+      assistantMessage: {
+        id: `msg-${turnId}-assistant`,
+        sessionId,
+        turnId,
+        role: "assistant",
+        content: question,
+        kind: "clarifying_question",
+        createdAt: now,
+      },
+      timeline: [
+        {
+          id: `tl-${turnId}-1`,
+          type: "message_received",
+          title: "Message received",
+          status: "completed",
+          createdAt: now,
+        },
+      ],
+      workspace: {
+        id: `ws-${sessionId}`,
+        sessionId,
+        variants: [],
+        status: "empty",
+        updatedAt: now,
+      },
+      nextActions: [],
+      raw: { artifactIds: [], evidenceChainIds: [], critiqueItemIds: [], decisionIds: [] },
+    };
+  }
 
-    if (input.variants.length === 0) return actions;
+  public buildExplainChoice(input: {
+    sessionId: string;
+    turnId: string;
+    variantId: string;
+    reason: string;
+    workspace: CopilotWorkspace;
+  }): CopilotChatResponse {
+    const now = new Date().toISOString();
+    return {
+      sessionId: input.sessionId,
+      turnId: input.turnId,
+      assistantMessage: {
+        id: `msg-${input.turnId}-assistant`,
+        sessionId: input.sessionId,
+        turnId: input.turnId,
+        role: "assistant",
+        content: input.reason,
+        kind: "decision_summary",
+        createdAt: now,
+      },
+      timeline: [
+        {
+          id: `tl-${input.turnId}-1`,
+          type: "evidence_opened",
+          title: "Choice explanation",
+          description: input.reason,
+          status: "completed",
+          createdAt: now,
+          relatedVariantId: input.variantId,
+        },
+      ],
+      workspace: input.workspace,
+      nextActions: [],
+      raw: {
+        artifactIds: [input.variantId],
+        evidenceChainIds: [],
+        critiqueItemIds: [],
+        decisionIds: [],
+      },
+    };
+  }
 
-    for (const variant of input.variants) {
-      actions.push({
-        id: `accept-${variant.id}`,
-        type: "accept",
-        label: "Accept",
-        variantId: variant.id,
-      });
-      actions.push({
-        id: `reject-${variant.id}`,
-        type: "reject",
-        label: "Reject",
-        variantId: variant.id,
-      });
-      actions.push({
-        id: `prefer-${variant.id}`,
-        type: "prefer",
-        label: "Prefer this version",
-        variantId: variant.id,
-      });
-      actions.push({
-        id: `conservative-${variant.id}`,
-        type: "revise_more_conservative",
-        label: "More conservative",
-        variantId: variant.id,
-      });
-      actions.push({
-        id: `quantified-${variant.id}`,
-        type: "revise_more_quantified",
-        label: "More quantified",
-        variantId: variant.id,
-      });
-      actions.push({
-        id: `evidence-${variant.id}`,
-        type: "show_evidence",
-        label: "Show evidence",
-        variantId: variant.id,
-      });
-      actions.push({
-        id: `explain-${variant.id}`,
-        type: "explain_choice",
-        label: "Explain this choice",
-        variantId: variant.id,
-      });
+  public buildShowEvidence(input: {
+    sessionId: string;
+    turnId: string;
+    variantId: string;
+    evidenceItems: ProductVariant["evidenceSummary"]["items"];
+    workspace: CopilotWorkspace;
+  }): CopilotChatResponse {
+    const now = new Date().toISOString();
+    const lines = input.evidenceItems.map(
+      (item) => `- ${item.title}: ${item.explanation}${item.quote ? ` ("${truncate(item.quote, 60)}")` : ""}`,
+    );
+    const content =
+      lines.length > 0
+        ? `Evidence for this variant:\n\n${lines.join("\n")}`
+        : "No direct evidence found for this variant.";
 
-      // Only need actions for the first few variants
-      if (actions.length >= 14) break;
-    }
-
-    if (input.workspaceStatus === "awaiting_user_decision") {
-      actions.unshift({
-        id: `confirm-metric-${randomUUID()}`,
-        type: "confirm_metric",
-        label: "Confirm a metric",
-        description: "Confirm a specific metric or number in the content",
-        requiresInput: true,
-        inputPlaceholder: "Which metric and what value?",
-      });
-    }
-
-    return actions;
+    return {
+      sessionId: input.sessionId,
+      turnId: input.turnId,
+      assistantMessage: {
+        id: `msg-${input.turnId}-assistant`,
+        sessionId: input.sessionId,
+        turnId: input.turnId,
+        role: "assistant",
+        content,
+        kind: "evidence_explanation",
+        createdAt: now,
+      },
+      timeline: [
+        {
+          id: `tl-${input.turnId}-1`,
+          type: "evidence_opened",
+          title: "Evidence details",
+          description: `Showing ${input.evidenceItems.length} evidence sources`,
+          status: "completed",
+          createdAt: now,
+          relatedVariantId: input.variantId,
+        },
+      ],
+      workspace: input.workspace,
+      nextActions: [],
+      raw: {
+        artifactIds: [input.variantId],
+        evidenceChainIds: [],
+        critiqueItemIds: [],
+        decisionIds: [],
+      },
+    };
   }
 
   public buildTimeline(
@@ -241,11 +339,8 @@ export class CopilotResponseBuilder {
     const items: ProductTimelineItem[] = [
       {
         id: `tl-${input.turnId}-1`,
-        type: "user_submitted",
+        type: "message_received",
         title: "Message received",
-        description: input.userMessage.length > 100
-          ? `${input.userMessage.slice(0, 97)}...`
-          : input.userMessage,
         status: "completed",
         createdAt: now,
       },
@@ -254,9 +349,9 @@ export class CopilotResponseBuilder {
     if (artifacts.length > 0) {
       items.push({
         id: `tl-${input.turnId}-2`,
-        type: "variant_generated",
+        type: "variants_generated",
         title: `${artifacts.length} variants generated`,
-        description: `Generated ${artifacts.length} candidate rewrites based on experience and job description.`,
+        description: `Generated ${artifacts.length} candidate rewrites.`,
         status: "completed",
         createdAt: now,
         relatedVariantId: artifacts[0].id,
@@ -268,24 +363,95 @@ export class CopilotResponseBuilder {
         id: `tl-${input.turnId}-3`,
         type: "critique_completed",
         title: "Critique completed",
-        description: "Each variant has been reviewed for accuracy, evidence support, and risk.",
-        status: "completed",
-        createdAt: now,
-      });
-    }
-
-    if (input.evidenceChains && input.evidenceChains.length > 0) {
-      items.push({
-        id: `tl-${input.turnId}-4`,
-        type: "evidence_attached",
-        title: "Evidence attached",
-        description: `${input.evidenceChains.length} evidence chains linked to variants.`,
+        description: "Each variant reviewed for accuracy and evidence support.",
         status: "completed",
         createdAt: now,
       });
     }
 
     return items;
+  }
+
+  // ── Private helpers ──
+
+  private markRecommended(variants: ProductVariant[], bestScore: number): void {
+    if (variants.length === 0) return;
+    // Sort by score descending, then find first that is ready/needs_confirmation (not unsafe)
+    const sorted = [...variants].sort((a, b) => (b.score.overall ?? 0) - (a.score.overall ?? 0));
+    const recommended = sorted.find((v) => v.status !== "unsafe") ?? sorted[0];
+    recommended.role = "recommended";
+    recommended.badges.unshift({ label: "Recommended", tone: "positive" });
+    recommended.reason = this.computeRecommendReason(recommended);
+    // Mark others
+    for (const v of variants) {
+      if (v.id !== recommended.id && v.role === "alternative") {
+        // keep as alternative
+      }
+    }
+  }
+
+  private computeRecommendReason(variant: ProductVariant): string {
+    const parts: string[] = [];
+    if (variant.score.overall !== undefined) {
+      parts.push(`strongest overall match (${Math.round(variant.score.overall * 100)}%)`);
+    }
+    if (variant.evidenceSummary.items.length > 0) {
+      parts.push(`backed by ${variant.evidenceSummary.items.length} evidence sources`);
+    }
+    if (variant.riskSummary.level === "low") {
+      parts.push("low risk profile");
+    }
+    return parts.length > 0
+      ? `Recommended because: ${parts.join(", ")}.`
+      : "Recommended based on overall fit.";
+  }
+
+  private computeReason(
+    artifact: GeneratedArtifact,
+    critique: ArtifactCritiqueItem | undefined,
+    score: ProductVariant["score"],
+    evidenceCount: number,
+    _input: BuildVariantInput,
+  ): string {
+    const parts: string[] = [];
+    if (score.overall !== undefined) {
+      parts.push(`match score ${Math.round(score.overall * 100)}%`);
+    }
+    if (evidenceCount > 0) {
+      parts.push(`${evidenceCount} evidence sources`);
+    }
+    if (critique?.verdict === "pass") parts.push("passed critique");
+    else if (critique?.verdict === "revise") parts.push("needs revision");
+    return parts.length > 0 ? parts.join(", ") + "." : "Generated from available experience.";
+  }
+
+  private buildVariantActions(variantId: string, status: string): ProductAction[] {
+    const actions: ProductAction[] = [
+      { id: `accept-${variantId}`, type: "accept", label: "Accept", variantId, primary: true },
+      { id: `reject-${variantId}`, type: "reject", label: "Reject", variantId, primary: false },
+      { id: `prefer-${variantId}`, type: "prefer", label: "Prefer this version", variantId, primary: false },
+      { id: `conservative-${variantId}`, type: "revise_more_conservative", label: "More conservative", variantId, primary: false },
+      { id: `quantified-${variantId}`, type: "revise_more_quantified", label: "More quantified", variantId, primary: false },
+      { id: `evidence-${variantId}`, type: "show_evidence", label: "Show evidence", variantId, primary: false },
+      { id: `explain-${variantId}`, type: "explain_choice", label: "Why this version?", variantId, primary: false },
+    ];
+    if (status === "needs_confirmation") {
+      actions.splice(3, 0, {
+        id: `confirm-metric-${variantId}`,
+        type: "confirm_metric",
+        label: "Confirm a metric",
+        variantId,
+        primary: true,
+        inputSchema: {
+          fields: [
+            { key: "metric", label: "Metric name", type: "text", placeholder: "e.g. bundle size reduction", required: true },
+            { key: "value", label: "Value", type: "text", placeholder: "e.g. 40%", required: true },
+            { key: "explanation", label: "Explanation", type: "textarea", placeholder: "How do you know this?", required: false },
+          ],
+        },
+      });
+    }
+    return actions;
   }
 
   private buildAssistantMessage(
@@ -311,167 +477,41 @@ export class CopilotResponseBuilder {
     critiques: ArtifactCritiqueItem[],
   ): string {
     if (variants.length === 0) {
-      return "I've analyzed your input but wasn't able to generate variants yet. Could you provide more context, like a job description or target role?";
+      return "I've analyzed your input but wasn't able to generate variants yet. Could you provide more context?";
     }
-
+    const recommended = variants.find((v) => v.role === "recommended");
     const passCount = critiques.filter((c) => c.verdict === "pass").length;
-    const reviseCount = critiques.filter((c) => c.verdict === "revise").length;
-    const rejectCount = critiques.filter((c) => c.verdict === "reject").length;
-
     const parts: string[] = [
       `I've generated ${variants.length} candidate rewrites for ${input.targetRole ?? "your target role"}.`,
     ];
-
-    if (critiques.length > 0) {
-      parts.push(`${passCount} passed critique, ${reviseCount} need revision, ${rejectCount} were rejected.`);
+    if (recommended) {
+      parts.push(`"${recommended.title}" is the recommended version.`);
     }
-
-    parts.push("Review each variant and accept, reject, or request a revision.");
-
+    if (critiques.length > 0) {
+      parts.push(`${passCount} passed critique.`);
+    }
+    parts.push("Review each version and accept, reject, or request changes.");
     return parts.join(" ");
   }
 
-  public buildClarifyingQuestion(sessionId: string, turnId: string, question: string): CopilotChatResponse {
-    const now = new Date().toISOString();
-    return {
-      sessionId,
-      turnId,
-      assistantMessage: {
-        id: `msg-${turnId}-assistant`,
-        sessionId,
-        turnId,
-        role: "assistant",
-        content: question,
-        kind: "clarifying_question",
-        createdAt: now,
-      },
-      timeline: [
-        {
-          id: `tl-${turnId}-1`,
-          type: "user_submitted",
-          title: "Message received",
-          status: "completed",
-          createdAt: now,
-        },
-      ],
-      workspace: {
-        id: `ws-${sessionId}`,
-        sessionId,
-        variants: [],
-        status: "empty",
-        updatedAt: now,
-      },
-      nextActions: [],
-      raw: {
-        artifactIds: [],
-        evidenceChainIds: [],
-        critiqueItemIds: [],
-        decisionIds: [],
-      },
-    };
-  }
-
-  public buildExplainChoice(input: {
-    sessionId: string;
-    turnId: string;
-    variantTitle: string;
-    variantId: string;
-    reason: string;
-  }): CopilotChatResponse {
-    const now = new Date().toISOString();
-    return {
-      sessionId: input.sessionId,
-      turnId: input.turnId,
-      assistantMessage: {
-        id: `msg-${input.turnId}-assistant`,
-        sessionId: input.sessionId,
-        turnId: input.turnId,
-        role: "assistant",
-        content: `"${input.variantTitle}" was recommended because: ${input.reason}`,
-        kind: "decision_summary",
-        createdAt: now,
-      },
-      timeline: [],
-      workspace: {
-        id: `ws-${input.sessionId}`,
-        sessionId: input.sessionId,
-        variants: [],
-        status: "ready",
-        updatedAt: now,
-      },
-      nextActions: [],
-      raw: {
-        artifactIds: [input.variantId],
-        evidenceChainIds: [],
-        critiqueItemIds: [],
-        decisionIds: [],
-      },
-    };
-  }
-
-  public buildShowEvidence(input: {
-    sessionId: string;
-    turnId: string;
-    variantId: string;
-    evidenceItems: NonNullable<ProductVariant["evidenceSummary"]>["items"];
-  }): CopilotChatResponse {
-    const now = new Date().toISOString();
-    const lines = input.evidenceItems.map(
-      (item) => `- ${item.title}: ${item.explanation}${item.quote ? ` ("${truncate(item.quote, 60)}")` : ""}`,
-    );
-    const content =
-      lines.length > 0
-        ? `Evidence for this variant:\n\n${lines.join("\n")}`
-        : "No direct evidence found for this variant.";
-
-    return {
-      sessionId: input.sessionId,
-      turnId: input.turnId,
-      assistantMessage: {
-        id: `msg-${input.turnId}-assistant`,
-        sessionId: input.sessionId,
-        turnId: input.turnId,
-        role: "assistant",
-        content,
-        kind: "evidence_explanation",
-        createdAt: now,
-      },
-      timeline: [],
-      workspace: {
-        id: `ws-${input.sessionId}`,
-        sessionId: input.sessionId,
-        variants: [],
-        status: "ready",
-        updatedAt: now,
-      },
-      nextActions: [],
-      raw: {
-        artifactIds: [input.variantId],
-        evidenceChainIds: [],
-        critiqueItemIds: [],
-        decisionIds: [],
-      },
-    };
-  }
-
-  private buildWorkspaceSummary(
-    variants: ProductVariant[],
-    critiques: ArtifactCritiqueItem[],
-  ): string | undefined {
+  private buildWorkspaceSummary(variants: ProductVariant[], critiques: ArtifactCritiqueItem[]): string | undefined {
     if (variants.length === 0) return undefined;
     const passCount = critiques.filter((c) => c.verdict === "pass").length;
-    return `${variants.length} variants, ${passCount} strong candidates`;
+    const recommended = variants.find((v) => v.role === "recommended");
+    return recommended
+      ? `${variants.length} variants · ${passCount} vetted · recommended: "${recommended.title}"`
+      : `${variants.length} variants, ${passCount} vetted`;
   }
 
   private resolveWorkspaceStatus(variants: ProductVariant[]): CopilotWorkspace["status"] {
     if (variants.length === 0) return "empty";
-    const hasNeedsConfirmation = variants.some((v) =>
-      v.badges.some((b) => b.label === "Needs confirmation"),
-    );
+    const hasNeedsConfirmation = variants.some((v) => v.status === "needs_confirmation");
     if (hasNeedsConfirmation) return "awaiting_user_decision";
     return "ready";
   }
 }
+
+// ── Helpers ──
 
 function ecContainsEvidence(ec: EvidenceChain, evidenceId: string): boolean {
   return (ec.sourceEvidences ?? []).some((ev: Evidence) => ev.id === evidenceId);
@@ -484,6 +524,13 @@ function readEnhancementStatus(artifact: GeneratedArtifact): string | undefined 
   }
   const status = (enhancement as Record<string, unknown>).status;
   return typeof status === "string" ? status : undefined;
+}
+
+function mapEnhancementToStatus(enhancementStatus: string | undefined): ProductVariant["status"] {
+  if (enhancementStatus === "ready") return "ready";
+  if (enhancementStatus === "needs_confirmation") return "needs_confirmation";
+  if (enhancementStatus === "unsafe") return "unsafe";
+  return "needs_confirmation"; // default: be safe
 }
 
 function truncate(text: string, max: number): string {

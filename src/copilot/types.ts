@@ -6,6 +6,9 @@ export type CopilotSession = {
   resumeText?: string | null;
   jdText?: string | null;
   currentWorkspaceId?: string | null;
+  resumeIngested: boolean;
+  resumeDocumentIds?: string[];
+  resumeArtifactIds?: string[];
   createdAt: string;
   updatedAt: string;
 };
@@ -58,14 +61,12 @@ export type CopilotWorkspace = {
 
 export type ProductVariant = {
   id: string;
-  artifactId?: string | null;
+  artifactId: string | null;
   title: string;
-  subtitle?: string | null;
-  before?: string | null;
-  after: string;
-  targetRole?: string | null;
-  section?: string | null;
-  score?: {
+  content: string;
+  role: "recommended" | "alternative" | "safe" | "quantified" | "experimental";
+  status: "ready" | "needs_confirmation" | "unsafe" | "accepted" | "rejected";
+  score: {
     overall?: number;
     relevance?: number;
     clarity?: number;
@@ -76,16 +77,8 @@ export type ProductVariant = {
     label: string;
     tone: "neutral" | "positive" | "warning" | "danger";
   }>;
-  highlights: Array<{
-    label: string;
-    text: string;
-  }>;
-  critiqueSummary?: {
-    strengths: string[];
-    risks: string[];
-    suggestions: string[];
-  };
-  evidenceSummary?: {
+  reason: string;
+  evidenceSummary: {
     coverageLabel: string;
     items: Array<{
       id: string;
@@ -95,8 +88,23 @@ export type ProductVariant = {
       confidence?: number;
     }>;
   };
-  decisionState: "undecided" | "preferred" | "accepted" | "rejected";
+  riskSummary: {
+    level: string;
+    unsupportedClaims: string[];
+    missingEvidence: string[];
+    warnings: string[];
+  };
+  missingInfo: string[];
+  sourceExperienceIds: string[];
+  sourceEvidenceIds: string[];
+  actions: ProductAction[];
+  raw: Record<string, unknown>;
   createdAt: string;
+  // Backward-compat aliases for migration
+  /** @deprecated use content */
+  after?: string;
+  /** @deprecated use role */
+  subtitle?: string | null;
 };
 
 export type ProductAction = {
@@ -113,23 +121,35 @@ export type ProductAction = {
   label: string;
   description?: string;
   variantId?: string;
+  primary: boolean;
+  inputSchema?: {
+    fields: Array<{
+      key: string;
+      label: string;
+      type: "text" | "number" | "textarea";
+      placeholder?: string;
+      required?: boolean;
+    }>;
+  };
+  // Backward-compat aliases
+  /** @deprecated use inputSchema */
   requiresInput?: boolean;
+  /** @deprecated use inputSchema.fields[0].placeholder */
   inputPlaceholder?: string;
 };
 
 export type ProductTimelineItem = {
   id: string;
   type:
-    | "user_submitted"
-    | "resume_analyzed"
+    | "message_received"
+    | "resume_ingested"
     | "jd_analyzed"
-    | "experience_matched"
-    | "variant_generated"
+    | "variants_generated"
     | "critique_completed"
-    | "evidence_attached"
-    | "user_decision"
     | "revision_completed"
-    | "error";
+    | "decision_recorded"
+    | "evidence_opened"
+    | "warning";
   title: string;
   description?: string;
   status: "pending" | "running" | "completed" | "failed";
@@ -177,16 +197,14 @@ export type CopilotActionRequest = {
 };
 
 export type CopilotStreamEvent =
-  | { type: "timeline"; item: ProductTimelineItem }
-  | { type: "assistant_message_delta"; content: string }
-  | { type: "workspace_patch"; patch: Partial<CopilotWorkspace> }
-  | { type: "variant_created"; variant: ProductVariant }
-  | { type: "next_actions"; actions: ProductAction[] }
-  | { type: "done"; sessionId: string; turnId: string }
-  | { type: "error"; message: string };
+  | { type: "copilot.turn.started"; sessionId: string; turnId: string }
+  | { type: "copilot.message.created"; message: CopilotMessage }
+  | { type: "copilot.timeline.updated"; item: ProductTimelineItem }
+  | { type: "copilot.workspace.updated"; sessionId: string; status: CopilotWorkspace["status"]; variantCount: number }
+  | { type: "copilot.action.required"; actions: ProductAction[] }
+  | { type: "copilot.completed"; sessionId: string; turnId: string; workspaceStatus: CopilotWorkspace["status"] }
+  | { type: "copilot.failed"; sessionId: string; turnId: string; message: string };
 
-// Safety: the raw field must only contain debug-safe IDs and metadata,
-// never internal chain-of-thought, reasoning_content, prompts, or tool args.
 export type CopilotRawSection = {
   artifactIds: string[];
   evidenceChainIds: string[];

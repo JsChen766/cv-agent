@@ -15,96 +15,76 @@ export async function registerDebugRoutes(
       requestId: "debug",
       traceId: "debug",
       mode: kernel.mode,
-      ...(kernel.warnings.length > 0 ? { warnings: kernel.warnings } : {}),
+      ...(result.warnings.length > 0 ? { warnings: result.warnings } : {}),
     });
   });
 }
 
 function buildAgentModesReport(kernel: ApiKernel): {
-  provider: {
-    configured: string;
-    active: string;
-    model: string;
-    isMock: boolean;
-  };
-  llm: {
-    mode: string;
-    isLive: boolean;
-  };
-  database: {
-    mode: "postgres" | "in_memory";
-    isPostgres: boolean;
-    connection: "ok" | "not_configured" | "error";
-  };
-  agents: {
-    experienceExtractor: string;
-    artifactGenerator: string;
-    criticAgent: string;
-    revisionAgent: string;
-    frontDeskAgent: string;
-  };
+  provider: string;
+  database: string;
+  runtimeMode: string;
+  frontDeskMode: string;
+  experienceExtractorMode: string;
+  artifactGeneratorMode: string;
+  criticAgentMode: string;
+  revisionAgentMode: string;
+  allowMockFallback: boolean;
+  model: string;
+  hasDatabaseUrl: boolean;
+  hasDeepSeekApiKey: boolean;
   warnings: string[];
 } {
   const agentModes = readAgentModeConfig();
+  const warnings: string[] = [...kernel.warnings];
+
   let providerConfig: AgentProviderFactoryConfig | null = null;
-  let providerName = "unknown";
-  let providerModel = "unknown";
-  let isMock = false;
+  let provider = "unknown";
+  let model = "unknown";
+  let allowMockFallback = false;
+  let hasDeepSeekApiKey = false;
 
   try {
     providerConfig = AgentProviderFactory.fromEnv();
-    providerName = providerConfig.provider;
-    providerModel = providerConfig.model ?? "unknown";
-    isMock = providerName === "mock";
+    provider = providerConfig.provider;
+    model = providerConfig.model ?? (provider === "deepseek" ? "deepseek-chat" : "mock");
+    allowMockFallback = providerConfig.allowMockFallback ?? false;
+    hasDeepSeekApiKey = Boolean(providerConfig.apiKey);
 
-    if (providerName === "deepseek" && !providerConfig.apiKey) {
-      isMock = true; // fell back to mock
+    if (provider === "deepseek" && !hasDeepSeekApiKey) {
+      provider = "mock";
+      warnings.push("AGENT_PROVIDER is deepseek but DEEPSEEK_API_KEY is missing. Falling back to mock provider.");
     }
   } catch {
-    providerName = "error";
-    providerModel = "error";
-    isMock = true;
+    provider = "error";
+    model = "error";
+    warnings.push("Failed to read provider config.");
   }
 
-  const llmAgentCount = [
-    agentModes.experienceExtractorMode,
-    agentModes.artifactGeneratorMode,
-    agentModes.criticAgentMode,
-    agentModes.revisionAgentMode,
-  ].filter((m) => m === "llm").length;
+  const hasDatabaseUrl = Boolean(process.env.DATABASE_URL);
+  if (hasDatabaseUrl && kernel.mode !== "postgres") {
+    warnings.push("DATABASE_URL is set but kernel is not in postgres mode.");
+  }
 
-  const warnings: string[] = [...kernel.warnings];
+  const database = kernel.mode ?? "in_memory";
 
-  if (isMock) {
+  if (provider === "mock") {
     warnings.push("Provider is in mock mode. LLM features are not live.");
-  }
-  if (llmAgentCount > 0 && isMock) {
-    warnings.push("LLM agents are configured but provider is mock. Agents will use deterministic/mock fallback.");
   }
 
   return {
-    provider: {
-      configured: process.env.AGENT_PROVIDER ?? "(default)",
-      active: providerName,
-      model: providerModel,
-      isMock,
-    },
-    llm: {
-      mode: llmAgentCount > 0 ? "llm" : "deterministic/mock",
-      isLive: !isMock && llmAgentCount > 0,
-    },
-    database: {
-      mode: kernel.mode ?? "in_memory",
-      isPostgres: kernel.mode === "postgres",
-      connection: kernel.mode === "postgres" ? "ok" : "not_configured",
-    },
-    agents: {
-      experienceExtractor: agentModes.experienceExtractorMode,
-      artifactGenerator: agentModes.artifactGeneratorMode,
-      criticAgent: agentModes.criticAgentMode,
-      revisionAgent: agentModes.revisionAgentMode,
-      frontDeskAgent: agentModes.frontDeskAgentMode === "llm" ? "llm" : "mock (orchestrator)",
-    },
+    provider,
+    database,
+    runtimeMode: process.env.NODE_ENV === "production" ? "production" : "development",
+    frontDeskMode: agentModes.frontDeskAgentMode,
+    experienceExtractorMode: agentModes.experienceExtractorMode,
+    artifactGeneratorMode: agentModes.artifactGeneratorMode,
+    criticAgentMode: agentModes.criticAgentMode,
+    revisionAgentMode: agentModes.revisionAgentMode,
+    allowMockFallback,
+    model,
+    hasDatabaseUrl,
+    hasDeepSeekApiKey,
     warnings,
   };
 }

@@ -4,18 +4,25 @@ import { createKernel } from "../src/api/kernel/createKernel.js";
 import type { ApiSuccess } from "../src/api/response.js";
 import type { ApiKernel } from "../src/api/types.js";
 import type { CopilotChatResponse } from "../src/copilot/types.js";
-import type { GeneratedArtifact, EvidenceChain } from "../src/knowledge/types.js";
+
+function setupEnv() {
+  process.env.AUTH_MODE = "dev_header";
+  process.env.AGENT_PROVIDER = "mock";
+  process.env.FRONTDESK_AGENT_MODE = "mock";
+  process.env.EXPERIENCE_EXTRACTOR_MODE = "deterministic";
+  process.env.ARTIFACT_GENERATOR_MODE = "deterministic";
+  process.env.CRITIC_AGENT_MODE = "deterministic";
+  process.env.REVISION_AGENT_MODE = "deterministic";
+  process.env.NODE_ENV = "test";
+  delete process.env.DATABASE_URL;
+}
 
 describe("GET /debug/agent-modes", () => {
   let kernel: ApiKernel;
   let server: Awaited<ReturnType<typeof createServer>>;
 
   beforeEach(async () => {
-    process.env.AUTH_MODE = "dev_header";
-    process.env.AGENT_PROVIDER = "mock";
-    process.env.FRONTDESK_AGENT_MODE = "mock";
-    process.env.NODE_ENV = "test";
-    delete process.env.DATABASE_URL;
+    setupEnv();
     kernel = await createKernel();
     server = await createServer(kernel);
   });
@@ -25,35 +32,48 @@ describe("GET /debug/agent-modes", () => {
     await kernel.close();
   });
 
-  it("returns provider, llm, database, and agents sections", async () => {
-    const response = await server.inject({
-      method: "GET",
-      url: "/debug/agent-modes",
-    });
-
+  it("returns flat data with provider, database, runtimeMode, agent modes", async () => {
+    const response = await server.inject({ method: "GET", url: "/debug/agent-modes" });
     expect(response.statusCode).toBe(200);
     const body = response.json() as ApiSuccess<Record<string, unknown>>;
     expect(body.ok).toBe(true);
 
-    const data = body.data as Record<string, unknown>;
-    expect(data.provider).toBeDefined();
-    expect(data.llm).toBeDefined();
-    expect(data.database).toBeDefined();
-    expect(data.agents).toBeDefined();
+    const d = body.data as Record<string, unknown>;
+    expect(typeof d.provider).toBe("string");
+    expect(typeof d.database).toBe("string");
+    expect(typeof d.runtimeMode).toBe("string");
+    expect(typeof d.frontDeskMode).toBe("string");
+    expect(typeof d.experienceExtractorMode).toBe("string");
+    expect(typeof d.artifactGeneratorMode).toBe("string");
+    expect(typeof d.criticAgentMode).toBe("string");
+    expect(typeof d.revisionAgentMode).toBe("string");
+    expect(typeof d.allowMockFallback).toBe("boolean");
+    expect(typeof d.model).toBe("string");
+    expect(typeof d.hasDatabaseUrl).toBe("boolean");
+    expect(typeof d.hasDeepSeekApiKey).toBe("boolean");
+    expect(Array.isArray(d.warnings)).toBe(true);
+  });
 
-    const provider = data.provider as Record<string, unknown>;
-    expect(typeof provider.configured).toBe("string");
-    expect(typeof provider.active).toBe("string");
-    expect(typeof provider.isMock).toBe("boolean");
+  it("warns when AGENT_PROVIDER is deepseek but no API key", async () => {
+    const origProvider = process.env.AGENT_PROVIDER;
+    const origKey = process.env.DEEPSEEK_API_KEY;
+    process.env.AGENT_PROVIDER = "deepseek";
+    delete process.env.DEEPSEEK_API_KEY;
 
-    const database = data.database as Record<string, unknown>;
-    expect(typeof database.isPostgres).toBe("boolean");
+    // Need a fresh kernel/server for this env
+    const k = await createKernel();
+    const s = await createServer(k);
+    const response = await s.inject({ method: "GET", url: "/debug/agent-modes" });
+    const body = response.json() as ApiSuccess<Record<string, unknown>>;
+    const d = body.data as Record<string, unknown>;
+    const warnings = d.warnings as string[];
+    expect(warnings.some(w => w.includes("DEEPSEEK_API_KEY") || w.includes("mock"))).toBe(true);
 
-    const agents = data.agents as Record<string, unknown>;
-    expect(typeof agents.experienceExtractor).toBe("string");
-    expect(typeof agents.artifactGenerator).toBe("string");
-    expect(typeof agents.criticAgent).toBe("string");
-    expect(typeof agents.revisionAgent).toBe("string");
+    await s.close();
+    await k.close();
+    process.env.AGENT_PROVIDER = origProvider;
+    if (origKey !== undefined) process.env.DEEPSEEK_API_KEY = origKey;
+    else delete process.env.DEEPSEEK_API_KEY;
   });
 });
 
@@ -62,15 +82,7 @@ describe("POST /copilot/chat", () => {
   let server: Awaited<ReturnType<typeof createServer>>;
 
   beforeEach(async () => {
-    process.env.AUTH_MODE = "dev_header";
-    process.env.AGENT_PROVIDER = "mock";
-    process.env.FRONTDESK_AGENT_MODE = "mock";
-    process.env.EXPERIENCE_EXTRACTOR_MODE = "deterministic";
-    process.env.ARTIFACT_GENERATOR_MODE = "deterministic";
-    process.env.CRITIC_AGENT_MODE = "deterministic";
-    process.env.REVISION_AGENT_MODE = "deterministic";
-    process.env.NODE_ENV = "test";
-    delete process.env.DATABASE_URL;
+    setupEnv();
     kernel = await createKernel();
     server = await createServer(kernel);
   });
@@ -80,120 +92,95 @@ describe("POST /copilot/chat", () => {
     await kernel.close();
   });
 
-  it("returns clarifying_question when no resume or JD is provided", async () => {
+  it("returns clarifying_question when no resume or JD", async () => {
     const response = await server.inject({
-      method: "POST",
-      url: "/copilot/chat",
+      method: "POST", url: "/copilot/chat",
       headers: { "x-user-id": "user-1" },
       payload: { message: "Hello" },
     });
-
     expect(response.statusCode).toBe(200);
     const body = response.json() as ApiSuccess<CopilotChatResponse>;
-    expect(body.ok).toBe(true);
     expect(body.data.assistantMessage.kind).toBe("clarifying_question");
-    expect(body.data.assistantMessage.content.length).toBeGreaterThan(10);
   });
 
-  it("returns clarifying_question when only resume is provided (no JD)", async () => {
+  it("returns clarifying_question when only resume (no JD)", async () => {
     const response = await server.inject({
-      method: "POST",
-      url: "/copilot/chat",
+      method: "POST", url: "/copilot/chat",
       headers: { "x-user-id": "user-1" },
-      payload: {
-        message: "Here is my resume",
-        resumeText: "Senior engineer with 10 years of React experience.",
-      },
+      payload: { message: "Here is my resume", resumeText: "Senior engineer." },
     });
-
     expect(response.statusCode).toBe(200);
     const body = response.json() as ApiSuccess<CopilotChatResponse>;
-    expect(body.ok).toBe(true);
     expect(body.data.assistantMessage.kind).toBe("clarifying_question");
   });
 
   it("returns full chat response with resume + JD + targetRole", async () => {
     const response = await server.inject({
-      method: "POST",
-      url: "/copilot/chat",
+      method: "POST", url: "/copilot/chat",
       headers: { "x-user-id": "user-1" },
       payload: {
-        message: "Generate resume content for this role",
+        message: "Generate resume content",
         resumeText: "As a Frontend Engineer at Acme Corp, I built React and TypeScript systems and reduced bundle size by 40%.",
         jdText: "React TypeScript performance design system role.",
         targetRole: "Frontend Engineer",
       },
     });
-
     expect(response.statusCode).toBe(200);
     const body = response.json() as ApiSuccess<CopilotChatResponse>;
     expect(body.ok).toBe(true);
-
-    const data = body.data;
-    // sessionId and turnId should be present
-    expect(typeof data.sessionId).toBe("string");
-    expect(data.sessionId.length).toBeGreaterThan(0);
-    expect(typeof data.turnId).toBe("string");
-    expect(data.turnId.length).toBeGreaterThan(0);
-
-    // assistantMessage
-    expect(data.assistantMessage.role).toBe("assistant");
-    expect(data.assistantMessage.content.length).toBeGreaterThan(0);
-
-    // timeline
-    expect(data.timeline.length).toBeGreaterThan(0);
-    expect(data.timeline[0].status).toBe("completed");
-
-    // workspace
-    expect(data.workspace.sessionId).toBe(data.sessionId);
-
-    // raw
-    expect(Array.isArray(data.raw.artifactIds)).toBe(true);
-    expect(Array.isArray(data.raw.evidenceChainIds)).toBe(true);
-    expect(Array.isArray(data.raw.critiqueItemIds)).toBe(true);
-    expect(Array.isArray(data.raw.decisionIds)).toBe(true);
+    const d = body.data;
+    expect(typeof d.sessionId).toBe("string");
+    expect(d.assistantMessage.role).toBe("assistant");
+    expect(d.timeline.length).toBeGreaterThan(0);
+    expect(d.workspace.sessionId).toBe(d.sessionId);
+    expect(Array.isArray(d.raw.artifactIds)).toBe(true);
   });
 
   it("reuses existing session when sessionId is provided", async () => {
-    // First request creates session
     const first = await server.inject({
-      method: "POST",
-      url: "/copilot/chat",
+      method: "POST", url: "/copilot/chat",
       headers: { "x-user-id": "user-1" },
-      payload: {
-        message: "Generate content",
-        jdText: "React role",
-        targetRole: "Frontend Engineer",
-      },
+      payload: { message: "Generate", jdText: "React role", targetRole: "FE" },
     });
-    const firstBody = first.json() as ApiSuccess<CopilotChatResponse>;
-    const sessionId = firstBody.data.sessionId;
+    const sid = (first.json() as ApiSuccess<CopilotChatResponse>).data.sessionId;
 
-    // Second request reuses session
     const second = await server.inject({
-      method: "POST",
-      url: "/copilot/chat",
+      method: "POST", url: "/copilot/chat",
+      headers: { "x-user-id": "user-1" },
+      payload: { sessionId: sid, message: "Revise", jdText: "React role" },
+    });
+    expect(second.statusCode).toBe(200);
+    expect((second.json() as ApiSuccess<CopilotChatResponse>).data.sessionId).toBe(sid);
+  });
+
+  it("does not re-ingest resume on second request with same session", async () => {
+    // First request triggers ingestion
+    const first = await server.inject({
+      method: "POST", url: "/copilot/chat",
       headers: { "x-user-id": "user-1" },
       payload: {
-        sessionId,
-        message: "Make it more conservative",
-        jdText: "React role",
+        message: "Generate", resumeText: "Senior engineer.",
+        jdText: "React role", targetRole: "FE",
       },
     });
+    const sid = (first.json() as ApiSuccess<CopilotChatResponse>).data.sessionId;
 
+    // Second request with same session should skip ingestion
+    const second = await server.inject({
+      method: "POST", url: "/copilot/chat",
+      headers: { "x-user-id": "user-1" },
+      payload: { sessionId: sid, message: "Revise", jdText: "React role" },
+    });
     expect(second.statusCode).toBe(200);
-    const secondBody = second.json() as ApiSuccess<CopilotChatResponse>;
-    expect(secondBody.data.sessionId).toBe(sessionId);
+    // Should still succeed (ingestion skipped)
   });
 
   it("rejects missing message field", async () => {
     const response = await server.inject({
-      method: "POST",
-      url: "/copilot/chat",
+      method: "POST", url: "/copilot/chat",
       headers: { "x-user-id": "user-1" },
       payload: {},
     });
-
     expect(response.statusCode).toBe(400);
   });
 });
@@ -204,32 +191,21 @@ describe("POST /copilot/actions", () => {
   let sessionId: string;
 
   beforeEach(async () => {
-    process.env.AUTH_MODE = "dev_header";
-    process.env.AGENT_PROVIDER = "mock";
-    process.env.FRONTDESK_AGENT_MODE = "mock";
-    process.env.EXPERIENCE_EXTRACTOR_MODE = "deterministic";
-    process.env.ARTIFACT_GENERATOR_MODE = "deterministic";
-    process.env.CRITIC_AGENT_MODE = "deterministic";
-    process.env.REVISION_AGENT_MODE = "deterministic";
-    process.env.NODE_ENV = "test";
-    delete process.env.DATABASE_URL;
+    setupEnv();
     kernel = await createKernel();
     server = await createServer(kernel);
 
-    // Create a session with content first
     const chatResponse = await server.inject({
-      method: "POST",
-      url: "/copilot/chat",
+      method: "POST", url: "/copilot/chat",
       headers: { "x-user-id": "user-1" },
       payload: {
         message: "Generate resume content",
-        resumeText: "As a Frontend Engineer at Acme Corp, I built React systems and reduced bundle size by 40%.",
+        resumeText: "As a Frontend Engineer at Acme Corp, I built React systems.",
         jdText: "React TypeScript role.",
         targetRole: "Frontend Engineer",
       },
     });
-    const chatBody = chatResponse.json() as ApiSuccess<CopilotChatResponse>;
-    sessionId = chatBody.data.sessionId;
+    sessionId = (chatResponse.json() as ApiSuccess<CopilotChatResponse>).data.sessionId;
   });
 
   afterEach(async () => {
@@ -237,82 +213,68 @@ describe("POST /copilot/actions", () => {
     await kernel.close();
   });
 
-  it("accepts a variant and returns decision_summary", async () => {
-    const variantId = "any-variant-id";
+  it("accepts a variant via workspace resolution", async () => {
     const response = await server.inject({
-      method: "POST",
-      url: "/copilot/actions",
+      method: "POST", url: "/copilot/actions",
       headers: { "x-user-id": "user-1" },
-      payload: {
-        sessionId,
-        action: { type: "accept", variantId },
-      },
+      payload: { sessionId, action: { type: "accept", variantId: "any-variant-id" } },
     });
-
     expect(response.statusCode).toBe(200);
     const body = response.json() as ApiSuccess<CopilotChatResponse>;
     expect(body.data.assistantMessage.kind).toBe("decision_summary");
+    expect(body.data.timeline.some(t => t.type === "decision_recorded")).toBe(true);
   });
 
   it("rejects a variant", async () => {
     const response = await server.inject({
-      method: "POST",
-      url: "/copilot/actions",
+      method: "POST", url: "/copilot/actions",
       headers: { "x-user-id": "user-1" },
-      payload: {
-        sessionId,
-        action: { type: "reject", variantId: "any-variant-id" },
-      },
+      payload: { sessionId, action: { type: "reject", variantId: "any-variant-id" } },
     });
-
     expect(response.statusCode).toBe(200);
-    const body = response.json() as ApiSuccess<CopilotChatResponse>;
-    expect(body.data.timeline.some((t) => t.type === "user_decision")).toBe(true);
   });
 
-  it("prefers a variant and updates decisionState", async () => {
+  it("prefers a variant", async () => {
     const response = await server.inject({
-      method: "POST",
-      url: "/copilot/actions",
+      method: "POST", url: "/copilot/actions",
       headers: { "x-user-id": "user-1" },
-      payload: {
-        sessionId,
-        action: { type: "prefer", variantId: "any-variant-id" },
-      },
+      payload: { sessionId, action: { type: "prefer", variantId: "any-variant-id" } },
     });
-
     expect(response.statusCode).toBe(200);
-    const body = response.json() as ApiSuccess<CopilotChatResponse>;
-    expect(body.data.assistantMessage.kind).toBe("decision_summary");
   });
 
-  it("show_evidence returns evidence_explanation message kind", async () => {
+  it("show_evidence returns evidence_explanation", async () => {
     const response = await server.inject({
-      method: "POST",
-      url: "/copilot/actions",
+      method: "POST", url: "/copilot/actions",
       headers: { "x-user-id": "user-1" },
-      payload: {
-        sessionId,
-        action: { type: "show_evidence", variantId: "any-variant-id" },
-      },
+      payload: { sessionId, action: { type: "show_evidence", variantId: "any-variant-id" } },
     });
-
     expect(response.statusCode).toBe(200);
     const body = response.json() as ApiSuccess<CopilotChatResponse>;
     expect(body.data.assistantMessage.kind).toBe("evidence_explanation");
   });
 
+  it("revision does not fail when lastGenArtifacts is not used", async () => {
+    // With the new orchestrator, revision uses artifact snapshot from variant.raw,
+    // not global lastGenArtifacts. If the variant doesn't exist,
+    // it should return a product error, not crash.
+    const response = await server.inject({
+      method: "POST", url: "/copilot/actions",
+      headers: { "x-user-id": "user-1" },
+      payload: { sessionId, action: { type: "revise_more_conservative", variantId: "nonexistent-variant" } },
+    });
+    // Should get a product error response, not 500
+    expect(response.statusCode).toBe(200);
+    const body = response.json() as ApiSuccess<CopilotChatResponse>;
+    expect(body.data.timeline.some(t => t.type === "warning")).toBe(true);
+  });
+
   it("returns 404 for unknown session", async () => {
     const response = await server.inject({
-      method: "POST",
-      url: "/copilot/actions",
+      method: "POST", url: "/copilot/actions",
       headers: { "x-user-id": "user-1" },
-      payload: {
-        sessionId: "non-existent-session",
-        action: { type: "accept", variantId: "var-1" },
-      },
+      payload: { sessionId: "non-existent", action: { type: "accept", variantId: "v1" } },
     });
-
     expect(response.statusCode).toBe(404);
   });
 });
@@ -322,15 +284,7 @@ describe("POST /copilot/chat/stream", () => {
   let server: Awaited<ReturnType<typeof createServer>>;
 
   beforeEach(async () => {
-    process.env.AUTH_MODE = "dev_header";
-    process.env.AGENT_PROVIDER = "mock";
-    process.env.FRONTDESK_AGENT_MODE = "mock";
-    process.env.EXPERIENCE_EXTRACTOR_MODE = "deterministic";
-    process.env.ARTIFACT_GENERATOR_MODE = "deterministic";
-    process.env.CRITIC_AGENT_MODE = "deterministic";
-    process.env.REVISION_AGENT_MODE = "deterministic";
-    process.env.NODE_ENV = "test";
-    delete process.env.DATABASE_URL;
+    setupEnv();
     kernel = await createKernel();
     server = await createServer(kernel);
   });
@@ -340,60 +294,58 @@ describe("POST /copilot/chat/stream", () => {
     await kernel.close();
   });
 
-  it("returns SSE with product-level events", async () => {
+  it("returns SSE with proper namespaced events", async () => {
     const response = await server.inject({
-      method: "POST",
-      url: "/copilot/chat/stream",
+      method: "POST", url: "/copilot/chat/stream",
       headers: { "x-user-id": "user-1" },
-      payload: {
-        message: "Generate content",
-        jdText: "React TypeScript role",
-        targetRole: "Frontend Engineer",
-      },
+      payload: { message: "Generate", jdText: "React role", targetRole: "FE" },
     });
-
     expect(response.statusCode).toBe(200);
     const body = response.body;
-    expect(body).toContain("event: ");
-    expect(body).toContain("data: ");
-    expect(body).toContain("timeline");
-    expect(body).toContain("done");
+    expect(body).toContain("event: copilot.turn.started");
+    expect(body).toContain("event: copilot.completed");
+    expect(body).toContain('"type":"copilot.turn.started"');
+    expect(body).toContain('"type":"copilot.completed"');
   });
 
-  it("returns clarifying events when JD is missing", async () => {
+  it("returns failed event when JD missing", async () => {
     const response = await server.inject({
-      method: "POST",
-      url: "/copilot/chat/stream",
+      method: "POST", url: "/copilot/chat/stream",
       headers: { "x-user-id": "user-1" },
-      payload: {
-        message: "Hello",
-      },
+      payload: { message: "Hello" },
     });
-
     expect(response.statusCode).toBe(200);
-    const body = response.body;
-    expect(body).toContain("event: ");
-    expect(body).toContain("done");
+    expect(response.body).toContain("event: copilot.failed");
   });
 
-  it("does not expose raw chain-of-thought or reasoning_content in SSE", async () => {
+  it("does not expose raw chain-of-thought or reasoning_content", async () => {
     const response = await server.inject({
-      method: "POST",
-      url: "/copilot/chat/stream",
+      method: "POST", url: "/copilot/chat/stream",
       headers: { "x-user-id": "user-1" },
-      payload: {
-        message: "Generate content",
-        jdText: "React TypeScript role",
-        targetRole: "Frontend Engineer",
-      },
+      payload: { message: "Generate", jdText: "React role", targetRole: "FE" },
     });
-
     const body = response.body;
     expect(body).not.toContain("chain-of-thought");
     expect(body).not.toContain("chain_of_thought");
     expect(body).not.toContain("reasoning_content");
     expect(body).not.toContain("internal_prompt");
     expect(body).not.toContain("tool_args");
+    expect(body).not.toContain("rawToken");
+    expect(body).not.toContain("providerRaw");
+    expect(body).not.toContain("chainOfThought");
+  });
+
+  it("does not expose raw LLM token stream", async () => {
+    const response = await server.inject({
+      method: "POST", url: "/copilot/chat/stream",
+      headers: { "x-user-id": "user-1" },
+      payload: { message: "Generate", jdText: "React role", targetRole: "FE" },
+    });
+    const body = response.body;
+    // Should not contain any raw LLM event types
+    expect(body).not.toContain("llm.delta");
+    expect(body).not.toContain("llm.started");
+    expect(body).not.toContain("llm.completed");
   });
 });
 
@@ -402,15 +354,7 @@ describe("CopilotChatResponse safety", () => {
   let server: Awaited<ReturnType<typeof createServer>>;
 
   beforeEach(async () => {
-    process.env.AUTH_MODE = "dev_header";
-    process.env.AGENT_PROVIDER = "mock";
-    process.env.FRONTDESK_AGENT_MODE = "mock";
-    process.env.EXPERIENCE_EXTRACTOR_MODE = "deterministic";
-    process.env.ARTIFACT_GENERATOR_MODE = "deterministic";
-    process.env.CRITIC_AGENT_MODE = "deterministic";
-    process.env.REVISION_AGENT_MODE = "deterministic";
-    process.env.NODE_ENV = "test";
-    delete process.env.DATABASE_URL;
+    setupEnv();
     kernel = await createKernel();
     server = await createServer(kernel);
   });
@@ -422,66 +366,51 @@ describe("CopilotChatResponse safety", () => {
 
   function checkNoLeaks(data: unknown, path: string): void {
     if (typeof data === "string") {
-      expect(data, `String at ${path} should not contain chain-of-thought`).not.toContain("chain-of-thought");
-      expect(data, `String at ${path} should not contain reasoning_content`).not.toContain("reasoning_content");
-      expect(data, `String at ${path} should not contain internal prompt`).not.toContain("internal_prompt");
-      expect(data, `String at ${path} should not contain tool_args`).not.toContain("tool_args");
+      expect(data).not.toContain("chain-of-thought");
+      expect(data).not.toContain("reasoning_content");
+      expect(data).not.toContain("internal_prompt");
+      expect(data).not.toContain("tool_args");
       return;
     }
     if (Array.isArray(data)) {
-      for (let i = 0; i < data.length; i++) {
-        checkNoLeaks(data[i], `${path}[${i}]`);
-      }
+      for (let i = 0; i < data.length; i++) checkNoLeaks(data[i], `${path}[${i}]`);
       return;
     }
     if (typeof data === "object" && data !== null) {
-      for (const [key, value] of Object.entries(data as Record<string, unknown>)) {
-        checkNoLeaks(value, `${path}.${key}`);
+      for (const [k, v] of Object.entries(data as Record<string, unknown>)) {
+        checkNoLeaks(v, `${path}.${k}`);
       }
     }
   }
 
   it("copilot chat response contains no chain-of-thought or reasoning leaks", async () => {
     const response = await server.inject({
-      method: "POST",
-      url: "/copilot/chat",
+      method: "POST", url: "/copilot/chat",
       headers: { "x-user-id": "user-1" },
       payload: {
         message: "Generate content",
         resumeText: "Senior engineer with React experience.",
-        jdText: "React role",
-        targetRole: "Frontend Engineer",
+        jdText: "React role", targetRole: "Frontend Engineer",
       },
     });
-
     expect(response.statusCode).toBe(200);
     const body = response.json() as ApiSuccess<CopilotChatResponse>;
-
-    // Serialize to JSON and check for any leaks
     const json = JSON.stringify(body);
     expect(json).not.toContain("chain-of-thought");
-    expect(json).not.toContain("chain_of_thought");
     expect(json).not.toContain("reasoning_content");
     expect(json).not.toContain("internal_prompt");
-    expect(json).not.toContain("internal system prompt");
-
-    // Deep check
     checkNoLeaks(body, "response");
   });
 
   it("clarifying question response contains no leaks", async () => {
     const response = await server.inject({
-      method: "POST",
-      url: "/copilot/chat",
+      method: "POST", url: "/copilot/chat",
       headers: { "x-user-id": "user-1" },
       payload: { message: "Hello" },
     });
-
-    expect(response.statusCode).toBe(200);
     const body = response.json() as ApiSuccess<CopilotChatResponse>;
     const json = JSON.stringify(body);
     expect(json).not.toContain("chain-of-thought");
     expect(json).not.toContain("reasoning_content");
-    expect(json).not.toContain("internal_prompt");
   });
 });

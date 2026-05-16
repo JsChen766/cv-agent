@@ -1,6 +1,6 @@
 # Coolto CV Agent Contract
 
-> Status: Draft v0.1, P8.0-P8.7.2 implemented through LLM-backed FrontDeskAgent, ExperienceExtractor, multi-experience extraction, evidence-aware LLM ArtifactGenerator, LLM-backed CriticAgent, RevisionAgent, public agent events, streaming generation, artifact decisions, and safe model stream previews  
+> Status: Draft v0.2, P8.0-P9 implemented through LLM-backed agents, streaming generation, artifact decisions, product copilot backend, CopilotOrchestrator, and product-level SSE stream  
 > Scope: frontend ↔ backend API ↔ cv-agent kernel / SDK  
 > Principle: backend owns authentication and request context; Agent Kernel owns document ingestion, experience knowledge, generation, evidence chains, and graph projections.
 
@@ -1229,12 +1229,132 @@ Status: implemented.
 - Made artifact decisions append-only in PostgreSQL and in-memory repositories.
 - Documented that changed user choices create new decision records; projections can derive current state later.
 
-### P9 Feedback Loop
+### P9 Product Copilot Backend
 
-- Revision requests connected to product review UI.
-- Conservative rewrite feedback loop.
-- Evidence augmentation.
-- Session updater.
+Status: implemented.
+
+- New `/copilot/*` product-level API layer for GPT-style frontend consumption.
+- `/copilot/chat` — conversational chat with clarifying questions, resume ingestion, and generation.
+- `/copilot/actions` — unified action handler (accept, reject, prefer, confirm_metric, revise, show_evidence, explain_choice).
+- `/copilot/chat/stream` — SSE product event stream (not LLM token stream).
+- `/debug/agent-modes` — runtime mode introspection.
+- `CopilotOrchestrator` — session management and business logic extracted from routes.
+- `CopilotResponseBuilder` — transforms kernel data into product-level responses.
+- Product types: `ProductVariant`, `ProductAction`, `ProductTimelineItem` with product semantics.
+- Existing `/generations/*` APIs preserved as internal/debug APIs.
+- No raw chain-of-thought, reasoning_content, prompts, or tool args in any response.
+
+#### Product Copilot API Contract
+
+##### GET /debug/agent-modes
+
+```bash
+curl http://127.0.0.1:3000/debug/agent-modes
+```
+
+Response:
+```json
+{
+  "ok": true,
+  "data": {
+    "provider": "mock",
+    "database": "in_memory",
+    "runtimeMode": "development",
+    "frontDeskMode": "mock",
+    "experienceExtractorMode": "deterministic",
+    "artifactGeneratorMode": "deterministic",
+    "criticAgentMode": "deterministic",
+    "revisionAgentMode": "deterministic",
+    "allowMockFallback": true,
+    "model": "mock",
+    "hasDatabaseUrl": false,
+    "hasDeepSeekApiKey": false,
+    "warnings": ["Provider is in mock mode."]
+  },
+  "meta": {}
+}
+```
+
+##### POST /copilot/chat
+
+```bash
+# Clarifying question (no context)
+curl -X POST http://127.0.0.1:3000/copilot/chat \
+  -H "content-type: application/json" \
+  -H "x-user-id: demo-user" \
+  -d '{"message":"Hello"}'
+
+# Full generation (resume + JD)
+curl -X POST http://127.0.0.1:3000/copilot/chat \
+  -H "content-type: application/json" \
+  -H "x-user-id: demo-user" \
+  -d '{
+    "message":"Generate resume content",
+    "resumeText":"Senior engineer with React and TypeScript experience.",
+    "jdText":"Looking for a Frontend Engineer with React skills.",
+    "targetRole":"Frontend Engineer"
+  }'
+```
+
+Response: `CopilotChatResponse` with `assistantMessage`, `timeline`, `workspace` (with `ProductVariant[]`), `nextActions`, `raw` (IDs only).
+
+##### POST /copilot/actions
+
+```bash
+# Accept a variant
+curl -X POST http://127.0.0.1:3000/copilot/actions \
+  -H "content-type: application/json" \
+  -H "x-user-id: demo-user" \
+  -d '{"sessionId":"cs-...","action":{"type":"accept","variantId":"artifact-1"}}'
+
+# Request conservative revision
+curl -X POST http://127.0.0.1:3000/copilot/actions \
+  -H "content-type: application/json" \
+  -H "x-user-id: demo-user" \
+  -d '{"sessionId":"cs-...","action":{"type":"revise_more_conservative","variantId":"artifact-1"}}'
+
+# Show evidence
+curl -X POST http://127.0.0.1:3000/copilot/actions \
+  -H "content-type: application/json" \
+  -H "x-user-id: demo-user" \
+  -d '{"sessionId":"cs-...","action":{"type":"show_evidence","variantId":"artifact-1"}}'
+```
+
+##### POST /copilot/chat/stream
+
+```bash
+curl -X POST http://127.0.0.1:3000/copilot/chat/stream \
+  -H "content-type: application/json" \
+  -H "x-user-id: demo-user" \
+  -d '{"message":"Generate content","jdText":"React role","targetRole":"Frontend Engineer"}'
+```
+
+SSE event types: `copilot.turn.started`, `copilot.message.created`, `copilot.timeline.updated`, `copilot.workspace.updated`, `copilot.action.required`, `copilot.completed`, `copilot.failed`.
+
+This is a **product event stream**, not an LLM token stream. Never exposes raw chain-of-thought, reasoning_content, prompts, or tool args.
+
+#### ProductVariant Contract
+
+Each variant includes:
+- `id`, `artifactId`, `title`, `content` — core identity and text
+- `role` — `recommended | alternative | safe | quantified | experimental`
+- `status` — `ready | needs_confirmation | unsafe | accepted | rejected`
+- `score` — `{ overall, relevance, evidenceStrength }`
+- `reason` — human-readable recommendation rationale
+- `evidenceSummary` — `{ coverageLabel, items[] }` with natural language explanations
+- `riskSummary` — `{ level, unsupportedClaims[], missingEvidence[], warnings[] }`
+- `missingInfo` — user-facing questions that need answers
+- `sourceExperienceIds[]`, `sourceEvidenceIds[]` — lineage
+- `actions[]` — per-variant product actions with `primary` flag and optional `inputSchema`
+- `raw` — debug-safe IDs and metadata only
+
+#### Safety Rules
+
+1. `/copilot/*` is the recommended product frontend entry point.
+2. `/generations/*`, `/documents/*` remain as internal/debug APIs.
+3. `raw` field contains only IDs and metadata; no chain-of-thought, prompts, or tool args.
+4. Stream is product event stream, not LLM token stream.
+5. All responses pass safety tests that verify no reasoning_content, prompts, or tool args leak.
 
 ### P10 Product Backend
 
