@@ -285,6 +285,7 @@ export class DefaultCvAgentKernel implements CvAgentKernel {
         data: {
           artifactCount: generation.artifacts.length,
           artifactIds: generation.artifacts.map((artifact) => artifact.id),
+          artifacts: generation.artifacts.map(toArtifactEventSummary),
         },
       });
       await emitAgentCompleted(ctx.events, {
@@ -416,6 +417,9 @@ export class DefaultCvAgentKernel implements CvAgentKernel {
         data: {
           artifactId: input.artifact.id,
           revisedArtifactId: result.revisedArtifact.id,
+          status: result.revisedArtifact.status,
+          enhancementStatus: readEnhancementStatus(result.revisedArtifact),
+          shortPreview: shortPreview(result.revisedArtifact.content),
         },
       });
       if (readEnhancementStatus(result.revisedArtifact) === "needs_confirmation") {
@@ -531,4 +535,18 @@ function readEnhancementStatus(artifact: CreateGenerationResult["artifacts"][num
   }
   const status = (enhancement as Record<string, unknown>).status;
   return typeof status === "string" ? status : undefined;
+}
+
+function toArtifactEventSummary(artifact: CreateGenerationResult["artifacts"][number]): Record<string, unknown> {
+  return {
+    id: artifact.id,
+    status: artifact.status,
+    enhancementStatus: readEnhancementStatus(artifact),
+    shortPreview: shortPreview(artifact.content),
+  };
+}
+
+function shortPreview(content: string): string {
+  const normalized = content.replace(/\s+/g, " ").trim();
+  return normalized.length > 120 ? `${normalized.slice(0, 117)}...` : normalized;
 }

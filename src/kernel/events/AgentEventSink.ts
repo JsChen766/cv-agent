@@ -67,6 +67,20 @@ export function emitToolCompleted(
   return sink?.emit({ ...event, type: "tool.completed", status: "completed" });
 }
 
+export function emitLlmDelta(
+  sink: AgentEventSink | undefined,
+  event: Omit<AgentEventInput, "type">,
+): Promise<void> | void {
+  return sink?.emit({ ...event, type: "llm.delta" });
+}
+
+export function emitLlmPreviewCompleted(
+  sink: AgentEventSink | undefined,
+  event: Omit<AgentEventInput, "type" | "status">,
+): Promise<void> | void {
+  return sink?.emit({ ...event, type: "llm.preview.completed", status: "completed" });
+}
+
 export function emitWarning(
   sink: AgentEventSink | undefined,
   event: Omit<AgentEventInput, "type">,

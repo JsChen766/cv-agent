@@ -201,18 +201,17 @@ CREATE INDEX IF NOT EXISTS idx_graph_view_snapshots_created_at ON graph_view_sna
 CREATE TABLE IF NOT EXISTS artifact_decisions (
   id TEXT PRIMARY KEY,
   user_id TEXT NOT NULL,
-  session_id TEXT NOT NULL,
   artifact_id TEXT NOT NULL,
-  status TEXT NOT NULL CHECK (status IN ('accepted', 'rejected', 'needs_revision')),
+  session_id TEXT,
+  decision TEXT NOT NULL,
   reason TEXT,
-  metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
-  created_at TIMESTAMPTZ NOT NULL,
-  updated_at TIMESTAMPTZ NOT NULL
+  selected_variant_id TEXT,
+  confirmation_json JSONB,
+  created_at TIMESTAMPTZ NOT NULL
 );
-CREATE INDEX IF NOT EXISTS idx_artifact_decisions_user_id ON artifact_decisions(user_id);
-CREATE INDEX IF NOT EXISTS idx_artifact_decisions_session_id ON artifact_decisions(session_id);
-CREATE INDEX IF NOT EXISTS idx_artifact_decisions_artifact_id ON artifact_decisions(artifact_id);
-CREATE INDEX IF NOT EXISTS idx_artifact_decisions_status ON artifact_decisions(status);
+CREATE INDEX IF NOT EXISTS idx_artifact_decisions_user_artifact ON artifact_decisions(user_id, artifact_id);
+CREATE INDEX IF NOT EXISTS idx_artifact_decisions_user_session ON artifact_decisions(user_id, session_id);
+CREATE INDEX IF NOT EXISTS idx_artifact_decisions_created_at ON artifact_decisions(created_at);
 
 CREATE TABLE IF NOT EXISTS coverage_gap_decisions (
   id TEXT PRIMARY KEY,

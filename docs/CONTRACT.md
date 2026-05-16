@@ -1,6 +1,6 @@
 # Coolto CV Agent Contract
 
-> Status: Draft v0.1, P8.0-P8.8 implemented through LLM-backed FrontDeskAgent, ExperienceExtractor, multi-experience extraction, evidence-aware LLM ArtifactGenerator, LLM-backed CriticAgent, RevisionAgent, public agent events, streaming generation, and artifact decisions  
+> Status: Draft v0.1, P8.0-P8.7.2 implemented through LLM-backed FrontDeskAgent, ExperienceExtractor, multi-experience extraction, evidence-aware LLM ArtifactGenerator, LLM-backed CriticAgent, RevisionAgent, public agent events, streaming generation, artifact decisions, and safe model stream previews  
 > Scope: frontend ↔ backend API ↔ cv-agent kernel / SDK  
 > Principle: backend owns authentication and request context; Agent Kernel owns document ingestion, experience knowledge, generation, evidence chains, and graph projections.
 
@@ -153,6 +153,8 @@ P8.1-P8.7 implementation notes:
 30. `KernelRequestContext.events` supports public agent events for frontend progress display without exposing model raw chain-of-thought.
 31. `POST /generations/stream` returns experimental NDJSON progress events and a final generation result.
 32. Artifact decisions support accept/reject/revision/metric-confirmation/unsafe/preferred-variant review flows.
+33. PostgreSQL mode persists artifact decisions through `PostgresArtifactDecisionRepository`.
+34. `ModelClient.stream()` remains separate from `/generations/stream`; structured JSON agents still use `chat()` for schema validation, repair, and fallback.
 
 Common local/LLM configurations:
 
@@ -599,9 +601,10 @@ The final line contains:
 Rules:
 
 1. `/generations` remains the stable synchronous API.
-2. The stream exposes public progress events only, not raw model chain-of-thought.
+2. This endpoint is an Agent Event Stream. It is not a direct model token stream.
 3. Events may include agent/tool names, step, status, message, ids, counts, warnings, and public summaries.
 4. If an error occurs after streaming starts, the stream reports it as an event/error line.
+5. Request auth and body validation happen before opening the NDJSON stream.
 
 ### 6.5 List Evidence Chains by Session
 
@@ -721,8 +724,9 @@ Rules:
 
 1. Backend derives `userId` from `KernelRequestContext`; body-level `userId` is ignored.
 2. Decisions record frontend review choices without mutating the artifact.
-3. In this phase decisions use in-memory application persistence. PostgreSQL persistence is future work because the existing `artifact_decisions` table does not yet cover all six decision types.
+3. In-memory mode uses `InMemoryArtifactDecisionRepository`; PostgreSQL mode uses `PostgresArtifactDecisionRepository`.
 4. `confirm_metric` should include the user-confirmed metric/value where available.
+5. The `artifact_decisions` table has no database foreign keys.
 
 ### 6.9 Agent Event Stream
 
@@ -738,7 +742,9 @@ export type AgentEventType =
   | "tool.completed"
   | "tool.failed"
   | "llm.started"
+  | "llm.delta"
   | "llm.completed"
+  | "llm.preview.completed"
   | "llm.repaired"
   | "llm.fallback"
   | "artifact.candidate.created"
@@ -752,8 +758,21 @@ Rules:
 
 1. Events are for frontend progress display.
 2. Events must not expose model raw chain-of-thought.
-3. Public reasoning summaries, step summaries, action logs, counts, ids, statuses, and warnings are allowed.
+3. Public reasoning summaries, step summaries, action logs, counts, ids, statuses, short previews, and warnings are allowed.
 4. Do not put API keys or complete private resume text in event `data`.
+5. Artifact events may include `shortPreview`, capped at 120 characters, plus `status` and `enhancementStatus`.
+
+### 6.9.1 Model Token Stream Preview
+
+Provider-level streaming is available through `ModelClient.stream()` and `DeepSeekProvider.stream()`. This is separate from `/generations/stream`.
+
+Rules:
+
+1. Structured JSON agents continue to use `chat()` by default for schema validation, repair, and deterministic fallback.
+2. `collectStreamPreview()` can consume a model stream and collect a bounded content preview.
+3. `reasoningDelta` is not returned by default.
+4. `includeReasoning=true` is reserved for explicit safe preview/debug use; frontend product UI should prefer public reasoning summaries or agent event summaries.
+5. The preview helper does not parse JSON and does not replace the main agent response path.
 
 ### 6.10 Variant Display Guidance
 
@@ -1165,7 +1184,7 @@ Status: implemented.
 - Optional smoke demo: `npm run dev:revision-llm-smoke`.
 - This phase does not add frontend UI, complete user feedback system, vector store, complex chunking, persistent agent run logging, async job queue, or database foreign keys.
 
-### P8.8 Agent Events, Streaming, and Artifact Decisions
+### P8.7.2 Streaming and Decision Persistence Hardening
 
 Status: implemented.
 
@@ -1173,16 +1192,18 @@ Status: implemented.
 - Kernel facade emits public high-level events for document ingestion, generation, critique, revision, decisions required, and failures.
 - `POST /generations/stream` returns experimental NDJSON lines with `{ event }` progress entries and a final `{ final }` generation result.
 - Events are public step summaries and must not expose model raw chain-of-thought.
-- Added `ArtifactDecisionService` and in-memory decision repository.
+- Artifact candidate/revision events include `status`, `enhancementStatus`, and bounded `shortPreview`.
+- Added `ArtifactDecisionService`, in-memory decision repository, and PostgreSQL artifact decision repository.
 - Added decision API routes:
   - `POST /generations/artifacts/decisions`
   - `GET /generations/artifacts/:artifactId/decisions`
   - `GET /generations/:sessionId/artifact-decisions`
-- PostgreSQL persistence for the expanded six decision types is future work; no new database foreign keys are introduced.
+- Added `artifact_decisions` schema/migration for the six decision types with no database foreign keys.
+- Added `llm.delta` and `llm.preview.completed` event types plus safe model stream preview helper.
+- `ModelClient.stream()` / `DeepSeekProvider.stream()` are provider token streams; `/generations/stream` remains the backend Agent Event Stream.
 
 ### P9 Feedback Loop
 
-- Persistent artifact decision storage.
 - Revision requests connected to product review UI.
 - Conservative rewrite feedback loop.
 - Evidence augmentation.

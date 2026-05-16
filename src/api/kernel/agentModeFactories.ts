@@ -19,12 +19,34 @@ import {
   AgentProviderFactory,
 } from "../../providers/factory/index.js";
 
-export function createFrontDeskModelClient(input: {
-  mode: "mock" | "llm";
-}): {
+export type CreatedFrontDeskModelClient = {
   modelClient: ModelClient;
   warnings: string[];
-} {
+};
+
+export type CreatedExperienceExtractor = {
+  extractor: ExperienceExtractor;
+  warnings: string[];
+};
+
+export type CreatedArtifactGenerator = {
+  generator: ArtifactGenerator;
+  warnings: string[];
+};
+
+export type CreatedArtifactCritic = {
+  critic: ArtifactCritic;
+  warnings: string[];
+};
+
+export type CreatedArtifactRevisionAgent = {
+  agent: ArtifactRevisionAgent;
+  warnings: string[];
+};
+
+export function createFrontDeskModelClient(input: {
+  mode: "mock" | "llm";
+}): CreatedFrontDeskModelClient {
   if (input.mode === "mock") {
     return {
       modelClient: new ModelClient({
@@ -53,10 +75,7 @@ export function createFrontDeskAgent(input: {
 
 export function createExperienceExtractor(input: {
   mode: "deterministic" | "llm";
-}): {
-  extractor: ExperienceExtractor;
-  warnings: string[];
-} {
+}): CreatedExperienceExtractor {
   if (input.mode === "deterministic") {
     return {
       extractor: new DeterministicExperienceExtractor(),
@@ -75,10 +94,7 @@ export function createExperienceExtractor(input: {
 
 export function createArtifactGenerator(input: {
   mode: "deterministic" | "llm";
-}): {
-  generator: ArtifactGenerator;
-  warnings: string[];
-} {
+}): CreatedArtifactGenerator {
   if (input.mode === "deterministic") {
     return {
       generator: new DeterministicArtifactGenerator(),
@@ -97,10 +113,7 @@ export function createArtifactGenerator(input: {
 
 export function createArtifactCritic(input: {
   mode: "deterministic" | "llm";
-}): {
-  critic: ArtifactCritic;
-  warnings: string[];
-} {
+}): CreatedArtifactCritic {
   if (input.mode === "deterministic") {
     return {
       critic: new DeterministicArtifactCritic(),
@@ -119,10 +132,7 @@ export function createArtifactCritic(input: {
 
 export function createArtifactRevisionAgent(input: {
   mode: "deterministic" | "llm";
-}): {
-  agent: ArtifactRevisionAgent;
-  warnings: string[];
-} {
+}): CreatedArtifactRevisionAgent {
   if (input.mode === "deterministic") {
     return {
       agent: new DeterministicArtifactRevisionAgent(),
@@ -137,4 +147,8 @@ export function createArtifactRevisionAgent(input: {
     }),
     warnings: agentProvider.warnings,
   };
+}
+
+export function uniqueWarnings(warnings: string[]): string[] {
+  return Array.from(new Set(warnings));
 }

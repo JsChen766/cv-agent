@@ -2,6 +2,7 @@ import type { QueryResultRow } from "pg";
 import { describe, expect, it } from "vitest";
 import {
   PostgresDocumentRepository,
+  PostgresArtifactDecisionRepository,
   PostgresEvidenceRepository,
   PostgresExperienceRepository,
   PostgresGeneratedArtifactRepository,
@@ -11,6 +12,7 @@ import type { PostgresQueryResult } from "../src/persistence/postgres/PostgresDa
 import type { ExtractedTextDocument } from "../src/tools/document/types.js";
 import type { Evidence, Experience, GeneratedArtifact } from "../src/knowledge/types.js";
 import type { GenerationSession } from "../src/application/sessions/types.js";
+import type { ArtifactDecisionRecord } from "../src/application/decisions/index.js";
 
 class FakePostgresDatabase {
   public readonly queries: Array<{ sql: string; params: unknown[] }> = [];
@@ -133,6 +135,64 @@ describe("PostgreSQL repositories", () => {
     expect(database.queries[0].sql).toContain("generation");
     expect(database.queries[0].params[5]).toContain("createdFrom");
     expect(database.queries[0].params[6]).toContain("jdText");
+  });
+
+  it("stores and lists artifact decisions with the expanded decision shape", async () => {
+    const database = new FakePostgresDatabase();
+    const repository = new PostgresArtifactDecisionRepository(database);
+    const record: ArtifactDecisionRecord = {
+      id: "decision-1",
+      userId: "user-1",
+      artifactId: "artifact-1",
+      sessionId: "session-1",
+      decision: "confirm_metric",
+      reason: "User confirmed metric.",
+      selectedVariantId: "artifact-variant-1",
+      confirmation: {
+        metric: "report preparation time",
+        value: "from 2 hours to 20 minutes",
+        explanation: "Confirmed by internal workflow logs.",
+      },
+      createdAt: "2024-01-01T00:00:00.000Z",
+    };
+
+    await repository.save(record);
+
+    expect(database.queries[0].sql).toContain("INSERT INTO artifact_decisions");
+    expect(database.queries[0].sql).toContain("decision");
+    expect(database.queries[0].sql).toContain("selected_variant_id");
+    expect(database.queries[0].sql).toContain("confirmation_json");
+    expect(database.queries[0].params).toEqual([
+      "decision-1",
+      "user-1",
+      "artifact-1",
+      "session-1",
+      "confirm_metric",
+      "User confirmed metric.",
+      "artifact-variant-1",
+      JSON.stringify(record.confirmation),
+      "2024-01-01T00:00:00.000Z",
+    ]);
+
+    database.nextRows = [{
+      id: "decision-1",
+      user_id: "user-1",
+      artifact_id: "artifact-1",
+      session_id: "session-1",
+      decision: "confirm_metric",
+      reason: "User confirmed metric.",
+      selected_variant_id: "artifact-variant-1",
+      confirmation_json: record.confirmation,
+      created_at: "2024-01-01T00:00:00.000Z",
+    }];
+
+    await expect(repository.listByArtifactId("user-1", "artifact-1")).resolves.toEqual([record]);
+    expect(database.queries[1].sql).toContain("WHERE user_id = $1 AND artifact_id = $2");
+    expect(database.queries[1].params).toEqual(["user-1", "artifact-1"]);
+
+    await repository.listBySessionId("user-1", "session-1");
+    expect(database.queries[2].sql).toContain("WHERE user_id = $1 AND session_id = $2");
+    expect(database.queries[2].params).toEqual(["user-1", "session-1"]);
   });
 });
 

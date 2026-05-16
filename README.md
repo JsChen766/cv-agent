@@ -202,7 +202,7 @@ curl -N -X POST http://127.0.0.1:3000/generations/stream \
   -d "{\"jdText\":\"React TypeScript performance role\",\"targetRole\":\"Frontend Engineer\"}"
 ```
 
-Each line contains `{ "event": AgentEvent }`; the final line contains `{ "final": CreateGenerationResult }`. The synchronous `/generations` endpoint remains supported.
+Each line contains `{ "event": AgentEvent }`; the final line contains `{ "final": CreateGenerationResult }`. The synchronous `/generations` endpoint remains supported. This is an Agent Event Stream for progress and final result delivery, not a raw model token stream.
 
 Query persisted evidence chains and graph snapshots:
 
@@ -694,13 +694,15 @@ Response data includes `revisedArtifact`, `metadata.revision`, `metadata.enhance
 
 ### Agent Event Stream
 
-The kernel can emit public agent events for frontend progress display. These events intentionally do not expose model raw chain-of-thought. They may include public step summaries such as `agent.started`, `agent.completed`, `tool.started`, `tool.completed`, `artifact.candidate.created`, `artifact.critique.completed`, `artifact.revision.completed`, `decision.required`, and `warning`.
+The kernel can emit public agent events for frontend progress display. These events intentionally do not expose model raw chain-of-thought. They may include public step summaries such as `agent.started`, `agent.completed`, `tool.started`, `tool.completed`, `llm.delta`, `llm.preview.completed`, `artifact.candidate.created`, `artifact.critique.completed`, `artifact.revision.completed`, `decision.required`, and `warning`.
 
-`POST /generations/stream` is the experimental NDJSON endpoint for this stream. Each event contains ids, timestamps, request/trace ids, agent/tool names, step, status, message, and safe summary data such as counts, artifact ids, statuses, and warnings.
+`POST /generations/stream` is the experimental NDJSON endpoint for this stream. Each event contains ids, timestamps, request/trace ids, agent/tool names, step, status, message, and safe summary data such as counts, artifact ids, statuses, short previews capped at 120 characters, and warnings.
+
+Provider-level token streaming is separate. `ModelClient.stream()` and `DeepSeekProvider.stream()` can produce token deltas, and `collectStreamPreview()` can collect a bounded safe preview. Structured JSON agents still use `chat()` by default so schema validation, repair, and deterministic fallback remain stable. `reasoningDelta` is not surfaced by default; future UI work should show public summaries or event summaries rather than raw hidden reasoning.
 
 ### Artifact Decisions and Variants
 
-Artifact decisions are recorded through `POST /generations/artifacts/decisions` with one of `accept`, `reject`, `request_revision`, `confirm_metric`, `mark_unsafe`, or `prefer_variant`. Decision records are scoped to the authenticated user and can be listed by artifact or session.
+Artifact decisions are recorded through `POST /generations/artifacts/decisions` with one of `accept`, `reject`, `request_revision`, `confirm_metric`, `mark_unsafe`, or `prefer_variant`. Decision records are scoped to the authenticated user and can be listed by artifact or session. In-memory mode uses `InMemoryArtifactDecisionRepository`; PostgreSQL mode uses `PostgresArtifactDecisionRepository` and the `artifact_decisions` table without database foreign keys.
 
 Frontend variant display should treat `artifacts[]` as same-generation candidates and `revisedArtifact` as a new candidate. `artifact.metadata.revision.revisedFromArtifactId` links version lineage. `metadata.enhancement.status=ready` means the candidate can be used, `needs_confirmation` means the user should confirm first, and `unsafe` means it should not be used directly. Decision records preserve whether the user accepted, rejected, requested revision, confirmed a metric, marked unsafe, or preferred a variant.
 

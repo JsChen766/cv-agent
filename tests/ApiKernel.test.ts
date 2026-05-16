@@ -106,12 +106,25 @@ describe("API kernel", () => {
     const kernel = await createPostgresKernelFromDatabase(database);
     try {
       await kernel.generationPersistenceService?.persist(createMinimalGenerateResumeResult());
+      await kernel.cvAgentKernel.generations.recordArtifactDecision(
+        {
+          user: { id: "user-1" },
+          auth: { mode: "dev_header" },
+          request: { requestId: "req-1", traceId: "trace-1", source: "test" },
+        },
+        {
+          artifactId: "artifact-1",
+          sessionId: "session-1",
+          decision: "accept",
+        },
+      );
 
       expect(kernel.mode).toBe("postgres");
       expect(kernel.cvAgentKernel.mode).toBe("postgres");
       expect(database.initializeSchemaCalled).toBe(true);
       expect(database.transactionCalled).toBe(true);
       expect(database.client.queries.some((query) => query.sql.includes("INSERT INTO generation_sessions"))).toBe(true);
+      expect(database.client.queries.some((query) => query.sql.includes("INSERT INTO artifact_decisions"))).toBe(true);
     } finally {
       await kernel.close();
     }

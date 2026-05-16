@@ -34,6 +34,12 @@ describe("PostgreSQL schema", () => {
     expect(schema).toContain("CREATE INDEX IF NOT EXISTS idx_generated_artifacts_target_jd_id");
     expect(schema).toContain("CREATE INDEX IF NOT EXISTS idx_generation_sessions_status");
     expect(schema).toContain("CREATE INDEX IF NOT EXISTS idx_graph_view_snapshots_scope");
+    expect(schema).toContain("decision TEXT NOT NULL");
+    expect(schema).toContain("selected_variant_id TEXT");
+    expect(schema).toContain("confirmation_json JSONB");
+    expect(schema).toContain("CREATE INDEX IF NOT EXISTS idx_artifact_decisions_user_artifact");
+    expect(schema).toContain("CREATE INDEX IF NOT EXISTS idx_artifact_decisions_user_session");
+    expect(schema).toContain("CREATE INDEX IF NOT EXISTS idx_artifact_decisions_created_at");
   });
 
   it("does not contain mixed ALTER statements", () => {
@@ -51,6 +57,15 @@ describe("PostgreSQL schema", () => {
     expect(existsSync(migrationPath)).toBe(true);
     const content = readFileSync(migrationPath, "utf8");
     expect(content).toMatch(/ADD\s+COLUMN\s+IF\s+NOT\s+EXISTS\s+generation/i);
+  });
+
+  it("has 0003 migration for expanded artifact decisions", () => {
+    const migrationPath = join(process.cwd(), "src", "persistence", "postgres", "migrations", "0003_update_artifact_decisions.sql");
+    expect(existsSync(migrationPath)).toBe(true);
+    const content = readFileSync(migrationPath, "utf8");
+    expect(content).toMatch(/ADD\s+COLUMN\s+IF\s+NOT\s+EXISTS\s+decision/i);
+    expect(content).toMatch(/DROP\s+COLUMN\s+IF\s+EXISTS\s+status/i);
+    expect(content).toContain("idx_artifact_decisions_user_artifact");
   });
 });
 

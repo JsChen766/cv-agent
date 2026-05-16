@@ -65,5 +65,24 @@ describe("CvAgentKernel events", () => {
     expect(eventTypes).toContain("artifact.critique.completed");
     expect(eventTypes).toContain("decision.required");
     expect(eventTypes).toContain("kernel.completed");
+
+    const candidateEvent = events.getEvents().find((event) => event.type === "artifact.candidate.created");
+    expect(candidateEvent?.data).toBeDefined();
+    const artifacts = readArtifacts(candidateEvent?.data);
+    expect(artifacts.length).toBeGreaterThan(0);
+    expect(typeof artifacts[0]?.id).toBe("string");
+    expect(typeof artifacts[0]?.status).toBe("string");
+    expect(typeof artifacts[0]?.shortPreview).toBe("string");
+    expect((artifacts[0]?.shortPreview as string).length).toBeLessThanOrEqual(120);
   });
 });
+
+function readArtifacts(data: Record<string, unknown> | undefined): Array<Record<string, unknown>> {
+  const artifacts = data?.artifacts;
+  if (!Array.isArray(artifacts)) {
+    return [];
+  }
+  return artifacts.filter((item): item is Record<string, unknown> =>
+    typeof item === "object" && item !== null && !Array.isArray(item)
+  );
+}

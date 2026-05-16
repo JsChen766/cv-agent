@@ -1,34 +1,47 @@
-import type { ArtifactDecisionRecord, ArtifactDecisionRepository } from "../repositories.js";
+import type {
+  ArtifactDecisionRecord,
+  ArtifactDecisionRepository,
+} from "../../application/decisions/index.js";
 import type { PostgresDatabase } from "./PostgresDatabase.js";
 import { jsonValue, optionalText, text, timestamp, type PgRow } from "./rowUtils.js";
 
 export class PostgresArtifactDecisionRepository implements ArtifactDecisionRepository {
   public constructor(private readonly database: Pick<PostgresDatabase, "query">) {}
 
-  public async save(decision: ArtifactDecisionRecord): Promise<void> {
+  public async save(record: ArtifactDecisionRecord): Promise<void> {
     await this.database.query(
       `INSERT INTO artifact_decisions (
-        id, user_id, session_id, artifact_id, status, reason, metadata, created_at, updated_at
+        id, user_id, artifact_id, session_id, decision, reason, selected_variant_id, confirmation_json, created_at
       ) VALUES (
-        $1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9
+        $1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9
       )
       ON CONFLICT (id) DO UPDATE SET
-        status = EXCLUDED.status,
+        artifact_id = EXCLUDED.artifact_id,
+        session_id = EXCLUDED.session_id,
+        decision = EXCLUDED.decision,
         reason = EXCLUDED.reason,
-        metadata = EXCLUDED.metadata,
-        updated_at = EXCLUDED.updated_at`,
+        selected_variant_id = EXCLUDED.selected_variant_id,
+        confirmation_json = EXCLUDED.confirmation_json`,
       [
-        decision.id,
-        decision.userId,
-        decision.sessionId,
-        decision.artifactId,
-        decision.status,
-        decision.reason ?? null,
-        JSON.stringify(decision.metadata),
-        decision.createdAt,
-        decision.updatedAt,
+        record.id,
+        record.userId,
+        record.artifactId,
+        record.sessionId ?? null,
+        record.decision,
+        record.reason ?? null,
+        record.selectedVariantId ?? null,
+        record.confirmation ? JSON.stringify(record.confirmation) : null,
+        record.createdAt,
       ],
     );
+  }
+
+  public async listByArtifactId(userId: string, artifactId: string): Promise<ArtifactDecisionRecord[]> {
+    const result = await this.database.query<PgRow>(
+      "SELECT * FROM artifact_decisions WHERE user_id = $1 AND artifact_id = $2 ORDER BY created_at ASC",
+      [userId, artifactId],
+    );
+    return result.rows.map(toDecision);
   }
 
   public async listBySessionId(userId: string, sessionId: string): Promise<ArtifactDecisionRecord[]> {
@@ -41,15 +54,20 @@ export class PostgresArtifactDecisionRepository implements ArtifactDecisionRepos
 }
 
 function toDecision(row: PgRow): ArtifactDecisionRecord {
+  const confirmation = jsonValue<ArtifactDecisionRecord["confirmation"] | null>(
+    row,
+    "confirmation_json",
+    null,
+  );
   return {
     id: text(row, "id"),
     userId: text(row, "user_id"),
-    sessionId: text(row, "session_id"),
     artifactId: text(row, "artifact_id"),
-    status: text(row, "status") as ArtifactDecisionRecord["status"],
-    reason: optionalText(row, "reason"),
-    metadata: jsonValue<Record<string, unknown>>(row, "metadata", {}),
+    ...(optionalText(row, "session_id") ? { sessionId: optionalText(row, "session_id") } : {}),
+    decision: text(row, "decision") as ArtifactDecisionRecord["decision"],
+    ...(optionalText(row, "reason") ? { reason: optionalText(row, "reason") } : {}),
+    ...(optionalText(row, "selected_variant_id") ? { selectedVariantId: optionalText(row, "selected_variant_id") } : {}),
+    ...(confirmation ? { confirmation } : {}),
     createdAt: timestamp(row, "created_at"),
-    updatedAt: optionalText(row, "updated_at") ?? timestamp(row, "created_at"),
   };
 }

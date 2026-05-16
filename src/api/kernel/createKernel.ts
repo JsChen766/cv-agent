@@ -1,4 +1,5 @@
 import {
+  type ArtifactDecisionRepository,
   ArtifactDecisionService,
   InMemoryArtifactDecisionRepository,
 } from "../../application/decisions/index.js";
@@ -39,6 +40,7 @@ import type {
 } from "../../persistence/repositories.js";
 import {
   PostgresDatabase,
+  PostgresArtifactDecisionRepository,
   PostgresDocumentRepository,
   PostgresEvidenceChainSnapshotRepository,
   PostgresEvidenceRepository,
@@ -61,6 +63,7 @@ import {
   createExperienceExtractor,
   createFrontDeskAgent,
   createFrontDeskModelClient,
+  uniqueWarnings,
 } from "./agentModeFactories.js";
 
 export async function createKernel(): Promise<ApiKernel> {
@@ -70,6 +73,7 @@ export async function createKernel(): Promise<ApiKernel> {
 
 async function createPostgresKernel(databaseUrl: string): Promise<ApiKernel> {
   const database = new PostgresDatabase({ connectionString: databaseUrl });
+  await database.runMigrations();
   return createPostgresKernelFromDatabase(database);
 }
 
@@ -88,6 +92,7 @@ export async function createPostgresKernelFromDatabase(
   const evidenceChainRepository = new PostgresEvidenceChainSnapshotRepository(database);
   const graphViewRepository = new PostgresGraphViewSnapshotRepository(database);
   const bundleRepository = new PostgresGenerationArtifactBundleRepository(database);
+  const artifactDecisionRepository = new PostgresArtifactDecisionRepository(database);
   const generationPersistenceService = createPostgresGenerationPersistenceService(database);
 
   return buildKernel({
@@ -102,6 +107,7 @@ export async function createPostgresKernelFromDatabase(
     evidenceChainRepository,
     graphViewRepository,
     bundleRepository,
+    artifactDecisionRepository,
     generationPersistenceService,
     close: () => database.close(),
   });
@@ -120,6 +126,7 @@ function createInMemoryKernel(): ApiKernel {
   const evidenceChainRepository = new InMemoryEvidenceChainSnapshotRepository();
   const graphViewRepository = new InMemoryGraphViewSnapshotRepository();
   const bundleRepository = new InMemoryGenerationArtifactBundleRepository();
+  const artifactDecisionRepository = new InMemoryArtifactDecisionRepository();
 
   return buildKernel({
     mode: "in_memory",
@@ -134,6 +141,7 @@ function createInMemoryKernel(): ApiKernel {
     evidenceChainRepository,
     graphViewRepository,
     bundleRepository,
+    artifactDecisionRepository,
     close: async () => {},
   });
 }
@@ -165,7 +173,7 @@ function buildKernel(input: BuildKernelInput): ApiKernel {
     artifactRepository: input.artifactRepository,
   });
   const artifactDecisionService = new ArtifactDecisionService(
-    new InMemoryArtifactDecisionRepository(),
+    input.artifactDecisionRepository,
   );
   const resumeGenerationService = new ResumeGenerationService({
     requirementExtractor: new DeterministicJDRequirementExtractor(input.skillRepository, input.requirementRepository),
@@ -253,13 +261,10 @@ type BuildKernelInput = {
   evidenceChainRepository: EvidenceChainSnapshotRepository;
   graphViewRepository: GraphViewSnapshotRepository;
   bundleRepository: GenerationArtifactBundleRepository;
+  artifactDecisionRepository: ArtifactDecisionRepository;
   generationPersistenceService?: GenerationPersistencePort;
   close(): Promise<void>;
 };
-
-function uniqueWarnings(warnings: string[]): string[] {
-  return Array.from(new Set(warnings));
-}
 
 class InMemoryDocumentRepository implements DocumentRepository {
   private readonly documents = new Map<string, PersistedDocument>();

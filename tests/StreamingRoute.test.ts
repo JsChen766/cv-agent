@@ -50,6 +50,7 @@ describe("Streaming generation route", () => {
     expect(response.headers["content-type"]).toContain("application/x-ndjson");
     expect(response.body).toContain("\"event\"");
     expect(response.body).toContain("\"kernel.started\"");
+    expect(response.body).toContain("\"kernel.completed\"");
     expect(response.body).toContain("\"final\"");
   });
 
@@ -64,6 +65,29 @@ describe("Streaming generation route", () => {
     });
 
     expect(response.statusCode).toBe(401);
+  });
+
+  it("rejects invalid bodies before opening the stream", async () => {
+    const response = await server.inject({
+      method: "POST",
+      url: "/generations/stream",
+      headers: {
+        "x-user-id": "user-1",
+      },
+      payload: {
+        jdText: "",
+        targetRole: "Frontend Engineer",
+      },
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.headers["content-type"]).not.toContain("application/x-ndjson");
+    expect(response.json()).toMatchObject({
+      ok: false,
+      error: {
+        code: "INVALID_BODY",
+      },
+    });
   });
 });
 
