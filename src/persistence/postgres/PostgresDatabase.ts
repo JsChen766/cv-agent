@@ -19,6 +19,30 @@ export type PostgresQueryable = {
   query<Row extends pg.QueryResultRow = pg.QueryResultRow>(sql: string, params?: unknown[]): Promise<PostgresQueryResult<Row>>;
 };
 
+export function splitSqlStatements(sql: string): string[] {
+  return sql
+    .split(";")
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
+}
+
+export function normalizeQueryResult<Row extends pg.QueryResultRow>(
+  result: pg.QueryResult<Row> | pg.QueryResult<Row>[],
+): PostgresQueryResult<Row> {
+  if (Array.isArray(result)) {
+    const last = result[result.length - 1];
+    return {
+      rows: (last?.rows ?? []) as Row[],
+      rowCount: result.reduce((sum, item) => sum + (item.rowCount ?? item.rows.length), 0),
+    };
+  }
+
+  return {
+    rows: result.rows ?? [],
+    rowCount: result.rowCount ?? result.rows.length,
+  };
+}
+
 export class PostgresDatabase {
   private readonly pool: pg.Pool;
 
@@ -33,11 +57,10 @@ export class PostgresDatabase {
     sql: string,
     params: unknown[] = [],
   ): Promise<PostgresQueryResult<Row>> {
-    const result = await this.pool.query<Row>(sql, params);
-    return {
-      rows: result.rows,
-      rowCount: result.rowCount ?? result.rows.length,
-    };
+    const result = (await this.pool.query<Row>(sql, params)) as
+      | pg.QueryResult<Row>
+      | pg.QueryResult<Row>[];
+    return normalizeQueryResult(result);
   }
 
   public async transaction<T>(
@@ -48,11 +71,10 @@ export class PostgresDatabase {
       await client.query("BEGIN");
       const result = await callback({
         query: async <Row extends pg.QueryResultRow = pg.QueryResultRow>(sql: string, params: unknown[] = []) => {
-          const queryResult = await client.query<Row>(sql, params);
-          return {
-            rows: queryResult.rows,
-            rowCount: queryResult.rowCount ?? queryResult.rows.length,
-          };
+          const queryResult = (await client.query<Row>(sql, params)) as
+            | pg.QueryResult<Row>
+            | pg.QueryResult<Row>[];
+          return normalizeQueryResult(queryResult);
         },
       });
       await client.query("COMMIT");
@@ -66,7 +88,9 @@ export class PostgresDatabase {
   }
 
   public async initializeSchema(): Promise<void> {
-    await this.query(SCHEMA_SQL);
+    for (const statement of splitSqlStatements(SCHEMA_SQL)) {
+      await this.query(statement);
+    }
   }
 
   public async runMigrations(): Promise<void> {
@@ -91,11 +115,7 @@ export class PostgresDatabase {
       const filePath = join(migrationsDir, file);
       const content = readFileSync(filePath, "utf8").trim();
       if (content.length === 0) continue;
-      // split by semicolons for multi-statement files (simple lightweight approach)
-      const statements = content
-        .split(";")
-        .map((s) => s.trim())
-        .filter((s) => s.length > 0);
+      const statements = splitSqlStatements(content);
       for (const stmt of statements) {
         await this.query(stmt);
       }

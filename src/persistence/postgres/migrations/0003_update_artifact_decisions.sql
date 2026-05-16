@@ -1,8 +1,3 @@
--- 0003_update_artifact_decisions
--- Expands artifact_decisions from the legacy three-state session decision
--- shape to the P8.7.2 artifact decision record shape.
--- No foreign keys are introduced.
-
 ALTER TABLE artifact_decisions ADD COLUMN IF NOT EXISTS decision TEXT DEFAULT 'request_revision';
 ALTER TABLE artifact_decisions ADD COLUMN IF NOT EXISTS selected_variant_id TEXT;
 ALTER TABLE artifact_decisions ADD COLUMN IF NOT EXISTS confirmation_json JSONB;
