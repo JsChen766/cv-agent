@@ -1,3 +1,5 @@
+import type { AgentEventSink } from "./events/index.js";
+
 export type KernelRequestSource =
   | "web"
   | "mini_program"
@@ -33,6 +35,7 @@ export type KernelRequestContext = {
   tenant?: {
     id?: string;
   };
+  events?: AgentEventSink;
 };
 
 export type KernelRequestContextOverrides = {
@@ -40,6 +43,7 @@ export type KernelRequestContextOverrides = {
   auth?: Partial<KernelRequestContext["auth"]>;
   request?: Partial<KernelRequestContext["request"]>;
   tenant?: KernelRequestContext["tenant"];
+  events?: AgentEventSink;
 };
 
 export function createTestKernelContext(
@@ -62,5 +66,6 @@ export function createTestKernelContext(
       ...overrides.request,
     },
     ...(overrides.tenant ? { tenant: overrides.tenant } : {}),
+    ...(overrides.events ? { events: overrides.events } : {}),
   };
 }

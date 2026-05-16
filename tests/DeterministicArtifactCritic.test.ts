@@ -376,6 +376,7 @@ describe("DeterministicArtifactCritic", () => {
 
     expect(report.items[0]?.verdict).toBe("revise");
     expect(report.items[0]?.truthfulnessRisk).toBe("medium");
+    expect(report.items[0]?.exaggerationRisk).toBe("medium");
     expect(report.items[0]?.missingEvidence).toContain("Numeric claim requires confirmation: 35%");
     expect(report.items[0]?.rewriteSuggestions).toContain(
       "Confirm the numeric metric or rewrite the artifact without unsupported numbers.",
@@ -400,6 +401,8 @@ describe("DeterministicArtifactCritic", () => {
     });
 
     expect(report.items[0]?.verdict).toBe("pass");
+    expect(report.items[0]?.truthfulnessRisk).toBe("low");
+    expect(report.items[0]?.exaggerationRisk).toBe("low");
     expect(report.items[0]?.missingEvidence).toEqual([]);
   });
 
@@ -435,6 +438,7 @@ describe("DeterministicArtifactCritic", () => {
     expect(report.items[0]?.missingEvidence.filter((item) =>
       item.startsWith("Numeric claim requires confirmation")
     )).toHaveLength(0);
+    expect(report.items[0]?.missingEvidence.length).toBeLessThanOrEqual(2);
     expect(report.items[0]?.missingEvidence).toContain("Can you confirm 35%?");
   });
 });

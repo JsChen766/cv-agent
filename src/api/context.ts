@@ -4,6 +4,7 @@ import type {
   KernelRequestContext,
   KernelRequestSource,
 } from "../kernel/index.js";
+import type { AgentEventSink } from "../kernel/events/index.js";
 import type { ResolvedAuth } from "./auth/index.js";
 
 export function createKernelRequestContext(
@@ -13,6 +14,7 @@ export function createKernelRequestContext(
     source?: KernelRequestSource;
     requestId?: string;
     traceId?: string;
+    eventSink?: AgentEventSink;
   } = {},
 ): KernelRequestContext {
   const requestId = options.requestId ??
@@ -41,6 +43,7 @@ export function createKernelRequestContext(
       source: options.source ?? "api",
       ...(userAgent ? { userAgent } : {}),
     },
+    ...(options.eventSink ? { events: options.eventSink } : {}),
   };
 }
 

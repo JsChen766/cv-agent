@@ -7,9 +7,11 @@ import type { AuthResolver } from "./auth/index.js";
 import { createAuthResolver } from "./auth/index.js";
 import { failure } from "./response.js";
 import { registerDocumentRoutes } from "./routes/documents.js";
+import { registerDecisionRoutes } from "./routes/decisions.js";
 import { registerEvidenceRoutes } from "./routes/evidence.js";
 import { registerGenerationRoutes } from "./routes/generations.js";
 import { registerHealthRoutes } from "./routes/health.js";
+import { registerStreamingRoutes } from "./routes/streaming.js";
 
 export type CreateServerOptions = {
   authResolver?: AuthResolver<FastifyRequest>;
@@ -33,6 +35,8 @@ export async function createServer(kernel: ApiKernel, options: CreateServerOptio
   await registerHealthRoutes(app, kernel);
   await registerDocumentRoutes(app, kernel, authResolver);
   await registerGenerationRoutes(app, kernel, authResolver);
+  await registerStreamingRoutes(app, kernel, authResolver);
+  await registerDecisionRoutes(app, kernel, authResolver);
   await registerEvidenceRoutes(app, kernel, authResolver);
 
   return app;

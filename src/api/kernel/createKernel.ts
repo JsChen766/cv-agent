@@ -1,13 +1,10 @@
-import { FrontDeskAgent } from "../../agents/FrontDeskAgent.js";
-import { DeterministicArtifactCritic } from "../../application/critique/DeterministicArtifactCritic.js";
-import { LLMArtifactCritic } from "../../application/critique/LLMArtifactCritic.js";
-import type { ArtifactCritic } from "../../application/critique/types.js";
+import {
+  ArtifactDecisionService,
+  InMemoryArtifactDecisionRepository,
+} from "../../application/decisions/index.js";
 import { ResumeGenerationService } from "../../application/ResumeGenerationService.js";
 import { DocumentIngestionService } from "../../application/documents/index.js";
 import { DeterministicJDRequirementExtractor } from "../../application/extractors/DeterministicJDRequirementExtractor.js";
-import { DeterministicArtifactGenerator } from "../../application/generators/DeterministicArtifactGenerator.js";
-import { LLMArtifactGenerator } from "../../application/generators/LLMArtifactGenerator.js";
-import type { ArtifactGenerator } from "../../application/generators/ArtifactGenerator.js";
 import { FrontDeskOrchestrator } from "../../application/frontdesk/index.js";
 import { GenerationPersistenceService } from "../../application/generation/index.js";
 import {
@@ -16,11 +13,7 @@ import {
 } from "../../application/query/index.js";
 import {
   ArtifactRevisionService,
-  DeterministicArtifactRevisionAgent,
-  LLMArtifactRevisionAgent,
-  type ArtifactRevisionAgent,
 } from "../../application/revision/index.js";
-import { ModelClient } from "../../core/model/ModelClient.js";
 import {
   ExperienceIngestionService,
   InMemoryEvidenceRepository,
@@ -30,14 +23,9 @@ import {
   InMemorySkillRepository,
   KeywordExperienceRetriever,
 } from "../../knowledge/index.js";
-import { MockProvider } from "../../providers/MockProvider.js";
 import {
-  AgentProviderFactory,
   readAgentModeConfig,
 } from "../../providers/factory/index.js";
-import { LLMExperienceExtractor } from "../../knowledge/ingestion/LLMExperienceExtractor.js";
-import { DeterministicExperienceExtractor } from "../../knowledge/ingestion/extractors/DeterministicExperienceExtractor.js";
-import type { ExperienceExtractor } from "../../knowledge/ingestion/extractors/types.js";
 import type {
   DocumentRepository,
   EvidenceChainSnapshot,
@@ -66,6 +54,14 @@ import {
 import { DocumentLoaderTool, type ExtractedTextDocument } from "../../tools/document/index.js";
 import { DefaultCvAgentKernel } from "../../kernel/index.js";
 import type { ApiKernel, GenerationPersistencePort } from "../types.js";
+import {
+  createArtifactCritic,
+  createArtifactGenerator,
+  createArtifactRevisionAgent,
+  createExperienceExtractor,
+  createFrontDeskAgent,
+  createFrontDeskModelClient,
+} from "./agentModeFactories.js";
 
 export async function createKernel(): Promise<ApiKernel> {
   const databaseUrl = process.env.DATABASE_URL;
@@ -168,6 +164,9 @@ function buildKernel(input: BuildKernelInput): ApiKernel {
     revisionAgent: revisionAgent.agent,
     artifactRepository: input.artifactRepository,
   });
+  const artifactDecisionService = new ArtifactDecisionService(
+    new InMemoryArtifactDecisionRepository(),
+  );
   const resumeGenerationService = new ResumeGenerationService({
     requirementExtractor: new DeterministicJDRequirementExtractor(input.skillRepository, input.requirementRepository),
     artifactGenerator: artifactGenerator.generator,
@@ -191,7 +190,7 @@ function buildKernel(input: BuildKernelInput): ApiKernel {
   const agentProvider = createFrontDeskModelClient({
     mode: agentModes.frontDeskAgentMode,
   });
-  const frontDeskAgent = new FrontDeskAgent({
+  const frontDeskAgent = createFrontDeskAgent({
     modelClient: agentProvider.modelClient,
   });
   const frontDeskOrchestrator = new FrontDeskOrchestrator(
@@ -224,6 +223,7 @@ function buildKernel(input: BuildKernelInput): ApiKernel {
     evidenceChainQueryService,
     graphViewQueryService,
     artifactRevisionService,
+    artifactDecisionService,
     close: input.close,
   });
 
@@ -256,118 +256,6 @@ type BuildKernelInput = {
   generationPersistenceService?: GenerationPersistencePort;
   close(): Promise<void>;
 };
-
-function createFrontDeskModelClient(input: {
-  mode: "mock" | "llm";
-}): {
-  modelClient: ModelClient;
-  warnings: string[];
-} {
-  if (input.mode === "mock") {
-    return {
-      modelClient: new ModelClient({
-        provider: new MockProvider(),
-        defaultModel: "mock",
-        maxRetries: 0,
-      }),
-      warnings: [],
-    };
-  }
-
-  const agentProvider = AgentProviderFactory.create(AgentProviderFactory.fromEnv());
-  return {
-    modelClient: agentProvider.modelClient,
-    warnings: agentProvider.warnings,
-  };
-}
-
-function createExperienceExtractor(input: {
-  mode: "deterministic" | "llm";
-}): {
-  extractor: ExperienceExtractor;
-  warnings: string[];
-} {
-  if (input.mode === "deterministic") {
-    return {
-      extractor: new DeterministicExperienceExtractor(),
-      warnings: [],
-    };
-  }
-
-  const agentProvider = AgentProviderFactory.create(AgentProviderFactory.fromEnv());
-  return {
-    extractor: new LLMExperienceExtractor({
-      modelClient: agentProvider.modelClient,
-    }),
-    warnings: agentProvider.warnings,
-  };
-}
-
-function createArtifactGenerator(input: {
-  mode: "deterministic" | "llm";
-}): {
-  generator: ArtifactGenerator;
-  warnings: string[];
-} {
-  if (input.mode === "deterministic") {
-    return {
-      generator: new DeterministicArtifactGenerator(),
-      warnings: [],
-    };
-  }
-
-  const agentProvider = AgentProviderFactory.create(AgentProviderFactory.fromEnv());
-  return {
-    generator: new LLMArtifactGenerator({
-      modelClient: agentProvider.modelClient,
-    }),
-    warnings: agentProvider.warnings,
-  };
-}
-
-function createArtifactCritic(input: {
-  mode: "deterministic" | "llm";
-}): {
-  critic: ArtifactCritic;
-  warnings: string[];
-} {
-  if (input.mode === "deterministic") {
-    return {
-      critic: new DeterministicArtifactCritic(),
-      warnings: [],
-    };
-  }
-
-  const agentProvider = AgentProviderFactory.create(AgentProviderFactory.fromEnv());
-  return {
-    critic: new LLMArtifactCritic({
-      modelClient: agentProvider.modelClient,
-    }),
-    warnings: agentProvider.warnings,
-  };
-}
-
-function createArtifactRevisionAgent(input: {
-  mode: "deterministic" | "llm";
-}): {
-  agent: ArtifactRevisionAgent;
-  warnings: string[];
-} {
-  if (input.mode === "deterministic") {
-    return {
-      agent: new DeterministicArtifactRevisionAgent(),
-      warnings: [],
-    };
-  }
-
-  const agentProvider = AgentProviderFactory.create(AgentProviderFactory.fromEnv());
-  return {
-    agent: new LLMArtifactRevisionAgent({
-      modelClient: agentProvider.modelClient,
-    }),
-    warnings: agentProvider.warnings,
-  };
-}
 
 function uniqueWarnings(warnings: string[]): string[] {
   return Array.from(new Set(warnings));

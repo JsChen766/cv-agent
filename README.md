@@ -193,11 +193,34 @@ curl -X POST http://127.0.0.1:3000/generations \
   -d "{\"jdText\":\"React TypeScript performance role\",\"targetRole\":\"Frontend Engineer\"}"
 ```
 
+Experimental NDJSON event stream:
+
+```bash
+curl -N -X POST http://127.0.0.1:3000/generations/stream \
+  -H "content-type: application/json" \
+  -H "x-user-id: demo-user" \
+  -d "{\"jdText\":\"React TypeScript performance role\",\"targetRole\":\"Frontend Engineer\"}"
+```
+
+Each line contains `{ "event": AgentEvent }`; the final line contains `{ "final": CreateGenerationResult }`. The synchronous `/generations` endpoint remains supported.
+
 Query persisted evidence chains and graph snapshots:
 
 ```bash
 curl -H "x-user-id: demo-user" http://127.0.0.1:3000/generations/:sessionId/evidence-chains
 curl -H "x-user-id: demo-user" http://127.0.0.1:3000/graphs/:scopeType/:scopeId
+```
+
+Record artifact review decisions:
+
+```bash
+curl -X POST http://127.0.0.1:3000/generations/artifacts/decisions \
+  -H "content-type: application/json" \
+  -H "x-user-id: demo-user" \
+  -d "{\"artifactId\":\"artifact-1\",\"sessionId\":\"session-1\",\"decision\":\"accept\"}"
+
+curl -H "x-user-id: demo-user" http://127.0.0.1:3000/generations/artifacts/:artifactId/decisions
+curl -H "x-user-id: demo-user" http://127.0.0.1:3000/generations/:sessionId/artifact-decisions
 ```
 
 `/documents/ingest` currently supports JSON input with either `text` or `base64`. Multipart upload and production file storage are future work.
@@ -647,6 +670,39 @@ POST /generations/artifacts/revise
 ```
 
 The request body contains the current `artifact`, optional `critiqueItem`, optional `evidenceChain`, a revision `instruction`, optional `customInstruction`, optional `targetRequirementIds`, optional `userConfirmations`, and optional `tone`. The backend uses the authenticated `ctx.user.id`; if `artifact.userId` does not match the authenticated user, the API returns `FORBIDDEN`.
+
+Example request:
+
+```json
+{
+  "artifact": { "...": "GeneratedArtifact" },
+  "critiqueItem": { "...": "ArtifactCritiqueItem" },
+  "evidenceChain": { "...": "EvidenceChain" },
+  "instruction": "make_more_conservative",
+  "tone": "conservative",
+  "userConfirmations": [
+    {
+      "metric": "report preparation time",
+      "value": "from 2 hours to 20 minutes",
+      "explanation": "Confirmed by internal workflow logs."
+    }
+  ]
+}
+```
+
+Response data includes `revisedArtifact`, `metadata.revision`, `metadata.enhancement`, and `warnings`. The current minimal API allows the frontend to pass `artifact`, `evidenceChain`, and `critiqueItem` directly; a production version should prefer `artifactId`/`sessionId` and load records server-side by authenticated `userId`.
+
+### Agent Event Stream
+
+The kernel can emit public agent events for frontend progress display. These events intentionally do not expose model raw chain-of-thought. They may include public step summaries such as `agent.started`, `agent.completed`, `tool.started`, `tool.completed`, `artifact.candidate.created`, `artifact.critique.completed`, `artifact.revision.completed`, `decision.required`, and `warning`.
+
+`POST /generations/stream` is the experimental NDJSON endpoint for this stream. Each event contains ids, timestamps, request/trace ids, agent/tool names, step, status, message, and safe summary data such as counts, artifact ids, statuses, and warnings.
+
+### Artifact Decisions and Variants
+
+Artifact decisions are recorded through `POST /generations/artifacts/decisions` with one of `accept`, `reject`, `request_revision`, `confirm_metric`, `mark_unsafe`, or `prefer_variant`. Decision records are scoped to the authenticated user and can be listed by artifact or session.
+
+Frontend variant display should treat `artifacts[]` as same-generation candidates and `revisedArtifact` as a new candidate. `artifact.metadata.revision.revisedFromArtifactId` links version lineage. `metadata.enhancement.status=ready` means the candidate can be used, `needs_confirmation` means the user should confirm first, and `unsafe` means it should not be used directly. Decision records preserve whether the user accepted, rejected, requested revision, confirmed a metric, marked unsafe, or preferred a variant.
 
 Contract mappers live in `src/application/mappers/` and translate internal service results into contract responses. `CooltoDemoService` in `src/application/CooltoDemoService.ts` runs the in-memory product demo flow:
 

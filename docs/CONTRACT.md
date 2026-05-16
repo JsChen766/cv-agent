@@ -1,6 +1,6 @@
 # Coolto CV Agent Contract
 
-> Status: Draft v0.1, P8.0-P8.7 implemented through LLM-backed FrontDeskAgent, ExperienceExtractor, multi-experience extraction, evidence-aware LLM ArtifactGenerator, LLM-backed CriticAgent, and RevisionAgent  
+> Status: Draft v0.1, P8.0-P8.8 implemented through LLM-backed FrontDeskAgent, ExperienceExtractor, multi-experience extraction, evidence-aware LLM ArtifactGenerator, LLM-backed CriticAgent, RevisionAgent, public agent events, streaming generation, and artifact decisions  
 > Scope: frontend ↔ backend API ↔ cv-agent kernel / SDK  
 > Principle: backend owns authentication and request context; Agent Kernel owns document ingestion, experience knowledge, generation, evidence chains, and graph projections.
 
@@ -150,6 +150,9 @@ P8.1-P8.7 implementation notes:
 27. RevisionAgent consumes artifact, critique item, evidence chain, user instruction, and optional user confirmations.
 28. Revised artifacts preserve source experience/evidence IDs, refresh `metadata.enhancement`, and add `metadata.revision`.
 29. The minimal API entrypoint is `POST /generations/artifacts/revise`.
+30. `KernelRequestContext.events` supports public agent events for frontend progress display without exposing model raw chain-of-thought.
+31. `POST /generations/stream` returns experimental NDJSON progress events and a final generation result.
+32. Artifact decisions support accept/reject/revision/metric-confirmation/unsafe/preferred-variant review flows.
 
 Common local/LLM configurations:
 
@@ -371,10 +374,11 @@ export type KernelRequestContext = {
   tenant?: {
     id?: string;
   };
+  events?: AgentEventSink;
 };
 ```
 
-Internal services may continue to use `userId`, but SDK/facade boundaries should accept `KernelRequestContext`.
+`events` is optional and carries public agent events for UI progress display. It must not expose raw model chain-of-thought, API keys, or complete private resume text. Internal services may continue to use `userId`, but SDK/facade boundaries should accept `KernelRequestContext`.
 
 ### 5.2 CvAgentKernel Facade
 
@@ -406,6 +410,21 @@ export type CvAgentKernel = {
       ctx: KernelRequestContext,
       query: GraphQuery,
     ): Promise<GraphViewQueryResult>;
+
+    reviseArtifact(
+      ctx: KernelRequestContext,
+      input: ReviseArtifactInput,
+    ): Promise<ArtifactRevisionResult>;
+
+    recordArtifactDecision(
+      ctx: KernelRequestContext,
+      input: RecordArtifactDecisionInput,
+    ): Promise<ArtifactDecisionRecord>;
+
+    listArtifactDecisions(
+      ctx: KernelRequestContext,
+      query: ListArtifactDecisionsQuery,
+    ): Promise<ArtifactDecisionRecord[]>;
   };
 
   health(): Promise<KernelHealth>;
@@ -544,7 +563,47 @@ Rules:
    - `unsafe`: do not use directly.
 6. Each enhancement claim records `supportLevel`, `riskLevel`, `evidenceIds`, and `sourceExperienceIds`.
 
-### 6.4 List Evidence Chains by Session
+### 6.4 Experimental Streaming Generation
+
+```http
+POST /generations/stream
+```
+
+Request:
+
+```ts
+export type CreateGenerationRequest = {
+  jdText: string;
+  targetRole: string;
+};
+```
+
+Response stream:
+
+```http
+Content-Type: application/x-ndjson
+```
+
+Each progress line contains:
+
+```ts
+{ event: AgentEvent }
+```
+
+The final line contains:
+
+```ts
+{ final: CreateGenerationResult }
+```
+
+Rules:
+
+1. `/generations` remains the stable synchronous API.
+2. The stream exposes public progress events only, not raw model chain-of-thought.
+3. Events may include agent/tool names, step, status, message, ids, counts, warnings, and public summaries.
+4. If an error occurs after streaming starts, the stream reports it as an event/error line.
+
+### 6.5 List Evidence Chains by Session
 
 ```http
 GET /generations/:sessionId/evidence-chains
@@ -565,7 +624,7 @@ Rules:
 2. Missing session returns empty result or not-found depending future product decision.
 3. Do not expose other users' snapshots.
 
-### 6.5 Get Graph by Scope
+### 6.6 Get Graph by Scope
 
 ```http
 GET /graphs/:scopeType/:scopeId
@@ -592,6 +651,121 @@ Rules:
 1. Query must be scoped by authenticated user.
 2. Empty result should include warning.
 3. Graph snapshots are projections, not source of truth.
+
+### 6.7 Revise Artifact
+
+```http
+POST /generations/artifacts/revise
+```
+
+Example request:
+
+```json
+{
+  "artifact": { "...": "GeneratedArtifact" },
+  "critiqueItem": { "...": "ArtifactCritiqueItem" },
+  "evidenceChain": { "...": "EvidenceChain" },
+  "instruction": "make_more_conservative",
+  "tone": "conservative",
+  "userConfirmations": [
+    {
+      "metric": "report preparation time",
+      "value": "from 2 hours to 20 minutes",
+      "explanation": "Confirmed by internal workflow logs."
+    }
+  ]
+}
+```
+
+Response data includes `revisedArtifact`, `revisedArtifact.metadata.revision`, `revisedArtifact.metadata.enhancement`, and `warnings`.
+
+Rules:
+
+1. Current minimal API allows the frontend to pass `artifact`, `evidenceChain`, and `critiqueItem`.
+2. Production should prefer `artifactId`/`sessionId`; backend should load records by authenticated `userId`.
+3. The revise API uses authenticated `ctx.user.id`; mismatched `artifact.userId` returns `FORBIDDEN`.
+4. Revised artifacts are variants; `metadata.revision.revisedFromArtifactId` links lineage.
+
+### 6.8 Artifact Decisions
+
+```http
+POST /generations/artifacts/decisions
+GET /generations/artifacts/:artifactId/decisions
+GET /generations/:sessionId/artifact-decisions
+```
+
+Decision input:
+
+```ts
+export type ArtifactDecisionInput = {
+  artifactId: string;
+  sessionId?: string;
+  decision:
+    | "accept"
+    | "reject"
+    | "request_revision"
+    | "confirm_metric"
+    | "mark_unsafe"
+    | "prefer_variant";
+  reason?: string;
+  selectedVariantId?: string;
+  confirmation?: {
+    metric?: string;
+    value?: string;
+    explanation?: string;
+  };
+};
+```
+
+Rules:
+
+1. Backend derives `userId` from `KernelRequestContext`; body-level `userId` is ignored.
+2. Decisions record frontend review choices without mutating the artifact.
+3. In this phase decisions use in-memory application persistence. PostgreSQL persistence is future work because the existing `artifact_decisions` table does not yet cover all six decision types.
+4. `confirm_metric` should include the user-confirmed metric/value where available.
+
+### 6.9 Agent Event Stream
+
+```ts
+export type AgentEventType =
+  | "kernel.started"
+  | "kernel.completed"
+  | "kernel.failed"
+  | "agent.started"
+  | "agent.completed"
+  | "agent.failed"
+  | "tool.started"
+  | "tool.completed"
+  | "tool.failed"
+  | "llm.started"
+  | "llm.completed"
+  | "llm.repaired"
+  | "llm.fallback"
+  | "artifact.candidate.created"
+  | "artifact.critique.completed"
+  | "artifact.revision.completed"
+  | "decision.required"
+  | "warning";
+```
+
+Rules:
+
+1. Events are for frontend progress display.
+2. Events must not expose model raw chain-of-thought.
+3. Public reasoning summaries, step summaries, action logs, counts, ids, statuses, and warnings are allowed.
+4. Do not put API keys or complete private resume text in event `data`.
+
+### 6.10 Variant Display Guidance
+
+Rules:
+
+1. `artifacts[]` are candidate variants from the same generation.
+2. `revisedArtifact` is a new candidate variant.
+3. `artifact.metadata.revision.revisedFromArtifactId` links version lineage.
+4. `metadata.enhancement.status=ready` means usable directly.
+5. `metadata.enhancement.status=needs_confirmation` means ask the user first.
+6. `metadata.enhancement.status=unsafe` means do not use directly.
+7. Decision records capture `accept`, `reject`, `request_revision`, `confirm_metric`, `mark_unsafe`, and `prefer_variant`.
 
 ---
 
@@ -989,13 +1163,28 @@ Status: implemented.
   - `POST /generations/artifacts/revise`
 - The revise API uses authenticated `ctx.user.id`; mismatched `artifact.userId` returns `FORBIDDEN`.
 - Optional smoke demo: `npm run dev:revision-llm-smoke`.
-- This phase does not add frontend UI, complete user feedback system, vector store, complex chunking, agent run tracing, async job queue, or database foreign keys.
+- This phase does not add frontend UI, complete user feedback system, vector store, complex chunking, persistent agent run logging, async job queue, or database foreign keys.
+
+### P8.8 Agent Events, Streaming, and Artifact Decisions
+
+Status: implemented.
+
+- Added `AgentEvent`, `AgentEventSink`, `NoopAgentEventSink`, and `CollectingAgentEventSink`.
+- Kernel facade emits public high-level events for document ingestion, generation, critique, revision, decisions required, and failures.
+- `POST /generations/stream` returns experimental NDJSON lines with `{ event }` progress entries and a final `{ final }` generation result.
+- Events are public step summaries and must not expose model raw chain-of-thought.
+- Added `ArtifactDecisionService` and in-memory decision repository.
+- Added decision API routes:
+  - `POST /generations/artifacts/decisions`
+  - `GET /generations/artifacts/:artifactId/decisions`
+  - `GET /generations/:sessionId/artifact-decisions`
+- PostgreSQL persistence for the expanded six decision types is future work; no new database foreign keys are introduced.
 
 ### P9 Feedback Loop
 
-- Artifact decisions.
-- Revision requests.
-- Conservative rewrite.
+- Persistent artifact decision storage.
+- Revision requests connected to product review UI.
+- Conservative rewrite feedback loop.
 - Evidence augmentation.
 - Session updater.
 

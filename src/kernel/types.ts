@@ -2,6 +2,10 @@ import type {
   ArtifactCritiqueReport,
 } from "../application/critique/types.js";
 import type {
+  ArtifactDecisionInput,
+  ArtifactDecisionRecord,
+} from "../application/decisions/index.js";
+import type {
   CoverageGapReport,
 } from "../application/coverage-gaps/types.js";
 import type {
@@ -92,6 +96,13 @@ export type ReviseArtifactInput = {
   tone?: RevisionTone;
 };
 
+export type RecordArtifactDecisionInput = Omit<ArtifactDecisionInput, "userId">;
+
+export type ListArtifactDecisionsQuery = {
+  artifactId?: string;
+  sessionId?: string;
+};
+
 export type KernelHealth = {
   ok: true;
   mode: KernelMode;
@@ -108,6 +119,14 @@ export type CvAgentKernel = {
     getEvidenceChains(ctx: KernelRequestContext, query: EvidenceChainQuery): Promise<EvidenceChainQueryResult>;
     getGraph(ctx: KernelRequestContext, query: GraphQuery): Promise<GraphViewQueryResult>;
     reviseArtifact(ctx: KernelRequestContext, input: ReviseArtifactInput): Promise<ArtifactRevisionResult>;
+    recordArtifactDecision(
+      ctx: KernelRequestContext,
+      input: RecordArtifactDecisionInput,
+    ): Promise<ArtifactDecisionRecord>;
+    listArtifactDecisions(
+      ctx: KernelRequestContext,
+      query: ListArtifactDecisionsQuery,
+    ): Promise<ArtifactDecisionRecord[]>;
   };
   health(): Promise<KernelHealth>;
   close(): Promise<void>;
