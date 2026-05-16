@@ -32,6 +32,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@fastify/cors": "^11.2.0",
     "dotenv": "^16.4.7",
     "fastify": "^5.8.5",
     "mammoth": "^1.12.0",

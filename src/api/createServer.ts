@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import Fastify from "fastify";
 import type { FastifyRequest } from "fastify";
+import fastifyCors from "@fastify/cors";
 import { ApiError } from "./errors.js";
 import type { ApiKernel } from "./types.js";
 import type { AuthResolver } from "./auth/index.js";
@@ -21,6 +22,8 @@ export async function createServer(kernel: ApiKernel, options: CreateServerOptio
   const app = Fastify({ logger: false });
   const authResolver = options.authResolver ?? createAuthResolver();
 
+  await registerDevCors(app);
+
   app.setErrorHandler((error, request, reply) => {
     const statusCode = error instanceof ApiError ? error.statusCode : 500;
     const requestId = readHeader(request.headers["x-request-id"]) ?? `req-${randomUUID()}`;
@@ -40,6 +43,37 @@ export async function createServer(kernel: ApiKernel, options: CreateServerOptio
   await registerEvidenceRoutes(app, kernel, authResolver);
 
   return app;
+}
+
+function isDevCorsEnabled(): boolean {
+  if (process.env.NODE_ENV === "production" && process.env.ENABLE_DEV_CORS !== "true") {
+    return false;
+  }
+  return true;
+}
+
+function parseDevCorsOrigins(): string[] {
+  if (process.env.DEV_CORS_ORIGIN) {
+    return process.env.DEV_CORS_ORIGIN.split(",").map((s) => s.trim()).filter((s) => s.length > 0);
+  }
+  return [
+    "http://127.0.0.1:5173",
+    "http://localhost:5173",
+    "http://127.0.0.1:5500",
+    "http://localhost:5500",
+    "null",
+  ];
+}
+
+async function registerDevCors(app: ReturnType<typeof Fastify>): Promise<void> {
+  if (!isDevCorsEnabled()) return;
+
+  await app.register(fastifyCors, {
+    origin: parseDevCorsOrigins(),
+    methods: ["GET", "POST", "OPTIONS"],
+    allowedHeaders: ["content-type", "x-user-id"],
+    credentials: false,
+  });
 }
 
 function readHeader(value: string | string[] | undefined): string | undefined {

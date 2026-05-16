@@ -1,9 +1,3 @@
--- This schema intentionally does not use database-level foreign keys.
--- Referential integrity is enforced at the application/service layer.
--- The reason is to keep agent-generated snapshots, evidence chains, graph projections,
--- and historical generation records stable across edits/deletions.
--- Do not add FOREIGN KEY / REFERENCES unless the persistence strategy is explicitly changed.
-
 CREATE TABLE IF NOT EXISTS users (
   id TEXT PRIMARY KEY,
   email TEXT UNIQUE,

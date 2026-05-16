@@ -17,7 +17,7 @@ export async function registerStreamingRoutes(
   app.post("/generations/stream", async (request, reply) => {
     const resolvedAuth = await authResolver.resolve(request);
     const body = parseGenerateBody(request.body);
-    startNdjson(reply);
+    startNdjson(reply, request);
 
     const sink = new NdjsonAgentEventSink((event) => {
       reply.raw.write(`${JSON.stringify({ event })}\n`);
@@ -62,13 +62,41 @@ class NdjsonAgentEventSink implements AgentEventSink {
   }
 }
 
-function startNdjson(reply: FastifyReply): void {
+function startNdjson(reply: FastifyReply, request: FastifyRequest): void {
   reply.hijack();
-  reply.raw.writeHead(200, {
+  const headers: Record<string, string> = {
     "content-type": "application/x-ndjson; charset=utf-8",
     "cache-control": "no-cache",
     connection: "keep-alive",
-  });
+  };
+  const corsOrigin = resolveDevCorsOrigin(request);
+  if (corsOrigin !== null) {
+    headers["access-control-allow-origin"] = corsOrigin;
+  }
+  reply.raw.writeHead(200, headers);
+}
+
+function resolveDevCorsOrigin(request: FastifyRequest): string | null {
+  const isProduction = process.env.NODE_ENV === "production";
+  if (isProduction && process.env.ENABLE_DEV_CORS !== "true") return null;
+
+  const origin = readHeader(request.headers["origin"]);
+  if (!origin) return null;
+
+  const allowedOrigins = process.env.DEV_CORS_ORIGIN
+    ? process.env.DEV_CORS_ORIGIN.split(",").map((s) => s.trim())
+    : ["http://127.0.0.1:5173", "http://localhost:5173", "http://127.0.0.1:5500", "http://localhost:5500", "null"];
+
+  return allowedOrigins.includes(origin) ? origin : null;
+}
+
+function readHeader(value: string | string[] | undefined): string | undefined {
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    return trimmed.length > 0 ? trimmed : undefined;
+  }
+  const firstValue = value?.find((item) => item.trim().length > 0);
+  return firstValue?.trim();
 }
 
 function parseGenerateBody(body: unknown): GenerateJsonBody {

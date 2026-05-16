@@ -5,3 +5,7 @@ dist/
 coverage/
 *.log
 .*
+
+# Local productized API playground
+local-playground/
+*.local.html

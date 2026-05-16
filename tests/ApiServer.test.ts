@@ -268,6 +268,153 @@ describe("API server", () => {
   });
 });
 
+describe("dev CORS", () => {
+    let devKernel: ApiKernel;
+    let devServer: Awaited<ReturnType<typeof createServer>>;
+
+    beforeEach(async () => {
+      process.env.AUTH_MODE = "dev_header";
+      process.env.AGENT_PROVIDER = "mock";
+      process.env.FRONTDESK_AGENT_MODE = "mock";
+      process.env.NODE_ENV = "test";
+      delete process.env.DATABASE_URL;
+      devKernel = await createKernel();
+      devServer = await createServer(devKernel);
+    });
+
+    afterEach(async () => {
+      await devServer.close();
+      await devKernel.close();
+    });
+
+    it("returns CORS headers on OPTIONS preflight in non-production", async () => {
+      const response = await devServer.inject({
+        method: "OPTIONS",
+        url: "/health",
+        headers: {
+          origin: "http://127.0.0.1:5173",
+          "access-control-request-method": "POST",
+          "access-control-request-headers": "content-type,x-user-id",
+        },
+      });
+
+      expect(response.statusCode).toBe(204);
+      expect(response.headers["access-control-allow-origin"]).toBe("http://127.0.0.1:5173");
+      expect(response.headers["access-control-allow-methods"]).toContain("GET");
+      expect(response.headers["access-control-allow-methods"]).toContain("POST");
+      expect(response.headers["access-control-allow-headers"]).toContain("content-type");
+      expect(response.headers["access-control-allow-headers"]).toContain("x-user-id");
+    });
+
+    it("returns CORS headers on GET request in non-production", async () => {
+      const response = await devServer.inject({
+        method: "GET",
+        url: "/health",
+        headers: {
+          origin: "http://localhost:5173",
+        },
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.headers["access-control-allow-origin"]).toBe("http://localhost:5173");
+    });
+
+    it("returns CORS headers when origin is null (file:// use case)", async () => {
+      const response = await devServer.inject({
+        method: "GET",
+        url: "/health",
+        headers: {
+          origin: "null",
+        },
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.headers["access-control-allow-origin"]).toBe("null");
+    });
+
+    it("allows x-user-id in requests with CORS", async () => {
+      const response = await devServer.inject({
+        method: "GET",
+        url: "/health",
+        headers: {
+          origin: "http://127.0.0.1:5173",
+          "x-user-id": "demo-user",
+        },
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.headers["access-control-allow-origin"]).toBe("http://127.0.0.1:5173");
+    });
+  });
+
+  describe("production CORS", () => {
+    it("does not enable CORS in production without ENABLE_DEV_CORS", async () => {
+      const originalNodeEnv = process.env.NODE_ENV;
+      const originalEnableDevCors = process.env.ENABLE_DEV_CORS;
+      process.env.AUTH_MODE = "dev_header";
+      process.env.AGENT_PROVIDER = "mock";
+      process.env.FRONTDESK_AGENT_MODE = "mock";
+      process.env.NODE_ENV = "production";
+      delete process.env.DATABASE_URL;
+      delete process.env.ENABLE_DEV_CORS;
+
+      const prodKernel = await createKernel();
+      const prodServer = await createServer(prodKernel);
+
+      const response = await prodServer.inject({
+        method: "OPTIONS",
+        url: "/health",
+        headers: {
+          origin: "http://127.0.0.1:5173",
+          "access-control-request-method": "GET",
+        },
+      });
+
+      // In production without ENABLE_DEV_CORS, CORS should not be active
+      expect(response.headers["access-control-allow-origin"]).toBeUndefined();
+
+      await prodServer.close();
+      await prodKernel.close();
+      process.env.NODE_ENV = originalNodeEnv;
+      if (originalEnableDevCors !== undefined) {
+        process.env.ENABLE_DEV_CORS = originalEnableDevCors;
+      }
+    });
+
+    it("enables CORS in production when ENABLE_DEV_CORS=true", async () => {
+      const originalNodeEnv = process.env.NODE_ENV;
+      const originalEnableDevCors = process.env.ENABLE_DEV_CORS;
+      process.env.AUTH_MODE = "dev_header";
+      process.env.AGENT_PROVIDER = "mock";
+      process.env.FRONTDESK_AGENT_MODE = "mock";
+      process.env.NODE_ENV = "production";
+      process.env.ENABLE_DEV_CORS = "true";
+      delete process.env.DATABASE_URL;
+
+      const prodKernel = await createKernel();
+      const prodServer = await createServer(prodKernel);
+
+      const response = await prodServer.inject({
+        method: "OPTIONS",
+        url: "/health",
+        headers: {
+          origin: "http://127.0.0.1:5173",
+          "access-control-request-method": "GET",
+        },
+      });
+
+      expect(response.statusCode).toBe(204);
+      expect(response.headers["access-control-allow-origin"]).toBe("http://127.0.0.1:5173");
+
+      await prodServer.close();
+      await prodKernel.close();
+      process.env.NODE_ENV = originalNodeEnv;
+      if (originalEnableDevCors !== undefined) {
+        process.env.ENABLE_DEV_CORS = originalEnableDevCors;
+      }
+    });
+  });
+
 function makeRevisionArtifact(userId: string): GeneratedArtifact {
   return {
     id: "artifact-api-revision",
