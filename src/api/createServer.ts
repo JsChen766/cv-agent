@@ -7,6 +7,8 @@ import type { ApiKernel } from "./types.js";
 import type { AuthResolver } from "./auth/index.js";
 import { createAuthResolver } from "./auth/index.js";
 import { failure } from "./response.js";
+import { registerCopilotRoutes } from "./routes/copilot.js";
+import { registerDebugRoutes } from "./routes/debug.js";
 import { registerDocumentRoutes } from "./routes/documents.js";
 import { registerDecisionRoutes } from "./routes/decisions.js";
 import { registerEvidenceRoutes } from "./routes/evidence.js";
@@ -36,11 +38,13 @@ export async function createServer(kernel: ApiKernel, options: CreateServerOptio
   });
 
   await registerHealthRoutes(app, kernel);
+  await registerDebugRoutes(app, kernel);
   await registerDocumentRoutes(app, kernel, authResolver);
   await registerGenerationRoutes(app, kernel, authResolver);
   await registerStreamingRoutes(app, kernel, authResolver);
   await registerDecisionRoutes(app, kernel, authResolver);
   await registerEvidenceRoutes(app, kernel, authResolver);
+  await registerCopilotRoutes(app, kernel, authResolver);
 
   return app;
 }
