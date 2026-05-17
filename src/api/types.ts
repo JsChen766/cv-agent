@@ -7,6 +7,7 @@ import type {
 import type { GenerateResumeResult } from "../application/ResumeGenerationService.js";
 import type { GenerationPersistenceResult } from "../persistence/repositories.js";
 import type { CvAgentKernel } from "../kernel/index.js";
+import type { ProductServices } from "../product/index.js";
 
 export type ApiMode = "postgres" | "in_memory";
 
@@ -34,6 +35,7 @@ export type ApiKernel = {
   generationPersistenceService?: GenerationPersistencePort;
   evidenceChainQueryService: EvidenceChainQueryService;
   graphViewQueryService: GraphViewQueryService;
+  productServices: ProductServices;
   close(): Promise<void>;
 };
 

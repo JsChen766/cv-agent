@@ -1,0 +1,152 @@
+import type { GeneratedArtifact } from "../knowledge/types.js";
+
+export type ProductExperienceCategory = "work" | "project" | "education" | "award" | "skill" | "other";
+export type ProductExperienceStatus = "active" | "archived" | "deleted";
+export type ProductExperienceRevisionSource = "manual" | "import" | "copilot" | "resume_upload";
+export type ProductExperienceVariantType = "full" | "medium" | "short" | "jd_tailored" | "custom";
+export type ProductExperienceVariantStatus = "active" | "archived";
+export type ProductJDRecord = {
+  id: string;
+  userId: string;
+  title: string;
+  company?: string;
+  targetRole?: string;
+  rawText: string;
+  requirements?: unknown;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type ProductExperience = {
+  id: string;
+  userId: string;
+  category: ProductExperienceCategory;
+  title: string;
+  organization?: string;
+  role?: string;
+  startDate?: string;
+  endDate?: string;
+  tags: string[];
+  status: ProductExperienceStatus;
+  currentRevisionId?: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type ProductExperienceRevision = {
+  id: string;
+  experienceId: string;
+  userId: string;
+  content: string;
+  structured?: unknown;
+  source: ProductExperienceRevisionSource;
+  createdAt: string;
+};
+
+export type ProductExperienceVariant = {
+  id: string;
+  experienceId: string;
+  revisionId: string;
+  userId: string;
+  variantType: ProductExperienceVariantType;
+  language: "zh" | "en";
+  targetJdId?: string;
+  content: string;
+  evidenceIds: string[];
+  score?: unknown;
+  status: ProductExperienceVariantStatus;
+  createdAt: string;
+};
+
+export type ProductResumeStatus = "draft" | "ready" | "archived";
+export type ProductResume = {
+  id: string;
+  userId: string;
+  title: string;
+  targetRole?: string;
+  jdId?: string;
+  templateId?: string;
+  status: ProductResumeStatus;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type ProductResumeItem = {
+  id: string;
+  resumeId: string;
+  userId: string;
+  sourceExperienceId?: string;
+  sourceVariantId?: string;
+  sourceArtifactId?: string;
+  sectionType: "experience" | "education" | "project" | "skill" | "award" | "summary" | "other";
+  title: string;
+  contentSnapshot: string;
+  orderIndex: number;
+  hidden: boolean;
+  pinned: boolean;
+  metadata: Record<string, unknown>;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type ProductGeneration = {
+  id: string;
+  userId: string;
+  sessionId?: string;
+  jdId?: string;
+  resumeId?: string;
+  targetRole?: string;
+  inputSnapshot: Record<string, unknown>;
+  outputSnapshot?: {
+    variants?: GeneratedArtifact[];
+    [key: string]: unknown;
+  };
+  selectedVariantIds: string[];
+  createdAt: string;
+};
+
+export type ProductImportJobStatus = "pending" | "extracting" | "candidates_ready" | "confirmed" | "failed";
+export type ProductImportJob = {
+  id: string;
+  userId: string;
+  sourceType: "text" | "pdf";
+  status: ProductImportJobStatus;
+  rawText?: string;
+  errorMessage?: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type ProductImportCandidateStatus = "pending" | "accepted" | "rejected" | "merged";
+export type ProductImportCandidate = {
+  id: string;
+  jobId: string;
+  userId: string;
+  title: string;
+  category: ProductExperienceCategory;
+  organization?: string;
+  role?: string;
+  content: string;
+  structured?: unknown;
+  status: ProductImportCandidateStatus;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type ProductResumeTemplate = {
+  id: string;
+  name: string;
+  description?: string;
+  config: Record<string, unknown>;
+  status: "active" | "archived";
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type ProductExperienceSummary = Pick<ProductExperience, "id" | "category" | "title" | "organization" | "role" | "status" | "currentRevisionId" | "createdAt" | "updatedAt"> & {
+  content?: string;
+};
+export type ProductJDSummary = Pick<ProductJDRecord, "id" | "title" | "company" | "targetRole" | "createdAt" | "updatedAt">;
+export type ProductResumeSummary = Pick<ProductResume, "id" | "title" | "targetRole" | "jdId" | "status" | "createdAt" | "updatedAt">;
+export type ProductResumeDetail = ProductResume & { items: ProductResumeItem[] };
+export type ProductImportCandidateSummary = Pick<ProductImportCandidate, "id" | "jobId" | "title" | "category" | "organization" | "role" | "content" | "status" | "createdAt" | "updatedAt">;

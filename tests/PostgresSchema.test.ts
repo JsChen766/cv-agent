@@ -67,6 +67,30 @@ describe("PostgreSQL schema", () => {
     expect(content).toMatch(/DROP\s+COLUMN\s+IF\s+EXISTS\s+status/i);
     expect(content).toContain("idx_artifact_decisions_user_artifact");
   });
+
+  it("has 0004 migration for product asset loop tables without foreign keys", () => {
+    const migrationPath = join(process.cwd(), "src", "persistence", "postgres", "migrations", "0004_product_asset_loop.sql");
+    expect(existsSync(migrationPath)).toBe(true);
+    const content = readFileSync(migrationPath, "utf8");
+    for (const table of [
+      "product_experience",
+      "product_experience_revision",
+      "product_experience_variant",
+      "product_jd",
+      "product_resume",
+      "product_resume_item",
+      "product_generation",
+      "product_import_job",
+      "product_import_candidate",
+      "product_resume_template",
+    ]) {
+      expect(content).toContain(`CREATE TABLE IF NOT EXISTS ${table}`);
+    }
+    expect(stripSqlComments(content)).not.toMatch(/\bREFERENCES\b/i);
+    expect(content).toContain("idx_product_experience_user_status");
+    expect(content).toContain("idx_product_generation_session_id");
+    expect(content).toContain("template-default");
+  });
 });
 
 function stripSqlComments(sql: string): string {

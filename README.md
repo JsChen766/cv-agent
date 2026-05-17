@@ -867,9 +867,98 @@ Run the forced-gap session demo when you specifically want to demonstrate supple
 npm run dev:generation-session-forced-gap
 ```
 
+## P10.1 Minimal Product Asset Loop
+
+P10.1 adds a Product Data Layer beside the Agent Kernel. The Agent Kernel still owns document ingestion, extraction, generation, critique, revision, evidence chains, and graph projections. The Product Layer owns long-lived business assets: experience library entries, JD records, resume drafts, resume item snapshots, import candidates, and generation records.
+
+Key rules:
+
+- Experiences are long-lived user assets in `product_experience` plus immutable `product_experience_revision` records.
+- JD-tailored copy does not overwrite the experience library. Accepted output is stored as `product_resume_item.content_snapshot`.
+- LLM/agent code does not write product tables directly. Writes go through Product Services and Repositories.
+- PostgreSQL product tables are user-scoped and intentionally avoid database-level foreign keys.
+- Default tests use in-memory repositories and deterministic/mock agents; Neon and real DeepSeek are not required.
+
+Product tables added by migration `0004_product_asset_loop.sql`:
+
+```text
+product_experience
+product_experience_revision
+product_experience_variant
+product_jd
+product_resume
+product_resume_item
+product_generation
+product_import_job
+product_import_candidate
+product_resume_template
+```
+
+Product APIs:
+
+```text
+GET/POST /product/experiences
+GET/PATCH /product/experiences/:id
+POST /product/experiences/:id/revisions
+POST /product/experiences/:id/variants
+GET/POST /product/jds
+GET /product/jds/:id
+GET/POST /product/resumes
+GET /product/resumes/:id
+POST /product/resumes/:id/items
+PATCH /product/resume-items/:id
+POST /product/resumes/:id/reorder
+POST /product/imports/text
+GET /product/imports/:id
+POST /product/import-candidates/:id/accept
+POST /product/import-candidates/:id/reject
+POST /product/generations/from-jd
+POST /product/generations/:id/accept-variant
+```
+
+Copilot now has deterministic product intent routing and product tools for `create_experience`, `list_experiences`, `import_resume_text`, `accept_import_candidate`, `save_jd`, `list_jds`, `create_resume_from_jd`, `save_variant_to_resume`, `list_resumes`, and `open_resume`. `/copilot/chat` remains the primary product entrypoint and keeps the P9 response envelope and `workspace.variants` contract.
+
+Local curl checks:
+
+```bash
+curl -H "x-user-id: demo-user" http://127.0.0.1:3000/debug/agent-modes
+
+curl -X POST http://127.0.0.1:3000/product/experiences \
+  -H "content-type: application/json" -H "x-user-id: demo-user" \
+  -d "{\"title\":\"React performance\",\"content\":\"Built React and TypeScript systems and reduced bundle size by 40%.\"}"
+
+curl -H "x-user-id: demo-user" http://127.0.0.1:3000/product/experiences
+
+curl -X POST http://127.0.0.1:3000/product/jds \
+  -H "content-type: application/json" -H "x-user-id: demo-user" \
+  -d "{\"rawText\":\"Looking for React, TypeScript and performance optimization.\",\"targetRole\":\"Frontend Engineer\"}"
+
+curl -H "x-user-id: demo-user" http://127.0.0.1:3000/product/jds
+
+curl -X POST http://127.0.0.1:3000/product/resumes \
+  -H "content-type: application/json" -H "x-user-id: demo-user" \
+  -d "{\"title\":\"Frontend Engineer draft\",\"targetRole\":\"Frontend Engineer\"}"
+
+curl -X POST http://127.0.0.1:3000/product/resumes/:resumeId/items \
+  -H "content-type: application/json" -H "x-user-id: demo-user" \
+  -d "{\"title\":\"React performance\",\"contentSnapshot\":\"Reduced bundle size by 40%.\"}"
+
+curl -X POST http://127.0.0.1:3000/copilot/chat \
+  -H "content-type: application/json" -H "x-user-id: demo-user" \
+  -d "{\"message\":\"查看我的经历库\",\"jdText\":\"React role\"}"
+
+curl -X POST http://127.0.0.1:3000/copilot/chat \
+  -H "content-type: application/json" -H "x-user-id: demo-user" \
+  -d "{\"message\":\"根据这个 JD 生成简历\",\"jdText\":\"Looking for React TypeScript performance optimization.\",\"targetRole\":\"Frontend Engineer\"}"
+
+curl -X POST http://127.0.0.1:3000/copilot/chat \
+  -H "content-type: application/json" -H "x-user-id: demo-user" \
+  -d "{\"message\":\"查看历史简历\",\"jdText\":\"React role\"}"
+```
+
 ## Current Non-Goals
 
-- No frontend.
+- No formal product page buildout in this backend phase.
 - No full auth system.
 - No Qdrant / Cloudflare Vectorize integration.
 - No Neo4j or external graph database.

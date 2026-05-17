@@ -1,3 +1,11 @@
+import type {
+  ProductExperienceSummary,
+  ProductImportCandidateSummary,
+  ProductJDSummary,
+  ProductResumeDetail,
+  ProductResumeSummary,
+} from "../product/types.js";
+
 export type CopilotSession = {
   id: string;
   userId?: string | null;
@@ -46,7 +54,16 @@ export type CopilotWorkspace = {
   id: string;
   sessionId: string;
   activeVariantId?: string | null;
+  activePanel?: "variants" | "experience_library" | "resume_history" | "resume_editor" | "jd_library" | "import_candidates";
+  productGenerationId?: string | null;
+  jdId?: string | null;
+  resumeId?: string | null;
   variants: ProductVariant[];
+  experiences?: ProductExperienceSummary[];
+  jds?: ProductJDSummary[];
+  resumes?: ProductResumeSummary[];
+  activeResume?: ProductResumeDetail;
+  importCandidates?: ProductImportCandidateSummary[];
   selectedEvidenceChainId?: string | null;
   status:
     | "empty"

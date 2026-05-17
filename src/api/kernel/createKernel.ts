@@ -55,6 +55,28 @@ import {
 } from "../../persistence/postgres/index.js";
 import { DocumentLoaderTool, type ExtractedTextDocument } from "../../tools/document/index.js";
 import { DefaultCvAgentKernel } from "../../kernel/index.js";
+import {
+  ExperienceService,
+  GenerationProductService,
+  ImportService,
+  InMemoryProductExperienceRepository,
+  InMemoryProductGenerationRepository,
+  InMemoryProductImportRepository,
+  InMemoryProductJDRepository,
+  InMemoryProductResumeRepository,
+  JDService,
+  PostgresProductExperienceRepository,
+  PostgresProductGenerationRepository,
+  PostgresProductImportRepository,
+  PostgresProductJDRepository,
+  PostgresProductResumeRepository,
+  ResumeService,
+  type ProductExperienceRepository,
+  type ProductGenerationRepository,
+  type ProductImportRepository,
+  type ProductJDRepository,
+  type ProductResumeRepository,
+} from "../../product/index.js";
 import type { ApiKernel, GenerationPersistencePort } from "../types.js";
 import {
   createArtifactCritic,
@@ -93,6 +115,11 @@ export async function createPostgresKernelFromDatabase(
   const graphViewRepository = new PostgresGraphViewSnapshotRepository(database);
   const bundleRepository = new PostgresGenerationArtifactBundleRepository(database);
   const artifactDecisionRepository = new PostgresArtifactDecisionRepository(database);
+  const productExperienceRepository = new PostgresProductExperienceRepository(database);
+  const productJDRepository = new PostgresProductJDRepository(database);
+  const productResumeRepository = new PostgresProductResumeRepository(database);
+  const productImportRepository = new PostgresProductImportRepository(database);
+  const productGenerationRepository = new PostgresProductGenerationRepository(database);
   const generationPersistenceService = createPostgresGenerationPersistenceService(database);
 
   return buildKernel({
@@ -108,6 +135,11 @@ export async function createPostgresKernelFromDatabase(
     graphViewRepository,
     bundleRepository,
     artifactDecisionRepository,
+    productExperienceRepository,
+    productJDRepository,
+    productResumeRepository,
+    productImportRepository,
+    productGenerationRepository,
     generationPersistenceService,
     close: () => database.close(),
   });
@@ -127,6 +159,11 @@ function createInMemoryKernel(): ApiKernel {
   const graphViewRepository = new InMemoryGraphViewSnapshotRepository();
   const bundleRepository = new InMemoryGenerationArtifactBundleRepository();
   const artifactDecisionRepository = new InMemoryArtifactDecisionRepository();
+  const productExperienceRepository = new InMemoryProductExperienceRepository();
+  const productJDRepository = new InMemoryProductJDRepository();
+  const productResumeRepository = new InMemoryProductResumeRepository();
+  const productImportRepository = new InMemoryProductImportRepository();
+  const productGenerationRepository = new InMemoryProductGenerationRepository();
 
   return buildKernel({
     mode: "in_memory",
@@ -142,6 +179,11 @@ function createInMemoryKernel(): ApiKernel {
     graphViewRepository,
     bundleRepository,
     artifactDecisionRepository,
+    productExperienceRepository,
+    productJDRepository,
+    productResumeRepository,
+    productImportRepository,
+    productGenerationRepository,
     close: async () => {},
   });
 }
@@ -234,6 +276,23 @@ function buildKernel(input: BuildKernelInput): ApiKernel {
     artifactDecisionService,
     close: input.close,
   });
+  const experienceService = new ExperienceService(input.productExperienceRepository);
+  const jdService = new JDService(input.productJDRepository);
+  const resumeService = new ResumeService(input.productResumeRepository);
+  const importService = new ImportService(input.productImportRepository, experienceService);
+  const generationProductService = new GenerationProductService(
+    input.productGenerationRepository,
+    jdService,
+    resumeService,
+    cvAgentKernel,
+  );
+  const productServices = {
+    experienceService,
+    jdService,
+    resumeService,
+    importService,
+    generationProductService,
+  };
 
   return {
     mode: input.mode,
@@ -244,6 +303,7 @@ function buildKernel(input: BuildKernelInput): ApiKernel {
     generationPersistenceService,
     evidenceChainQueryService,
     graphViewQueryService,
+    productServices,
     close: input.close,
   };
 }
@@ -262,6 +322,11 @@ type BuildKernelInput = {
   graphViewRepository: GraphViewSnapshotRepository;
   bundleRepository: GenerationArtifactBundleRepository;
   artifactDecisionRepository: ArtifactDecisionRepository;
+  productExperienceRepository: ProductExperienceRepository;
+  productJDRepository: ProductJDRepository;
+  productResumeRepository: ProductResumeRepository;
+  productImportRepository: ProductImportRepository;
+  productGenerationRepository: ProductGenerationRepository;
   generationPersistenceService?: GenerationPersistencePort;
   close(): Promise<void>;
 };

@@ -166,6 +166,76 @@ describe("POST /copilot/chat", () => {
     expect(JSON.stringify(body)).not.toContain("chain-of-thought");
   });
 
+  it("routes experience library requests to the product workspace panel", async () => {
+    const response = await server.inject({
+      method: "POST", url: "/copilot/chat",
+      headers: { "x-user-id": "user-1" },
+      payload: { message: "查看我的经历库", jdText: "React role" },
+    });
+    expect(response.statusCode).toBe(200);
+    const body = response.json() as ApiSuccess<CopilotChatResponse>;
+    expect(body.data.workspace.activePanel).toBe("experience_library");
+    expect(Array.isArray(body.data.workspace.experiences)).toBe(true);
+  });
+
+  it("routes resume history requests to the product workspace panel", async () => {
+    const response = await server.inject({
+      method: "POST", url: "/copilot/chat",
+      headers: { "x-user-id": "user-1" },
+      payload: { message: "查看历史简历", jdText: "React role" },
+    });
+    expect(response.statusCode).toBe(200);
+    const body = response.json() as ApiSuccess<CopilotChatResponse>;
+    expect(body.data.workspace.activePanel).toBe("resume_history");
+    expect(Array.isArray(body.data.workspace.resumes)).toBe(true);
+  });
+
+  it("saves product JD and product_generation when generating from JD through chat", async () => {
+    const response = await server.inject({
+      method: "POST", url: "/copilot/chat",
+      headers: { "x-user-id": "user-1" },
+      payload: {
+        message: "根据这个 JD 生成简历",
+        jdText: "React TypeScript performance optimization role.",
+        targetRole: "Frontend Engineer",
+      },
+    });
+    const body = response.json() as ApiSuccess<CopilotChatResponse>;
+    expect(body.data.workspace.activePanel).toBe("variants");
+    expect(body.data.workspace.productGenerationId).toMatch(/^pgen-/);
+    expect(body.data.workspace.jdId).toMatch(/^pjd-/);
+    expect(body.data.workspace.variants.length).toBeGreaterThan(0);
+  });
+
+  it("creates product_experience from add experience chat intent", async () => {
+    const response = await server.inject({
+      method: "POST", url: "/copilot/chat",
+      headers: { "x-user-id": "user-1" },
+      payload: {
+        message: "保存这段经历到经历库：Built React and TypeScript systems and reduced bundle size by 40%.",
+        jdText: "React role",
+      },
+    });
+    const body = response.json() as ApiSuccess<CopilotChatResponse>;
+    expect(body.data.workspace.activePanel).toBe("experience_library");
+    expect(body.data.workspace.experiences?.length).toBeGreaterThan(0);
+  });
+
+  it("creates import candidates from import resume chat intent", async () => {
+    const response = await server.inject({
+      method: "POST", url: "/copilot/chat",
+      headers: { "x-user-id": "user-1" },
+      payload: {
+        message: "导入简历",
+        resumeText: "Built React systems.\n\nReduced bundle size by 40%.",
+        jdText: "React role",
+      },
+    });
+    const body = response.json() as ApiSuccess<CopilotChatResponse>;
+    expect(body.data.workspace.activePanel).toBe("import_candidates");
+    expect(body.data.workspace.importCandidates?.length).toBeGreaterThan(0);
+  });
+
   it("reuses existing session when sessionId is provided", async () => {
     const first = await server.inject({
       method: "POST", url: "/copilot/chat",
@@ -261,6 +331,19 @@ describe("POST /copilot/actions", () => {
     expect(body.data.assistantMessage.kind).toBe("decision_summary");
     expect(body.data.timeline.some(t => t.type === "decision_recorded")).toBe(true);
     expect(body.data.workspace.variants.find((variant) => variant.id === variantId)?.status).toBe("accepted");
+  });
+
+  it("accepting a generated variant creates a resume item snapshot when product generation is available", async () => {
+    const response = await server.inject({
+      method: "POST", url: "/copilot/actions",
+      headers: { "x-user-id": "user-1" },
+      payload: { sessionId, action: { type: "accept", variantId } },
+    });
+    const body = response.json() as ApiSuccess<CopilotChatResponse>;
+    expect(response.statusCode).toBe(200);
+    expect(body.data.assistantMessage.content).toContain("保存到当前简历草稿");
+    expect(body.data.workspace.activePanel).toBe("resume_editor");
+    expect(body.data.workspace.activeResume?.items.length).toBeGreaterThan(0);
   });
 
   it("rejects a variant", async () => {

@@ -14,6 +14,7 @@ import { registerDecisionRoutes } from "./routes/decisions.js";
 import { registerEvidenceRoutes } from "./routes/evidence.js";
 import { registerGenerationRoutes } from "./routes/generations.js";
 import { registerHealthRoutes } from "./routes/health.js";
+import { registerProductRoutes } from "./routes/product.js";
 import { registerStreamingRoutes } from "./routes/streaming.js";
 
 export type CreateServerOptions = {
@@ -44,6 +45,7 @@ export async function createServer(kernel: ApiKernel, options: CreateServerOptio
   await registerStreamingRoutes(app, kernel, authResolver);
   await registerDecisionRoutes(app, kernel, authResolver);
   await registerEvidenceRoutes(app, kernel, authResolver);
+  await registerProductRoutes(app, kernel, authResolver);
   await registerCopilotRoutes(app, kernel, authResolver);
 
   return app;
@@ -61,7 +63,7 @@ async function registerDevCors(app: ReturnType<typeof Fastify>): Promise<void> {
 
   await app.register(fastifyCors, {
     origin: isAllowedDevCorsOrigin,
-    methods: ["GET", "POST", "OPTIONS"],
+    methods: ["GET", "POST", "PATCH", "OPTIONS"],
     allowedHeaders: ["content-type", "x-user-id", "x-request-id", "x-trace-id"],
     credentials: false,
   });

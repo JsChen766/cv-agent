@@ -4,6 +4,10 @@ import type { KernelRequestContext } from "../kernel/context.js";
 import type { CreateGenerationResult } from "../kernel/types.js";
 import type { GeneratedArtifact } from "../knowledge/types.js";
 import type { ArtifactDecisionRecord } from "../application/decisions/index.js";
+import { ProductIntentRouter } from "./ProductIntentRouter.js";
+import type { ProductIntent } from "./ProductIntentRouter.js";
+import { ProductToolRegistry } from "../product/tools/ProductToolRegistry.js";
+import type { ProductToolResult } from "../product/tools/ProductToolRegistry.js";
 import { CopilotResponseBuilder } from "./CopilotResponseBuilder.js";
 import type {
   CopilotSession,
@@ -27,10 +31,13 @@ export class CopilotOrchestrator {
   private readonly workspaces = new Map<string, CopilotWorkspace>();
   private readonly artifactSnapshots = new Map<string, GeneratedArtifact>();
   private readonly builder = new CopilotResponseBuilder();
+  private readonly intentRouter = new ProductIntentRouter();
+  private readonly productTools: ProductToolRegistry;
   private readonly kernel: ApiKernel;
 
   public constructor(deps: CopilotOrchestratorDeps) {
     this.kernel = deps.kernel;
+    this.productTools = new ProductToolRegistry(deps.kernel.productServices);
   }
 
   // ── Session ──
@@ -203,6 +210,17 @@ export class CopilotOrchestrator {
         session.updatedAt = new Date().toISOString();
       } catch (err) {
         ingestionWarnings.push(`Resume ingestion failed: ${err instanceof Error ? err.message : "unknown error"}`);
+      }
+    }
+
+    const productIntent = this.intentRouter.route(body);
+    if (this.shouldHandleProductIntent(productIntent.intent)) {
+      const productResponse = await this.handleProductIntent(ctx, session, turn.id, body, productIntent.intent, ingestionWarnings);
+      if (productResponse) {
+        this.saveMessage(productResponse.assistantMessage);
+        this.saveWorkspace(productResponse.workspace);
+        this.completeTurn(turn.id, productResponse.assistantMessage.id);
+        return { ...productResponse, ingestionWarnings };
       }
     }
 
@@ -471,7 +489,24 @@ export class CopilotOrchestrator {
     const labels: Record<string, string> = {
       accept: "accepted", reject: "rejected", prefer: "preferred",
     };
-    const content = `You've ${labels[decisionType] ?? decisionType} this version.`;
+    let content = `You've ${labels[decisionType] ?? decisionType} this version.`;
+    let resumeIds: string[] = [];
+    if (decisionType === "accept" && ws.productGenerationId && variantId) {
+      try {
+        const saved = await this.productTools.saveVariantToResume(ctx.user.id, {
+          generationId: ws.productGenerationId,
+          variantId,
+          resumeId: ws.resumeId ?? undefined,
+        });
+        content = saved.assistantMessage;
+        resumeIds = saved.raw?.resumeIds ?? [];
+        if (saved.workspacePatch?.activeResume) ws.activeResume = saved.workspacePatch.activeResume;
+        if (saved.workspacePatch?.activePanel) ws.activePanel = saved.workspacePatch.activePanel;
+        if (saved.workspacePatch?.resumeId) ws.resumeId = saved.workspacePatch.resumeId;
+      } catch {
+        // Decision recording should remain successful even if product resume save fails.
+      }
+    }
 
     const msg: CopilotMessage = {
       id: `msg-${randomUUID()}`,
@@ -503,7 +538,7 @@ export class CopilotOrchestrator {
         artifactIds: artifactId ? [artifactId] : [],
         evidenceChainIds: [],
         critiqueItemIds: [],
-        decisionIds: decision ? [decision.id] : [],
+        decisionIds: decision ? [decision.id, ...resumeIds] : resumeIds,
       },
     };
   }
@@ -750,6 +785,147 @@ export class CopilotOrchestrator {
     });
   }
 
+  private shouldHandleProductIntent(intent: ProductIntent): boolean {
+    return intent !== "unknown" && intent !== "save_variant_to_resume";
+  }
+
+  private async handleProductIntent(
+    ctx: KernelRequestContext,
+    session: CopilotSession,
+    turnId: string,
+    body: CopilotChatRequest,
+    intent: ProductIntent,
+    ingestionWarnings: string[],
+  ): Promise<CopilotChatResponse | null> {
+    switch (intent) {
+      case "list_experiences":
+        return this.buildToolResponse(session.id, turnId, await this.productTools.listExperiences(ctx.user.id));
+      case "list_resumes":
+        return this.buildToolResponse(session.id, turnId, await this.productTools.listResumes(ctx.user.id));
+      case "list_jds":
+        return this.buildToolResponse(session.id, turnId, await this.productTools.listJDs(ctx.user.id));
+      case "add_experience":
+        return this.buildToolResponse(session.id, turnId, await this.productTools.createExperience(ctx.user.id, parseProductExperienceFromMessage(body.message)));
+      case "import_resume":
+        return this.buildToolResponse(session.id, turnId, await this.productTools.importResumeText(ctx.user.id, body.resumeText ?? body.message));
+      case "save_jd":
+        return this.buildToolResponse(session.id, turnId, await this.productTools.saveJD(ctx.user.id, {
+          rawText: body.jdText,
+          targetRole: session.targetRole ?? body.targetRole ?? undefined,
+        }));
+      case "generate_resume_for_jd": {
+        const generation = await this.kernel.productServices.generationProductService.generateResumeFromJD(ctx, {
+          userId: ctx.user.id,
+          sessionId: session.id,
+          jdText: session.jdText ?? body.jdText,
+          targetRole: session.targetRole ?? body.targetRole ?? "Target Role",
+        });
+        const response = this.builder.buildChatResponse({
+          sessionId: session.id,
+          turnId,
+          userMessage: body.message,
+          generatedArtifacts: generation.variants,
+          critiqueItems: generation.generationResult.critiqueReport.items,
+          evidenceChains: generation.generationResult.evidenceChains,
+          targetRole: session.targetRole ?? body.targetRole ?? null,
+          clientState: body.clientState ?? {},
+        });
+        response.workspace.activePanel = "variants";
+        response.workspace.productGenerationId = generation.generation.id;
+        response.workspace.jdId = generation.jd.id;
+        response.raw.decisionIds = [generation.generation.id];
+        this.storeArtifactSnapshots(session.id, generation.variants);
+        this.applyNoVariantsWarning(response, generation.variants.length);
+        this.addIngestionTimeline(response, turnId, session, ingestionWarnings);
+        return response;
+      }
+      default:
+        return null;
+    }
+  }
+
+  private buildToolResponse(sessionId: string, turnId: string, result: ProductToolResult): CopilotChatResponse {
+    const now = new Date().toISOString();
+    const workspace: CopilotWorkspace = {
+      id: `ws-${sessionId}`,
+      sessionId,
+      variants: result.workspacePatch?.variants ?? this.getWorkspace(sessionId)?.variants ?? [],
+      status: "ready",
+      updatedAt: now,
+      activePanel: result.workspacePatch?.activePanel,
+      experiences: result.workspacePatch?.experiences,
+      jds: result.workspacePatch?.jds,
+      resumes: result.workspacePatch?.resumes,
+      activeResume: result.workspacePatch?.activeResume,
+      importCandidates: result.workspacePatch?.importCandidates,
+      productGenerationId: result.workspacePatch?.productGenerationId ?? this.getWorkspace(sessionId)?.productGenerationId,
+      jdId: result.workspacePatch?.jdId ?? this.getWorkspace(sessionId)?.jdId,
+      resumeId: result.workspacePatch?.resumeId ?? this.getWorkspace(sessionId)?.resumeId,
+    };
+    return {
+      sessionId,
+      turnId,
+      assistantMessage: {
+        id: `msg-${randomUUID()}`,
+        sessionId,
+        turnId,
+        role: "assistant",
+        content: result.assistantMessage,
+        kind: result.status === "needs_input" ? "clarifying_question" : "decision_summary",
+        createdAt: now,
+      },
+      timeline: result.timelineItems ?? [{
+        id: `tl-${turnId}-product`,
+        type: result.status === "failed" ? "warning" : "message_received",
+        title: result.toolName,
+        description: result.assistantMessage,
+        status: result.status === "failed" ? "failed" : "completed",
+        createdAt: now,
+      }],
+      workspace,
+      nextActions: result.nextActions ?? [],
+      raw: {
+        artifactIds: [],
+        evidenceChainIds: [],
+        critiqueItemIds: [],
+        decisionIds: [
+          ...(result.raw?.experienceIds ?? []),
+          ...(result.raw?.jdIds ?? []),
+          ...(result.raw?.resumeIds ?? []),
+          ...(result.raw?.generationIds ?? []),
+        ],
+      },
+    };
+  }
+
+  private addIngestionTimeline(
+    response: CopilotChatResponse,
+    turnId: string,
+    session: CopilotSession,
+    ingestionWarnings: string[],
+  ): void {
+    if (session.resumeIngested) {
+      response.timeline.push({
+        id: `tl-${turnId}-resume`,
+        type: "resume_ingested",
+        title: "Resume processed",
+        description: "Experiences, evidence, and skills extracted.",
+        status: "completed",
+        createdAt: new Date().toISOString(),
+      });
+    }
+    for (const w of ingestionWarnings) {
+      response.timeline.push({
+        id: `tl-${turnId}-warn-${response.timeline.length}`,
+        type: "warning",
+        title: "Warning",
+        description: w,
+        status: "completed",
+        createdAt: new Date().toISOString(),
+      });
+    }
+  }
+
   private applyNoVariantsWarning(response: CopilotChatResponse, artifactCount: number): void {
     if (artifactCount > 0) return;
     const now = new Date().toISOString();
@@ -774,4 +950,36 @@ export class CopilotOrchestrator {
   private artifactSnapshotKey(sessionId: string, artifactId: string): string {
     return `${sessionId}:${artifactId}`;
   }
+}
+
+function parseExperienceFromMessage(message: string): {
+  title?: string;
+  category?: string;
+  content?: string;
+} {
+  const content = message
+    .replace(/^(请)?(帮我)?(保存这段经历|加入经历库|添加经历到经历库|添加经历)[:：\s]*/u, "")
+    .trim();
+  const safeContent = content.length > 0 ? content : message.trim();
+  return {
+    title: safeContent.split(/\r?\n/)[0]?.slice(0, 80),
+    category: safeContent.toLowerCase().includes("project") || safeContent.includes("项目") ? "project" : "work",
+    content: safeContent,
+  };
+}
+
+function parseProductExperienceFromMessage(message: string): {
+  title?: string;
+  category?: string;
+  content?: string;
+} {
+  const content = message
+    .replace(/^(请)?(帮我)?(保存这段经历|加入经历库|添加经历到经历库|添加经历)[:：\s]*/u, "")
+    .trim();
+  const safeContent = content.length > 0 ? content : message.trim();
+  return {
+    title: safeContent.split(/\r?\n/)[0]?.slice(0, 80),
+    category: safeContent.toLowerCase().includes("project") || safeContent.includes("项目") ? "project" : "work",
+    content: safeContent,
+  };
 }

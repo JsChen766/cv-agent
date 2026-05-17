@@ -1,6 +1,6 @@
 # Coolto CV Agent Contract
 
-> Status: Draft v0.2, P8.0-P9 implemented through LLM-backed agents, streaming generation, artifact decisions, product copilot backend, CopilotOrchestrator, and product-level SSE stream  
+> Status: Draft v0.2, P8.0-P10.1 implemented through LLM-backed agents, streaming generation, artifact decisions, product copilot backend, product asset loop, CopilotOrchestrator, and product-level SSE stream  
 > Scope: frontend ↔ backend API ↔ cv-agent kernel / SDK  
 > Principle: backend owns authentication and request context; Agent Kernel owns document ingestion, experience knowledge, generation, evidence chains, and graph projections.
 
@@ -1358,11 +1358,146 @@ Each variant includes:
 
 ### P10 Product Backend
 
+#### P10.1 Minimal Product Asset Loop
+
+Status: implemented.
+
+P10.1 introduces the product business asset layer that sits beside the Agent Kernel. It exists so Coolto Copilot can behave like a chat-first job-search copilot while still preserving durable user assets.
+
+The old CVhub concepts are mapped into product assets:
+
+- Experience library -> `product_experience`, `product_experience_revision`, `product_experience_variant`
+- JD history -> `product_jd`
+- Resume drafts -> `product_resume`, `product_resume_item`
+- Resume/text import -> `product_import_job`, `product_import_candidate`
+- Generation tracking -> `product_generation`
+- Export jobs -> future `product_export_job`
+
+Product tables:
+
+```text
+product_experience
+product_experience_revision
+product_experience_variant
+product_jd
+product_resume
+product_resume_item
+product_generation
+product_import_job
+product_import_candidate
+product_resume_template
+```
+
+Hard rules:
+
+1. Product tables are user-scoped.
+2. PostgreSQL product schema has no database-level foreign keys.
+3. LLMs and agents do not write product tables directly.
+4. Product writes go through Services and Repositories.
+5. The experience library stores stable user assets.
+6. JD-tailored results are saved into `product_resume_item.content_snapshot`; they do not overwrite `product_experience_revision`.
+7. Agent Kernel owns intelligence: extraction, generation, critique, revision, evidence chains.
+8. Product Layer owns business state: experiences, JDs, resumes, resume item snapshots, import candidates, generation records.
+9. Default tests must not require Neon or a real LLM provider.
+
+Product APIs:
+
+```text
+GET /product/experiences
+POST /product/experiences
+GET /product/experiences/:id
+PATCH /product/experiences/:id
+POST /product/experiences/:id/revisions
+POST /product/experiences/:id/variants
+
+GET /product/jds
+POST /product/jds
+GET /product/jds/:id
+
+GET /product/resumes
+POST /product/resumes
+GET /product/resumes/:id
+POST /product/resumes/:id/items
+PATCH /product/resume-items/:id
+POST /product/resumes/:id/reorder
+
+POST /product/imports/text
+GET /product/imports/:id
+POST /product/import-candidates/:id/accept
+POST /product/import-candidates/:id/reject
+
+POST /product/generations/from-jd
+POST /product/generations/:id/accept-variant
+```
+
+Copilot product tools:
+
+```text
+create_experience
+list_experiences
+import_resume_text
+accept_import_candidate
+save_jd
+list_jds
+create_resume_from_jd
+save_variant_to_resume
+list_resumes
+open_resume
+```
+
+`/copilot/chat` now runs a deterministic `ProductIntentRouter` before the legacy generation fallback. Supported product intents include adding an experience, listing experiences, importing resume text, saving a JD, generating variants for a JD, accepting a variant into a resume draft, listing resumes, and opening product workspaces. The response envelope remains the P9 `CopilotChatResponse`; new workspace fields are additive and `workspace.variants` remains compatible with the minimal frontend.
+
+`/copilot/actions` keeps P9 actions. Accepting a generated variant also saves it to a product resume draft when the current workspace is tied to a `product_generation`.
+
+Curl examples:
+
+```bash
+curl -X POST http://127.0.0.1:3000/product/experiences \
+  -H "content-type: application/json" \
+  -H "x-user-id: demo-user" \
+  -d '{"title":"React performance","content":"Built React and TypeScript systems and reduced bundle size by 40%."}'
+
+curl -H "x-user-id: demo-user" http://127.0.0.1:3000/product/experiences
+
+curl -X POST http://127.0.0.1:3000/product/jds \
+  -H "content-type: application/json" \
+  -H "x-user-id: demo-user" \
+  -d '{"rawText":"Looking for React, TypeScript and performance optimization.","targetRole":"Frontend Engineer"}'
+
+curl -X POST http://127.0.0.1:3000/product/resumes \
+  -H "content-type: application/json" \
+  -H "x-user-id: demo-user" \
+  -d '{"title":"Frontend Engineer draft","targetRole":"Frontend Engineer"}'
+
+curl -X POST http://127.0.0.1:3000/product/resumes/:resumeId/items \
+  -H "content-type: application/json" \
+  -H "x-user-id: demo-user" \
+  -d '{"title":"React performance","contentSnapshot":"Reduced bundle size by 40%."}'
+
+curl -X POST http://127.0.0.1:3000/copilot/chat \
+  -H "content-type: application/json" \
+  -H "x-user-id: demo-user" \
+  -d '{"message":"查看我的经历库","jdText":"React role"}'
+
+curl -X POST http://127.0.0.1:3000/copilot/chat \
+  -H "content-type: application/json" \
+  -H "x-user-id: demo-user" \
+  -d '{"message":"根据这个 JD 生成简历","jdText":"Looking for React TypeScript performance optimization.","targetRole":"Frontend Engineer"}'
+
+curl -X POST http://127.0.0.1:3000/copilot/chat \
+  -H "content-type: application/json" \
+  -H "x-user-id: demo-user" \
+  -d '{"message":"查看历史简历","jdText":"React role"}'
+```
+
+Future P10 work:
+
 - Multipart upload.
 - Object storage.
 - Rate limit.
 - Logging/tracing.
 - Production auth.
+- PDF export and product export jobs.
 
 ---
 
