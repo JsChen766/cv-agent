@@ -35,7 +35,8 @@ export class ProductIntentRouter {
     if (contains(original, ["这是我的简历", "导入简历"]) || message.includes("import resume") || (body.resumeText && body.resumeText.length > 120 && !body.jdText)) {
       return { intent: "import_resume", confidence: 0.85 };
     }
-    if ((contains(original, ["保存JD", "保存 JD", "这个JD", "岗位描述"]) || message.includes("save jd")) && body.jdText) {
+    const asksToGenerate = contains(original, ["生成简历", "根据JD", "根据 JD", "投递", "改写"]) || message.includes("generate");
+    if (!asksToGenerate && (contains(original, ["保存JD", "保存 JD", "这个JD", "这个 JD", "岗位描述"]) || message.includes("save jd"))) {
       return { intent: "save_jd", confidence: 0.85 };
     }
     if (contains(original, ["历史简历", "之前生成", "简历列表"]) || message.includes("resumes")) {
@@ -44,7 +45,7 @@ export class ProductIntentRouter {
     if ((contains(original, ["保存这个版本", "采用这个版本"]) || message.includes("save this version")) && body.clientState?.activeVariantId) {
       return { intent: "save_variant_to_resume", confidence: 0.8 };
     }
-    if ((contains(original, ["生成简历", "根据JD", "根据 JD", "投递", "改写"]) || message.includes("generate")) && body.jdText) {
+    if (asksToGenerate) {
       return { intent: "generate_resume_for_jd", confidence: 0.95 };
     }
     if (contains(original, ["查看 JD", "JD 列表", "历史 JD"]) || message.includes("list jds")) {

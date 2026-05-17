@@ -167,54 +167,23 @@ export class CopilotOrchestrator {
     const userMsg = this.createUserMessage(session.id, body.message);
     const turn = this.createTurn(session.id, userMsg.id);
 
+    const productIntent = this.intentRouter.route(body);
     const hasResume = Boolean(session.resumeText || body.resumeText);
     const hasJD = Boolean(session.jdText || body.jdText);
 
-    // Missing info → clarifying question
-    if (!hasResume && !hasJD) {
-      const response = this.builder.buildClarifyingQuestion(
-        session.id, turn.id,
-        "Could you paste your resume or a job description so I can help tailor your experience?",
-      );
-      this.saveMessage(response.assistantMessage);
-      this.completeTurn(turn.id, response.assistantMessage.id);
-      return { ...response, ingestionWarnings };
-    }
-
-    if (!hasJD) {
-      const response = this.builder.buildClarifyingQuestion(
-        session.id, turn.id,
-        "I see you've shared your background. Could you also paste the job description you're targeting?",
-      );
-      this.saveMessage(response.assistantMessage);
-      this.completeTurn(turn.id, response.assistantMessage.id);
-      return { ...response, ingestionWarnings };
-    }
-
-    // Import resume only if not already ingested this session
-    if (hasResume && !session.resumeIngested) {
-      try {
-        const ingestResult = await this.kernel.cvAgentKernel.documents.ingest(ctx, {
-          message: "Import resume.",
-          documents: [{
-            userId: ctx.user.id,
-            fileName: "copilot-resume.txt",
-            mimeType: "text/plain",
-            sourceRef: `copilot:${session.id}`,
-            buffer: new TextEncoder().encode(session.resumeText!),
-          }],
-        });
-        session.resumeIngested = true;
-        session.resumeDocumentIds = ingestResult.extractedDocuments.map(d => d.documentId);
-        session.resumeArtifactIds = ingestResult.evidences?.map(e => e.id) ?? [];
-        session.updatedAt = new Date().toISOString();
-      } catch (err) {
-        ingestionWarnings.push(`Resume ingestion failed: ${err instanceof Error ? err.message : "unknown error"}`);
-      }
-    }
-
-    const productIntent = this.intentRouter.route(body);
     if (this.shouldHandleProductIntent(productIntent.intent)) {
+      if (productIntent.intent === "generate_resume_for_jd" && !hasJD) {
+        const response = this.builder.buildClarifyingQuestion(
+          session.id, turn.id,
+          "Please paste the job description so I can generate tailored resume variants.",
+        );
+        this.saveMessage(response.assistantMessage);
+        this.completeTurn(turn.id, response.assistantMessage.id);
+        return { ...response, ingestionWarnings };
+      }
+      if (productIntent.intent === "generate_resume_for_jd") {
+        await this.ingestResumeIfNeeded(ctx, session, ingestionWarnings);
+      }
       const productResponse = await this.handleProductIntent(ctx, session, turn.id, body, productIntent.intent, ingestionWarnings);
       if (productResponse) {
         this.saveMessage(productResponse.assistantMessage);
@@ -223,6 +192,20 @@ export class CopilotOrchestrator {
         return { ...productResponse, ingestionWarnings };
       }
     }
+
+    if (!hasJD) {
+      const response = this.builder.buildClarifyingQuestion(
+        session.id, turn.id,
+        hasResume
+          ? "I see you've shared your background. Could you also paste the job description you're targeting?"
+          : "Could you paste your resume or a job description so I can help tailor your experience?",
+      );
+      this.saveMessage(response.assistantMessage);
+      this.completeTurn(turn.id, response.assistantMessage.id);
+      return { ...response, ingestionWarnings };
+    }
+
+    await this.ingestResumeIfNeeded(ctx, session, ingestionWarnings);
 
     const generationResult = await this.generateVariantsForCopilot(ctx, session, body);
 
@@ -785,6 +768,32 @@ export class CopilotOrchestrator {
     });
   }
 
+  private async ingestResumeIfNeeded(
+    ctx: KernelRequestContext,
+    session: CopilotSession,
+    ingestionWarnings: string[],
+  ): Promise<void> {
+    if (!session.resumeText || session.resumeIngested) return;
+    try {
+      const ingestResult = await this.kernel.cvAgentKernel.documents.ingest(ctx, {
+        message: "Import resume.",
+        documents: [{
+          userId: ctx.user.id,
+          fileName: "copilot-resume.txt",
+          mimeType: "text/plain",
+          sourceRef: `copilot:${session.id}`,
+          buffer: new TextEncoder().encode(session.resumeText),
+        }],
+      });
+      session.resumeIngested = true;
+      session.resumeDocumentIds = ingestResult.extractedDocuments.map(d => d.documentId);
+      session.resumeArtifactIds = ingestResult.evidences?.map(e => e.id) ?? [];
+      session.updatedAt = new Date().toISOString();
+    } catch (err) {
+      ingestionWarnings.push(`Resume ingestion failed: ${err instanceof Error ? err.message : "unknown error"}`);
+    }
+  }
+
   private shouldHandleProductIntent(intent: ProductIntent): boolean {
     return intent !== "unknown" && intent !== "save_variant_to_resume";
   }
@@ -810,7 +819,7 @@ export class CopilotOrchestrator {
         return this.buildToolResponse(session.id, turnId, await this.productTools.importResumeText(ctx.user.id, body.resumeText ?? body.message));
       case "save_jd":
         return this.buildToolResponse(session.id, turnId, await this.productTools.saveJD(ctx.user.id, {
-          rawText: body.jdText,
+          rawText: session.jdText ?? body.jdText ?? extractJDTextFromMessage(body.message),
           targetRole: session.targetRole ?? body.targetRole ?? undefined,
         }));
       case "generate_resume_for_jd": {
@@ -982,4 +991,11 @@ function parseProductExperienceFromMessage(message: string): {
     category: safeContent.toLowerCase().includes("project") || safeContent.includes("项目") ? "project" : "work",
     content: safeContent,
   };
+}
+
+function extractJDTextFromMessage(message: string): string | undefined {
+  const content = message
+    .replace(/^(请)?(帮我)?(保存\s?JD|保存这个\s?JD|这是\s?JD|岗位描述)[:：\s]*/iu, "")
+    .trim();
+  return content.length >= 20 ? content : undefined;
 }

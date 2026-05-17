@@ -1,4 +1,4 @@
-import type { PostgresDatabase } from "../../persistence/postgres/PostgresDatabase.js";
+import type { PostgresDatabase, PostgresQueryable } from "../../persistence/postgres/PostgresDatabase.js";
 import { jsonValue, optionalText, text, timestamp, type PgRow } from "../../persistence/postgres/rowUtils.js";
 import type {
   ProductExperience,
@@ -20,7 +20,7 @@ import type {
   ProductResumeRepository,
 } from "./index.js";
 
-type Db = Pick<PostgresDatabase, "query">;
+type Db = Pick<PostgresDatabase, "query"> & Partial<Pick<PostgresDatabase, "transaction">>;
 
 export class PostgresProductExperienceRepository implements ProductExperienceRepository {
   public constructor(private readonly database: Db) {}
@@ -44,6 +44,20 @@ export class PostgresProductExperienceRepository implements ProductExperienceRep
       ],
     );
     return record;
+  }
+
+  public async createExperienceWithRevision(record: ProductExperience, revision: ProductExperienceRevision): Promise<{ experience: ProductExperience; revision: ProductExperienceRevision }> {
+    if (this.database.transaction) {
+      return this.database.transaction(async (client: PostgresQueryable) => {
+        const repository = new PostgresProductExperienceRepository(client);
+        const experience = await repository.createExperience(record);
+        const createdRevision = await repository.createRevision(revision);
+        return { experience, revision: createdRevision };
+      });
+    }
+    const experience = await this.createExperience(record);
+    const createdRevision = await this.createRevision(revision);
+    return { experience, revision: createdRevision };
   }
 
   public async listExperiencesByUser(userId: string, options: ListOptions & { status?: ProductExperience["status"] } = {}): Promise<ProductExperience[]> {

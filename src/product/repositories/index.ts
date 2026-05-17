@@ -14,6 +14,7 @@ export type ListOptions = { limit?: number };
 
 export interface ProductExperienceRepository {
   createExperience(record: ProductExperience): Promise<ProductExperience>;
+  createExperienceWithRevision(record: ProductExperience, revision: ProductExperienceRevision): Promise<{ experience: ProductExperience; revision: ProductExperienceRevision }>;
   listExperiencesByUser(userId: string, options?: ListOptions & { status?: ProductExperience["status"] }): Promise<ProductExperience[]>;
   getExperienceById(userId: string, id: string): Promise<ProductExperience | null>;
   updateExperience(userId: string, id: string, patch: Partial<ProductExperience>): Promise<ProductExperience | null>;
@@ -69,6 +70,12 @@ export class InMemoryProductExperienceRepository implements ProductExperienceRep
   public async createExperience(record: ProductExperience): Promise<ProductExperience> {
     this.experiences.set(record.id, record);
     return record;
+  }
+
+  public async createExperienceWithRevision(record: ProductExperience, revision: ProductExperienceRevision): Promise<{ experience: ProductExperience; revision: ProductExperienceRevision }> {
+    this.experiences.set(record.id, record);
+    this.revisions.set(revision.id, revision);
+    return { experience: record, revision };
   }
 
   public async listExperiencesByUser(userId: string, options: ListOptions & { status?: ProductExperience["status"] } = {}): Promise<ProductExperience[]> {

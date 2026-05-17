@@ -170,7 +170,7 @@ describe("POST /copilot/chat", () => {
     const response = await server.inject({
       method: "POST", url: "/copilot/chat",
       headers: { "x-user-id": "user-1" },
-      payload: { message: "查看我的经历库", jdText: "React role" },
+      payload: { message: "查看我的经历库" },
     });
     expect(response.statusCode).toBe(200);
     const body = response.json() as ApiSuccess<CopilotChatResponse>;
@@ -182,7 +182,7 @@ describe("POST /copilot/chat", () => {
     const response = await server.inject({
       method: "POST", url: "/copilot/chat",
       headers: { "x-user-id": "user-1" },
-      payload: { message: "查看历史简历", jdText: "React role" },
+      payload: { message: "查看历史简历" },
     });
     expect(response.statusCode).toBe(200);
     const body = response.json() as ApiSuccess<CopilotChatResponse>;
@@ -213,7 +213,6 @@ describe("POST /copilot/chat", () => {
       headers: { "x-user-id": "user-1" },
       payload: {
         message: "保存这段经历到经历库：Built React and TypeScript systems and reduced bundle size by 40%.",
-        jdText: "React role",
       },
     });
     const body = response.json() as ApiSuccess<CopilotChatResponse>;
@@ -228,7 +227,6 @@ describe("POST /copilot/chat", () => {
       payload: {
         message: "导入简历",
         resumeText: "Built React systems.\n\nReduced bundle size by 40%.",
-        jdText: "React role",
       },
     });
     const body = response.json() as ApiSuccess<CopilotChatResponse>;

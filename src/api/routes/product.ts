@@ -4,6 +4,12 @@ import { success } from "../response.js";
 import type { ApiKernel } from "../types.js";
 import type { AuthResolver } from "../auth/index.js";
 import { createKernelRequestContext } from "../context.js";
+import type {
+  ProductExperienceCategory,
+  ProductExperienceRevisionSource,
+  ProductExperienceVariantType,
+  ProductResumeItem,
+} from "../../product/types.js";
 
 export async function registerProductRoutes(
   app: FastifyInstance,
@@ -22,7 +28,7 @@ export async function registerProductRoutes(
     const data = await kernel.productServices.experienceService.createExperience(ctx.user.id, {
       title: requiredString(body.title, "title"),
       content: requiredString(body.content, "content"),
-      category: optionalString(body.category) as never,
+      category: readCategory(body.category),
       organization: optionalString(body.organization),
       role: optionalString(body.role),
       tags: stringArray(body.tags),
@@ -59,7 +65,7 @@ export async function registerProductRoutes(
     const body = requireRecord(request.body);
     const revision = await kernel.productServices.experienceService.createRevision(ctx.user.id, param(request, "id"), {
       content: requiredString(body.content, "content"),
-      source: optionalString(body.source) as never,
+      source: readRevisionSource(body.source),
     });
     return productSuccess(revision, kernel, ctx);
   });
@@ -69,8 +75,8 @@ export async function registerProductRoutes(
     const body = requireRecord(request.body);
     const variant = await kernel.productServices.experienceService.createVariant(ctx.user.id, param(request, "id"), requiredString(body.revisionId, "revisionId"), {
       content: requiredString(body.content, "content"),
-      variantType: optionalString(body.variantType) as never,
-      language: optionalString(body.language) as never,
+      variantType: readVariantType(body.variantType),
+      language: readLanguage(body.language),
       targetJdId: optionalString(body.targetJdId),
     });
     return productSuccess(variant, kernel, ctx);
@@ -128,7 +134,7 @@ export async function registerProductRoutes(
     const item = await kernel.productServices.resumeService.addResumeItem(ctx.user.id, param(request, "id"), {
       title: requiredString(body.title, "title"),
       contentSnapshot: requiredString(body.contentSnapshot, "contentSnapshot"),
-      sectionType: optionalString(body.sectionType) as never,
+      sectionType: readSectionType(body.sectionType),
       sourceExperienceId: optionalString(body.sourceExperienceId),
       sourceVariantId: optionalString(body.sourceVariantId),
       sourceArtifactId: optionalString(body.sourceArtifactId),
@@ -238,6 +244,34 @@ function optionalString(value: unknown): string | undefined {
 
 function stringArray(value: unknown): string[] {
   return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
+}
+
+function readCategory(value: unknown): ProductExperienceCategory | undefined {
+  return readEnum(value, "category", ["work", "project", "education", "award", "skill", "other"]);
+}
+
+function readRevisionSource(value: unknown): ProductExperienceRevisionSource | undefined {
+  return readEnum(value, "source", ["manual", "import", "copilot", "resume_upload"]);
+}
+
+function readVariantType(value: unknown): ProductExperienceVariantType | undefined {
+  return readEnum(value, "variantType", ["full", "medium", "short", "jd_tailored", "custom"]);
+}
+
+function readLanguage(value: unknown): "zh" | "en" | undefined {
+  return readEnum(value, "language", ["zh", "en"]);
+}
+
+function readSectionType(value: unknown): ProductResumeItem["sectionType"] | undefined {
+  return readEnum(value, "sectionType", ["experience", "education", "project", "skill", "award", "summary", "other"]);
+}
+
+function readEnum<const T extends string>(value: unknown, name: string, allowed: readonly T[]): T | undefined {
+  if (value === undefined || value === null || value === "") return undefined;
+  if (typeof value !== "string" || !allowed.includes(value as T)) {
+    throw new ApiError("INVALID_BODY", `${name} must be one of: ${allowed.join(", ")}.`, 400);
+  }
+  return value as T;
 }
 
 function param(request: FastifyRequest, name: string): string {

@@ -1,4 +1,5 @@
 import type { KernelRequestContext } from "../../kernel/context.js";
+import type { GeneratedArtifact } from "../../knowledge/types.js";
 import type { ProductAction, ProductTimelineItem, ProductVariant } from "../../copilot/types.js";
 import type { ProductServices } from "../services/index.js";
 import type {
@@ -33,6 +34,7 @@ export type ProductToolResult = {
     resumeIds?: string[];
     generationIds?: string[];
   };
+  generatedArtifacts?: GeneratedArtifact[];
 };
 
 export class ProductToolRegistry {
@@ -125,7 +127,7 @@ export class ProductToolRegistry {
     };
   }
 
-  public async createResumeFromJD(ctx: KernelRequestContext, input: { sessionId?: string; jdText?: string; jdId?: string; targetRole?: string; variants: ProductVariant[] }): Promise<ProductToolResult> {
+  public async createResumeFromJD(ctx: KernelRequestContext, input: { sessionId?: string; jdText?: string; jdId?: string; targetRole?: string }): Promise<ProductToolResult> {
     const result = await this.services.generationProductService.generateResumeFromJD(ctx, {
       userId: ctx.user.id,
       sessionId: input.sessionId,
@@ -139,11 +141,11 @@ export class ProductToolRegistry {
       assistantMessage: `已根据 JD 生成 ${result.variants.length} 个候选版本。`,
       workspacePatch: {
         activePanel: "variants",
-        variants: input.variants,
         productGenerationId: result.generation.id,
         jdId: result.jd.id,
       },
       raw: { generationIds: [result.generation.id], jdIds: [result.jd.id] },
+      generatedArtifacts: result.variants,
     };
   }
 

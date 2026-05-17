@@ -68,9 +68,7 @@ export class ExperienceService {
       source: input.source ?? "manual",
       createdAt: now,
     };
-    await this.repository.createExperience(experience);
-    await this.repository.createRevision(revision);
-    return { experience, revision };
+    return this.repository.createExperienceWithRevision(experience, revision);
   }
 
   public async listExperiences(userId: string, filters: { limit?: number; status?: ProductExperience["status"] } = {}): Promise<Array<ProductExperience & { content?: string }>> {
@@ -414,6 +412,8 @@ export class GenerationProductService {
       metadata: { generationId: generation.id },
     });
     const selected = Array.from(new Set([...generation.selectedVariantIds, variant.id]));
+    // TODO(P10): move resume creation, item creation, and generation attachment into a
+    // product unit-of-work when product repositories share a transaction runner.
     await this.repository.updateGenerationSelection(userId, generation.id, selected);
     const attached = await this.repository.attachResume(userId, generation.id, targetResume.id);
     return { generation: attached ?? generation, resume: targetResume, item, variant };

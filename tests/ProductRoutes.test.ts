@@ -105,4 +105,18 @@ describe("Product API routes", () => {
     expect(data.generationId).toMatch(/^pgen-/);
     expect(data.variants.length).toBeGreaterThan(0);
   });
+
+  it("rejects invalid product enum values", async () => {
+    const response = await server.inject({
+      method: "POST",
+      url: "/product/experiences",
+      headers: { "x-user-id": "user-1" },
+      payload: { title: "Bad category", content: "Built systems.", category: "invalid" },
+    });
+    expect(response.statusCode).toBe(400);
+    expect(response.json()).toMatchObject({
+      ok: false,
+      error: { code: "INVALID_BODY" },
+    });
+  });
 });
