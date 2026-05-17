@@ -32,7 +32,7 @@ describe("GET /debug/agent-modes", () => {
     await kernel.close();
   });
 
-  it("returns flat data with provider, database, runtimeMode, agent modes", async () => {
+  it("returns flat data with provider, database, runtimeMode, nodeEnv, agent modes", async () => {
     const response = await server.inject({ method: "GET", url: "/debug/agent-modes" });
     expect(response.statusCode).toBe(200);
     const body = response.json() as ApiSuccess<Record<string, unknown>>;
@@ -42,6 +42,7 @@ describe("GET /debug/agent-modes", () => {
     expect(typeof d.provider).toBe("string");
     expect(typeof d.database).toBe("string");
     expect(typeof d.runtimeMode).toBe("string");
+    expect(typeof d.nodeEnv).toBe("string");
     expect(typeof d.frontDeskMode).toBe("string");
     expect(typeof d.experienceExtractorMode).toBe("string");
     expect(typeof d.artifactGeneratorMode).toBe("string");
@@ -134,6 +135,14 @@ describe("POST /copilot/chat", () => {
     expect(d.timeline.length).toBeGreaterThan(0);
     expect(d.workspace.sessionId).toBe(d.sessionId);
     expect(Array.isArray(d.raw.artifactIds)).toBe(true);
+    const actionTypes = d.nextActions.map((action) => action.type);
+    expect(actionTypes).toEqual(expect.arrayContaining([
+      "accept",
+      "show_evidence",
+      "explain_choice",
+      "revise_more_conservative",
+    ]));
+    expect(JSON.stringify(body)).not.toContain("_artifactSnapshot");
   });
 
   it("reuses existing session when sessionId is provided", async () => {
@@ -189,6 +198,8 @@ describe("POST /copilot/actions", () => {
   let kernel: ApiKernel;
   let server: Awaited<ReturnType<typeof createServer>>;
   let sessionId: string;
+  let variantId: string;
+  let initialVariantCount: number;
 
   beforeEach(async () => {
     setupEnv();
@@ -205,7 +216,12 @@ describe("POST /copilot/actions", () => {
         targetRole: "Frontend Engineer",
       },
     });
-    sessionId = (chatResponse.json() as ApiSuccess<CopilotChatResponse>).data.sessionId;
+    const chatData = (chatResponse.json() as ApiSuccess<CopilotChatResponse>).data;
+    sessionId = chatData.sessionId;
+    const firstVariant = chatData.workspace.variants[0];
+    expect(firstVariant).toBeDefined();
+    variantId = firstVariant!.id;
+    initialVariantCount = chatData.workspace.variants.length;
   });
 
   afterEach(async () => {
@@ -217,19 +233,20 @@ describe("POST /copilot/actions", () => {
     const response = await server.inject({
       method: "POST", url: "/copilot/actions",
       headers: { "x-user-id": "user-1" },
-      payload: { sessionId, action: { type: "accept", variantId: "any-variant-id" } },
+      payload: { sessionId, action: { type: "accept", variantId } },
     });
     expect(response.statusCode).toBe(200);
     const body = response.json() as ApiSuccess<CopilotChatResponse>;
     expect(body.data.assistantMessage.kind).toBe("decision_summary");
     expect(body.data.timeline.some(t => t.type === "decision_recorded")).toBe(true);
+    expect(body.data.workspace.variants.find((variant) => variant.id === variantId)?.status).toBe("accepted");
   });
 
   it("rejects a variant", async () => {
     const response = await server.inject({
       method: "POST", url: "/copilot/actions",
       headers: { "x-user-id": "user-1" },
-      payload: { sessionId, action: { type: "reject", variantId: "any-variant-id" } },
+      payload: { sessionId, action: { type: "reject", variantId } },
     });
     expect(response.statusCode).toBe(200);
   });
@@ -238,7 +255,7 @@ describe("POST /copilot/actions", () => {
     const response = await server.inject({
       method: "POST", url: "/copilot/actions",
       headers: { "x-user-id": "user-1" },
-      payload: { sessionId, action: { type: "prefer", variantId: "any-variant-id" } },
+      payload: { sessionId, action: { type: "prefer", variantId } },
     });
     expect(response.statusCode).toBe(200);
   });
@@ -247,11 +264,40 @@ describe("POST /copilot/actions", () => {
     const response = await server.inject({
       method: "POST", url: "/copilot/actions",
       headers: { "x-user-id": "user-1" },
-      payload: { sessionId, action: { type: "show_evidence", variantId: "any-variant-id" } },
+      payload: { sessionId, action: { type: "show_evidence", variantId } },
     });
     expect(response.statusCode).toBe(200);
     const body = response.json() as ApiSuccess<CopilotChatResponse>;
     expect(body.data.assistantMessage.kind).toBe("evidence_explanation");
+    expect(body.data.workspace.variants.length).toBeGreaterThan(0);
+  });
+
+  it("explain_choice returns a populated workspace", async () => {
+    const response = await server.inject({
+      method: "POST", url: "/copilot/actions",
+      headers: { "x-user-id": "user-1" },
+      payload: { sessionId, action: { type: "explain_choice", variantId } },
+    });
+    expect(response.statusCode).toBe(200);
+    const body = response.json() as ApiSuccess<CopilotChatResponse>;
+    expect(body.data.workspace.variants.length).toBeGreaterThan(0);
+  });
+
+  it("revises a real variant using the private artifact snapshot", async () => {
+    const response = await server.inject({
+      method: "POST", url: "/copilot/actions",
+      headers: { "x-user-id": "user-1" },
+      payload: { sessionId, action: { type: "revise_more_conservative", variantId } },
+    });
+    expect(response.statusCode).toBe(200);
+    const body = response.json() as ApiSuccess<CopilotChatResponse>;
+    const json = JSON.stringify(body);
+    expect(json).not.toContain("Source artifact snapshot not available");
+    expect(json).not.toContain("_artifactSnapshot");
+    expect(
+      body.data.workspace.variants.length > initialVariantCount ||
+        body.data.timeline.some((item) => item.type === "revision_completed"),
+    ).toBe(true);
   });
 
   it("revision does not fail when lastGenArtifacts is not used", async () => {
@@ -304,6 +350,7 @@ describe("POST /copilot/chat/stream", () => {
     const body = response.body;
     expect(body).toContain("event: copilot.turn.started");
     expect(body).toContain("event: copilot.completed");
+    expect(body).toContain("event: copilot.action.required");
     expect(body).toContain('"type":"copilot.turn.started"');
     expect(body).toContain('"type":"copilot.completed"');
   });
@@ -399,6 +446,7 @@ describe("CopilotChatResponse safety", () => {
     expect(json).not.toContain("chain-of-thought");
     expect(json).not.toContain("reasoning_content");
     expect(json).not.toContain("internal_prompt");
+    expect(json).not.toContain("_artifactSnapshot");
     checkNoLeaks(body, "response");
   });
 

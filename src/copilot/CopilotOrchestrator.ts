@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { ApiKernel } from "../api/types.js";
 import type { KernelRequestContext } from "../kernel/context.js";
-import type { GeneratedArtifact, EvidenceChain } from "../knowledge/types.js";
+import type { GeneratedArtifact } from "../knowledge/types.js";
 import type { ArtifactCritiqueItem } from "../application/critique/types.js";
 import type { ArtifactDecisionRecord } from "../application/decisions/index.js";
 import { CopilotResponseBuilder } from "./CopilotResponseBuilder.js";
@@ -13,7 +13,6 @@ import type {
   CopilotChatResponse,
   CopilotActionRequest,
   CopilotChatRequest,
-  ProductAction,
   ProductVariant,
 } from "./types.js";
 
@@ -26,6 +25,7 @@ export class CopilotOrchestrator {
   private readonly turns = new Map<string, CopilotTurn>();
   private readonly sessionMessages = new Map<string, CopilotMessage[]>();
   private readonly workspaces = new Map<string, CopilotWorkspace>();
+  private readonly artifactSnapshots = new Map<string, GeneratedArtifact>();
   private readonly builder = new CopilotResponseBuilder();
   private readonly kernel: ApiKernel;
 
@@ -230,13 +230,7 @@ export class CopilotOrchestrator {
       clientState: body.clientState ?? {},
     });
 
-    // Store a snapshot of each artifact in variant.raw for future revision use
-    const artifactMap = new Map(generatedArtifacts.map(a => [a.id, a]));
-    for (const variant of response.workspace.variants) {
-      if (variant.artifactId && artifactMap.has(variant.artifactId)) {
-        variant.raw._artifactSnapshot = artifactMap.get(variant.artifactId) as unknown as Record<string, unknown>;
-      }
-    }
+    this.storeArtifactSnapshots(session.id, generatedArtifacts);
 
     // Add ingestion timeline items
     if (session.resumeIngested) {
@@ -379,16 +373,18 @@ export class CopilotOrchestrator {
         targetRole: session.targetRole ?? body.targetRole ?? "Target Role",
       });
 
+      const generatedArtifacts = frontDeskResponse.artifacts ?? [];
       const response = this.builder.buildChatResponse({
         sessionId: session.id,
         turnId: turn.id,
         userMessage: body.message,
-        generatedArtifacts: frontDeskResponse.artifacts ?? [],
+        generatedArtifacts,
         critiqueItems: frontDeskResponse.critiqueReport?.items ?? [],
         evidenceChains: frontDeskResponse.evidenceChains ?? [],
         targetRole: session.targetRole ?? body.targetRole ?? null,
         clientState: body.clientState ?? {},
       });
+      this.storeArtifactSnapshots(session.id, generatedArtifacts);
 
       this.saveMessage(response.assistantMessage);
       this.saveWorkspace(response.workspace);
@@ -533,8 +529,7 @@ export class CopilotOrchestrator {
       return this.errorResponse(session.id, turnId, "Variant not found or has no underlying artifact.");
     }
 
-    // Get artifact from variant.raw snapshot (stored at generation time)
-    const artifactSnapshot = variant.raw?._artifactSnapshot as unknown as GeneratedArtifact | undefined;
+    const artifactSnapshot = this.artifactSnapshots.get(this.artifactSnapshotKey(session.id, variant.artifactId));
     if (!artifactSnapshot) {
       return this.errorResponse(session.id, turnId, "Source artifact snapshot not available for revision.");
     }
@@ -554,8 +549,7 @@ export class CopilotOrchestrator {
     const revisedVariant = this.builder.buildVariant({ artifact: revisedArtifact, targetRole: session.targetRole });
     revisedVariant.role = "experimental";
     revisedVariant.badges.unshift({ label: "Revised", tone: "neutral" });
-    // Store the revised artifact snapshot for future revisions
-    revisedVariant.raw._artifactSnapshot = revisedArtifact as unknown as Record<string, unknown>;
+    this.storeArtifactSnapshots(session.id, [revisedArtifact]);
 
     const ws = this.getWorkspace(session.id);
     if (ws) {
@@ -748,5 +742,15 @@ export class CopilotOrchestrator {
       nextActions: [],
       raw: { artifactIds: [], evidenceChainIds: [], critiqueItemIds: [], decisionIds: [] },
     };
+  }
+
+  private storeArtifactSnapshots(sessionId: string, artifacts: GeneratedArtifact[]): void {
+    for (const artifact of artifacts) {
+      this.artifactSnapshots.set(this.artifactSnapshotKey(sessionId, artifact.id), artifact);
+    }
+  }
+
+  private artifactSnapshotKey(sessionId: string, artifactId: string): string {
+    return `${sessionId}:${artifactId}`;
   }
 }

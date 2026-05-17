@@ -76,7 +76,7 @@ export class CopilotResponseBuilder {
       assistantMessage,
       timeline,
       workspace,
-      nextActions: [],
+      nextActions: this.buildTopLevelActions(variants),
       raw: {
         artifactIds: artifacts.map((a) => a.id),
         evidenceChainIds: evidenceChains.map((ec) => ec.id),
@@ -425,9 +425,28 @@ export class CopilotResponseBuilder {
     return parts.length > 0 ? parts.join(", ") + "." : "Generated from available experience.";
   }
 
+  private buildTopLevelActions(variants: ProductVariant[]): ProductAction[] {
+    const recommended = variants.find((v) => v.role === "recommended") ?? variants[0];
+    if (!recommended) return [];
+
+    const criticalTypes: ProductAction["type"][] = recommended.status === "needs_confirmation"
+      ? ["confirm_metric", "accept", "show_evidence", "explain_choice", "revise_more_conservative"]
+      : ["accept", "show_evidence", "explain_choice", "revise_more_conservative"];
+
+    return criticalTypes
+      .map((type) => recommended.actions.find((action) => action.type === type))
+      .filter((action): action is ProductAction => Boolean(action))
+      .map((action) => ({
+        ...action,
+        primary: recommended.status === "needs_confirmation"
+          ? action.type === "confirm_metric"
+          : action.type === "accept",
+      }));
+  }
+
   private buildVariantActions(variantId: string, status: string): ProductAction[] {
     const actions: ProductAction[] = [
-      { id: `accept-${variantId}`, type: "accept", label: "Accept", variantId, primary: true },
+      { id: `accept-${variantId}`, type: "accept", label: "Accept", variantId, primary: status !== "needs_confirmation" },
       { id: `reject-${variantId}`, type: "reject", label: "Reject", variantId, primary: false },
       { id: `prefer-${variantId}`, type: "prefer", label: "Prefer this version", variantId, primary: false },
       { id: `conservative-${variantId}`, type: "revise_more_conservative", label: "More conservative", variantId, primary: false },

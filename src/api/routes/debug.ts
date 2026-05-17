@@ -24,6 +24,7 @@ function buildAgentModesReport(kernel: ApiKernel): {
   provider: string;
   database: string;
   runtimeMode: string;
+  nodeEnv: string;
   frontDeskMode: string;
   experienceExtractorMode: string;
   artifactGeneratorMode: string;
@@ -75,7 +76,8 @@ function buildAgentModesReport(kernel: ApiKernel): {
   return {
     provider,
     database,
-    runtimeMode: process.env.NODE_ENV === "production" ? "production" : "development",
+    runtimeMode: kernel.mode,
+    nodeEnv: process.env.NODE_ENV ?? "development",
     frontDeskMode: agentModes.frontDeskAgentMode,
     experienceExtractorMode: agentModes.experienceExtractorMode,
     artifactGeneratorMode: agentModes.artifactGeneratorMode,

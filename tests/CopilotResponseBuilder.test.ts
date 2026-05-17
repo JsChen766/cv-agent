@@ -63,6 +63,12 @@ describe("CopilotResponseBuilder", () => {
       expect(result.timeline.length).toBeGreaterThan(0);
       expect(result.workspace.variants.length).toBe(1);
       expect(result.raw.artifactIds).toContain("artifact-1");
+      expect(result.nextActions.map((action) => action.type)).toEqual([
+        "accept",
+        "show_evidence",
+        "explain_choice",
+        "revise_more_conservative",
+      ]);
     });
 
     it("returns plain_text when no artifacts", () => {
@@ -71,6 +77,25 @@ describe("CopilotResponseBuilder", () => {
         targetRole: "Frontend Engineer",
       });
       expect(result.assistantMessage.kind).toBe("plain_text");
+      expect(result.nextActions).toEqual([]);
+    });
+
+    it("uses confirm_metric as the primary top-level action when recommended variant needs confirmation", () => {
+      const result = builder.buildChatResponse({
+        sessionId: "s-1", turnId: "t-1", userMessage: "Generate",
+        generatedArtifacts: [makeArtifact({ metadata: { enhancement: { status: "needs_confirmation" } } })],
+        targetRole: "Frontend Engineer",
+      });
+
+      expect(result.nextActions.map((action) => action.type)).toEqual([
+        "confirm_metric",
+        "accept",
+        "show_evidence",
+        "explain_choice",
+        "revise_more_conservative",
+      ]);
+      expect(result.nextActions.find((action) => action.type === "confirm_metric")?.primary).toBe(true);
+      expect(result.nextActions.find((action) => action.type === "accept")?.primary).toBe(false);
     });
   });
 
