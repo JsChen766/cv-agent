@@ -93,18 +93,21 @@ describe("POST /copilot/chat", () => {
     await kernel.close();
   });
 
-  it("returns clarifying_question when no resume or JD", async () => {
+  it("answers product capability chat without requiring a JD", async () => {
     const response = await server.inject({
       method: "POST", url: "/copilot/chat",
       headers: { "x-user-id": "user-1" },
-      payload: { message: "Hello" },
+      payload: { message: "你好，你能做什么？" },
     });
     expect(response.statusCode).toBe(200);
     const body = response.json() as ApiSuccess<CopilotChatResponse>;
-    expect(body.data.assistantMessage.kind).toBe("clarifying_question");
+    expect(["plain_text", "decision_summary"]).toContain(body.data.assistantMessage.kind);
+    expect(body.data.assistantMessage.content).toContain("Coolto Copilot");
+    expect(body.data.assistantMessage.content).not.toContain("JD first");
+    expect(body.data.workspace.status).toBe("empty");
   });
 
-  it("returns clarifying_question when only resume (no JD)", async () => {
+  it("imports resume text without requiring a JD", async () => {
     const response = await server.inject({
       method: "POST", url: "/copilot/chat",
       headers: { "x-user-id": "user-1" },
@@ -112,7 +115,21 @@ describe("POST /copilot/chat", () => {
     });
     expect(response.statusCode).toBe(200);
     const body = response.json() as ApiSuccess<CopilotChatResponse>;
-    expect(body.data.assistantMessage.kind).toBe("clarifying_question");
+    expect(body.data.workspace.activePanel).toBe("import_candidates");
+    expect(body.data.assistantMessage.content).not.toContain("job description");
+  });
+
+  it("returns career advice without requiring a JD", async () => {
+    const response = await server.inject({
+      method: "POST", url: "/copilot/chat",
+      headers: { "x-user-id": "user-1" },
+      payload: { message: "我不知道怎么写项目经历，你能帮我吗？" },
+    });
+    expect(response.statusCode).toBe(200);
+    const body = response.json() as ApiSuccess<CopilotChatResponse>;
+    expect(body.data.assistantMessage.kind).toBe("plain_text");
+    expect(body.data.assistantMessage.content).toContain("project experience");
+    expect(body.data.assistantMessage.content).not.toContain("JD first");
   });
 
   it("returns full chat response with resume + JD + targetRole", async () => {
@@ -178,6 +195,18 @@ describe("POST /copilot/chat", () => {
     expect(Array.isArray(body.data.workspace.experiences)).toBe(true);
   });
 
+  it("routes natural Chinese experience library requests to the product workspace panel", async () => {
+    const response = await server.inject({
+      method: "POST", url: "/copilot/chat",
+      headers: { "x-user-id": "user-1" },
+      payload: { message: "查看我的经历库" },
+    });
+    expect(response.statusCode).toBe(200);
+    const body = response.json() as ApiSuccess<CopilotChatResponse>;
+    expect(body.data.workspace.activePanel).toBe("experience_library");
+    expect(Array.isArray(body.data.workspace.experiences)).toBe(true);
+  });
+
   it("routes resume history requests to the product workspace panel", async () => {
     const response = await server.inject({
       method: "POST", url: "/copilot/chat",
@@ -218,6 +247,78 @@ describe("POST /copilot/chat", () => {
     const body = response.json() as ApiSuccess<CopilotChatResponse>;
     expect(body.data.workspace.activePanel).toBe("experience_library");
     expect(body.data.workspace.experiences?.length).toBeGreaterThan(0);
+  });
+
+  it("creates product_experience from natural add experience chat intent", async () => {
+    const response = await server.inject({
+      method: "POST", url: "/copilot/chat",
+      headers: { "x-user-id": "user-1" },
+      payload: {
+        message: "保存这段经历到经历库：Built React systems and reduced bundle size by 40%.",
+      },
+    });
+    const body = response.json() as ApiSuccess<CopilotChatResponse>;
+    expect(body.data.workspace.activePanel).toBe("experience_library");
+    expect(body.data.workspace.experiences?.length).toBeGreaterThan(0);
+  });
+
+  it("asks for a JD when the user wants resume generation without one", async () => {
+    const response = await server.inject({
+      method: "POST", url: "/copilot/chat",
+      headers: { "x-user-id": "user-1" },
+      payload: { message: "帮我生成一份投递简历" },
+    });
+    expect(response.statusCode).toBe(200);
+    const body = response.json() as ApiSuccess<CopilotChatResponse>;
+    expect(body.data.assistantMessage.kind).toBe("clarifying_question");
+    expect(body.data.assistantMessage.content).toContain("JD");
+    expect(body.data.assistantMessage.content).not.toContain("provide more context");
+  });
+
+  it("explains the current generated workspace without asking for the JD again", async () => {
+    const first = await server.inject({
+      method: "POST", url: "/copilot/chat",
+      headers: { "x-user-id": "user-1" },
+      payload: {
+        message: "根据这个 JD 生成简历",
+        jdText: "React TypeScript performance optimization role.",
+        targetRole: "Frontend Engineer",
+      },
+    });
+    const sessionId = (first.json() as ApiSuccess<CopilotChatResponse>).data.sessionId;
+
+    const second = await server.inject({
+      method: "POST", url: "/copilot/chat",
+      headers: { "x-user-id": "user-1" },
+      payload: { sessionId, message: "为什么推荐第一个？" },
+    });
+    expect(second.statusCode).toBe(200);
+    const body = second.json() as ApiSuccess<CopilotChatResponse>;
+    expect(body.data.assistantMessage.content).not.toContain("Please paste the JD");
+    expect(body.data.workspace.variants.length).toBeGreaterThan(0);
+  });
+
+  it("offers a conservative revision action without asking for the JD again", async () => {
+    const first = await server.inject({
+      method: "POST", url: "/copilot/chat",
+      headers: { "x-user-id": "user-1" },
+      payload: {
+        message: "根据这个 JD 生成简历",
+        jdText: "React TypeScript performance optimization role.",
+        targetRole: "Frontend Engineer",
+      },
+    });
+    const sessionId = (first.json() as ApiSuccess<CopilotChatResponse>).data.sessionId;
+
+    const second = await server.inject({
+      method: "POST", url: "/copilot/chat",
+      headers: { "x-user-id": "user-1" },
+      payload: { sessionId, message: "这个太夸张了，保守一点" },
+    });
+    expect(second.statusCode).toBe(200);
+    const body = second.json() as ApiSuccess<CopilotChatResponse>;
+    expect(body.data.nextActions.map((action) => action.type)).toContain("revise_more_conservative");
+    expect(body.data.assistantMessage.content).not.toContain("Please paste the JD");
   });
 
   it("creates import candidates from import resume chat intent", async () => {

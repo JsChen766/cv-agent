@@ -1445,7 +1445,13 @@ list_resumes
 open_resume
 ```
 
-`/copilot/chat` now runs a deterministic `ProductIntentRouter` before the legacy generation fallback. Supported product intents include adding an experience, listing experiences, importing resume text, saving a JD, generating variants for a JD, accepting a variant into a resume draft, listing resumes, and opening product workspaces. The response envelope remains the P9 `CopilotChatResponse`; new workspace fields are additive and `workspace.variants` remains compatible with the minimal frontend.
+`/copilot/chat` now enters through a conversational FrontDeskAgent decision layer before product tools or generation are considered. Supported decision modes are `chat_only`, `ask_clarification`, `use_product_tool`, `generate_resume_variants`, `explain_workspace`, and `smalltalk`.
+
+The FrontDeskAgent is a job-search chat assistant, not only an intent classifier. Normal chat, product capability questions, job-search advice, resume writing guidance, confusion, and smalltalk return direct assistant text and do not require a JD. Product tools are called only when the user clearly asks for workspace operations such as adding an experience, listing experiences, importing resume text, saving/listing JDs, generating variants for a JD, accepting a variant into a resume draft, listing resumes, or opening product workspaces.
+
+`FRONTDESK_CONVERSATION_MODE=deterministic | llm` controls the decision layer. The default is `deterministic` for stable tests. In `llm` mode, model output is structured JSON and must pass runtime validation before use. Invalid model output or provider failure falls back to deterministic routing.
+
+`ProductIntentRouter` remains as a deterministic fallback and guardrail. The response envelope remains the P9 `CopilotChatResponse`; new workspace fields are additive and `workspace.variants` remains compatible with the minimal frontend. Responses must not expose chain-of-thought, `reasoning_content`, provider raw payloads, internal prompts, or tool arguments.
 
 `/copilot/actions` keeps P9 actions. Accepting a generated variant also saves it to a product resume draft when the current workspace is tied to a `product_generation`.
 

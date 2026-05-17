@@ -9,6 +9,8 @@ import type { ProductIntent } from "./ProductIntentRouter.js";
 import { ProductToolRegistry } from "../product/tools/ProductToolRegistry.js";
 import type { ProductToolResult } from "../product/tools/ProductToolRegistry.js";
 import { CopilotResponseBuilder } from "./CopilotResponseBuilder.js";
+import { ConversationalFrontDeskAgent } from "./frontdesk/ConversationalFrontDeskAgent.js";
+import type { FrontDeskDecision } from "./frontdesk/FrontDeskDecision.js";
 import type {
   CopilotSession,
   CopilotTurn,
@@ -18,6 +20,7 @@ import type {
   CopilotActionRequest,
   CopilotChatRequest,
   ProductVariant,
+  ProductAction,
 } from "./types.js";
 
 export type CopilotOrchestratorDeps = {
@@ -32,12 +35,16 @@ export class CopilotOrchestrator {
   private readonly artifactSnapshots = new Map<string, GeneratedArtifact>();
   private readonly builder = new CopilotResponseBuilder();
   private readonly intentRouter = new ProductIntentRouter();
+  private readonly frontDeskAgent: ConversationalFrontDeskAgent;
   private readonly productTools: ProductToolRegistry;
   private readonly kernel: ApiKernel;
 
   public constructor(deps: CopilotOrchestratorDeps) {
     this.kernel = deps.kernel;
     this.productTools = new ProductToolRegistry(deps.kernel.productServices);
+    this.frontDeskAgent = new ConversationalFrontDeskAgent({
+      modelClient: deps.kernel.frontDeskModelClient,
+    });
   }
 
   // ── Session ──
@@ -166,95 +173,285 @@ export class CopilotOrchestrator {
 
     const userMsg = this.createUserMessage(session.id, body.message);
     const turn = this.createTurn(session.id, userMsg.id);
-
-    const productIntent = this.intentRouter.route(body);
     const hasResume = Boolean(session.resumeText || body.resumeText);
     const hasJD = Boolean(session.jdText || body.jdText);
 
-    if (this.shouldHandleProductIntent(productIntent.intent)) {
-      if (productIntent.intent === "generate_resume_for_jd" && !hasJD) {
-        const response = this.builder.buildClarifyingQuestion(
-          session.id, turn.id,
-          "Please paste the job description so I can generate tailored resume variants.",
-        );
+    try {
+      const decision = await this.frontDeskAgent.decide({
+        message: body.message,
+        request: body,
+        session,
+        workspace: this.getWorkspace(session.id),
+        clientState: body.clientState,
+        hasResume,
+        hasJD,
+        targetRole: session.targetRole ?? body.targetRole ?? null,
+        recentMessages: this.sessionMessages.get(session.id) ?? [],
+      });
+
+      const response = await this.handleFrontDeskDecision(ctx, session, turn.id, body, decision, ingestionWarnings);
+      if (response) {
         this.saveMessage(response.assistantMessage);
+        this.saveWorkspace(response.workspace);
         this.completeTurn(turn.id, response.assistantMessage.id);
         return { ...response, ingestionWarnings };
+      }
+    } catch {
+      const fallbackResponse = await this.handleLegacyProductFlow(ctx, session, turn.id, body, hasResume, hasJD, ingestionWarnings);
+      this.saveMessage(fallbackResponse.assistantMessage);
+      this.saveWorkspace(fallbackResponse.workspace);
+      this.completeTurn(turn.id, fallbackResponse.assistantMessage.id);
+      return { ...fallbackResponse, ingestionWarnings };
+    }
+
+    const response = this.buildConversationResponse(
+      session.id,
+      turn.id,
+      "I can help with job search planning, resume writing, and your Coolto workspace. What would you like to work on first?",
+      "plain_text",
+      this.getWorkspace(session.id),
+    );
+    this.saveMessage(response.assistantMessage);
+    this.saveWorkspace(response.workspace);
+    this.completeTurn(turn.id, response.assistantMessage.id);
+    return { ...response, ingestionWarnings };
+  }
+
+  private async handleFrontDeskDecision(
+    ctx: KernelRequestContext,
+    session: CopilotSession,
+    turnId: string,
+    body: CopilotChatRequest,
+    decision: FrontDeskDecision,
+    ingestionWarnings: string[],
+  ): Promise<CopilotChatResponse | null> {
+    switch (decision.mode) {
+      case "chat_only":
+      case "smalltalk":
+        return this.buildConversationResponse(
+          session.id,
+          turnId,
+          decision.assistantDraft,
+          "plain_text",
+          this.getWorkspace(session.id),
+          decision.nextActions,
+        );
+
+      case "ask_clarification":
+        return this.buildConversationResponse(
+          session.id,
+          turnId,
+          decision.assistantDraft,
+          "clarifying_question",
+          this.getWorkspace(session.id),
+          decision.nextActions,
+        );
+
+      case "use_product_tool":
+        return this.executeFrontDeskTool(ctx, session, turnId, body, decision, ingestionWarnings);
+
+      case "generate_resume_variants": {
+        const hasJD = Boolean(session.jdText || body.jdText);
+        if (!hasJD) {
+          return this.buildConversationResponse(
+            session.id,
+            turnId,
+            "Please paste the JD first, then I can generate tailored resume variants for this application.",
+            "clarifying_question",
+            this.getWorkspace(session.id),
+          );
+        }
+        await this.ingestResumeIfNeeded(ctx, session, ingestionWarnings);
+        return this.handleProductIntent(ctx, session, turnId, body, "generate_resume_for_jd", ingestionWarnings);
+      }
+
+      case "explain_workspace":
+        return this.handleWorkspaceExplanation(session, turnId, decision);
+
+      default:
+        return null;
+    }
+  }
+
+  private async executeFrontDeskTool(
+    ctx: KernelRequestContext,
+    session: CopilotSession,
+    turnId: string,
+    body: CopilotChatRequest,
+    decision: FrontDeskDecision,
+    ingestionWarnings: string[],
+  ): Promise<CopilotChatResponse | null> {
+    if (!decision.toolCall) {
+      return this.buildConversationResponse(session.id, turnId, decision.assistantDraft, "plain_text", this.getWorkspace(session.id));
+    }
+
+    const args = decision.toolCall.arguments;
+    switch (decision.toolCall.name) {
+      case "create_experience":
+        return this.buildToolResponse(
+          session.id,
+          turnId,
+          await this.productTools.createExperience(ctx.user.id, {
+            title: stringArg(args.title),
+            category: stringArg(args.category),
+            content: stringArg(args.content),
+            organization: stringArg(args.organization),
+            role: stringArg(args.role),
+            tags: arrayStringArg(args.tags),
+          }),
+          decision.assistantDraft,
+        );
+
+      case "list_experiences":
+        return this.buildToolResponse(session.id, turnId, await this.productTools.listExperiences(ctx.user.id), decision.assistantDraft);
+
+      case "import_resume_text":
+        return this.buildToolResponse(
+          session.id,
+          turnId,
+          await this.productTools.importResumeText(ctx.user.id, stringArg(args.rawText) ?? body.resumeText ?? body.message),
+          decision.assistantDraft,
+        );
+
+      case "save_jd":
+        return this.buildToolResponse(
+          session.id,
+          turnId,
+          await this.productTools.saveJD(ctx.user.id, {
+            rawText: stringArg(args.rawText) ?? session.jdText ?? body.jdText,
+            targetRole: stringArg(args.targetRole) ?? session.targetRole ?? body.targetRole ?? undefined,
+          }),
+          decision.assistantDraft,
+        );
+
+      case "list_jds":
+        return this.buildToolResponse(session.id, turnId, await this.productTools.listJDs(ctx.user.id), decision.assistantDraft);
+
+      case "create_resume_from_jd":
+        await this.ingestResumeIfNeeded(ctx, session, ingestionWarnings);
+        return this.handleProductIntent(ctx, session, turnId, {
+          ...body,
+          jdText: stringArg(args.jdText) ?? body.jdText,
+          targetRole: stringArg(args.targetRole) ?? body.targetRole,
+        }, "generate_resume_for_jd", ingestionWarnings);
+
+      case "save_variant_to_resume": {
+        const workspace = this.getWorkspace(session.id);
+        const generationId = stringArg(args.generationId) ?? workspace?.productGenerationId ?? undefined;
+        const variantId = stringArg(args.variantId) ?? body.clientState?.activeVariantId ?? workspace?.activeVariantId ?? workspace?.variants[0]?.id;
+        if (!generationId || !variantId) {
+          return this.buildConversationResponse(
+            session.id,
+            turnId,
+            "Which generated version should I save to your resume draft?",
+            "clarifying_question",
+            workspace,
+          );
+        }
+        return this.buildToolResponse(
+          session.id,
+          turnId,
+          await this.productTools.saveVariantToResume(ctx.user.id, {
+            generationId,
+            variantId,
+            resumeId: stringArg(args.resumeId) ?? workspace?.resumeId ?? undefined,
+          }),
+          decision.assistantDraft,
+        );
+      }
+
+      case "list_resumes":
+        return this.buildToolResponse(session.id, turnId, await this.productTools.listResumes(ctx.user.id), decision.assistantDraft);
+
+      case "open_resume": {
+        const resumeId = stringArg(args.resumeId);
+        if (!resumeId) {
+          return this.buildConversationResponse(session.id, turnId, "Which resume would you like to open?", "clarifying_question", this.getWorkspace(session.id));
+        }
+        return this.buildToolResponse(session.id, turnId, await this.productTools.openResume(ctx.user.id, resumeId), decision.assistantDraft);
+      }
+
+      default:
+        return null;
+    }
+  }
+
+  private handleWorkspaceExplanation(
+    session: CopilotSession,
+    turnId: string,
+    decision: FrontDeskDecision,
+  ): CopilotChatResponse {
+    const now = new Date().toISOString();
+    const workspace = this.getWorkspace(session.id) ?? this.emptyWorkspace(session.id, now);
+    const variantId = workspace.activeVariantId ?? workspace.variants[0]?.id ?? "";
+    const variant = variantId ? workspace.variants.find((item) => item.id === variantId) : undefined;
+
+    if (decision.intent === "show_evidence") {
+      return this.handleShowEvidence(session, turnId, variantId, variant, now);
+    }
+    if (decision.intent === "explain_choice") {
+      return this.handleExplainChoice(session, turnId, variantId, variant, now);
+    }
+
+    return this.buildConversationResponse(
+      session.id,
+      turnId,
+      decision.assistantDraft,
+      "plain_text",
+      workspace,
+      decision.nextActions,
+    );
+  }
+
+  private async handleLegacyProductFlow(
+    ctx: KernelRequestContext,
+    session: CopilotSession,
+    turnId: string,
+    body: CopilotChatRequest,
+    hasResume: boolean,
+    hasJD: boolean,
+    ingestionWarnings: string[],
+  ): Promise<CopilotChatResponse> {
+    const productIntent = this.intentRouter.route(body);
+    if (this.shouldHandleProductIntent(productIntent.intent)) {
+      if (productIntent.intent === "generate_resume_for_jd" && !hasJD) {
+        return this.builder.buildClarifyingQuestion(
+          session.id, turnId,
+          "Please paste the job description so I can generate tailored resume variants.",
+        );
       }
       if (productIntent.intent === "generate_resume_for_jd") {
         await this.ingestResumeIfNeeded(ctx, session, ingestionWarnings);
       }
-      const productResponse = await this.handleProductIntent(ctx, session, turn.id, body, productIntent.intent, ingestionWarnings);
-      if (productResponse) {
-        this.saveMessage(productResponse.assistantMessage);
-        this.saveWorkspace(productResponse.workspace);
-        this.completeTurn(turn.id, productResponse.assistantMessage.id);
-        return { ...productResponse, ingestionWarnings };
-      }
+      const productResponse = await this.handleProductIntent(ctx, session, turnId, body, productIntent.intent, ingestionWarnings);
+      if (productResponse) return productResponse;
     }
 
     if (!hasJD) {
-      const response = this.builder.buildClarifyingQuestion(
-        session.id, turn.id,
+      return this.builder.buildClarifyingQuestion(
+        session.id, turnId,
         hasResume
           ? "I see you've shared your background. Could you also paste the job description you're targeting?"
           : "Could you paste your resume or a job description so I can help tailor your experience?",
       );
-      this.saveMessage(response.assistantMessage);
-      this.completeTurn(turn.id, response.assistantMessage.id);
-      return { ...response, ingestionWarnings };
     }
 
     await this.ingestResumeIfNeeded(ctx, session, ingestionWarnings);
-
     const generationResult = await this.generateVariantsForCopilot(ctx, session, body);
-
-    // Store source artifacts in workspace variants' raw before building response
-    const generatedArtifacts = generationResult.artifacts;
-    const critiqueItems = generationResult.critiqueReport.items;
-    const evidenceChains = generationResult.evidenceChains;
-
     const response = this.builder.buildChatResponse({
       sessionId: session.id,
-      turnId: turn.id,
+      turnId,
       userMessage: body.message,
-      generatedArtifacts,
-      critiqueItems,
-      evidenceChains,
+      generatedArtifacts: generationResult.artifacts,
+      critiqueItems: generationResult.critiqueReport.items,
+      evidenceChains: generationResult.evidenceChains,
       targetRole: session.targetRole ?? body.targetRole ?? null,
       clientState: body.clientState ?? {},
     });
-
-    this.storeArtifactSnapshots(session.id, generatedArtifacts);
-    this.applyNoVariantsWarning(response, generatedArtifacts.length);
-
-    // Add ingestion timeline items
-    if (session.resumeIngested) {
-      response.timeline.push({
-        id: `tl-${turn.id}-resume`,
-        type: "resume_ingested",
-        title: "Resume processed",
-        description: "Experiences, evidence, and skills extracted.",
-        status: "completed",
-        createdAt: new Date().toISOString(),
-      });
-    }
-    for (const w of ingestionWarnings) {
-      response.timeline.push({
-        id: `tl-${turn.id}-warn-${response.timeline.length}`,
-        type: "warning",
-        title: "Warning",
-        description: w,
-        status: "completed",
-        createdAt: new Date().toISOString(),
-      });
-    }
-
-    this.saveMessage(response.assistantMessage);
-    this.saveWorkspace(response.workspace);
-    this.completeTurn(turn.id, response.assistantMessage.id);
-
-    return { ...response, ingestionWarnings };
+    this.storeArtifactSnapshots(session.id, generationResult.artifacts);
+    this.applyNoVariantsWarning(response, generationResult.artifacts.length);
+    this.addIngestionTimeline(response, turnId, session, ingestionWarnings);
+    return response;
   }
 
   // ── Action orchestration ──
@@ -853,24 +1050,18 @@ export class CopilotOrchestrator {
     }
   }
 
-  private buildToolResponse(sessionId: string, turnId: string, result: ProductToolResult): CopilotChatResponse {
+  private buildConversationResponse(
+    sessionId: string,
+    turnId: string,
+    content: string,
+    kind: CopilotMessage["kind"],
+    existingWorkspace?: CopilotWorkspace,
+    frontDeskActions?: FrontDeskDecision["nextActions"],
+  ): CopilotChatResponse {
     const now = new Date().toISOString();
-    const workspace: CopilotWorkspace = {
-      id: `ws-${sessionId}`,
-      sessionId,
-      variants: result.workspacePatch?.variants ?? this.getWorkspace(sessionId)?.variants ?? [],
-      status: "ready",
-      updatedAt: now,
-      activePanel: result.workspacePatch?.activePanel,
-      experiences: result.workspacePatch?.experiences,
-      jds: result.workspacePatch?.jds,
-      resumes: result.workspacePatch?.resumes,
-      activeResume: result.workspacePatch?.activeResume,
-      importCandidates: result.workspacePatch?.importCandidates,
-      productGenerationId: result.workspacePatch?.productGenerationId ?? this.getWorkspace(sessionId)?.productGenerationId,
-      jdId: result.workspacePatch?.jdId ?? this.getWorkspace(sessionId)?.jdId,
-      resumeId: result.workspacePatch?.resumeId ?? this.getWorkspace(sessionId)?.resumeId,
-    };
+    const workspace = existingWorkspace
+      ? { ...existingWorkspace, updatedAt: now }
+      : this.emptyWorkspace(sessionId, now);
     return {
       sessionId,
       turnId,
@@ -879,7 +1070,93 @@ export class CopilotOrchestrator {
         sessionId,
         turnId,
         role: "assistant",
-        content: result.assistantMessage,
+        content,
+        kind,
+        createdAt: now,
+      },
+      timeline: [{
+        id: `tl-${turnId}-frontdesk`,
+        type: "message_received",
+        title: "Assistant replied",
+        status: "completed",
+        createdAt: now,
+      }],
+      workspace,
+      nextActions: this.mapFrontDeskActions(frontDeskActions, workspace),
+      raw: { artifactIds: [], evidenceChainIds: [], critiqueItemIds: [], decisionIds: [] },
+    };
+  }
+
+  private emptyWorkspace(sessionId: string, now = new Date().toISOString()): CopilotWorkspace {
+    return {
+      id: `ws-${sessionId}`,
+      sessionId,
+      variants: [],
+      status: "empty",
+      updatedAt: now,
+    };
+  }
+
+  private mapFrontDeskActions(
+    frontDeskActions: FrontDeskDecision["nextActions"],
+    workspace: CopilotWorkspace,
+  ): ProductAction[] {
+    if (!frontDeskActions?.length) return [];
+    const activeVariantId = workspace.activeVariantId ?? workspace.variants[0]?.id;
+    const supported = new Set<ProductAction["type"]>([
+      "revise_more_conservative",
+      "revise_more_quantified",
+      "show_evidence",
+      "explain_choice",
+      "accept",
+    ]);
+    return frontDeskActions
+      .filter((action) => supported.has(action.type as ProductAction["type"]))
+      .map((action, index) => ({
+        id: `act-frontdesk-${index + 1}`,
+        type: action.type as ProductAction["type"],
+        label: action.label,
+        variantId: activeVariantId,
+        primary: index === 0,
+      }));
+  }
+
+  private buildToolResponse(
+    sessionId: string,
+    turnId: string,
+    result: ProductToolResult,
+    assistantDraft?: string,
+  ): CopilotChatResponse {
+    const now = new Date().toISOString();
+    const existingWorkspace = this.getWorkspace(sessionId);
+    const workspace: CopilotWorkspace = {
+      id: `ws-${sessionId}`,
+      sessionId,
+      variants: result.workspacePatch?.variants ?? existingWorkspace?.variants ?? [],
+      status: "ready",
+      updatedAt: now,
+      activePanel: result.workspacePatch?.activePanel,
+      experiences: result.workspacePatch?.experiences,
+      jds: result.workspacePatch?.jds,
+      resumes: result.workspacePatch?.resumes,
+      activeResume: result.workspacePatch?.activeResume,
+      importCandidates: result.workspacePatch?.importCandidates,
+      productGenerationId: result.workspacePatch?.productGenerationId ?? existingWorkspace?.productGenerationId,
+      jdId: result.workspacePatch?.jdId ?? existingWorkspace?.jdId,
+      resumeId: result.workspacePatch?.resumeId ?? existingWorkspace?.resumeId,
+    };
+    const content = assistantDraft
+      ? `${assistantDraft}\n\n${result.assistantMessage}`
+      : result.assistantMessage;
+    return {
+      sessionId,
+      turnId,
+      assistantMessage: {
+        id: `msg-${randomUUID()}`,
+        sessionId,
+        turnId,
+        role: "assistant",
+        content,
         kind: result.status === "needs_input" ? "clarifying_question" : "decision_summary",
         createdAt: now,
       },
@@ -998,4 +1275,14 @@ function extractJDTextFromMessage(message: string): string | undefined {
     .replace(/^(请)?(帮我)?(保存\s?JD|保存这个\s?JD|这是\s?JD|岗位描述)[:：\s]*/iu, "")
     .trim();
   return content.length >= 20 ? content : undefined;
+}
+
+function stringArg(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim().length > 0 ? value : undefined;
+}
+
+function arrayStringArg(value: unknown): string[] | undefined {
+  return Array.isArray(value) && value.every((item) => typeof item === "string")
+    ? value
+    : undefined;
 }

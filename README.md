@@ -918,6 +918,16 @@ POST /product/generations/:id/accept-variant
 
 Copilot now has deterministic product intent routing and product tools for `create_experience`, `list_experiences`, `import_resume_text`, `accept_import_candidate`, `save_jd`, `list_jds`, `create_resume_from_jd`, `save_variant_to_resume`, `list_resumes`, and `open_resume`. `/copilot/chat` remains the primary product entrypoint and keeps the P9 response envelope and `workspace.variants` contract.
 
+### P10.1.5 Conversational FrontDeskAgent
+
+`/copilot/chat` now enters through a conversational front desk decision layer instead of treating every message as a product command or generation request. The decision schema supports `chat_only`, `ask_clarification`, `use_product_tool`, `generate_resume_variants`, `explain_workspace`, and `smalltalk`.
+
+By default `FRONTDESK_CONVERSATION_MODE` is `deterministic` so tests stay stable. `llm` mode uses the configured model client with structured JSON validation and falls back to deterministic routing if model output is invalid or unavailable.
+
+Product tools are used only when the user clearly asks for workspace operations such as listing experiences, saving an experience, importing resume text, saving/listing JDs, generating variants from a JD, accepting a variant, or opening resume history. Normal chat, product capability questions, resume writing guidance, job-search advice, and smalltalk return direct assistant text and do not require a JD.
+
+`ProductIntentRouter` is still present as a deterministic fallback and guardrail. Responses must not expose chain-of-thought, `reasoning_content`, provider raw payloads, internal prompts, or tool arguments.
+
 Local curl checks:
 
 ```bash

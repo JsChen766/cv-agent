@@ -304,6 +304,7 @@ function buildKernel(input: BuildKernelInput): ApiKernel {
     evidenceChainQueryService,
     graphViewQueryService,
     productServices,
+    frontDeskModelClient: agentProvider.modelClient,
     close: input.close,
   };
 }
