@@ -155,6 +155,11 @@ export type ProductAction = {
   inputPlaceholder?: string;
 };
 
+export type SuggestedPrompt = {
+  label: string;
+  message: string;
+};
+
 export type ProductTimelineItem = {
   id: string;
   type:
@@ -194,6 +199,7 @@ export type CopilotChatResponse = {
   timeline: ProductTimelineItem[];
   workspace: CopilotWorkspace;
   nextActions: ProductAction[];
+  suggestedPrompts?: SuggestedPrompt[];
   raw: {
     artifactIds: string[];
     evidenceChainIds: string[];

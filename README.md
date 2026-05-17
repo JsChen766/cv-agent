@@ -928,6 +928,8 @@ Product tools are used only when the user clearly asks for workspace operations 
 
 `ProductIntentRouter` is still present as a deterministic fallback and guardrail. Responses must not expose chain-of-thought, `reasoning_content`, provider raw payloads, internal prompts, or tool arguments.
 
+P10.1.6 adds `suggestedPrompts` for chat-only prompt chips and makes explicit workspace instructions execute directly from chat. For example, "show evidence", "why recommend the first one", "make it more conservative", "make it more quantified", and "use the first one" run against the active or first variant when available.
+
 Local curl checks:
 
 ```bash

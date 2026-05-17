@@ -115,6 +115,16 @@ export class ConversationalFrontDeskAgent {
       };
     }
 
+    if (hasVariants && isQuantifiedRevisionRequest(message, lower)) {
+      return {
+        mode: "explain_workspace",
+        intent: "revise_variant",
+        confidence: 0.88,
+        assistantDraft: "I will make the current version more quantified while staying grounded in the evidence.",
+        nextActions: activeVariantId ? [{ type: "revise_more_quantified", label: "Make it more quantified" }] : undefined,
+      };
+    }
+
     if (hasVariants && isAcceptVariantRequest(message, lower)) {
       if (!workspace?.productGenerationId || !activeVariantId) {
         return ask("accept_variant", "Which generated version should I save to your resume draft?", ["variantId"]);
@@ -355,6 +365,11 @@ function isConservativeRevisionRequest(message: string, lower: string): boolean 
     /\b(too exaggerated|more conservative|tone it down|less aggressive)\b/i.test(lower);
 }
 
+function isQuantifiedRevisionRequest(message: string, lower: string): boolean {
+  return containsAny(message, ["再量化一点", "更量化", "量化一点"]) ||
+    /\b(more quantified|quantify|add metrics|more metrics|add numbers)\b/i.test(lower);
+}
+
 function isExplainChoiceRequest(message: string, lower: string): boolean {
   return containsAny(message, ["为什么推荐", "为什么是第一个", "解释推荐", "为什么选"]) ||
     /\b(why.*recommend|explain.*choice|why.*first)\b/i.test(lower);
@@ -426,6 +441,15 @@ function buildSystemPrompt(): string {
     "Use ask_clarification when a product operation is requested but required input is missing.",
     "Use use_product_tool or generate_resume_variants only when the user clearly asks for a workspace operation.",
     "Never expose tool names, internal intents, provider raw data, reasoning_content, or chain-of-thought in assistantDraft.",
+    "Few-shot decisions:",
+    JSON.stringify({ message: "你好，你能做什么？", output: { mode: "chat_only", intent: "ask_product_capability" } }),
+    JSON.stringify({ message: "我不知道怎么写项目经历", output: { mode: "chat_only", intent: "career_advice" } }),
+    JSON.stringify({ message: "查看我的经历库", output: { mode: "use_product_tool", intent: "list_experiences", toolCall: { name: "list_experiences", arguments: {} } } }),
+    JSON.stringify({ message: "保存这段经历到经历库：Built React systems...", output: { mode: "use_product_tool", intent: "add_experience", toolCall: { name: "create_experience", arguments: { content: "Built React systems..." } } } }),
+    JSON.stringify({ message: "根据这个 JD 生成简历", hasJD: true, output: { mode: "generate_resume_variants", intent: "generate_resume_for_jd" } }),
+    JSON.stringify({ message: "帮我生成简历", hasJD: false, output: { mode: "ask_clarification", intent: "generate_resume_for_jd", missingInputs: ["jdText"] } }),
+    JSON.stringify({ message: "这个太夸张了，保守一点", workspace: { hasVariants: true }, output: { mode: "explain_workspace", intent: "revise_variant", nextActions: [{ type: "revise_more_conservative", label: "Make it more conservative" }] } }),
+    JSON.stringify({ message: "就用第一个", workspace: { hasVariants: true }, output: { mode: "use_product_tool", intent: "accept_variant", toolCall: { name: "save_variant_to_resume", arguments: { variantId: "active-or-first-variant" } } } }),
   ].join("\n");
 }
 

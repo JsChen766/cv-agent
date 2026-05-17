@@ -21,6 +21,7 @@ import type {
   CopilotChatRequest,
   ProductVariant,
   ProductAction,
+  SuggestedPrompt,
 } from "./types.js";
 
 export type CopilotOrchestratorDeps = {
@@ -266,7 +267,7 @@ export class CopilotOrchestrator {
       }
 
       case "explain_workspace":
-        return this.handleWorkspaceExplanation(session, turnId, decision);
+        return this.handleWorkspaceExplanation(ctx, session, turnId, decision);
 
       default:
         return null;
@@ -376,11 +377,12 @@ export class CopilotOrchestrator {
     }
   }
 
-  private handleWorkspaceExplanation(
+  private async handleWorkspaceExplanation(
+    ctx: KernelRequestContext,
     session: CopilotSession,
     turnId: string,
     decision: FrontDeskDecision,
-  ): CopilotChatResponse {
+  ): Promise<CopilotChatResponse> {
     const now = new Date().toISOString();
     const workspace = this.getWorkspace(session.id) ?? this.emptyWorkspace(session.id, now);
     const variantId = workspace.activeVariantId ?? workspace.variants[0]?.id ?? "";
@@ -392,6 +394,35 @@ export class CopilotOrchestrator {
     if (decision.intent === "explain_choice") {
       return this.handleExplainChoice(session, turnId, variantId, variant, now);
     }
+    if (decision.intent === "revise_variant") {
+      if (!variant) {
+        return this.buildConversationResponse(
+          session.id,
+          turnId,
+          "Which generated version should I revise?",
+          "clarifying_question",
+          workspace,
+        );
+      }
+      if (variant.status === "needs_confirmation" && this.isQuantifiedRevision(decision)) {
+        return this.buildConversationResponse(
+          session.id,
+          turnId,
+          "Before I make this more quantified, please confirm the metric or impact number you want me to use.",
+          "clarifying_question",
+          workspace,
+          [{ type: "confirm_metric", label: "Confirm metric" }],
+        );
+      }
+      return this.handleRevision(
+        ctx,
+        session,
+        turnId,
+        { type: this.isQuantifiedRevision(decision) ? "revise_more_quantified" : "revise_more_conservative", variantId },
+        variant,
+        now,
+      );
+    }
 
     return this.buildConversationResponse(
       session.id,
@@ -401,6 +432,11 @@ export class CopilotOrchestrator {
       workspace,
       decision.nextActions,
     );
+  }
+
+  private isQuantifiedRevision(decision: FrontDeskDecision): boolean {
+    return decision.nextActions?.some((action) => action.type === "revise_more_quantified") ??
+      /quant/i.test(decision.assistantDraft);
   }
 
   private async handleLegacyProductFlow(
@@ -521,7 +557,34 @@ export class CopilotOrchestrator {
       turnId: turn.id,
     });
 
+    const hasResume = Boolean(session.resumeText || body.resumeText);
     const hasJD = Boolean(session.jdText || body.jdText);
+    try {
+      const decision = await this.frontDeskAgent.decide({
+        message: body.message,
+        request: body,
+        session,
+        workspace: this.getWorkspace(session.id),
+        clientState: body.clientState,
+        hasResume,
+        hasJD,
+        targetRole: session.targetRole ?? body.targetRole ?? null,
+        recentMessages: this.sessionMessages.get(session.id) ?? [],
+      });
+      if (decision.mode !== "generate_resume_variants" || !hasJD) {
+        const response = await this.handleFrontDeskDecision(ctx, session, turn.id, body, decision, []);
+        if (response) {
+          this.saveMessage(response.assistantMessage);
+          this.saveWorkspace(response.workspace);
+          this.completeTurn(turn.id, response.assistantMessage.id);
+          this.emitCopilotResponse(sse, response);
+          return;
+        }
+      }
+    } catch {
+      // Fall through to the legacy generation stream.
+    }
+
     if (!hasJD) {
       sse("copilot.failed", {
         type: "copilot.failed",
@@ -579,36 +642,7 @@ export class CopilotOrchestrator {
       this.saveWorkspace(response.workspace);
       this.completeTurn(turn.id, response.assistantMessage.id);
 
-      // Emit product-level events
-      sse("copilot.message.created", {
-        type: "copilot.message.created",
-        message: response.assistantMessage,
-      });
-
-      for (const item of response.timeline) {
-        sse("copilot.timeline.updated", { type: "copilot.timeline.updated", item });
-      }
-
-      if (response.nextActions.length > 0) {
-        sse("copilot.action.required", {
-          type: "copilot.action.required",
-          actions: response.nextActions,
-        });
-      }
-
-      sse("copilot.workspace.updated", {
-        type: "copilot.workspace.updated",
-        sessionId: session.id,
-        status: response.workspace.status,
-        variantCount: response.workspace.variants.length,
-      });
-
-      sse("copilot.completed", {
-        type: "copilot.completed",
-        sessionId: session.id,
-        turnId: turn.id,
-        workspaceStatus: response.workspace.status,
-      });
+      this.emitCopilotResponse(sse, response);
     } catch (error) {
       const msg = error instanceof Error ? error.message : "Generation failed.";
       sse("copilot.failed", {
@@ -621,6 +655,41 @@ export class CopilotOrchestrator {
   }
 
   // ── Private action handlers ──
+
+  private emitCopilotResponse(
+    sse: (event: string, data: unknown) => void,
+    response: CopilotChatResponse,
+  ): void {
+    sse("copilot.message.created", {
+      type: "copilot.message.created",
+      message: response.assistantMessage,
+    });
+
+    for (const item of response.timeline) {
+      sse("copilot.timeline.updated", { type: "copilot.timeline.updated", item });
+    }
+
+    if (response.nextActions.length > 0) {
+      sse("copilot.action.required", {
+        type: "copilot.action.required",
+        actions: response.nextActions,
+      });
+    }
+
+    sse("copilot.workspace.updated", {
+      type: "copilot.workspace.updated",
+      sessionId: response.sessionId,
+      status: response.workspace.status,
+      variantCount: response.workspace.variants.length,
+    });
+
+    sse("copilot.completed", {
+      type: "copilot.completed",
+      sessionId: response.sessionId,
+      turnId: response.turnId,
+      workspaceStatus: response.workspace.status,
+    });
+  }
 
   private async handleDecision(
     ctx: KernelRequestContext,
@@ -1083,6 +1152,7 @@ export class CopilotOrchestrator {
       }],
       workspace,
       nextActions: this.mapFrontDeskActions(frontDeskActions, workspace),
+      suggestedPrompts: this.mapSuggestedPrompts(frontDeskActions),
       raw: { artifactIds: [], evidenceChainIds: [], critiqueItemIds: [], decisionIds: [] },
     };
   }
@@ -1109,6 +1179,7 @@ export class CopilotOrchestrator {
       "show_evidence",
       "explain_choice",
       "accept",
+      "confirm_metric",
     ]);
     return frontDeskActions
       .filter((action) => supported.has(action.type as ProductAction["type"]))
@@ -1119,6 +1190,17 @@ export class CopilotOrchestrator {
         variantId: activeVariantId,
         primary: index === 0,
       }));
+  }
+
+  private mapSuggestedPrompts(frontDeskActions: FrontDeskDecision["nextActions"]): SuggestedPrompt[] | undefined {
+    if (!frontDeskActions?.length) return undefined;
+    const prompts = frontDeskActions
+      .map((action) => {
+        const message = suggestedPromptMessage(action.type);
+        return message ? { label: action.label, message } : undefined;
+      })
+      .filter((item): item is SuggestedPrompt => Boolean(item));
+    return prompts.length > 0 ? prompts : undefined;
   }
 
   private buildToolResponse(
@@ -1285,4 +1367,21 @@ function arrayStringArg(value: unknown): string[] | undefined {
   return Array.isArray(value) && value.every((item) => typeof item === "string")
     ? value
     : undefined;
+}
+
+function suggestedPromptMessage(type: string): string | undefined {
+  switch (type) {
+    case "list_experiences":
+      return "Show my experience library.";
+    case "generate_resume_for_jd":
+      return "I want to generate a tailored resume from a JD.";
+    case "create_experience":
+      return "Help me save a new experience.";
+    case "import_resume":
+      return "I want to import my resume text.";
+    case "list_resumes":
+      return "Show my resume history.";
+    default:
+      return undefined;
+  }
 }

@@ -105,6 +105,10 @@ describe("POST /copilot/chat", () => {
     expect(body.data.assistantMessage.content).toContain("Coolto Copilot");
     expect(body.data.assistantMessage.content).not.toContain("JD first");
     expect(body.data.workspace.status).toBe("empty");
+    expect(body.data.suggestedPrompts?.map((prompt) => prompt.message)).toEqual(expect.arrayContaining([
+      "Show my experience library.",
+      "I want to generate a tailored resume from a JD.",
+    ]));
   });
 
   it("imports resume text without requiring a JD", async () => {
@@ -285,7 +289,9 @@ describe("POST /copilot/chat", () => {
         targetRole: "Frontend Engineer",
       },
     });
-    const sessionId = (first.json() as ApiSuccess<CopilotChatResponse>).data.sessionId;
+    const firstBody = first.json() as ApiSuccess<CopilotChatResponse>;
+    const sessionId = firstBody.data.sessionId;
+    const initialVariantCount = firstBody.data.workspace.variants.length;
 
     const second = await server.inject({
       method: "POST", url: "/copilot/chat",
@@ -298,7 +304,7 @@ describe("POST /copilot/chat", () => {
     expect(body.data.workspace.variants.length).toBeGreaterThan(0);
   });
 
-  it("offers a conservative revision action without asking for the JD again", async () => {
+  it("executes conservative revision from chat without asking for the JD again", async () => {
     const first = await server.inject({
       method: "POST", url: "/copilot/chat",
       headers: { "x-user-id": "user-1" },
@@ -308,7 +314,9 @@ describe("POST /copilot/chat", () => {
         targetRole: "Frontend Engineer",
       },
     });
-    const sessionId = (first.json() as ApiSuccess<CopilotChatResponse>).data.sessionId;
+    const firstBody = first.json() as ApiSuccess<CopilotChatResponse>;
+    const sessionId = firstBody.data.sessionId;
+    const initialVariantCount = firstBody.data.workspace.variants.length;
 
     const second = await server.inject({
       method: "POST", url: "/copilot/chat",
@@ -317,8 +325,79 @@ describe("POST /copilot/chat", () => {
     });
     expect(second.statusCode).toBe(200);
     const body = second.json() as ApiSuccess<CopilotChatResponse>;
-    expect(body.data.nextActions.map((action) => action.type)).toContain("revise_more_conservative");
+    expect(
+      body.data.workspace.variants.length > initialVariantCount ||
+        body.data.timeline.some((item) => item.type === "revision_completed"),
+    ).toBe(true);
     expect(body.data.assistantMessage.content).not.toContain("Please paste the JD");
+  });
+
+  it("executes show evidence from chat", async () => {
+    const first = await server.inject({
+      method: "POST", url: "/copilot/chat",
+      headers: { "x-user-id": "user-1" },
+      payload: {
+        message: "Generate resume content",
+        jdText: "React TypeScript performance optimization role.",
+        targetRole: "Frontend Engineer",
+      },
+    });
+    const sessionId = (first.json() as ApiSuccess<CopilotChatResponse>).data.sessionId;
+
+    const second = await server.inject({
+      method: "POST", url: "/copilot/chat",
+      headers: { "x-user-id": "user-1" },
+      payload: { sessionId, message: "show evidence" },
+    });
+    expect(second.statusCode).toBe(200);
+    const body = second.json() as ApiSuccess<CopilotChatResponse>;
+    expect(body.data.assistantMessage.kind).toBe("evidence_explanation");
+  });
+
+  it("executes explain choice from chat", async () => {
+    const first = await server.inject({
+      method: "POST", url: "/copilot/chat",
+      headers: { "x-user-id": "user-1" },
+      payload: {
+        message: "Generate resume content",
+        jdText: "React TypeScript performance optimization role.",
+        targetRole: "Frontend Engineer",
+      },
+    });
+    const sessionId = (first.json() as ApiSuccess<CopilotChatResponse>).data.sessionId;
+
+    const second = await server.inject({
+      method: "POST", url: "/copilot/chat",
+      headers: { "x-user-id": "user-1" },
+      payload: { sessionId, message: "why recommend the first one?" },
+    });
+    expect(second.statusCode).toBe(200);
+    const body = second.json() as ApiSuccess<CopilotChatResponse>;
+    expect(["evidence_explanation", "decision_summary"]).toContain(body.data.assistantMessage.kind);
+    expect(body.data.assistantMessage.content.length).toBeGreaterThan(20);
+  });
+
+  it("accepts the first variant from chat", async () => {
+    const first = await server.inject({
+      method: "POST", url: "/copilot/chat",
+      headers: { "x-user-id": "user-1" },
+      payload: {
+        message: "Generate resume content",
+        jdText: "React TypeScript performance optimization role.",
+        targetRole: "Frontend Engineer",
+      },
+    });
+    const sessionId = (first.json() as ApiSuccess<CopilotChatResponse>).data.sessionId;
+
+    const second = await server.inject({
+      method: "POST", url: "/copilot/chat",
+      headers: { "x-user-id": "user-1" },
+      payload: { sessionId, message: "use the first one" },
+    });
+    expect(second.statusCode).toBe(200);
+    const body = second.json() as ApiSuccess<CopilotChatResponse>;
+    expect(body.data.workspace.activePanel).toBe("resume_editor");
+    expect(body.data.workspace.activeResume?.items.length).toBeGreaterThan(0);
   });
 
   it("creates import candidates from import resume chat intent", async () => {
@@ -558,14 +637,16 @@ describe("POST /copilot/chat/stream", () => {
     expect(body).toContain('"type":"copilot.completed"');
   });
 
-  it("returns failed event when JD missing", async () => {
+  it("streams chat-only frontdesk replies without requiring a JD", async () => {
     const response = await server.inject({
       method: "POST", url: "/copilot/chat/stream",
       headers: { "x-user-id": "user-1" },
-      payload: { message: "Hello" },
+      payload: { message: "Hello, what can you do?" },
     });
     expect(response.statusCode).toBe(200);
-    expect(response.body).toContain("event: copilot.failed");
+    expect(response.body).toContain("event: copilot.message.created");
+    expect(response.body).toContain("event: copilot.completed");
+    expect(response.body).not.toContain("event: copilot.failed");
   });
 
   it("does not expose raw chain-of-thought or reasoning_content", async () => {

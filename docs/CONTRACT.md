@@ -1453,6 +1453,8 @@ The FrontDeskAgent is a job-search chat assistant, not only an intent classifier
 
 `ProductIntentRouter` remains as a deterministic fallback and guardrail. The response envelope remains the P9 `CopilotChatResponse`; new workspace fields are additive and `workspace.variants` remains compatible with the minimal frontend. Responses must not expose chain-of-thought, `reasoning_content`, provider raw payloads, internal prompts, or tool arguments.
 
+P10.1.6 adds `suggestedPrompts?: Array<{ label: string; message: string }>` to `CopilotChatResponse` for chat-only recommendations that should be shown as prompt chips rather than product actions. Explicit workspace commands in chat, such as asking for evidence, asking why a variant was recommended, requesting a conservative or quantified revision, or accepting the first variant, execute immediately when the current workspace has a usable variant.
+
 `/copilot/actions` keeps P9 actions. Accepting a generated variant also saves it to a product resume draft when the current workspace is tied to a `product_generation`.
 
 Curl examples:
