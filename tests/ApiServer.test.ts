@@ -345,6 +345,23 @@ describe("dev CORS", () => {
       expect(response.statusCode).toBe(200);
       expect(response.headers["access-control-allow-origin"]).toBe("http://127.0.0.1:5173");
     });
+
+    it("allows Vite fallback localhost ports and request tracing headers", async () => {
+      const response = await devServer.inject({
+        method: "OPTIONS",
+        url: "/copilot/chat",
+        headers: {
+          origin: "http://localhost:5174",
+          "access-control-request-method": "POST",
+          "access-control-request-headers": "content-type,x-user-id,x-request-id,x-trace-id",
+        },
+      });
+
+      expect(response.statusCode).toBe(204);
+      expect(response.headers["access-control-allow-origin"]).toBe("http://localhost:5174");
+      expect(response.headers["access-control-allow-headers"]).toContain("x-request-id");
+      expect(response.headers["access-control-allow-headers"]).toContain("x-trace-id");
+    });
   });
 
   describe("production CORS", () => {

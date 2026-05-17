@@ -145,6 +145,27 @@ describe("POST /copilot/chat", () => {
     expect(JSON.stringify(body)).not.toContain("_artifactSnapshot");
   });
 
+  it("generates variants for Chinese copilot requests when JD exists", async () => {
+    const response = await server.inject({
+      method: "POST", url: "/copilot/chat",
+      headers: { "x-user-id": "user-1" },
+      payload: {
+        message: "请根据我的简历和 JD，生成适合投递的项目经历改写版本。",
+        resumeText: "As a Frontend Engineer at Acme Corp, I built React and TypeScript systems and reduced bundle size by 40%.",
+        jdText: "Looking for a Frontend Engineer with React, TypeScript, performance optimization and design system experience.",
+        targetRole: "Frontend Engineer",
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+    const body = response.json() as ApiSuccess<CopilotChatResponse>;
+    expect(body.data.workspace.variants.length).toBeGreaterThan(0);
+    expect(body.data.assistantMessage.content).not.toContain("Could you provide more context");
+    expect(body.data.timeline.some((item) => item.type === "variants_generated")).toBe(true);
+    expect(JSON.stringify(body)).not.toContain("reasoning_content");
+    expect(JSON.stringify(body)).not.toContain("chain-of-thought");
+  });
+
   it("reuses existing session when sessionId is provided", async () => {
     const first = await server.inject({
       method: "POST", url: "/copilot/chat",

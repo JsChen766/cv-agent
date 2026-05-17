@@ -1,8 +1,8 @@
 import { randomUUID } from "node:crypto";
 import type { ApiKernel } from "../api/types.js";
 import type { KernelRequestContext } from "../kernel/context.js";
+import type { CreateGenerationResult } from "../kernel/types.js";
 import type { GeneratedArtifact } from "../knowledge/types.js";
-import type { ArtifactCritiqueItem } from "../application/critique/types.js";
 import type { ArtifactDecisionRecord } from "../application/decisions/index.js";
 import { CopilotResponseBuilder } from "./CopilotResponseBuilder.js";
 import type {
@@ -206,18 +206,12 @@ export class CopilotOrchestrator {
       }
     }
 
-    // Run generation
-    const frontDeskResponse = await this.kernel.frontDeskOrchestrator.handle({
-      userId: ctx.user.id,
-      message: body.message,
-      jdText: session.jdText ?? body.jdText,
-      targetRole: session.targetRole ?? body.targetRole ?? "Target Role",
-    });
+    const generationResult = await this.generateVariantsForCopilot(ctx, session, body);
 
     // Store source artifacts in workspace variants' raw before building response
-    const generatedArtifacts = frontDeskResponse.artifacts ?? [];
-    const critiqueItems = frontDeskResponse.critiqueReport?.items ?? [];
-    const evidenceChains = frontDeskResponse.evidenceChains ?? [];
+    const generatedArtifacts = generationResult.artifacts;
+    const critiqueItems = generationResult.critiqueReport.items;
+    const evidenceChains = generationResult.evidenceChains;
 
     const response = this.builder.buildChatResponse({
       sessionId: session.id,
@@ -231,6 +225,7 @@ export class CopilotOrchestrator {
     });
 
     this.storeArtifactSnapshots(session.id, generatedArtifacts);
+    this.applyNoVariantsWarning(response, generatedArtifacts.length);
 
     // Add ingestion timeline items
     if (session.resumeIngested) {
@@ -366,25 +361,21 @@ export class CopilotOrchestrator {
     });
 
     try {
-      const frontDeskResponse = await this.kernel.frontDeskOrchestrator.handle({
-        userId: ctx.user.id,
-        message: body.message,
-        jdText: session.jdText ?? body.jdText,
-        targetRole: session.targetRole ?? body.targetRole ?? "Target Role",
-      });
+      const generationResult = await this.generateVariantsForCopilot(ctx, session, body);
 
-      const generatedArtifacts = frontDeskResponse.artifacts ?? [];
+      const generatedArtifacts = generationResult.artifacts;
       const response = this.builder.buildChatResponse({
         sessionId: session.id,
         turnId: turn.id,
         userMessage: body.message,
         generatedArtifacts,
-        critiqueItems: frontDeskResponse.critiqueReport?.items ?? [],
-        evidenceChains: frontDeskResponse.evidenceChains ?? [],
+        critiqueItems: generationResult.critiqueReport.items,
+        evidenceChains: generationResult.evidenceChains,
         targetRole: session.targetRole ?? body.targetRole ?? null,
         clientState: body.clientState ?? {},
       });
       this.storeArtifactSnapshots(session.id, generatedArtifacts);
+      this.applyNoVariantsWarning(response, generatedArtifacts.length);
 
       this.saveMessage(response.assistantMessage);
       this.saveWorkspace(response.workspace);
@@ -742,6 +733,36 @@ export class CopilotOrchestrator {
       nextActions: [],
       raw: { artifactIds: [], evidenceChainIds: [], critiqueItemIds: [], decisionIds: [] },
     };
+  }
+
+  private async generateVariantsForCopilot(
+    ctx: KernelRequestContext,
+    session: CopilotSession,
+    body: CopilotChatRequest,
+  ): Promise<CreateGenerationResult> {
+    const jdText = session.jdText ?? body.jdText;
+    if (!jdText) {
+      throw new Error("Job description is required to generate Copilot variants.");
+    }
+    return this.kernel.cvAgentKernel.generations.create(ctx, {
+      jdText,
+      targetRole: session.targetRole ?? body.targetRole ?? "Target Role",
+    });
+  }
+
+  private applyNoVariantsWarning(response: CopilotChatResponse, artifactCount: number): void {
+    if (artifactCount > 0) return;
+    const now = new Date().toISOString();
+    const description = "Generation returned no variants. Check artifact generator mode/provider response.";
+    response.assistantMessage.content = description;
+    response.timeline.push({
+      id: `tl-${response.turnId}-no-variants`,
+      type: "warning",
+      title: "No variants generated",
+      description,
+      status: "completed",
+      createdAt: now,
+    });
   }
 
   private storeArtifactSnapshots(sessionId: string, artifacts: GeneratedArtifact[]): void {

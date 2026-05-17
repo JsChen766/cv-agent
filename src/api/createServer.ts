@@ -56,28 +56,39 @@ function isDevCorsEnabled(): boolean {
   return true;
 }
 
-function parseDevCorsOrigins(): string[] {
-  if (process.env.DEV_CORS_ORIGIN) {
-    return process.env.DEV_CORS_ORIGIN.split(",").map((s) => s.trim()).filter((s) => s.length > 0);
-  }
-  return [
-    "http://127.0.0.1:5173",
-    "http://localhost:5173",
-    "http://127.0.0.1:5500",
-    "http://localhost:5500",
-    "null",
-  ];
-}
-
 async function registerDevCors(app: ReturnType<typeof Fastify>): Promise<void> {
   if (!isDevCorsEnabled()) return;
 
   await app.register(fastifyCors, {
-    origin: parseDevCorsOrigins(),
+    origin: isAllowedDevCorsOrigin,
     methods: ["GET", "POST", "OPTIONS"],
-    allowedHeaders: ["content-type", "x-user-id"],
+    allowedHeaders: ["content-type", "x-user-id", "x-request-id", "x-trace-id"],
     credentials: false,
   });
+}
+
+function isAllowedDevCorsOrigin(origin: string | undefined, callback: (error: Error | null, allowed: boolean) => void): void {
+  callback(null, isAllowedOrigin(origin));
+}
+
+function isAllowedOrigin(origin: string | undefined): boolean {
+  if (origin === undefined || origin === "null") return true;
+  if (parseConfiguredCorsOrigins().includes(origin)) return true;
+
+  try {
+    const url = new URL(origin);
+    const isLocalHost = url.hostname === "127.0.0.1" || url.hostname === "localhost";
+    return isLocalHost && (url.protocol === "http:" || url.protocol === "https:");
+  } catch {
+    return false;
+  }
+}
+
+function parseConfiguredCorsOrigins(): string[] {
+  return (process.env.DEV_CORS_ORIGIN ?? "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
 }
 
 function readHeader(value: string | string[] | undefined): string | undefined {
