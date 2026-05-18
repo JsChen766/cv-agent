@@ -13,6 +13,7 @@ import {
   DETERMINISTIC_RUNTIME_WARNING,
   readAllowDeterministicRuntime,
 } from "../../agents/runtime/AgentRuntimeGuards.js";
+import { readLimit } from "./helpers.js";
 
 export async function registerDebugRoutes(
   app: FastifyInstance,
@@ -223,9 +224,3 @@ function assertDebugRunsEnabled(): void {
   }
 }
 
-function readLimit(query: unknown): number | undefined {
-  if (typeof query !== "object" || query === null) return undefined;
-  const value = (query as Record<string, unknown>).limit;
-  const parsed = typeof value === "string" ? Number(value) : undefined;
-  return Number.isFinite(parsed) ? parsed : undefined;
-}

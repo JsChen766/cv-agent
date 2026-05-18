@@ -7,6 +7,7 @@ import { applyRateLimit } from "../rateLimit.js";
 import { success } from "../response.js";
 import type { ApiKernel } from "../types.js";
 import type { BackgroundJobType } from "../../platform/index.js";
+import { isRecord, meta, param, readLimit, requireRecord } from "./helpers.js";
 
 export async function registerJobRoutes(
   app: FastifyInstance,
@@ -55,15 +56,6 @@ export async function registerJobRoutes(
   });
 }
 
-function meta(kernel: ApiKernel, ctx: ReturnType<typeof createKernelRequestContext>) {
-  return {
-    requestId: ctx.request.requestId,
-    traceId: ctx.request.traceId,
-    mode: kernel.mode,
-    ...(kernel.warnings.length > 0 ? { warnings: kernel.warnings } : {}),
-  };
-}
-
 function readJobType(value: unknown): BackgroundJobType {
   if (
     value === "import_pdf" ||
@@ -76,26 +68,4 @@ function readJobType(value: unknown): BackgroundJobType {
     value === "export_resume_pdf"
   ) return value;
   throw new ApiError(ErrorCodes.INVALID_BODY, "type is not supported.", 400);
-}
-
-function param(request: FastifyRequest, name: string): string {
-  const params = request.params as Record<string, unknown>;
-  const value = params[name];
-  if (typeof value !== "string" || !value.trim()) throw new ApiError(ErrorCodes.INVALID_BODY, `${name} is required.`, 400);
-  return value;
-}
-
-function requireRecord(value: unknown): Record<string, unknown> {
-  if (!isRecord(value)) throw new ApiError(ErrorCodes.INVALID_BODY, "Request body must be a JSON object.", 400);
-  return value;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function readLimit(query: unknown): number | undefined {
-  if (!isRecord(query)) return undefined;
-  const parsed = typeof query.limit === "string" ? Number(query.limit) : undefined;
-  return Number.isFinite(parsed) ? parsed : undefined;
 }

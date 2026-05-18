@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { DocumentLoaderTool } from "../tools/document/index.js";
+import { readPlatformConfig } from "../platform/config.js";
 import type { FileRepository } from "./FileRepository.js";
 import type { FileStorage } from "./FileStorage.js";
 import { assertFileUploadEnabled, sourceTypeForMime, validateFile } from "./FileValidation.js";
@@ -61,13 +62,15 @@ export class FileService {
         sourceRef: `file:${file.id}`,
         buffer,
       });
+      const maxChars = readPlatformConfig().fileMaxParsedTextChars;
+      const text = extracted.text.length > maxChars ? extracted.text.slice(0, maxChars) : extracted.text;
       const document = await this.repository.createParsedDocument({
         id: `pdoc-${randomUUID()}`,
         userId,
         fileId: file.id,
         sourceType: sourceTypeForMime(file.mimeType),
-        text: extracted.text,
-        metadata: extracted.metadata,
+        text,
+        metadata: { ...extracted.metadata, truncated: extracted.text.length > maxChars, originalLength: extracted.text.length },
         createdAt: new Date().toISOString(),
       });
       await this.repository.updateFile(userId, id, { status: "parsed", parserStatus: "parsed", parserError: undefined, textDocumentId: document.id });

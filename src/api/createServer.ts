@@ -6,6 +6,7 @@ import type { ApiKernel } from "./types.js";
 import type { AuthResolver } from "./auth/index.js";
 import { createAuthResolver } from "./auth/index.js";
 import { readPlatformConfig } from "../platform/config.js";
+import { readHeader } from "./routes/helpers.js";
 import { errorResponse } from "./errors/index.js";
 import { registerAuthRoutes } from "./routes/auth.js";
 import { registerCopilotRoutes } from "./routes/copilot.js";
@@ -113,13 +114,4 @@ function parseConfiguredCorsOrigins(): string[] {
     .split(",")
     .map((s) => s.trim())
     .filter((s) => s.length > 0);
-}
-
-function readHeader(value: string | string[] | undefined): string | undefined {
-  if (typeof value === "string") {
-    const trimmed = value.trim();
-    return trimmed.length > 0 ? trimmed : undefined;
-  }
-  const firstValue = value?.find((item) => item.trim().length > 0);
-  return firstValue?.trim();
 }

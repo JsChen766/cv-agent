@@ -1,6 +1,6 @@
 import type { ResumeExportService } from "../exports/index.js";
 import type { FileService } from "../files/index.js";
-import type { PlatformServices } from "../platform/index.js";
+import type { BackgroundJob, PlatformServices } from "../platform/index.js";
 import type { ProductServices } from "../product/index.js";
 import { JobRegistry } from "./JobRegistry.js";
 
@@ -40,30 +40,44 @@ export class JobRunner {
     });
   }
 
+  /** Test/compat path: looks up job by id before running. Sets running state if not already running. */
   public async runJob(jobId: string, userId: string): Promise<void> {
     const job = await this.deps.platformServices.backgroundJobs.getJob(userId, jobId);
     if (!job || job.status === "cancelled") return;
+    // If job was already claimed (running), don't double-bump attempts
+    const toRun = job.status !== "running"
+      ? (await this.deps.platformServices.backgroundJobs.markRunning(userId, jobId)) ?? job
+      : job;
+    return this.executeJob(toRun);
+  }
+
+  /** Worker path: uses an already-claimed job object directly (attempts already bumped by claimNextJob). */
+  public async runClaimedJob(job: BackgroundJob, _workerId: string): Promise<void> {
+    if (job.status === "cancelled") return;
+    return this.executeJob(job);
+  }
+
+  private async executeJob(job: BackgroundJob): Promise<void> {
     const handler = this.registry.get(job.type);
     if (!handler) {
-      await this.deps.platformServices.backgroundJobs.markFailed(userId, jobId, `No handler registered for job type ${job.type}.`);
+      await this.deps.platformServices.backgroundJobs.markFailed(job.userId, job.id, `No handler registered for job type ${job.type}.`);
       return;
     }
-    await this.deps.platformServices.backgroundJobs.markProgress(userId, jobId, 10, "Job started.");
+    await this.deps.platformServices.backgroundJobs.markProgress(job.userId, job.id, 10, "Job started.");
     try {
-      await this.deps.platformServices.backgroundJobs.markProgress(userId, jobId, 30, "Processing.");
+      await this.deps.platformServices.backgroundJobs.markProgress(job.userId, job.id, 30, "Processing.");
       const output = await handler({ job });
-      // Re-check: job may have been cancelled during handler execution
-      const current = await this.deps.platformServices.backgroundJobs.getJob(userId, jobId);
+      const current = await this.deps.platformServices.backgroundJobs.getJob(job.userId, job.id);
       if (current?.status === "cancelled") return;
-      await this.deps.platformServices.backgroundJobs.markCompleted(userId, jobId, output);
+      await this.deps.platformServices.backgroundJobs.markCompleted(job.userId, job.id, output);
     } catch (error) {
-      const current = await this.deps.platformServices.backgroundJobs.getJob(userId, jobId);
+      const current = await this.deps.platformServices.backgroundJobs.getJob(job.userId, job.id);
       if (current?.status === "cancelled") return;
       const message = error instanceof Error ? error.message : "Job failed.";
       if (job.attempts < job.maxAttempts) {
-        await this.deps.platformServices.backgroundJobs.scheduleRetry(userId, jobId, message, new Date(Date.now() + 1000 * Math.max(1, job.attempts)).toISOString());
+        await this.deps.platformServices.backgroundJobs.scheduleRetry(job.userId, job.id, message, new Date(Date.now() + 1000 * Math.max(1, job.attempts)).toISOString());
       } else {
-        await this.deps.platformServices.backgroundJobs.markFailed(userId, jobId, message);
+        await this.deps.platformServices.backgroundJobs.markFailed(job.userId, job.id, message);
       }
     }
   }

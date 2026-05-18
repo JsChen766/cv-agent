@@ -37,7 +37,7 @@ export class BackgroundWorker {
           this.kernel.platformServices.backgroundJobs.heartbeat(job!.userId, job!.id, this.workerId).catch(() => {});
         }, Math.floor(readPlatformConfig().jobLockTtlMs / 3));
         try {
-          await this.kernel.jobRunner.runJob(job.id, job.userId);
+          await this.kernel.jobRunner.runClaimedJob(job, this.workerId);
         } finally {
           clearInterval(heartbeatInterval);
         }

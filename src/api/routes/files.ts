@@ -6,6 +6,7 @@ import { withIdempotency } from "../idempotency.js";
 import { applyRateLimit } from "../rateLimit.js";
 import { success } from "../response.js";
 import type { ApiKernel } from "../types.js";
+import { meta, param, readHeader, readLimit, requiredString } from "./helpers.js";
 
 export async function registerFileRoutes(app: FastifyInstance, kernel: ApiKernel, authResolver: AuthResolver<FastifyRequest>): Promise<void> {
   app.addContentTypeParser(/^multipart\/form-data/i, { parseAs: "buffer" }, (_request, body, done) => done(null, body));
@@ -103,27 +104,3 @@ function parseMultipartUpload(body: unknown, contentType: string): { originalNam
   return { originalName: filename, mimeType, buffer: Buffer.from(content, "binary") };
 }
 
-function meta(kernel: ApiKernel, ctx: ReturnType<typeof createKernelRequestContext>) {
-  return { requestId: ctx.request.requestId, traceId: ctx.request.traceId, mode: kernel.mode };
-}
-
-function param(request: FastifyRequest, name: string): string {
-  const value = (request.params as Record<string, unknown>)[name];
-  return requiredString(value, name);
-}
-
-function requiredString(value: unknown, name: string): string {
-  if (typeof value !== "string" || !value.trim()) throw new ApiError(ErrorCodes.INVALID_BODY, `${name} is required.`, 400);
-  return value;
-}
-
-function readLimit(query: unknown): number | undefined {
-  if (typeof query !== "object" || query === null) return undefined;
-  const parsed = typeof (query as Record<string, unknown>).limit === "string" ? Number((query as Record<string, unknown>).limit) : undefined;
-  return Number.isFinite(parsed) ? parsed : undefined;
-}
-
-function readHeader(value: string | string[] | undefined): string | undefined {
-  if (typeof value === "string") return value.trim() || undefined;
-  return value?.find((item) => item.trim().length > 0)?.trim();
-}

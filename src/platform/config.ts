@@ -41,6 +41,7 @@ export type PlatformConfig = {
   fileStorageProvider: FileStorageProvider;
   fileStorageDir: string;
   fileMaxSizeMb: number;
+  fileMaxParsedTextChars: number;
   fileAllowedMimeTypes: string;
 
   // export
@@ -91,6 +92,7 @@ export function readPlatformConfig(env: NodeJS.ProcessEnv = process.env): Platfo
     fileStorageProvider: readFileStorageProvider(env),
     fileStorageDir: env.FILE_STORAGE_DIR?.trim() || ".data/uploads",
     fileMaxSizeMb: readPositiveNumber(env.FILE_MAX_SIZE_MB) ?? 10,
+    fileMaxParsedTextChars: readPositiveNumber(env.FILE_MAX_PARSED_TEXT_CHARS) ?? 500_000,
     fileAllowedMimeTypes: env.FILE_ALLOWED_MIME_TYPES?.trim() || "application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/plain",
 
     // export

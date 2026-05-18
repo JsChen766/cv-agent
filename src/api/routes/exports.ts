@@ -7,6 +7,7 @@ import { applyRateLimit } from "../rateLimit.js";
 import { success } from "../response.js";
 import type { ApiKernel } from "../types.js";
 import type { ResumeExportFormat } from "../../exports/index.js";
+import { isRecord, meta, optionalString, param, readLimit } from "./helpers.js";
 
 export async function registerExportRoutes(app: FastifyInstance, kernel: ApiKernel, authResolver: AuthResolver<FastifyRequest>): Promise<void> {
   const contextFor = async (request: FastifyRequest) => {
@@ -58,32 +59,8 @@ export async function registerExportRoutes(app: FastifyInstance, kernel: ApiKern
   });
 }
 
-function meta(kernel: ApiKernel, ctx: ReturnType<typeof createKernelRequestContext>) {
-  return { requestId: ctx.request.requestId, traceId: ctx.request.traceId, mode: kernel.mode };
-}
-
 function readFormat(value: unknown): ResumeExportFormat {
   if (value === undefined || value === "html") return "html";
   if (value === "pdf") return "pdf";
   throw new ApiError(ErrorCodes.INVALID_BODY, "format must be html or pdf.", 400);
-}
-
-function param(request: FastifyRequest, name: string): string {
-  const value = (request.params as Record<string, unknown>)[name];
-  if (typeof value !== "string" || !value.trim()) throw new ApiError(ErrorCodes.INVALID_BODY, `${name} is required.`, 400);
-  return value;
-}
-
-function optionalString(value: unknown): string | undefined {
-  return typeof value === "string" && value.trim() ? value : undefined;
-}
-
-function readLimit(query: unknown): number | undefined {
-  if (!isRecord(query)) return undefined;
-  const parsed = typeof query.limit === "string" ? Number(query.limit) : undefined;
-  return Number.isFinite(parsed) ? parsed : undefined;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
