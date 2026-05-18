@@ -1,5 +1,5 @@
 import type { FastifyInstance, FastifyRequest } from "fastify";
-import { ApiError } from "../errors.js";
+import { ApiError, ErrorCodes } from "../errors.js";
 import { success } from "../response.js";
 import type { ApiKernel } from "../types.js";
 import type { AuthResolver } from "../auth/index.js";
@@ -49,7 +49,7 @@ export async function registerProductRoutes(
   app.get("/product/experiences/:id", async (request) => {
     const ctx = await contextFor(request);
     const experience = await kernel.productServices.experienceService.getExperience(ctx.user.id, param(request, "id"));
-    if (!experience) throw new ApiError("NOT_FOUND", "Experience not found.", 404);
+    if (!experience) throw new ApiError(ErrorCodes.NOT_FOUND, "Experience not found.", 404);
     const revisions = await kernel.productServices.experienceService.listRevisions(ctx.user.id, experience.id);
     return productSuccess({ experience, revisions }, kernel, ctx);
   });
@@ -67,7 +67,7 @@ export async function registerProductRoutes(
       const updated = await kernel.productServices.experienceService.updateExperience(ctx.user.id, param(request, "id"), {
         ...patch,
       });
-      if (!updated) throw new ApiError("NOT_FOUND", "Experience not found.", 404);
+      if (!updated) throw new ApiError(ErrorCodes.NOT_FOUND, "Experience not found.", 404);
       return productSuccess(updated, kernel, ctx);
     });
   });
@@ -120,7 +120,7 @@ export async function registerProductRoutes(
   app.get("/product/jds/:id", async (request) => {
     const ctx = await contextFor(request);
     const jd = await kernel.productServices.jdService.getJD(ctx.user.id, param(request, "id"));
-    if (!jd) throw new ApiError("NOT_FOUND", "JD not found.", 404);
+    if (!jd) throw new ApiError(ErrorCodes.NOT_FOUND, "JD not found.", 404);
     return productSuccess(jd, kernel, ctx);
   });
 
@@ -142,7 +142,7 @@ export async function registerProductRoutes(
   app.get("/product/resumes/:id", async (request) => {
     const ctx = await contextFor(request);
     const resume = await kernel.productServices.resumeService.getResume(ctx.user.id, param(request, "id"));
-    if (!resume) throw new ApiError("NOT_FOUND", "Resume not found.", 404);
+    if (!resume) throw new ApiError(ErrorCodes.NOT_FOUND, "Resume not found.", 404);
     return productSuccess(resume, kernel, ctx);
   });
 
@@ -172,7 +172,7 @@ export async function registerProductRoutes(
         hidden: typeof body.hidden === "boolean" ? body.hidden : undefined,
         pinned: typeof body.pinned === "boolean" ? body.pinned : undefined,
       });
-      if (!item) throw new ApiError("NOT_FOUND", "Resume item not found.", 404);
+      if (!item) throw new ApiError(ErrorCodes.NOT_FOUND, "Resume item not found.", 404);
       return productSuccess(item, kernel, ctx);
     });
   });
@@ -200,7 +200,7 @@ export async function registerProductRoutes(
     return withIdempotency(request, reply, kernel, ctx.user.id, async () => {
       const fileId = requiredString(body.fileId, "fileId");
       const file = await kernel.fileService.getFile(ctx.user.id, fileId);
-      if (!file) throw new ApiError("NOT_FOUND", "File not found.", 404);
+      if (!file) throw new ApiError(ErrorCodes.NOT_FOUND, "File not found.", 404);
       const job = await kernel.platformServices.backgroundJobs.enqueue({
         userId: ctx.user.id,
         type: "import_resume_file",
@@ -216,7 +216,7 @@ export async function registerProductRoutes(
   app.get("/product/imports/:id", async (request) => {
     const ctx = await contextFor(request);
     const job = await kernel.productServices.importService.getImportJob(ctx.user.id, param(request, "id"));
-    if (!job) throw new ApiError("NOT_FOUND", "Import job not found.", 404);
+    if (!job) throw new ApiError(ErrorCodes.NOT_FOUND, "Import job not found.", 404);
     const candidates = await kernel.productServices.importService.listCandidatesByJob(ctx.user.id, job.id);
     return productSuccess({ job, candidates }, kernel, ctx);
   });
@@ -246,7 +246,7 @@ export async function registerProductRoutes(
   app.get("/product/generations/:id", async (request) => {
     const ctx = await contextFor(request);
     const generation = await kernel.productServices.generationProductService.getGeneration(ctx.user.id, param(request, "id"));
-    if (!generation) throw new ApiError("NOT_FOUND", "Generation not found.", 404);
+    if (!generation) throw new ApiError(ErrorCodes.NOT_FOUND, "Generation not found.", 404);
     return productSuccess(generation, kernel, ctx);
   });
 
@@ -256,7 +256,7 @@ export async function registerProductRoutes(
     const jdId = optionalString(body.jdId);
     const jdText = optionalString(body.jdText);
     if (!jdId && !jdText) {
-      throw new ApiError("INVALID_BODY", "jdText or jdId is required.", 400);
+      throw new ApiError(ErrorCodes.INVALID_BODY, "jdText or jdId is required.", 400);
     }
     return withIdempotency(request, reply, kernel, ctx.user.id, async () => {
       await kernel.platformServices.usage.consume({ userId: ctx.user.id, metric: "generation" });
@@ -292,14 +292,14 @@ function productSuccess(data: unknown, kernel: ApiKernel, ctx: ReturnType<typeof
 
 function requireRecord(value: unknown): Record<string, unknown> {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
-    throw new ApiError("INVALID_BODY", "Request body must be a JSON object.", 400);
+    throw new ApiError(ErrorCodes.INVALID_BODY, "Request body must be a JSON object.", 400);
   }
   return value as Record<string, unknown>;
 }
 
 function requiredString(value: unknown, name: string): string {
   if (typeof value !== "string" || !value.trim()) {
-    throw new ApiError("INVALID_BODY", `${name} is required.`, 400);
+    throw new ApiError(ErrorCodes.INVALID_BODY, `${name} is required.`, 400);
   }
   return value;
 }
@@ -335,7 +335,7 @@ function readSectionType(value: unknown): ProductResumeItem["sectionType"] | und
 function readEnum<const T extends string>(value: unknown, name: string, allowed: readonly T[]): T | undefined {
   if (value === undefined || value === null || value === "") return undefined;
   if (typeof value !== "string" || !allowed.includes(value as T)) {
-    throw new ApiError("INVALID_BODY", `${name} must be one of: ${allowed.join(", ")}.`, 400);
+    throw new ApiError(ErrorCodes.INVALID_BODY, `${name} must be one of: ${allowed.join(", ")}.`, 400);
   }
   return value as T;
 }

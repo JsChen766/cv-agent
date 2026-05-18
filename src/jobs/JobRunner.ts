@@ -44,12 +44,21 @@ export class JobRunner {
     const job = await this.deps.platformServices.backgroundJobs.getJob(userId, jobId);
     if (!job || job.status === "cancelled") return;
     const handler = this.registry.get(job.type);
-    if (!handler) throw new Error(`No handler registered for job type ${job.type}.`);
+    if (!handler) {
+      await this.deps.platformServices.backgroundJobs.markFailed(userId, jobId, `No handler registered for job type ${job.type}.`);
+      return;
+    }
     await this.deps.platformServices.backgroundJobs.markProgress(userId, jobId, 10, "Job started.");
     try {
+      await this.deps.platformServices.backgroundJobs.markProgress(userId, jobId, 30, "Processing.");
       const output = await handler({ job });
+      // Re-check: job may have been cancelled during handler execution
+      const current = await this.deps.platformServices.backgroundJobs.getJob(userId, jobId);
+      if (current?.status === "cancelled") return;
       await this.deps.platformServices.backgroundJobs.markCompleted(userId, jobId, output);
     } catch (error) {
+      const current = await this.deps.platformServices.backgroundJobs.getJob(userId, jobId);
+      if (current?.status === "cancelled") return;
       const message = error instanceof Error ? error.message : "Job failed.";
       if (job.attempts < job.maxAttempts) {
         await this.deps.platformServices.backgroundJobs.scheduleRetry(userId, jobId, message, new Date(Date.now() + 1000 * Math.max(1, job.attempts)).toISOString());

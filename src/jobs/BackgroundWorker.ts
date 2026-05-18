@@ -23,9 +23,24 @@ export class BackgroundWorker {
 
   private async loop(types?: BackgroundJobType[]): Promise<void> {
     while (!this.stopped) {
-      const job = await this.kernel.platformServices.backgroundJobs.claimNextJob(this.workerId, types);
+      let job: Awaited<ReturnType<typeof this.kernel.platformServices.backgroundJobs.claimNextJob>> = null;
+      try {
+        job = await this.kernel.platformServices.backgroundJobs.claimNextJob(this.workerId, types);
+      } catch {
+        // claim error — back off and retry
+        await new Promise((resolve) => setTimeout(resolve, readPlatformConfig().jobPollIntervalMs));
+        continue;
+      }
       if (job) {
-        await this.kernel.jobRunner.runJob(job.id, job.userId);
+        // Run heartbeat concurrently with the job so lock doesn't expire
+        const heartbeatInterval = setInterval(() => {
+          this.kernel.platformServices.backgroundJobs.heartbeat(job!.userId, job!.id, this.workerId).catch(() => {});
+        }, Math.floor(readPlatformConfig().jobLockTtlMs / 3));
+        try {
+          await this.kernel.jobRunner.runJob(job.id, job.userId);
+        } finally {
+          clearInterval(heartbeatInterval);
+        }
       } else {
         await new Promise((resolve) => setTimeout(resolve, readPlatformConfig().jobPollIntervalMs));
       }

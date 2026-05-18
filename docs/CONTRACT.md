@@ -2113,6 +2113,41 @@ EXPORT_DOWNLOAD_TTL_MINUTES=60
 USER_API_KEY_ENCRYPTION_SECRET=change-me
 ```
 
+### 14.8 P11.1 Stabilization Notes
+
+P11.1 did not add new features. It hardened the P11 foundation:
+
+- **Shared route helpers** (`src/api/routes/helpers.ts`) replace 7 independent copies of `readHeader`, `readLimit`, `requireRecord`, `requiredString`, `optionalString`, `isRecord`, `param`, and `meta`.
+- **Error code consistency**: `product.ts`, `copilot.ts` now use `ErrorCodes` enum instead of raw strings.
+- **Cookie security**: `Secure` flag on HTTPS, `Max-Age` from session TTL, `HttpOnly; SameSite=Lax`.
+- **Debug auth gating**: `/debug/agent-modes` requires auth + `DEBUG_ROUTES_ENABLED=true`.
+- **Worker heartbeat**: `BackgroundWorker` sends heartbeat during job execution at `jobLockTtlMs / 3` interval.
+- **Job cancellation hardening**: `JobRunner` re-checks cancellation after handler completion.
+- **Export errors**: `ResumeExportService` uses `ApiError` with proper status codes.
+- **Template escaping**: `escapeHtml` escapes all 5 sensitive characters (`& < > " '`).
+
+### Error behavior
+
+| Scenario | Status code | Error code |
+|----------|-------------|------------|
+| DOCX export requested | 400 | `INVALID_BODY` |
+| PDF export with `PDF_RENDERER=none` | 503 | `INTERNAL_ERROR` |
+| Export / resume not found | 404 | `NOT_FOUND` |
+| Export not completed | 404 | `NOT_FOUND` |
+| Export file not found | 404 | `NOT_FOUND` |
+
+### Pending (explicitly deferred)
+
+| Item | Status |
+|------|--------|
+| Real OAuth/password login | deferred |
+| R2/S3 storage backend | interface reserved, not implemented |
+| Playwright PDF renderer | `PDF_RENDERER=none` default; error message clear |
+| DOCX export | returns `INVALID_BODY` |
+| Production queue (Redis/BullMQ) | not needed yet; PostgreSQL polling works for MVP |
+| Frontend login UI | deferred |
+| `bearer_token` / `service` auth modes | reserved |
+
 ---
 
 ## 15. Checklist for New Code

@@ -1,8 +1,9 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import type { FileService } from "../files/index.js";
 import type { PlatformServices } from "../platform/index.js";
-import { readPlatformConfig, type PdfRenderer } from "../platform/config.js";
+import { readPlatformConfig } from "../platform/config.js";
 import type { ResumeService } from "../product/index.js";
+import { ApiError, ErrorCodes } from "../api/errors.js";
 import type { ResumeExportRepository } from "./ResumeExportRepository.js";
 import { ResumeHtmlRenderer } from "./ResumeHtmlRenderer.js";
 import type { ResumeExport, ResumeExportFormat } from "./types.js";
@@ -18,9 +19,9 @@ export class ResumeExportService {
   ) {}
 
   public async createExport(userId: string, input: { resumeId: string; format: ResumeExportFormat; templateId?: string }): Promise<{ exportRecord: ResumeExport; job: Awaited<ReturnType<PlatformServices["backgroundJobs"]["createJob"]>> }> {
-    if (input.format === "docx") throw new Error("DOCX export is not supported yet.");
+    if (input.format === "docx") throw new ApiError(ErrorCodes.INVALID_BODY, "DOCX export is not supported yet.", 400);
     if (input.format === "pdf" && readPlatformConfig().pdfRenderer === "none") {
-      throw new Error("PDF renderer is not configured. Set PDF_RENDERER=playwright or PDF_RENDERER=external.");
+      throw new ApiError(ErrorCodes.INTERNAL_ERROR, "PDF renderer is not configured. Set PDF_RENDERER=playwright or PDF_RENDERER=external.", 503);
     }
     const now = new Date().toISOString();
     const record = await this.repository.createExport({
@@ -59,12 +60,12 @@ export class ResumeExportService {
 
   public async renderExportJob(userId: string, exportId: string): Promise<ResumeExport> {
     const record = await this.repository.getExport(userId, exportId);
-    if (!record) throw new Error("Export not found.");
+    if (!record) throw new ApiError(ErrorCodes.NOT_FOUND, "Export not found.", 404);
     if (record.format === "pdf" && readPlatformConfig().pdfRenderer === "none") {
-      throw new Error("PDF renderer is not configured.");
+      throw new ApiError(ErrorCodes.INTERNAL_ERROR, "PDF renderer is not configured.", 503);
     }
     const resume = await this.resumeService.getResume(userId, record.resumeId);
-    if (!resume) throw new Error("Resume not found.");
+    if (!resume) throw new ApiError(ErrorCodes.NOT_FOUND, "Resume not found.", 404);
     await this.repository.updateExport(userId, exportId, { status: "rendering" });
     const html = this.renderer.render(resume, record.templateId);
     const file = await this.fileService.uploadFile(userId, {
@@ -85,11 +86,13 @@ export class ResumeExportService {
 
   public async readDownload(userId: string, id: string): Promise<{ exportRecord: ResumeExport; fileText: string }> {
     const record = await this.repository.getExport(userId, id);
-    if (!record || record.status !== "completed" || !record.fileId) throw new Error("Export is not ready.");
+    if (!record || record.status !== "completed" || !record.fileId) {
+      throw new ApiError(ErrorCodes.NOT_FOUND, "Export is not ready.", 404);
+    }
     const parsed = await this.fileService.getParsedDocumentByFileId(userId, record.fileId);
     if (parsed) return { exportRecord: record, fileText: parsed.text };
     const file = await this.fileService.getFile(userId, record.fileId);
-    if (!file) throw new Error("Export file not found.");
+    if (!file) throw new ApiError(ErrorCodes.NOT_FOUND, "Export file not found.", 404);
     const document = await this.fileService.parseFile(userId, file.id);
     return { exportRecord: record, fileText: document.text };
   }

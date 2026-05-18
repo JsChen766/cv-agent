@@ -1275,6 +1275,67 @@ EXPORT_DOWNLOAD_TTL_MINUTES=60
 USER_API_KEY_ENCRYPTION_SECRET=change-me
 ```
 
+## P11.1 Product Backend Stabilization
+
+P11.1 hardens the P11 foundation without adding new features. Focus: code quality, error handling, auth security, worker reliability, and E2E verification.
+
+### Stabilization improvements
+
+- **Shared route helpers**: `src/api/routes/helpers.ts` eliminates 7 copies of `readHeader`, `readLimit`, `requireRecord`, `requiredString`, `optionalString`, `isRecord`, `param`, and `meta` across route files.
+- **Error code consistency**: All raw error strings in `product.ts`, `copilot.ts`, and `auth.ts` replaced with `ErrorCodes` enum values.
+- **Cookie security**: Session cookies now include `Secure` flag on HTTPS, `Max-Age` based on session TTL, and proper `HttpOnly; SameSite=Lax`.
+- **Debug route gating**: `/debug/agent-modes` now requires auth and `DEBUG_ROUTES_ENABLED=true`, preventing infrastructure config leaks on public deployments.
+- **Worker heartbeat**: `BackgroundWorker` sends heartbeat during job execution, preventing lock expiry for long-running jobs.
+- **InMemory job claim safety**: Synchronous guard prevents concurrent claim of the same job in in-memory mode.
+- **Job cancellation hardening**: `JobRunner` re-checks cancellation status after handler completion to avoid overwriting cancelled state.
+- **Export error quality**: `ResumeExportService` now throws `ApiError` with proper status codes (400/404/503) instead of bare `Error` (which mapped to 500).
+- **HTML escaping**: Template `escapeHtml` now escapes single quotes for defense-in-depth.
+- **Download content-type**: Export download correctly sets `text/html` vs `application/pdf` based on format.
+
+### E2E test
+
+`tests/ProductBackendE2E.test.ts` validates the complete main flow end-to-end using in-memory services:
+
+```text
+auth → upload txt → parse job → parsed_document
+  → product import from file → import candidates
+  → accept candidate → product_experience
+  → save JD → generate resume → accept variant → product_resume_item
+  → create HTML export job → worker processes → download export
+  → user isolation + no sensitive data leaked
+```
+
+### Public API surface (stable)
+
+```text
+Public (production-safe):
+  /auth/me, /auth/logout, /auth/api-keys
+  /copilot/chat, /copilot/actions, /copilot/chat/stream
+  /copilot/sessions, /copilot/sidebar
+  /product/experiences, /product/jds, /product/resumes
+  /product/imports/*, /product/generations/*
+  /product/dashboard
+  /jobs, /jobs/:id, /jobs/:id/cancel
+  /files/upload, /files, /files/:id, /files/:id/parse, /files/:id/parsed-document
+  /exports/resumes/:resumeId, /exports, /exports/:id, /exports/:id/download
+  /debug/agent-modes, /debug/agent-runs (gated)
+
+Internal/Legacy (default disabled):
+  /documents/*, /generations/*, /decisions/*, /evidence/*
+```
+
+### Pending (explicitly deferred)
+
+| Item | Status |
+|------|--------|
+| OAuth/password real login | deferred |
+| Frontend login UI | deferred |
+| R2/S3 storage | interface reserved, not implemented |
+| Playwright PDF renderer | `PDF_RENDERER=none` by default |
+| DOCX export | not supported |
+| Production queue (Redis/BullMQ) | not needed yet |
+| `bearer_token` / `service` auth modes | reserved |
+
 ## Current Non-Goals
 
 - No formal product page buildout in this backend phase.

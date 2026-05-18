@@ -19,11 +19,15 @@ export async function registerDebugRoutes(
   kernel: ApiKernel,
   authResolver?: AuthResolver<FastifyRequest>,
 ): Promise<void> {
-  app.get("/debug/agent-modes", async () => {
+  app.get("/debug/agent-modes", async (request) => {
+    assertDebugRoutesEnabled();
+    if (!authResolver) throw new ApiError(ErrorCodes.UNAUTHORIZED, "Authentication is required.", 401);
+    const ctx = createKernelRequestContext(request, await authResolver.resolve(request));
+    await applyRateLimit(kernel, ctx, request);
     const result = buildAgentModesReport(kernel);
     return success(result, {
-      requestId: "debug",
-      traceId: "debug",
+      requestId: ctx.request.requestId,
+      traceId: ctx.request.traceId,
       mode: kernel.mode,
       ...(result.warnings.length > 0 ? { warnings: result.warnings } : {}),
     });
@@ -203,6 +207,12 @@ function buildAgentModesReport(kernel: ApiKernel): {
     hasDeepSeekApiKey,
     warnings: uniqueWarnings,
   };
+}
+
+function assertDebugRoutesEnabled(): void {
+  if (process.env.DEBUG_ROUTES_ENABLED !== "true") {
+    throw new ApiError(ErrorCodes.FORBIDDEN, "Debug routes are disabled. Set DEBUG_ROUTES_ENABLED=true to enable them.", 403);
+  }
 }
 
 function assertDebugRunsEnabled(): void {

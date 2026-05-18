@@ -229,28 +229,38 @@ class InMemoryBackgroundJobService {
       .slice(0, limit);
   }
 
+  private jobClaimLock = false;
+
   public async claimNextJob(workerId: string, types?: BackgroundJobType[]): Promise<BackgroundJob | null> {
-    const now = Date.now();
-    const job = Array.from(this.jobs.values())
-      .filter((item) => (
-        item.status === "pending" &&
-        (!types?.length || types.includes(item.type)) &&
-        (!item.runAfter || new Date(item.runAfter).getTime() <= now) &&
-        (!item.nextRetryAt || new Date(item.nextRetryAt).getTime() <= now) &&
-        (!item.lockedUntil || new Date(item.lockedUntil).getTime() <= now)
-      ))
-      .sort((a, b) => b.priority - a.priority || a.createdAt.localeCompare(b.createdAt))[0];
-    if (!job) return null;
-    const locked = {
-      ...job,
-      status: "running" as const,
-      attempts: job.attempts + 1,
-      lockedBy: workerId,
-      lockedUntil: new Date(now + readPlatformConfig().jobLockTtlMs).toISOString(),
-      updatedAt: new Date().toISOString(),
-    };
-    this.jobs.set(job.id, locked);
-    return locked;
+    // Synchronous guard: prevent concurrent claim loops on same in-memory store.
+    // JS is single-threaded, so a simple flag works as long as claimNextJob has no internal await.
+    if (this.jobClaimLock) return null;
+    this.jobClaimLock = true;
+    try {
+      const now = Date.now();
+      const job = Array.from(this.jobs.values())
+        .filter((item) => (
+          item.status === "pending" &&
+          (!types?.length || types.includes(item.type)) &&
+          (!item.runAfter || new Date(item.runAfter).getTime() <= now) &&
+          (!item.nextRetryAt || new Date(item.nextRetryAt).getTime() <= now) &&
+          (!item.lockedUntil || new Date(item.lockedUntil).getTime() <= now)
+        ))
+        .sort((a, b) => b.priority - a.priority || a.createdAt.localeCompare(b.createdAt))[0];
+      if (!job) return null;
+      const locked = {
+        ...job,
+        status: "running" as const,
+        attempts: job.attempts + 1,
+        lockedBy: workerId,
+        lockedUntil: new Date(now + readPlatformConfig().jobLockTtlMs).toISOString(),
+        updatedAt: new Date().toISOString(),
+      };
+      this.jobs.set(job.id, locked);
+      return locked;
+    } finally {
+      this.jobClaimLock = false;
+    }
   }
 
   public async markRunning(userId: string, id: string): Promise<BackgroundJob | null> {

@@ -8,6 +8,8 @@ import { success } from "../response.js";
 import type { ApiKernel } from "../types.js";
 import { readSessionCookieName } from "../../auth/index.js";
 import type { UserApiKeyProvider } from "../../auth/types.js";
+import { readPlatformConfig } from "../../platform/config.js";
+import { isRecord, meta, optionalString, param, readHeader, readLimit, requireRecord, requiredString } from "./helpers.js";
 
 export async function registerAuthRoutes(app: FastifyInstance, kernel: ApiKernel, authResolver: AuthResolver<FastifyRequest>): Promise<void> {
   app.get("/auth/me", async (request) => {
@@ -21,18 +23,23 @@ export async function registerAuthRoutes(app: FastifyInstance, kernel: ApiKernel
   app.post("/auth/dev-login", async (request, reply) => {
     assertDevLoginAllowed();
     const body = isRecord(request.body) ? request.body : {};
-    const user = await kernel.authService.createUser({
-      email: typeof body.email === "string" ? body.email : "dev@example.com",
-      displayName: typeof body.displayName === "string" ? body.displayName : "Dev User",
-      authProvider: "dev",
+    const ctx = createKernelRequestContext(request, { user: { id: readHeader(request.headers["x-user-id"]) ?? "dev-anon", roles: [] }, auth: { mode: "dev_header" } });
+    await applyRateLimit(kernel, ctx, request);
+    return withIdempotency(request, reply, kernel, ctx.user.id, async () => {
+      const user = await kernel.authService.createUser({
+        email: typeof body.email === "string" ? body.email : "dev@example.com",
+        displayName: typeof body.displayName === "string" ? body.displayName : "Dev User",
+        authProvider: "dev",
+      });
+      const { token } = await kernel.authService.createSession({
+        userId: user.id,
+        userAgent: readHeader(request.headers["user-agent"]),
+        ip: request.ip,
+      });
+      const secure = request.protocol === "https" ? "; Secure" : "";
+      reply.header("set-cookie", `${readSessionCookieName()}=${encodeURIComponent(token)}; HttpOnly;${secure}; Path=/; SameSite=Lax; Max-Age=${readPlatformConfig().sessionTtlDays * 86400}`);
+      return success({ user }, meta(kernel, ctx));
     });
-    const { token } = await kernel.authService.createSession({
-      userId: user.id,
-      userAgent: readHeader(request.headers["user-agent"]),
-      ip: request.ip,
-    });
-    reply.header("set-cookie", `${readSessionCookieName()}=${encodeURIComponent(token)}; HttpOnly; Path=/; SameSite=Lax`);
-    return success({ user }, { requestId: "dev-login", traceId: "dev-login", mode: kernel.mode });
   });
 
   app.post("/auth/logout", async (request) => {
@@ -72,12 +79,9 @@ export async function registerAuthRoutes(app: FastifyInstance, kernel: ApiKernel
   });
 }
 
-function meta(kernel: ApiKernel, ctx: ReturnType<typeof createKernelRequestContext>) {
-  return { requestId: ctx.request.requestId, traceId: ctx.request.traceId, mode: kernel.mode };
-}
-
 function assertDevLoginAllowed(): void {
-  if (process.env.NODE_ENV === "production") {
+  const config = readPlatformConfig();
+  if (process.env.NODE_ENV === "production" && !config.allowDevHeaderAuth) {
     throw new ApiError(ErrorCodes.FORBIDDEN, "Dev login is disabled in production.", 403);
   }
 }
@@ -85,34 +89,6 @@ function assertDevLoginAllowed(): void {
 function readProvider(value: unknown): UserApiKeyProvider {
   if (value === "deepseek" || value === "openai" || value === "compatible") return value;
   throw new ApiError(ErrorCodes.INVALID_BODY, "provider must be deepseek, openai, or compatible.", 400);
-}
-
-function param(request: FastifyRequest, name: string): string {
-  const value = (request.params as Record<string, unknown>)[name];
-  return requiredString(value, name);
-}
-
-function requireRecord(value: unknown): Record<string, unknown> {
-  if (!isRecord(value)) throw new ApiError(ErrorCodes.INVALID_BODY, "Request body must be a JSON object.", 400);
-  return value;
-}
-
-function requiredString(value: unknown, name: string): string {
-  if (typeof value !== "string" || !value.trim()) throw new ApiError(ErrorCodes.INVALID_BODY, `${name} is required.`, 400);
-  return value;
-}
-
-function optionalString(value: unknown): string | undefined {
-  return typeof value === "string" && value.trim() ? value : undefined;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function readHeader(value: string | string[] | undefined): string | undefined {
-  if (typeof value === "string") return value.trim() || undefined;
-  return value?.find((item) => item.trim().length > 0)?.trim();
 }
 
 function readCookie(cookieHeader: string | string[] | undefined, name: string): string | undefined {

@@ -14,7 +14,12 @@ function setupEnv() {
   process.env.CRITIC_AGENT_MODE = "deterministic";
   process.env.REVISION_AGENT_MODE = "deterministic";
   process.env.NODE_ENV = "test";
+  process.env.DEBUG_ROUTES_ENABLED = "true";
   delete process.env.DATABASE_URL;
+}
+
+function authHeaders() {
+  return { "x-user-id": "debug-test-user" };
 }
 
 describe("GET /debug/agent-modes", () => {
@@ -33,7 +38,7 @@ describe("GET /debug/agent-modes", () => {
   });
 
   it("returns structured runtime, legacy, database, and safety data", async () => {
-    const response = await server.inject({ method: "GET", url: "/debug/agent-modes" });
+    const response = await server.inject({ method: "GET", url: "/debug/agent-modes", headers: authHeaders() });
     expect(response.statusCode).toBe(200);
     const body = response.json() as ApiSuccess<Record<string, unknown>>;
     expect(body.ok).toBe(true);
@@ -88,7 +93,7 @@ describe("GET /debug/agent-modes", () => {
     // Need a fresh kernel/server for this env
     const k = await createKernel();
     const s = await createServer(k);
-    const response = await s.inject({ method: "GET", url: "/debug/agent-modes" });
+    const response = await s.inject({ method: "GET", url: "/debug/agent-modes", headers: authHeaders() });
     const body = response.json() as ApiSuccess<Record<string, unknown>>;
     const d = body.data as Record<string, unknown>;
     const warnings = d.warnings as string[];

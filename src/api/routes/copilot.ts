@@ -2,13 +2,14 @@ import { randomUUID } from "node:crypto";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import type { AuthResolver } from "../auth/index.js";
 import { createKernelRequestContext } from "../context.js";
-import { ApiError } from "../errors.js";
+import { ApiError, ErrorCodes } from "../errors.js";
 import { success } from "../response.js";
 import type { ApiKernel } from "../types.js";
 import { withIdempotency } from "../idempotency.js";
 import { applyRateLimit } from "../rateLimit.js";
 import { CopilotOrchestrator } from "../../copilot/CopilotOrchestrator.js";
 import type { CopilotActionRequest, CopilotChatRequest } from "../../copilot/types.js";
+import { isRecord, readHeader } from "./helpers.js";
 
 // Module-level orchestrator — scoped to the kernel instance
 let orchestrator: CopilotOrchestrator;
@@ -46,7 +47,7 @@ export async function registerCopilotRoutes(
 
     const session = await orchestrator.getSession(ctx.user.id, body.sessionId);
     if (!session) {
-      throw new ApiError("SESSION_NOT_FOUND", "Session not found.", 404);
+      throw new ApiError(ErrorCodes.NOT_FOUND, "Session not found.", 404);
     }
 
     return withIdempotency(request, reply, kernel, ctx.user.id, async () => {
@@ -65,7 +66,7 @@ export async function registerCopilotRoutes(
     const ctx = createKernelRequestContext(request, resolvedAuth);
     await applyRateLimit(kernel, ctx, request);
     if (readHeader(request.headers["idempotency-key"])) {
-      throw new ApiError("INVALID_BODY", "SSE stream does not support idempotent replay.", 400);
+      throw new ApiError(ErrorCodes.INVALID_BODY, "SSE stream does not support idempotent replay.", 400);
     }
     const body = parseCopilotChatBody(request.body);
 
@@ -89,10 +90,10 @@ export async function registerCopilotRoutes(
 
 function parseCopilotChatBody(body: unknown): CopilotChatRequest {
   if (!isRecord(body)) {
-    throw new ApiError("INVALID_BODY", "Request body must be a JSON object.", 400);
+    throw new ApiError(ErrorCodes.INVALID_BODY, "Request body must be a JSON object.", 400);
   }
   if (typeof body.message !== "string" || !body.message.trim()) {
-    throw new ApiError("INVALID_BODY", "message is required.", 400);
+    throw new ApiError(ErrorCodes.INVALID_BODY, "message is required.", 400);
   }
   return {
     sessionId: typeof body.sessionId === "string" ? body.sessionId : undefined,
@@ -106,13 +107,13 @@ function parseCopilotChatBody(body: unknown): CopilotChatRequest {
 
 function parseCopilotActionBody(body: unknown): CopilotActionRequest {
   if (!isRecord(body)) {
-    throw new ApiError("INVALID_BODY", "Request body must be a JSON object.", 400);
+    throw new ApiError(ErrorCodes.INVALID_BODY, "Request body must be a JSON object.", 400);
   }
   if (typeof body.sessionId !== "string" || !body.sessionId.trim()) {
-    throw new ApiError("INVALID_BODY", "sessionId is required.", 400);
+    throw new ApiError(ErrorCodes.INVALID_BODY, "sessionId is required.", 400);
   }
   if (!isRecord(body.action) || typeof body.action.type !== "string") {
-    throw new ApiError("INVALID_BODY", "action with type is required.", 400);
+    throw new ApiError(ErrorCodes.INVALID_BODY, "action with type is required.", 400);
   }
   return {
     sessionId: body.sessionId,
@@ -124,17 +125,4 @@ function parseCopilotActionBody(body: unknown): CopilotActionRequest {
     },
     clientState: isRecord(body.clientState) ? body.clientState as Record<string, unknown> : undefined,
   };
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function readHeader(value: string | string[] | undefined): string | undefined {
-  if (typeof value === "string") {
-    const trimmed = value.trim();
-    return trimmed.length > 0 ? trimmed : undefined;
-  }
-  const firstValue = value?.find((item) => item.trim().length > 0);
-  return firstValue?.trim();
 }
