@@ -65,8 +65,17 @@ function meta(kernel: ApiKernel, ctx: ReturnType<typeof createKernelRequestConte
 }
 
 function readJobType(value: unknown): BackgroundJobType {
-  if (value === "import_pdf" || value === "export_pdf" || value === "rebuild_index" || value === "long_generation") return value;
-  throw new ApiError(ErrorCodes.INVALID_BODY, "type must be import_pdf, export_pdf, rebuild_index, or long_generation.", 400);
+  if (
+    value === "import_pdf" ||
+    value === "export_pdf" ||
+    value === "rebuild_index" ||
+    value === "long_generation" ||
+    value === "parse_document" ||
+    value === "import_resume_file" ||
+    value === "export_resume_html" ||
+    value === "export_resume_pdf"
+  ) return value;
+  throw new ApiError(ErrorCodes.INVALID_BODY, "type is not supported.", 400);
 }
 
 function param(request: FastifyRequest, name: string): string {

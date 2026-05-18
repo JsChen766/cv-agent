@@ -194,6 +194,25 @@ export async function registerProductRoutes(
     });
   });
 
+  app.post("/product/imports/file", async (request, reply) => {
+    const ctx = await contextFor(request);
+    const body = requireRecord(request.body);
+    return withIdempotency(request, reply, kernel, ctx.user.id, async () => {
+      const fileId = requiredString(body.fileId, "fileId");
+      const file = await kernel.fileService.getFile(ctx.user.id, fileId);
+      if (!file) throw new ApiError("NOT_FOUND", "File not found.", 404);
+      const job = await kernel.platformServices.backgroundJobs.enqueue({
+        userId: ctx.user.id,
+        type: "import_resume_file",
+        input: { fileId },
+        progress: 0,
+        priority: 0,
+        maxAttempts: 3,
+      });
+      return productSuccess({ job }, kernel, ctx);
+    });
+  });
+
   app.get("/product/imports/:id", async (request) => {
     const ctx = await contextFor(request);
     const job = await kernel.productServices.importService.getImportJob(ctx.user.id, param(request, "id"));

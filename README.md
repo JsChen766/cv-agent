@@ -1133,6 +1133,148 @@ curl -X POST http://127.0.0.1:3000/copilot/chat \
   -d "{\"message\":\"查看历史简历\",\"jdText\":\"React role\"}"
 ```
 
+## P11 Product Backend Completion
+
+P11 upgrades the backend from "Agent product skeleton + hardening" to a real resume product MVP backend.
+
+### P11.1 Formal Auth
+
+Auth modes are fully implemented with `AuthService`, `AuthRepository`, and `ApiKeyEncryptor`:
+
+| Mode | Source | Use |
+|------|--------|-----|
+| `cookie_session` | signed session cookie | web app, production default |
+| `bearer_static` | `Authorization: Bearer <token>` | single-user deployment |
+| `dev_header` | `x-user-id` header | dev/test only |
+| `disabled` | anonymous | test only |
+
+Tables: `app_user`, `auth_identity`, `auth_session`, `user_api_key` (AES-256-GCM encrypted, masked in responses).
+
+APIs:
+
+```text
+GET    /auth/me
+POST   /auth/dev-login      (dev/test only)
+POST   /auth/logout
+GET    /auth/api-keys
+POST   /auth/api-keys
+DELETE /auth/api-keys/:id
+```
+
+### P11.2 API Boundary
+
+```text
+Public (always available):
+  /auth/*   /copilot/*   /product/*   /jobs/*   /files/*   /exports/*
+
+Internal/Legacy (gated by INTERNAL_KERNEL_ROUTES_ENABLED=false):
+  /documents/*   /generations/*   /decisions/*   /evidence/*   /graphs/*
+```
+
+### P11.3 Async Job System
+
+Worker runtime: `BackgroundWorker`, `JobRegistry`, `JobRunner`, 4 job handlers (`parse_document`, `import_resume_file`, `export_resume_html`, `export_resume_pdf`).
+
+Job lifecycle: `pending → running → completed | failed (retry with backoff) | cancelled`.
+
+Config:
+
+```env
+JOB_WORKER_ENABLED=true
+JOB_WORKER_CONCURRENCY=1
+JOB_POLL_INTERVAL_MS=2000
+JOB_LOCK_TTL_MS=60000
+```
+
+Locked claims prevent duplicate workers (PostgreSQL atomic UPDATE, in-memory table polling).
+
+### P11.4 File Upload & Parsing
+
+`FileService`, `FileValidation`, `FileStorage` (local disk via `LocalFileStorage`, test via `InMemoryFileStorage`).
+
+Tables: `uploaded_file`, `parsed_document`.
+
+Validation: size limit (`FILE_MAX_SIZE_MB=10`), MIME type check, extension check, path traversal prevention (UUID storage keys).
+
+APIs:
+
+```text
+POST   /files/upload            (multipart/form-data or JSON base64)
+GET    /files
+GET    /files/:id
+DELETE /files/:id
+POST   /files/:id/parse         (creates parse_document job)
+GET    /files/:id/parsed-document
+```
+
+Parsers: `PdfParser`, `DocxParser`, `TextParser` (mocked in tests).
+
+### P11.5 Resume Export
+
+`ResumeExportService` creates export jobs via background worker. `ResumeHtmlRenderer` renders HTML with pluggable templates (`defaultTemplate`).
+
+Table: `resume_export`.
+
+APIs:
+
+```text
+POST   /exports/resumes/:resumeId    { format: "pdf"|"html", templateId?: string }
+GET    /exports
+GET    /exports/:id
+GET    /exports/:id/download
+DELETE /exports/:id
+```
+
+PDF renderer: `PDF_RENDERER=none|playwright|external`. HTML export always works. DOCX is reserved.
+
+### P11.6 Product Import Integration
+
+```text
+POST /product/imports/file   { fileId }
+  → background job parses file → creates import candidates
+  → reuses ImportService.createCandidatesFromText pipeline
+```
+
+### P11.7 Configuration Centralization
+
+All P11 config is centralized in `PlatformConfig` / `readPlatformConfig()` in `src/platform/config.ts`. Services import `readPlatformConfig()` instead of reading `process.env`.
+
+New `.env` entries:
+
+```env
+# Auth
+AUTH_MODE=cookie_session
+SESSION_COOKIE_NAME=coolto_session
+SESSION_TTL_DAYS=30
+AUTH_STATIC_BEARER_TOKEN=...
+AUTH_STATIC_USER_ID=...
+ALLOW_DEV_HEADER_AUTH=false
+ALLOW_INSECURE_AUTH=false
+
+# API Boundary
+INTERNAL_KERNEL_ROUTES_ENABLED=false
+
+# Job Worker
+JOB_WORKER_ENABLED=false
+JOB_WORKER_CONCURRENCY=1
+JOB_POLL_INTERVAL_MS=2000
+JOB_LOCK_TTL_MS=60000
+
+# File Upload
+FILE_UPLOAD_ENABLED=true
+FILE_STORAGE_PROVIDER=local
+FILE_STORAGE_DIR=.data/uploads
+FILE_MAX_SIZE_MB=10
+
+# Export
+PDF_RENDERER=none
+EXPORT_STORAGE_DIR=.data/exports
+EXPORT_DOWNLOAD_TTL_MINUTES=60
+
+# API Key Encryption
+USER_API_KEY_ENCRYPTION_SECRET=change-me
+```
+
 ## Current Non-Goals
 
 - No formal product page buildout in this backend phase.

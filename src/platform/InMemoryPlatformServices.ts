@@ -5,7 +5,9 @@ import type {
   AgentRun,
   AgentToolRun,
   BackgroundJob,
+  BackgroundJobCreateInput,
   BackgroundJobStatus,
+  BackgroundJobType,
   IdempotencyBeginResult,
   IdempotencyEntry,
   PlatformServices,
@@ -194,11 +196,25 @@ class InMemoryAgentRunService {
 class InMemoryBackgroundJobService {
   private readonly jobs = new Map<string, BackgroundJob>();
 
-  public async createJob(input: Omit<BackgroundJob, "id" | "status" | "attempts" | "createdAt" | "updatedAt">): Promise<BackgroundJob> {
+  public async createJob(input: BackgroundJobCreateInput): Promise<BackgroundJob> {
     const now = new Date().toISOString();
-    const job: BackgroundJob = { ...input, id: `job-${randomUUID()}`, status: "pending", attempts: 0, createdAt: now, updatedAt: now };
+    const job: BackgroundJob = {
+      ...input,
+      id: `job-${randomUUID()}`,
+      status: "pending",
+      attempts: 0,
+      progress: input.progress ?? 0,
+      priority: input.priority ?? 0,
+      maxAttempts: input.maxAttempts ?? 3,
+      createdAt: now,
+      updatedAt: now,
+    };
     this.jobs.set(job.id, job);
     return job;
+  }
+
+  public enqueue(input: BackgroundJobCreateInput): Promise<BackgroundJob> {
+    return this.createJob(input);
   }
 
   public async getJob(userId: string, id: string): Promise<BackgroundJob | null> {
@@ -213,16 +229,48 @@ class InMemoryBackgroundJobService {
       .slice(0, limit);
   }
 
+  public async claimNextJob(workerId: string, types?: BackgroundJobType[]): Promise<BackgroundJob | null> {
+    const now = Date.now();
+    const job = Array.from(this.jobs.values())
+      .filter((item) => (
+        item.status === "pending" &&
+        (!types?.length || types.includes(item.type)) &&
+        (!item.runAfter || new Date(item.runAfter).getTime() <= now) &&
+        (!item.nextRetryAt || new Date(item.nextRetryAt).getTime() <= now) &&
+        (!item.lockedUntil || new Date(item.lockedUntil).getTime() <= now)
+      ))
+      .sort((a, b) => b.priority - a.priority || a.createdAt.localeCompare(b.createdAt))[0];
+    if (!job) return null;
+    const locked = {
+      ...job,
+      status: "running" as const,
+      attempts: job.attempts + 1,
+      lockedBy: workerId,
+      lockedUntil: new Date(now + readPlatformConfig().jobLockTtlMs).toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+    this.jobs.set(job.id, locked);
+    return locked;
+  }
+
   public async markRunning(userId: string, id: string): Promise<BackgroundJob | null> {
     return this.update(userId, id, "running", (job) => ({ attempts: job.attempts + 1 }));
   }
 
+  public async markProgress(userId: string, id: string, progress: number, message?: string): Promise<BackgroundJob | null> {
+    return this.update(userId, id, "running", () => ({ progress: Math.max(0, Math.min(100, Math.round(progress))), progressMessage: message }));
+  }
+
   public async markCompleted(userId: string, id: string, output?: Record<string, unknown>): Promise<BackgroundJob | null> {
-    return this.update(userId, id, "completed", () => ({ output, completedAt: new Date().toISOString() }));
+    return this.update(userId, id, "completed", () => ({ output, progress: 100, lockedBy: undefined, lockedUntil: undefined, completedAt: new Date().toISOString() }));
   }
 
   public async markFailed(userId: string, id: string, errorMessage: string): Promise<BackgroundJob | null> {
-    return this.update(userId, id, "failed", () => ({ errorMessage, completedAt: new Date().toISOString() }));
+    return this.update(userId, id, "failed", () => ({ errorMessage, lockedBy: undefined, lockedUntil: undefined, completedAt: new Date().toISOString() }));
+  }
+
+  public async scheduleRetry(userId: string, id: string, errorMessage: string, nextRetryAt: string): Promise<BackgroundJob | null> {
+    return this.update(userId, id, "pending", () => ({ errorMessage, nextRetryAt, lockedBy: undefined, lockedUntil: undefined }));
   }
 
   public async cancelJob(userId: string, id: string): Promise<BackgroundJob | null> {
@@ -231,7 +279,19 @@ class InMemoryBackgroundJobService {
     if (job.status === "completed" || job.status === "failed") {
       throw new ApiError(ErrorCodes.CONFLICT, "Completed or failed jobs cannot be cancelled.", 409);
     }
-    return this.update(userId, id, "cancelled", () => ({ completedAt: new Date().toISOString() }));
+    return this.markCancelled(userId, id);
+  }
+
+  public async markCancelled(userId: string, id: string): Promise<BackgroundJob | null> {
+    return this.update(userId, id, "cancelled", () => ({ lockedBy: undefined, lockedUntil: undefined, completedAt: new Date().toISOString() }));
+  }
+
+  public async heartbeat(userId: string, id: string, workerId: string): Promise<BackgroundJob | null> {
+    const job = await this.getJob(userId, id);
+    if (!job || job.lockedBy !== workerId) return null;
+    const next = { ...job, lockedUntil: new Date(Date.now() + readPlatformConfig().jobLockTtlMs).toISOString(), updatedAt: new Date().toISOString() };
+    this.jobs.set(id, next);
+    return next;
   }
 
   private async update(

@@ -1853,7 +1853,269 @@ When `off`, `CopilotPresenter` composes `decision.assistantMessage` and public t
 
 ---
 
-## 14. Checklist for New Code
+## 14. P11 Product Backend Completion
+
+Status: implemented.
+
+P11 upgrades the backend from "Agent product skeleton + hardening" to "real resume product MVP backend." Every new feature follows the same principles: no ORM, no DB FK, user-scoped reads, idempotency on mutating routes, long work over background jobs, safe error responses.
+
+### 14.1 Auth Contract (P11)
+
+Auth modes are now fully implemented:
+
+| Mode | Status | Source | Use |
+|------|--------|--------|-----|
+| `dev_header` | implemented | `x-user-id` header | dev/test only; production forbids unless `ALLOW_DEV_HEADER_AUTH=true` |
+| `disabled` | implemented | none (anonymous) | test only unless `ALLOW_INSECURE_AUTH=true` |
+| `bearer_static` | implemented | `Authorization: Bearer <token>` | single-user deployment |
+| `cookie_session` | implemented | `coolto_session` cookie | web app production path |
+| `bearer_token` | reserved | `Authorization: Bearer <token>` | future API clients |
+| `service` | reserved | internal service credential | future background jobs / admin tools |
+
+#### Tables
+
+```text
+app_user            — user identity (email, status, auth_provider)
+auth_identity       — OAuth/provider linkage (future password/github/google)
+auth_session        — signed session tokens (hashed)
+user_api_key        — encrypted user-provided LLM API keys
+```
+
+No database foreign keys. All referential integrity is enforced at the service layer.
+
+#### Auth APIs
+
+```text
+GET    /auth/me
+POST   /auth/dev-login         (dev/test only)
+POST   /auth/logout
+GET    /auth/api-keys
+POST   /auth/api-keys
+DELETE /auth/api-keys/:id
+```
+
+#### User API Key Contract
+
+- Keys are stored encrypted with AES-256-GCM (`v1.<iv>.<tag>.<ciphertext>`).
+- `USER_API_KEY_ENCRYPTION_SECRET` is required in non-test environments.
+- `GET /auth/api-keys` returns only `maskedKey` (e.g., `sk-****abcd`), never the raw key.
+- `DELETE /auth/api-keys/:id` disables the key (status=disabled), never returns raw key.
+- `resolveUserModelConfig(userId)` decrypts the first active key for provider use.
+
+#### Session Contract
+
+- `POST /auth/dev-login` creates or returns an existing user, creates an `auth_session`, and sets a `coolto_session` cookie.
+- `validateSessionToken` hashes the token, looks up the session, checks expiry and status, and returns the user.
+- `POST /auth/logout` revokes the session.
+
+### 14.2 Public / Internal API Boundary
+
+```text
+Public Product API (always available):
+  /auth/*       /copilot/*    /product/*    /jobs/*    /files/*    /exports/*
+
+Internal/Legacy API (gated by INTERNAL_KERNEL_ROUTES_ENABLED):
+  /documents/*  /generations/*  /decisions/*  /evidence/*  /graphs/*
+```
+
+`INTERNAL_KERNEL_ROUTES_ENABLED` defaults to `false`. Internal routes return 404 when disabled. Tests default to `true` (via `NODE_ENV=test`). Public routes are never gated.
+
+### 14.3 Background Job Contract
+
+#### Tables
+
+```text
+background_job     — extended with progress, locked_by, locked_until,
+                     max_attempts, next_retry_at, result_ref, idempotency_key
+```
+
+#### Job types
+
+```text
+parse_document      import_resume_file      export_resume_html
+export_resume_pdf   import_pdf              export_pdf
+rebuild_index       long_generation
+```
+
+#### Job lifecycle
+
+```text
+pending → running → completed
+                  → failed → (retry with backoff) → pending
+                  → cancelled
+                  → failed (max_attempts exhausted)
+```
+
+- `claimNextJob(workerId, types)` atomically locks a pending job with a TTL (`JOB_LOCK_TTL_MS`).
+- Two workers cannot claim the same job.
+- Failed jobs are retried up to `max_attempts` with backoff.
+- Workers heartbeat to extend locks.
+- Cancellation sets status=cancelled; a running job that checks for cancellation should stop early.
+
+#### Worker config
+
+```env
+JOB_WORKER_ENABLED=true
+JOB_WORKER_CONCURRENCY=1
+JOB_POLL_INTERVAL_MS=2000
+JOB_LOCK_TTL_MS=60000
+```
+
+The worker polls PostgreSQL (or in-memory table) with a configurable interval. No external queue system is required.
+
+#### Job APIs
+
+```text
+GET    /jobs
+POST   /jobs
+GET    /jobs/:id
+POST   /jobs/:id/cancel
+```
+
+### 14.4 File Upload / Parsing Contract
+
+#### Tables
+
+```text
+uploaded_file       — original_name, mime_type, size_bytes, storage_key,
+                      sha256, status, parser_status, parser_error
+parsed_document     — source_type, text, metadata_json, linked to file_id
+```
+
+#### Storage abstraction
+
+```text
+FileStorage (interface)
+  LocalFileStorage       — disk-based, root from FILE_STORAGE_DIR
+  InMemoryFileStorage    — test-only, stores Buffers in a Map
+```
+
+`FILE_STORAGE_PROVIDER=local|memory` selects the backend. `r2` and `s3` are reserved.
+
+#### File validation
+
+- Max size: `FILE_MAX_SIZE_MB=10` (10 MB default).
+- Allowed MIME types: `application/pdf`, `application/vnd.openxmlformats-officedocument.wordprocessingml.document`, `text/plain`.
+- Extension must match MIME type (`.pdf` for PDF, `.docx` for DOCX).
+- Empty files are rejected.
+- Storage keys are UUID-based, not derived from user filenames, preventing path traversal.
+
+#### File APIs
+
+```text
+POST   /files/upload              (multipart/form-data: file)
+GET    /files
+GET    /files/:id
+DELETE /files/:id                  (soft delete + physical file removal)
+POST   /files/:id/parse            (creates parse_document job)
+GET    /files/:id/parsed-document
+```
+
+#### Parsing
+
+- PDF: `PdfDocumentParser` (project has existing parser in `src/tools/document/`).
+- DOCX: `DocxDocumentParser`.
+- Plain text: direct read through `TextParser`.
+- Parse failure returns safe error, no stack traces.
+
+### 14.5 Resume Export Contract
+
+#### Table
+
+```text
+resume_export       — resume_id, format (pdf|html|docx), template_id,
+                      status, file_id, download_token_hash, download_expires_at
+```
+
+#### Export lifecycle
+
+```text
+pending → rendering → completed → (downloadable until download_expires_at)
+                   → failed
+                   → expired / deleted
+```
+
+#### Export APIs
+
+```text
+POST   /exports/resumes/:resumeId   { format: "pdf"|"html", templateId?: string }
+GET    /exports
+GET    /exports/:id
+GET    /exports/:id/download
+DELETE /exports/:id
+```
+
+#### Renderer config
+
+```env
+PDF_RENDERER=none|playwright|external
+EXPORT_DOWNLOAD_TTL_MINUTES=60
+```
+
+- HTML export: always available through `ResumeHtmlRenderer` + `defaultTemplate`.
+- PDF export: requires `PDF_RENDERER=playwright` or `PDF_RENDERER=external`. Returns safe error when `none`.
+- DOCX export: reserved, returns "not supported yet".
+- Templates are pluggable through `ResumeHtmlRenderer.register(template)`.
+- Export creates a background job; the HTTP response returns the export record and job immediately.
+
+#### Default template
+
+The `defaultTemplate` renders resume title, target role, and sorted visible items with basic inline CSS. Future templates can be registered at runtime.
+
+### 14.6 Product Import Integration
+
+```text
+POST /product/imports/file   { fileId: string }
+  → creates `import_resume_file` background job
+  → job parses file if not already parsed
+  → job creates text import from parsed text
+  → job creates import candidates from extracted segments
+```
+
+The existing `POST /product/imports/text` path is unchanged. File import reuses the same `ImportService.createCandidatesFromText` pipeline.
+
+### 14.7 Configuration Centralization
+
+All P11 config is centralized in `PlatformConfig` / `readPlatformConfig()` in `src/platform/config.ts`. Services no longer read from `process.env` directly; they import `readPlatformConfig()`.
+
+```env
+# Auth
+AUTH_MODE=cookie_session
+SESSION_COOKIE_NAME=coolto_session
+SESSION_TTL_DAYS=30
+AUTH_STATIC_BEARER_TOKEN=...
+AUTH_STATIC_USER_ID=...
+ALLOW_DEV_HEADER_AUTH=false
+ALLOW_INSECURE_AUTH=false
+
+# API Boundary
+INTERNAL_KERNEL_ROUTES_ENABLED=false
+
+# Job Worker
+JOB_WORKER_ENABLED=false
+JOB_WORKER_CONCURRENCY=1
+JOB_POLL_INTERVAL_MS=2000
+JOB_LOCK_TTL_MS=60000
+
+# File Upload
+FILE_UPLOAD_ENABLED=true
+FILE_STORAGE_PROVIDER=local
+FILE_STORAGE_DIR=.data/uploads
+FILE_MAX_SIZE_MB=10
+FILE_ALLOWED_MIME_TYPES=application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/plain
+
+# Export
+PDF_RENDERER=none
+EXPORT_STORAGE_DIR=.data/exports
+EXPORT_DOWNLOAD_TTL_MINUTES=60
+
+# User API Key Encryption
+USER_API_KEY_ENCRYPTION_SECRET=change-me
+```
+
+---
+
+## 15. Checklist for New Code
 
 Before adding new frontend/backend/kernel features, verify:
 
@@ -1868,4 +2130,9 @@ Before adding new frontend/backend/kernel features, verify:
 [ ] Does PostgreSQL path avoid database-level foreign-key constraints?
 [ ] Are generation writes transaction-aware in Postgres mode?
 [ ] Are errors returned through a stable envelope?
+[ ] Do mutating routes support Idempotency-Key?
+[ ] Does file handling validate size, MIME type, and extension?
+[ ] Are background jobs used for long-running work instead of blocking HTTP?
+[ ] Are API keys encrypted at rest and masked in responses?
+[ ] Are sensitive contents (CoT, reasoning, API keys, prompts, tool args) excluded from responses?
 ```

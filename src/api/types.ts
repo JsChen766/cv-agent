@@ -10,6 +10,10 @@ import type { ProductServices } from "../product/index.js";
 import type { ModelClient } from "../core/model/ModelClient.js";
 import type { CopilotSessionService, CopilotWorkspaceService } from "../copilot/services/index.js";
 import type { PlatformServices } from "../platform/index.js";
+import type { AuthService } from "../auth/index.js";
+import type { FileService } from "../files/index.js";
+import type { ResumeExportService } from "../exports/index.js";
+import type { JobRunner } from "../jobs/index.js";
 
 export type ApiMode = "postgres" | "in_memory";
 
@@ -42,6 +46,10 @@ export type ApiKernel = {
     workspaceService: CopilotWorkspaceService;
   };
   platformServices: PlatformServices;
+  authService: AuthService;
+  fileService: FileService;
+  exportService: ResumeExportService;
+  jobRunner: JobRunner;
   frontDeskModelClient?: ModelClient;
   close(): Promise<void>;
 };

@@ -87,6 +87,24 @@ import {
 } from "../../product/index.js";
 import type { ApiKernel, GenerationPersistencePort } from "../types.js";
 import { InMemoryPlatformServices, PostgresPlatformServices, type PlatformServices } from "../../platform/index.js";
+import { AuthService, InMemoryAuthRepository, PostgresAuthRepository } from "../../auth/index.js";
+import {
+  FileService,
+  InMemoryFileRepository,
+  InMemoryFileStorage,
+  LocalFileStorage,
+  PostgresFileRepository,
+  type FileRepository,
+  type FileStorage,
+} from "../../files/index.js";
+import {
+  InMemoryResumeExportRepository,
+  PostgresResumeExportRepository,
+  ResumeExportService,
+  type ResumeExportRepository,
+} from "../../exports/index.js";
+import { readPlatformConfig } from "../../platform/config.js";
+import { JobRunner } from "../../jobs/index.js";
 import {
   createArtifactCritic,
   createArtifactGenerator,
@@ -132,6 +150,9 @@ export async function createPostgresKernelFromDatabase(
   const copilotPersistence = new PostgresCopilotPersistence(database);
   const platformServices = new PostgresPlatformServices(database);
   const generationPersistenceService = createPostgresGenerationPersistenceService(database);
+  const authService = new AuthService(new PostgresAuthRepository(database));
+  const fileRepository = new PostgresFileRepository(database);
+  const exportRepository = new PostgresResumeExportRepository(database);
 
   return buildKernel({
     mode: "postgres",
@@ -153,6 +174,10 @@ export async function createPostgresKernelFromDatabase(
     productGenerationRepository,
     copilotPersistence,
     platformServices,
+    authService,
+    fileRepository,
+    exportRepository,
+    fileStorage: createFileStorage(),
     generationPersistenceService,
     close: () => database.close(),
   });
@@ -179,6 +204,9 @@ function createInMemoryKernel(): ApiKernel {
   const productGenerationRepository = new InMemoryProductGenerationRepository();
   const copilotPersistence = new InMemoryCopilotPersistence();
   const platformServices = new InMemoryPlatformServices();
+  const authService = new AuthService(new InMemoryAuthRepository());
+  const fileRepository = new InMemoryFileRepository();
+  const exportRepository = new InMemoryResumeExportRepository();
 
   return buildKernel({
     mode: "in_memory",
@@ -201,6 +229,10 @@ function createInMemoryKernel(): ApiKernel {
     productGenerationRepository,
     copilotPersistence,
     platformServices,
+    authService,
+    fileRepository,
+    exportRepository,
+    fileStorage: new InMemoryFileStorage(),
     close: async () => {},
   });
 }
@@ -305,6 +337,20 @@ function buildKernel(input: BuildKernelInput): ApiKernel {
     sessionService: new CopilotSessionService(input.copilotPersistence),
     workspaceService: new CopilotWorkspaceService(input.copilotPersistence, productServices),
   };
+  const fileService = new FileService(input.fileRepository, input.fileStorage);
+  let exportService!: ResumeExportService;
+  const jobRunner = new JobRunner({
+    platformServices: input.platformServices,
+    fileService,
+    productServices,
+    getExportService: () => exportService,
+  });
+  exportService = new ResumeExportService(
+    input.exportRepository,
+    resumeService,
+    fileService,
+    input.platformServices,
+  );
 
   return {
     mode: input.mode,
@@ -317,6 +363,10 @@ function buildKernel(input: BuildKernelInput): ApiKernel {
     productServices,
     copilotServices,
     platformServices: input.platformServices,
+    authService: input.authService,
+    fileService,
+    exportService,
+    jobRunner,
     frontDeskModelClient: agentProvider.modelClient,
     close: input.close,
   };
@@ -343,9 +393,18 @@ type BuildKernelInput = {
   productGenerationRepository: ProductGenerationRepository;
   copilotPersistence: CopilotPersistence;
   platformServices: PlatformServices;
+  authService: AuthService;
+  fileRepository: FileRepository;
+  fileStorage: FileStorage;
+  exportRepository: ResumeExportRepository;
   generationPersistenceService?: GenerationPersistencePort;
   close(): Promise<void>;
 };
+
+function createFileStorage(): FileStorage {
+  const provider = readPlatformConfig().fileStorageProvider;
+  return provider === "memory" ? new InMemoryFileStorage() : new LocalFileStorage();
+}
 
 class InMemoryDocumentRepository implements DocumentRepository {
   private readonly documents = new Map<string, PersistedDocument>();

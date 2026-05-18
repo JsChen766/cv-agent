@@ -6,7 +6,9 @@ import type {
   AgentRun,
   AgentToolRun,
   BackgroundJob,
+  BackgroundJobCreateInput,
   BackgroundJobStatus,
+  BackgroundJobType,
   IdempotencyBeginResult,
   IdempotencyEntry,
   PlatformServices,
@@ -241,15 +243,19 @@ class PostgresAgentRunService {
 class PostgresBackgroundJobService {
   public constructor(private readonly database: PostgresQueryable) {}
 
-  public async createJob(input: Omit<BackgroundJob, "id" | "status" | "attempts" | "createdAt" | "updatedAt">): Promise<BackgroundJob> {
+  public async createJob(input: BackgroundJobCreateInput): Promise<BackgroundJob> {
     const now = new Date().toISOString();
-    const job: BackgroundJob = { ...input, id: `job-${randomUUID()}`, status: "pending", attempts: 0, createdAt: now, updatedAt: now };
+    const job: BackgroundJob = { ...input, id: `job-${randomUUID()}`, status: "pending", attempts: 0, progress: input.progress ?? 0, priority: input.priority ?? 0, maxAttempts: input.maxAttempts ?? 3, createdAt: now, updatedAt: now };
     await this.database.query(
-      `INSERT INTO background_job (id,user_id,type,status,input_json,output_json,error_message,attempts,created_at,updated_at,run_after,completed_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
-      [job.id, job.userId, job.type, job.status, JSON.stringify(job.input ?? {}), null, null, job.attempts, job.createdAt, job.updatedAt, job.runAfter ?? null, null],
+      `INSERT INTO background_job (id,user_id,type,status,input_json,output_json,error_message,attempts,progress,progress_message,idempotency_key,priority,locked_by,locked_until,max_attempts,next_retry_at,result_ref,created_at,updated_at,run_after,completed_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)`,
+      [job.id, job.userId, job.type, job.status, JSON.stringify(job.input ?? {}), null, null, job.attempts, job.progress, job.progressMessage ?? null, job.idempotencyKey ?? null, job.priority, job.lockedBy ?? null, job.lockedUntil ?? null, job.maxAttempts, job.nextRetryAt ?? null, job.resultRef ?? null, job.createdAt, job.updatedAt, job.runAfter ?? null, null],
     );
     return job;
+  }
+
+  public enqueue(input: BackgroundJobCreateInput): Promise<BackgroundJob> {
+    return this.createJob(input);
   }
 
   public async getJob(userId: string, id: string): Promise<BackgroundJob | null> {
@@ -262,31 +268,69 @@ class PostgresBackgroundJobService {
     return result.rows.map(mapJob);
   }
 
+  public async claimNextJob(workerId: string, types?: BackgroundJobType[]): Promise<BackgroundJob | null> {
+    const now = new Date().toISOString();
+    const lockUntil = new Date(Date.now() + readPlatformConfig().jobLockTtlMs).toISOString();
+    const result = await this.database.query<any>(
+      `UPDATE background_job SET status='running', attempts=attempts+1, locked_by=$1, locked_until=$2, updated_at=$3
+       WHERE id = (
+         SELECT id FROM background_job
+         WHERE status='pending'
+           AND ($4::text[] IS NULL OR type = ANY($4::text[]))
+           AND (run_after IS NULL OR run_after <= $3)
+           AND (next_retry_at IS NULL OR next_retry_at <= $3)
+           AND (locked_until IS NULL OR locked_until <= $3)
+         ORDER BY priority DESC, created_at ASC
+         LIMIT 1
+       )
+       RETURNING *`,
+      [workerId, lockUntil, now, types?.length ? types : null],
+    );
+    return result.rows[0] ? mapJob(result.rows[0]) : null;
+  }
+
   public async markRunning(userId: string, id: string): Promise<BackgroundJob | null> {
     return this.update(userId, id, "running", { attemptsIncrement: true });
   }
 
+  public async markProgress(userId: string, id: string, progress: number, message?: string): Promise<BackgroundJob | null> {
+    return this.update(userId, id, "running", { progress, progressMessage: message });
+  }
+
   public async markCompleted(userId: string, id: string, output?: Record<string, unknown>): Promise<BackgroundJob | null> {
-    return this.update(userId, id, "completed", { output, completedAt: new Date().toISOString() });
+    return this.update(userId, id, "completed", { output, progress: 100, completedAt: new Date().toISOString(), clearLock: true });
   }
 
   public async markFailed(userId: string, id: string, errorMessage: string): Promise<BackgroundJob | null> {
-    return this.update(userId, id, "failed", { errorMessage, completedAt: new Date().toISOString() });
+    return this.update(userId, id, "failed", { errorMessage, completedAt: new Date().toISOString(), clearLock: true });
+  }
+
+  public async scheduleRetry(userId: string, id: string, errorMessage: string, nextRetryAt: string): Promise<BackgroundJob | null> {
+    return this.update(userId, id, "pending", { errorMessage, nextRetryAt, clearLock: true });
   }
 
   public async cancelJob(userId: string, id: string): Promise<BackgroundJob | null> {
     const job = await this.getJob(userId, id);
     if (!job) return null;
     if (job.status === "completed" || job.status === "failed") throw new ApiError(ErrorCodes.CONFLICT, "Completed or failed jobs cannot be cancelled.", 409);
-    return this.update(userId, id, "cancelled", { completedAt: new Date().toISOString() });
+    return this.markCancelled(userId, id);
   }
 
-  private async update(userId: string, id: string, status: BackgroundJobStatus, patch: { output?: Record<string, unknown>; errorMessage?: string; completedAt?: string; attemptsIncrement?: boolean }): Promise<BackgroundJob | null> {
+  public async markCancelled(userId: string, id: string): Promise<BackgroundJob | null> {
+    return this.update(userId, id, "cancelled", { completedAt: new Date().toISOString(), clearLock: true });
+  }
+
+  public async heartbeat(userId: string, id: string, workerId: string): Promise<BackgroundJob | null> {
+    await this.database.query(`UPDATE background_job SET locked_until=$4, updated_at=$4 WHERE user_id=$1 AND id=$2 AND locked_by=$3`, [userId, id, workerId, new Date(Date.now() + readPlatformConfig().jobLockTtlMs).toISOString()]);
+    return this.getJob(userId, id);
+  }
+
+  private async update(userId: string, id: string, status: BackgroundJobStatus, patch: { output?: Record<string, unknown>; errorMessage?: string; completedAt?: string; attemptsIncrement?: boolean; progress?: number; progressMessage?: string; nextRetryAt?: string; clearLock?: boolean }): Promise<BackgroundJob | null> {
     const existing = await this.getJob(userId, id);
     if (!existing) return null;
     await this.database.query(
-      `UPDATE background_job SET status=$3, output_json=$4, error_message=$5, attempts=attempts+$6, updated_at=$7, completed_at=$8 WHERE user_id=$1 AND id=$2`,
-      [userId, id, status, patch.output ? JSON.stringify(patch.output) : null, patch.errorMessage ?? null, patch.attemptsIncrement ? 1 : 0, new Date().toISOString(), patch.completedAt ?? null],
+      `UPDATE background_job SET status=$3, output_json=$4, error_message=$5, attempts=attempts+$6, progress=COALESCE($7,progress), progress_message=$8, next_retry_at=$9, locked_by=$10, locked_until=$11, updated_at=$12, completed_at=$13 WHERE user_id=$1 AND id=$2`,
+      [userId, id, status, patch.output ? JSON.stringify(patch.output) : null, patch.errorMessage ?? null, patch.attemptsIncrement ? 1 : 0, patch.progress ?? null, patch.progressMessage ?? null, patch.nextRetryAt ?? null, patch.clearLock ? null : existing.lockedBy ?? null, patch.clearLock ? null : existing.lockedUntil ?? null, new Date().toISOString(), patch.completedAt ?? null],
     );
     return this.getJob(userId, id);
   }
@@ -358,6 +402,15 @@ function mapJob(row: any): BackgroundJob {
     output: row.output_json ?? undefined,
     errorMessage: row.error_message ?? undefined,
     attempts: Number(row.attempts ?? 0),
+    progress: Number(row.progress ?? 0),
+    progressMessage: row.progress_message ?? undefined,
+    idempotencyKey: row.idempotency_key ?? undefined,
+    priority: Number(row.priority ?? 0),
+    lockedBy: row.locked_by ?? undefined,
+    lockedUntil: row.locked_until ? new Date(row.locked_until).toISOString() : undefined,
+    maxAttempts: Number(row.max_attempts ?? 3),
+    nextRetryAt: row.next_retry_at ? new Date(row.next_retry_at).toISOString() : undefined,
+    resultRef: row.result_ref ?? undefined,
     createdAt: new Date(row.created_at).toISOString(),
     updatedAt: new Date(row.updated_at).toISOString(),
     runAfter: row.run_after ? new Date(row.run_after).toISOString() : undefined,

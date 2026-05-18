@@ -77,7 +77,15 @@ export type AgentToolRun = {
   completedAt?: string;
 };
 
-export type BackgroundJobType = "import_pdf" | "export_pdf" | "rebuild_index" | "long_generation";
+export type BackgroundJobType =
+  | "import_pdf"
+  | "export_pdf"
+  | "rebuild_index"
+  | "long_generation"
+  | "parse_document"
+  | "import_resume_file"
+  | "export_resume_html"
+  | "export_resume_pdf";
 
 export type BackgroundJobStatus = "pending" | "running" | "completed" | "failed" | "cancelled";
 
@@ -90,10 +98,28 @@ export type BackgroundJob = {
   output?: Record<string, unknown>;
   errorMessage?: string;
   attempts: number;
+  progress: number;
+  progressMessage?: string;
+  idempotencyKey?: string;
+  priority: number;
+  lockedBy?: string;
+  lockedUntil?: string;
+  maxAttempts: number;
+  nextRetryAt?: string;
+  resultRef?: string;
   createdAt: string;
   updatedAt: string;
   runAfter?: string;
   completedAt?: string;
+};
+
+export type BackgroundJobCreateInput = Omit<
+  BackgroundJob,
+  "id" | "status" | "attempts" | "progress" | "priority" | "maxAttempts" | "createdAt" | "updatedAt"
+> & {
+  progress?: number;
+  priority?: number;
+  maxAttempts?: number;
 };
 
 export type PlatformServices = {
@@ -127,12 +153,18 @@ export type PlatformServices = {
     getRun(userId: string, id: string): Promise<{ run: AgentRun; tools: AgentToolRun[] } | null>;
   };
   backgroundJobs: {
-    createJob(input: Omit<BackgroundJob, "id" | "status" | "attempts" | "createdAt" | "updatedAt">): Promise<BackgroundJob>;
+    createJob(input: BackgroundJobCreateInput): Promise<BackgroundJob>;
+    enqueue(input: BackgroundJobCreateInput): Promise<BackgroundJob>;
     getJob(userId: string, id: string): Promise<BackgroundJob | null>;
     listJobs(userId: string, limit?: number): Promise<BackgroundJob[]>;
+    claimNextJob(workerId: string, types?: BackgroundJobType[]): Promise<BackgroundJob | null>;
     markRunning(userId: string, id: string): Promise<BackgroundJob | null>;
+    markProgress(userId: string, id: string, progress: number, message?: string): Promise<BackgroundJob | null>;
     markCompleted(userId: string, id: string, output?: Record<string, unknown>): Promise<BackgroundJob | null>;
     markFailed(userId: string, id: string, errorMessage: string): Promise<BackgroundJob | null>;
+    scheduleRetry(userId: string, id: string, errorMessage: string, nextRetryAt: string): Promise<BackgroundJob | null>;
     cancelJob(userId: string, id: string): Promise<BackgroundJob | null>;
+    markCancelled(userId: string, id: string): Promise<BackgroundJob | null>;
+    heartbeat(userId: string, id: string, workerId: string): Promise<BackgroundJob | null>;
   };
 };
