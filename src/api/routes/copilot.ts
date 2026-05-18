@@ -5,6 +5,7 @@ import { createKernelRequestContext } from "../context.js";
 import { ApiError } from "../errors.js";
 import { success } from "../response.js";
 import type { ApiKernel } from "../types.js";
+import { withIdempotency } from "../idempotency.js";
 import { CopilotOrchestrator } from "../../copilot/CopilotOrchestrator.js";
 import type { CopilotActionRequest, CopilotChatRequest } from "../../copilot/types.js";
 
@@ -18,22 +19,24 @@ export async function registerCopilotRoutes(
 ): Promise<void> {
   orchestrator = new CopilotOrchestrator({ kernel });
 
-  app.post("/copilot/chat", async (request) => {
+  app.post("/copilot/chat", async (request, reply) => {
     const resolvedAuth = await authResolver.resolve(request);
     const ctx = createKernelRequestContext(request, resolvedAuth);
     const body = parseCopilotChatBody(request.body);
 
-    const response = await orchestrator.handleChat(ctx, body);
+    return withIdempotency(request, reply, kernel, ctx.user.id, async () => {
+      const response = await orchestrator.handleChat(ctx, body);
 
-    return success(response, {
-      requestId: ctx.request.requestId,
-      traceId: ctx.request.traceId,
-      mode: kernel.mode,
-      ...(kernel.warnings.length > 0 ? { warnings: kernel.warnings } : {}),
+      return success(response, {
+        requestId: ctx.request.requestId,
+        traceId: ctx.request.traceId,
+        mode: kernel.mode,
+        ...(kernel.warnings.length > 0 ? { warnings: kernel.warnings } : {}),
+      });
     });
   });
 
-  app.post("/copilot/actions", async (request) => {
+  app.post("/copilot/actions", async (request, reply) => {
     const resolvedAuth = await authResolver.resolve(request);
     const ctx = createKernelRequestContext(request, resolvedAuth);
     const body = parseCopilotActionBody(request.body);
@@ -43,12 +46,14 @@ export async function registerCopilotRoutes(
       throw new ApiError("SESSION_NOT_FOUND", "Session not found.", 404);
     }
 
-    const response = await orchestrator.handleAction(ctx, body);
+    return withIdempotency(request, reply, kernel, ctx.user.id, async () => {
+      const response = await orchestrator.handleAction(ctx, body);
 
-    return success(response, {
-      requestId: ctx.request.requestId,
-      traceId: ctx.request.traceId,
-      mode: kernel.mode,
+      return success(response, {
+        requestId: ctx.request.requestId,
+        traceId: ctx.request.traceId,
+        mode: kernel.mode,
+      });
     });
   });
 

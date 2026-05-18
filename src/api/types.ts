@@ -1,4 +1,3 @@
-import type { FrontDeskOrchestrator } from "../application/frontdesk/index.js";
 import type { ResumeGenerationService } from "../application/ResumeGenerationService.js";
 import type {
   EvidenceChainQueryService,
@@ -10,6 +9,7 @@ import type { CvAgentKernel } from "../kernel/index.js";
 import type { ProductServices } from "../product/index.js";
 import type { ModelClient } from "../core/model/ModelClient.js";
 import type { CopilotSessionService, CopilotWorkspaceService } from "../copilot/services/index.js";
+import type { PlatformServices } from "../platform/index.js";
 
 export type ApiMode = "postgres" | "in_memory";
 
@@ -28,11 +28,6 @@ export type ApiKernel = {
    */
   cvAgentKernel: CvAgentKernel;
   /**
-   * @deprecated Legacy document-ingestion adapter kept for cvAgentKernel.documents.ingest().
-   * Copilot product chat must use AgentRuntime through the Copilot API adapter.
-   */
-  frontDeskOrchestrator: FrontDeskOrchestrator;
-  /**
    * Legacy/transitional internal service fields.
    * They remain for compatibility with existing tests and demos, but should not
    * be used by new API routes.
@@ -46,6 +41,7 @@ export type ApiKernel = {
     sessionService: CopilotSessionService;
     workspaceService: CopilotWorkspaceService;
   };
+  platformServices: PlatformServices;
   frontDeskModelClient?: ModelClient;
   close(): Promise<void>;
 };

@@ -1,6 +1,9 @@
-import type { FastifyInstance } from "fastify";
+import type { FastifyInstance, FastifyRequest } from "fastify";
 import { success } from "../response.js";
 import type { ApiKernel } from "../types.js";
+import type { AuthResolver } from "../auth/index.js";
+import { createKernelRequestContext } from "../context.js";
+import { ApiError, ErrorCodes } from "../errors.js";
 import { readAgentModeConfig } from "../../providers/factory/agentModes.js";
 import { AgentProviderFactory } from "../../providers/factory/AgentProviderFactory.js";
 import type { AgentProviderFactoryConfig } from "../../providers/factory/types.js";
@@ -13,6 +16,7 @@ import {
 export async function registerDebugRoutes(
   app: FastifyInstance,
   kernel: ApiKernel,
+  authResolver?: AuthResolver<FastifyRequest>,
 ): Promise<void> {
   app.get("/debug/agent-modes", async () => {
     const result = buildAgentModesReport(kernel);
@@ -21,6 +25,33 @@ export async function registerDebugRoutes(
       traceId: "debug",
       mode: kernel.mode,
       ...(result.warnings.length > 0 ? { warnings: result.warnings } : {}),
+    });
+  });
+
+  app.get("/debug/agent-runs", async (request) => {
+    assertDebugRunsEnabled();
+    if (!authResolver) throw new ApiError(ErrorCodes.UNAUTHORIZED, "Authentication is required.", 401);
+    const ctx = createKernelRequestContext(request, await authResolver.resolve(request));
+    const data = await kernel.platformServices.agentRuns.listRuns(ctx.user.id, readLimit(request.query));
+    return success(data, {
+      requestId: ctx.request.requestId,
+      traceId: ctx.request.traceId,
+      mode: kernel.mode,
+    });
+  });
+
+  app.get("/debug/agent-runs/:id", async (request) => {
+    assertDebugRunsEnabled();
+    if (!authResolver) throw new ApiError(ErrorCodes.UNAUTHORIZED, "Authentication is required.", 401);
+    const ctx = createKernelRequestContext(request, await authResolver.resolve(request));
+    const id = (request.params as Record<string, unknown>).id;
+    if (typeof id !== "string" || !id.trim()) throw new ApiError(ErrorCodes.INVALID_BODY, "id is required.", 400);
+    const data = await kernel.platformServices.agentRuns.getRun(ctx.user.id, id);
+    if (!data) throw new ApiError(ErrorCodes.NOT_FOUND, "Agent run not found.", 404);
+    return success(data, {
+      requestId: ctx.request.requestId,
+      traceId: ctx.request.traceId,
+      mode: kernel.mode,
     });
   });
 }
@@ -47,6 +78,8 @@ function buildAgentModesReport(kernel: ApiKernel): {
   legacyKernelAgents: {
     legacyFrontDeskPresent: boolean;
     legacyFrontDeskInUseByCopilot: false;
+    legacyFrontDeskUsedByCopilot: false;
+    legacyFrontDeskUsedByDocuments: false;
     experienceExtractorMode: string;
     artifactGeneratorMode: string;
     criticAgentMode: string;
@@ -122,8 +155,10 @@ function buildAgentModesReport(kernel: ApiKernel): {
     hasApiKey: runtimeConfig.hasApiKey,
   };
   const legacyKernelAgents = {
-    legacyFrontDeskPresent: Boolean(kernel.frontDeskOrchestrator),
+    legacyFrontDeskPresent: false,
     legacyFrontDeskInUseByCopilot: false as const,
+    legacyFrontDeskUsedByCopilot: false as const,
+    legacyFrontDeskUsedByDocuments: false as const,
     experienceExtractorMode: agentModes.experienceExtractorMode,
     artifactGeneratorMode: agentModes.artifactGeneratorMode,
     criticAgentMode: agentModes.criticAgentMode,
@@ -165,4 +200,17 @@ function buildAgentModesReport(kernel: ApiKernel): {
     hasDeepSeekApiKey,
     warnings: uniqueWarnings,
   };
+}
+
+function assertDebugRunsEnabled(): void {
+  if (process.env.NODE_ENV === "production" && process.env.DEBUG_ROUTES_ENABLED !== "true") {
+    throw new ApiError(ErrorCodes.FORBIDDEN, "Debug agent run routes are disabled in production.", 403);
+  }
+}
+
+function readLimit(query: unknown): number | undefined {
+  if (typeof query !== "object" || query === null) return undefined;
+  const value = (query as Record<string, unknown>).limit;
+  const parsed = typeof value === "string" ? Number(value) : undefined;
+  return Number.isFinite(parsed) ? parsed : undefined;
 }

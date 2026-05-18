@@ -4,9 +4,8 @@ import {
   InMemoryArtifactDecisionRepository,
 } from "../../application/decisions/index.js";
 import { ResumeGenerationService } from "../../application/ResumeGenerationService.js";
-import { DocumentIngestionService } from "../../application/documents/index.js";
+import { DocumentExperienceIngestionService, DocumentIngestionService } from "../../application/documents/index.js";
 import { DeterministicJDRequirementExtractor } from "../../application/extractors/DeterministicJDRequirementExtractor.js";
-import { FrontDeskOrchestrator } from "../../application/frontdesk/index.js";
 import { GenerationPersistenceService } from "../../application/generation/index.js";
 import {
   EvidenceChainQueryService,
@@ -87,12 +86,12 @@ import {
   type ProductResumeRepository,
 } from "../../product/index.js";
 import type { ApiKernel, GenerationPersistencePort } from "../types.js";
+import { InMemoryPlatformServices, PostgresPlatformServices, type PlatformServices } from "../../platform/index.js";
 import {
   createArtifactCritic,
   createArtifactGenerator,
   createArtifactRevisionAgent,
   createExperienceExtractor,
-  createFrontDeskAgent,
   createFrontDeskModelClient,
   uniqueWarnings,
 } from "./agentModeFactories.js";
@@ -131,6 +130,7 @@ export async function createPostgresKernelFromDatabase(
   const productImportRepository = new PostgresProductImportRepository(database);
   const productGenerationRepository = new PostgresProductGenerationRepository(database);
   const copilotPersistence = new PostgresCopilotPersistence(database);
+  const platformServices = new PostgresPlatformServices(database);
   const generationPersistenceService = createPostgresGenerationPersistenceService(database);
 
   return buildKernel({
@@ -152,6 +152,7 @@ export async function createPostgresKernelFromDatabase(
     productImportRepository,
     productGenerationRepository,
     copilotPersistence,
+    platformServices,
     generationPersistenceService,
     close: () => database.close(),
   });
@@ -177,6 +178,7 @@ function createInMemoryKernel(): ApiKernel {
   const productImportRepository = new InMemoryProductImportRepository();
   const productGenerationRepository = new InMemoryProductGenerationRepository();
   const copilotPersistence = new InMemoryCopilotPersistence();
+  const platformServices = new InMemoryPlatformServices();
 
   return buildKernel({
     mode: "in_memory",
@@ -198,6 +200,7 @@ function createInMemoryKernel(): ApiKernel {
     productImportRepository,
     productGenerationRepository,
     copilotPersistence,
+    platformServices,
     close: async () => {},
   });
 }
@@ -255,22 +258,9 @@ function buildKernel(input: BuildKernelInput): ApiKernel {
   const agentProvider = createFrontDeskModelClient({
     mode: agentModes.frontDeskAgentMode,
   });
-  const frontDeskAgent = createFrontDeskAgent({
-    modelClient: agentProvider.modelClient,
-  });
-  // Deprecated legacy adapter: retained for cvAgentKernel.documents.ingest().
-  // Product chat routes use AgentRuntime, not this orchestrator.
-  const frontDeskOrchestrator = new FrontDeskOrchestrator(
-    frontDeskAgent,
-    documentLoader,
-    ingestionService,
-    resumeGenerationService,
+  const documentExperienceIngestionService = new DocumentExperienceIngestionService(
     documentIngestionService,
-    {
-      evidenceChainQueryService,
-      graphViewQueryService,
-    },
-    artifactRevisionService,
+    ingestionService,
   );
 
   const warnings = uniqueWarnings([
@@ -285,7 +275,7 @@ function buildKernel(input: BuildKernelInput): ApiKernel {
   const cvAgentKernel = new DefaultCvAgentKernel({
     mode: input.mode,
     warnings,
-    frontDeskOrchestrator,
+    documentExperienceIngestionService,
     resumeGenerationService,
     generationPersistenceService,
     evidenceChainQueryService,
@@ -320,13 +310,13 @@ function buildKernel(input: BuildKernelInput): ApiKernel {
     mode: input.mode,
     warnings,
     cvAgentKernel,
-    frontDeskOrchestrator,
     resumeGenerationService,
     generationPersistenceService,
     evidenceChainQueryService,
     graphViewQueryService,
     productServices,
     copilotServices,
+    platformServices: input.platformServices,
     frontDeskModelClient: agentProvider.modelClient,
     close: input.close,
   };
@@ -352,6 +342,7 @@ type BuildKernelInput = {
   productImportRepository: ProductImportRepository;
   productGenerationRepository: ProductGenerationRepository;
   copilotPersistence: CopilotPersistence;
+  platformServices: PlatformServices;
   generationPersistenceService?: GenerationPersistencePort;
   close(): Promise<void>;
 };

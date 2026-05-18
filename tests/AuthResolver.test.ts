@@ -43,13 +43,13 @@ describe("AuthResolver", () => {
     });
   });
 
-  it("throws MISSING_AUTH when x-user-id is absent", async () => {
+  it("throws UNAUTHORIZED when x-user-id is absent", async () => {
     const resolver = new DevHeaderAuthResolver();
 
     await expect(resolver.resolve({ headers: {} } as unknown as FastifyRequest))
       .rejects
       .toMatchObject({
-        code: "MISSING_AUTH",
+        code: "UNAUTHORIZED",
         statusCode: 401,
       } satisfies Partial<ApiError>);
   });
@@ -77,7 +77,7 @@ describe("AuthResolver", () => {
     process.env.NODE_ENV = "production";
 
     expect(() => createAuthResolver()).toThrow(
-      "AUTH_MODE must be set in production. Supported values are dev_header and cookie_session.",
+      "AUTH_MODE must be set in production. Supported values are dev_header, bearer_static, and cookie_session.",
     );
   });
 
@@ -101,7 +101,7 @@ describe("AuthResolver", () => {
     process.env.AUTH_MODE = "unknown";
 
     expect(() => createAuthResolver()).toThrow(
-      'Unknown AUTH_MODE "unknown". Supported values are dev_header and cookie_session.',
+      'Unknown AUTH_MODE "unknown". Supported values are dev_header, disabled, bearer_static, and cookie_session.',
     );
   });
 });

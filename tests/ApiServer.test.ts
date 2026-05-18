@@ -134,7 +134,7 @@ describe("API server", () => {
     };
     expect(body.ok).toBe(false);
     expect(body.error).toEqual({
-      code: "MISSING_AUTH",
+      code: "UNAUTHORIZED",
       message: "x-user-id header is required in dev auth mode.",
     });
     expect(body.meta.mode).toBe("in_memory");

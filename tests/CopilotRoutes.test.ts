@@ -52,8 +52,9 @@ describe("GET /debug/agent-modes", () => {
     expect(typeof agentRuntime.allowDeterministicRouter).toBe("boolean");
     expect(typeof agentRuntime.allowDeterministicRuntime).toBe("boolean");
     expect(typeof agentRuntime.hasApiKey).toBe("boolean");
-    expect(legacyKernelAgents.legacyFrontDeskPresent).toBe(true);
+    expect(legacyKernelAgents.legacyFrontDeskPresent).toBe(false);
     expect(legacyKernelAgents.legacyFrontDeskInUseByCopilot).toBe(false);
+    expect(legacyKernelAgents.legacyFrontDeskUsedByDocuments).toBe(false);
     expect(typeof legacyKernelAgents.experienceExtractorMode).toBe("string");
     expect(typeof legacyKernelAgents.artifactGeneratorMode).toBe("string");
     expect(typeof legacyKernelAgents.criticAgentMode).toBe("string");

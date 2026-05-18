@@ -9,7 +9,9 @@ export type KernelRequestSource =
 
 export type KernelAuthMode =
   | "dev_header"
+  | "disabled"
   | "cookie_session"
+  | "bearer_static"
   | "bearer_token"
   | "service";
 

@@ -4,6 +4,7 @@ import { success } from "../response.js";
 import type { ApiKernel } from "../types.js";
 import type { AuthResolver } from "../auth/index.js";
 import { createKernelRequestContext } from "../context.js";
+import { withIdempotency } from "../idempotency.js";
 import type {
   ProductExperienceCategory,
   ProductExperienceRevisionSource,
@@ -22,18 +23,20 @@ export async function registerProductRoutes(
     return productSuccess(data, kernel, ctx);
   });
 
-  app.post("/product/experiences", async (request) => {
+  app.post("/product/experiences", async (request, reply) => {
     const ctx = createKernelRequestContext(request, await authResolver.resolve(request));
     const body = requireRecord(request.body);
-    const data = await kernel.productServices.experienceService.createExperience(ctx.user.id, {
-      title: requiredString(body.title, "title"),
-      content: requiredString(body.content, "content"),
-      category: readCategory(body.category),
-      organization: optionalString(body.organization),
-      role: optionalString(body.role),
-      tags: stringArray(body.tags),
+    return withIdempotency(request, reply, kernel, ctx.user.id, async () => {
+      const data = await kernel.productServices.experienceService.createExperience(ctx.user.id, {
+        title: requiredString(body.title, "title"),
+        content: requiredString(body.content, "content"),
+        category: readCategory(body.category),
+        organization: optionalString(body.organization),
+        role: optionalString(body.role),
+        tags: stringArray(body.tags),
+      });
+      return productSuccess(data, kernel, ctx);
     });
-    return productSuccess(data, kernel, ctx);
   });
 
   app.get("/product/experiences/:id", async (request) => {
@@ -87,16 +90,18 @@ export async function registerProductRoutes(
     return productSuccess(await kernel.productServices.jdService.listJDs(ctx.user.id, readLimit(request.query)), kernel, ctx);
   });
 
-  app.post("/product/jds", async (request) => {
+  app.post("/product/jds", async (request, reply) => {
     const ctx = createKernelRequestContext(request, await authResolver.resolve(request));
     const body = requireRecord(request.body);
-    const jd = await kernel.productServices.jdService.saveJD(ctx.user.id, {
-      rawText: requiredString(body.rawText ?? body.jdText, "rawText"),
-      title: optionalString(body.title),
-      company: optionalString(body.company),
-      targetRole: optionalString(body.targetRole),
+    return withIdempotency(request, reply, kernel, ctx.user.id, async () => {
+      const jd = await kernel.productServices.jdService.saveJD(ctx.user.id, {
+        rawText: requiredString(body.rawText ?? body.jdText, "rawText"),
+        title: optionalString(body.title),
+        company: optionalString(body.company),
+        targetRole: optionalString(body.targetRole),
+      });
+      return productSuccess(jd, kernel, ctx);
     });
-    return productSuccess(jd, kernel, ctx);
   });
 
   app.get("/product/jds/:id", async (request) => {
@@ -111,14 +116,14 @@ export async function registerProductRoutes(
     return productSuccess(await kernel.productServices.resumeService.listResumes(ctx.user.id, readLimit(request.query)), kernel, ctx);
   });
 
-  app.post("/product/resumes", async (request) => {
+  app.post("/product/resumes", async (request, reply) => {
     const ctx = createKernelRequestContext(request, await authResolver.resolve(request));
     const body = requireRecord(request.body);
-    return productSuccess(await kernel.productServices.resumeService.createResume(ctx.user.id, {
-      title: optionalString(body.title),
-      targetRole: optionalString(body.targetRole),
-      jdId: optionalString(body.jdId),
-    }), kernel, ctx);
+    return withIdempotency(request, reply, kernel, ctx.user.id, async () => productSuccess(await kernel.productServices.resumeService.createResume(ctx.user.id, {
+        title: optionalString(body.title),
+        targetRole: optionalString(body.targetRole),
+        jdId: optionalString(body.jdId),
+      }), kernel, ctx));
   });
 
   app.get("/product/resumes/:id", async (request) => {
@@ -161,12 +166,14 @@ export async function registerProductRoutes(
     return productSuccess(await kernel.productServices.resumeService.reorderResumeItems(ctx.user.id, param(request, "id"), stringArray(body.orderedIds)), kernel, ctx);
   });
 
-  app.post("/product/imports/text", async (request) => {
+  app.post("/product/imports/text", async (request, reply) => {
     const ctx = createKernelRequestContext(request, await authResolver.resolve(request));
     const body = requireRecord(request.body);
-    const job = await kernel.productServices.importService.createTextImportJob(ctx.user.id, requiredString(body.rawText, "rawText"));
-    const candidates = await kernel.productServices.importService.createCandidatesFromText(ctx.user.id, job.id);
-    return productSuccess({ job, candidates }, kernel, ctx);
+    return withIdempotency(request, reply, kernel, ctx.user.id, async () => {
+      const job = await kernel.productServices.importService.createTextImportJob(ctx.user.id, requiredString(body.rawText, "rawText"));
+      const candidates = await kernel.productServices.importService.createCandidatesFromText(ctx.user.id, job.id);
+      return productSuccess({ job, candidates }, kernel, ctx);
+    });
   });
 
   app.get("/product/imports/:id", async (request) => {
@@ -204,7 +211,7 @@ export async function registerProductRoutes(
     return productSuccess(generation, kernel, ctx);
   });
 
-  app.post("/product/generations/from-jd", async (request) => {
+  app.post("/product/generations/from-jd", async (request, reply) => {
     const ctx = createKernelRequestContext(request, await authResolver.resolve(request));
     const body = requireRecord(request.body);
     const jdId = optionalString(body.jdId);
@@ -212,23 +219,26 @@ export async function registerProductRoutes(
     if (!jdId && !jdText) {
       throw new ApiError("INVALID_BODY", "jdText or jdId is required.", 400);
     }
-    const result = await kernel.productServices.generationProductService.generateResumeFromJD(ctx, {
-      userId: ctx.user.id,
-      jdId,
-      jdText,
-      targetRole: optionalString(body.targetRole),
+    return withIdempotency(request, reply, kernel, ctx.user.id, async () => {
+      await kernel.platformServices.usage.consume({ userId: ctx.user.id, metric: "generation" });
+      const result = await kernel.productServices.generationProductService.generateResumeFromJD(ctx, {
+        userId: ctx.user.id,
+        jdId,
+        jdText,
+        targetRole: optionalString(body.targetRole),
+      });
+      return productSuccess({ generationId: result.generation.id, jd: result.jd, variants: result.variants, generation: result.generation }, kernel, ctx);
     });
-    return productSuccess({ generationId: result.generation.id, jd: result.jd, variants: result.variants, generation: result.generation }, kernel, ctx);
   });
 
-  app.post("/product/generations/:id/accept-variant", async (request) => {
+  app.post("/product/generations/:id/accept-variant", async (request, reply) => {
     const ctx = createKernelRequestContext(request, await authResolver.resolve(request));
     const body = requireRecord(request.body);
-    return productSuccess(await kernel.productServices.generationProductService.saveAcceptedVariantToResume(ctx.user.id, {
-      generationId: param(request, "id"),
-      variantId: requiredString(body.variantId, "variantId"),
-      resumeId: optionalString(body.resumeId),
-    }), kernel, ctx);
+    return withIdempotency(request, reply, kernel, ctx.user.id, async () => productSuccess(await kernel.productServices.generationProductService.saveAcceptedVariantToResume(ctx.user.id, {
+        generationId: param(request, "id"),
+        variantId: requiredString(body.variantId, "variantId"),
+        resumeId: optionalString(body.resumeId),
+      }), kernel, ctx));
   });
 }
 

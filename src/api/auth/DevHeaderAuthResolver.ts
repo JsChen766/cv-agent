@@ -1,12 +1,12 @@
 import type { FastifyRequest } from "fastify";
-import { ApiError } from "../errors.js";
+import { ApiError, ErrorCodes } from "../errors.js";
 import type { AuthResolver, ResolvedAuth } from "./types.js";
 
 export class DevHeaderAuthResolver implements AuthResolver<FastifyRequest> {
   public async resolve(request: FastifyRequest): Promise<ResolvedAuth> {
     const userId = readHeader(request.headers["x-user-id"]);
     if (!userId) {
-      throw new ApiError("MISSING_AUTH", "x-user-id header is required in dev auth mode.", 401);
+      throw new ApiError(ErrorCodes.UNAUTHORIZED, "x-user-id header is required in dev auth mode.", 401);
     }
     return {
       user: {

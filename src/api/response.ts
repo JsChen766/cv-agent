@@ -1,4 +1,4 @@
-import { ApiError } from "./errors.js";
+import { mapError } from "./errors.js";
 
 export type ApiMeta = {
   requestId: string;
@@ -19,6 +19,7 @@ export type ApiFailure = {
     code: string;
     message: string;
     details?: unknown;
+    retryable?: boolean;
   };
   meta: ApiMeta;
 };
@@ -32,31 +33,14 @@ export function success<T>(data: T, meta: ApiMeta): ApiSuccess<T> {
 }
 
 export function failure(error: unknown, meta: ApiMeta): ApiFailure {
-  if (error instanceof ApiError) {
-    return {
-      ok: false,
-      error: {
-        code: error.code,
-        message: error.message,
-      },
-      meta,
-    };
-  }
-  if (error instanceof Error) {
-    return {
-      ok: false,
-      error: {
-        code: "INTERNAL_ERROR",
-        message: "Internal server error.",
-      },
-      meta,
-    };
-  }
+  const mapped = mapError(error);
   return {
     ok: false,
     error: {
-      code: "INTERNAL_ERROR",
-      message: "Internal server error.",
+      code: mapped.code,
+      message: mapped.message,
+      ...(mapped.details !== undefined ? { details: mapped.details } : {}),
+      ...(mapped.retryable !== undefined ? { retryable: mapped.retryable } : {}),
     },
     meta,
   };

@@ -2,11 +2,10 @@ import { randomUUID } from "node:crypto";
 import Fastify from "fastify";
 import type { FastifyRequest } from "fastify";
 import fastifyCors from "@fastify/cors";
-import { ApiError } from "./errors.js";
 import type { ApiKernel } from "./types.js";
 import type { AuthResolver } from "./auth/index.js";
 import { createAuthResolver } from "./auth/index.js";
-import { failure } from "./response.js";
+import { errorResponse } from "./errors/index.js";
 import { registerCopilotRoutes } from "./routes/copilot.js";
 import { registerCopilotDashboardRoutes } from "./routes/copilotDashboard.js";
 import { registerDebugRoutes } from "./routes/debug.js";
@@ -15,6 +14,7 @@ import { registerDecisionRoutes } from "./routes/decisions.js";
 import { registerEvidenceRoutes } from "./routes/evidence.js";
 import { registerGenerationRoutes } from "./routes/generations.js";
 import { registerHealthRoutes } from "./routes/health.js";
+import { registerJobRoutes } from "./routes/jobs.js";
 import { registerProductRoutes } from "./routes/product.js";
 import { registerStreamingRoutes } from "./routes/streaming.js";
 
@@ -28,19 +28,26 @@ export async function createServer(kernel: ApiKernel, options: CreateServerOptio
 
   await registerDevCors(app);
 
+  app.addHook("preHandler", async (request) => {
+    await kernel.platformServices.usage.checkRequest({
+      userId: readHeader(request.headers["x-user-id"]),
+      ip: request.ip,
+    });
+  });
+
   app.setErrorHandler((error, request, reply) => {
-    const statusCode = error instanceof ApiError ? error.statusCode : 500;
     const requestId = readHeader(request.headers["x-request-id"]) ?? `req-${randomUUID()}`;
-    reply.status(statusCode).send(failure(error, {
+    const mapped = errorResponse(error, {
       requestId,
       traceId: readHeader(request.headers["x-trace-id"]) ?? requestId,
       mode: kernel.mode,
       ...(kernel.warnings.length > 0 ? { warnings: kernel.warnings } : {}),
-    }));
+    });
+    reply.status(mapped.statusCode).send(mapped.body);
   });
 
   await registerHealthRoutes(app, kernel);
-  await registerDebugRoutes(app, kernel);
+  await registerDebugRoutes(app, kernel, authResolver);
   await registerDocumentRoutes(app, kernel, authResolver);
   await registerGenerationRoutes(app, kernel, authResolver);
   await registerStreamingRoutes(app, kernel, authResolver);
@@ -49,6 +56,7 @@ export async function createServer(kernel: ApiKernel, options: CreateServerOptio
   await registerProductRoutes(app, kernel, authResolver);
   await registerCopilotDashboardRoutes(app, kernel, authResolver);
   await registerCopilotRoutes(app, kernel, authResolver);
+  await registerJobRoutes(app, kernel, authResolver);
 
   return app;
 }
@@ -66,7 +74,7 @@ async function registerDevCors(app: ReturnType<typeof Fastify>): Promise<void> {
   await app.register(fastifyCors, {
     origin: isAllowedDevCorsOrigin,
     methods: ["GET", "POST", "PATCH", "OPTIONS"],
-    allowedHeaders: ["content-type", "x-user-id", "x-request-id", "x-trace-id"],
+    allowedHeaders: ["content-type", "x-user-id", "x-request-id", "x-trace-id", "idempotency-key"],
     credentials: false,
   });
 }

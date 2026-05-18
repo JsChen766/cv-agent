@@ -70,7 +70,7 @@ describe("Streaming generation route", () => {
     expect(response.json()).toMatchObject({
       ok: false,
       error: {
-        code: "MISSING_AUTH",
+        code: "UNAUTHORIZED",
       },
     });
   });

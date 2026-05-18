@@ -17,6 +17,8 @@ import { AgentToolRegistry, type AgentToolResult } from "../tools/AgentToolRegis
 import { FrontDeskAgent } from "../frontdesk/FrontDeskAgent.js";
 import { readAgentRuntimeConfig, type AgentRuntimeConfig } from "./AgentRuntimeConfig.js";
 import { safeClarificationDecision, type AgentDecision } from "../schema/AgentDecision.js";
+import { ApiError, ErrorCodes, mapError } from "../../api/errors.js";
+import { readPlatformConfig } from "../../platform/index.js";
 
 export type AgentRuntimeDeps = {
   kernel: ApiKernel;
@@ -47,63 +49,104 @@ export class AgentRuntime {
     request: CopilotChatRequest,
   ): Promise<CopilotChatResponse & { ingestionWarnings: string[] }> {
     const ingestionWarnings: string[] = [];
+    this.assertPromptWithinLimit(request);
+    await this.deps.kernel.platformServices.usage.consume({ userId: ctx.user.id, metric: "message" });
     const session = await this.deps.kernel.copilotServices.sessionService.getOrCreateSession(ctx.user.id, {
       sessionId: request.sessionId,
       resumeText: request.resumeText,
       jdText: request.jdText,
       targetRole: request.targetRole,
     });
-    const userMessage = await this.saveMessage(ctx.user.id, {
-      id: `msg-${randomUUID()}`,
+    await this.acquireSessionLock(ctx, session.id);
+    const run = await this.deps.kernel.platformServices.agentRuns.createRun({
+      id: `run-${randomUUID()}`,
+      userId: ctx.user.id,
       sessionId: session.id,
-      role: "user",
-      content: request.message,
-      kind: "plain_text",
-      createdAt: new Date().toISOString(),
-    });
-    const turn = await this.deps.kernel.copilotServices.sessionService.createTurn(ctx.user.id, session.id, userMessage.id);
-    const [workspace, recentMessages] = await Promise.all([
-      this.deps.kernel.copilotServices.workspaceService.getWorkspace(ctx.user.id, session.id),
-      this.deps.kernel.copilotServices.sessionService.getRecentMessages(ctx.user.id, session.id, 6),
-    ]);
-
-    let decision = await this.frontDesk.decide(this.decisionInput(ctx, request, session, workspace, recentMessages));
-
-    if (!this.decisionToolCallsAreValid(decision, {
       requestId: ctx.request.requestId,
-      sessionId: session.id,
-    })) {
-      decision = safeClarificationDecision();
-    }
-
-    const toolResults = await this.executeDecisionTools(ctx, request, session, workspace, turn.id, decision, ingestionWarnings);
-    const nextWorkspace = mergeWorkspace(session.id, workspace, decision, toolResults);
-    const response = this.presenter.present({
-      sessionId: session.id,
-      turnId: turn.id,
-      decision,
-      toolResults,
-      workspace: nextWorkspace,
+      mode: this.config.frontDeskAgentMode,
+      model: this.config.model,
     });
+    const startedAt = Date.now();
+    try {
+      const userMessage = await this.saveMessage(ctx.user.id, {
+        id: `msg-${randomUUID()}`,
+        sessionId: session.id,
+        role: "user",
+        content: request.message,
+        kind: "plain_text",
+        createdAt: new Date().toISOString(),
+      });
+      const turn = await this.deps.kernel.copilotServices.sessionService.createTurn(ctx.user.id, session.id, userMessage.id);
+      const [workspace, recentMessages] = await Promise.all([
+        this.deps.kernel.copilotServices.workspaceService.getWorkspace(ctx.user.id, session.id),
+        this.deps.kernel.copilotServices.sessionService.getRecentMessages(ctx.user.id, session.id, 6),
+      ]);
 
-    await this.persistResponse(ctx.user.id, response, activityTypeForDecision(decision, toolResults));
-    return { ...response, ingestionWarnings };
+      let decision = await this.frontDesk.decide(this.decisionInput(ctx, request, session, workspace, recentMessages));
+
+      if (!this.decisionToolCallsAreValid(decision, {
+        requestId: ctx.request.requestId,
+        sessionId: session.id,
+      }) || normalizeToolCalls(decision).length > readPlatformConfig().maxToolCallsPerRun) {
+        decision = safeClarificationDecision();
+      }
+
+      const toolResults = await this.executeDecisionTools(ctx, request, session, workspace, turn.id, decision, ingestionWarnings, run.id);
+      const nextWorkspace = mergeWorkspace(session.id, workspace, decision, toolResults);
+      const response = this.presenter.present({
+        sessionId: session.id,
+        turnId: turn.id,
+        decision,
+        toolResults,
+        workspace: nextWorkspace,
+      });
+      response.assistantMessage.content = await this.synthesizeFinalAnswer(decision, toolResults, response);
+
+      await this.persistResponse(ctx.user.id, response, activityTypeForDecision(decision, toolResults));
+      await this.deps.kernel.platformServices.agentRuns.completeRun(run.id, {
+        turnId: turn.id,
+        decisionMode: decision.mode,
+        latencyMs: Date.now() - startedAt,
+      });
+      return { ...response, ingestionWarnings };
+    } catch (error) {
+      const mapped = mapError(error);
+      await this.deps.kernel.platformServices.agentRuns.failRun(run.id, {
+        errorCode: mapped.code,
+        errorMessage: mapped.message,
+        latencyMs: Date.now() - startedAt,
+      });
+      throw error;
+    } finally {
+      await this.releaseSessionLock(ctx, session.id);
+    }
   }
 
   public async handleAction(ctx: KernelRequestContext, request: CopilotActionRequest): Promise<CopilotChatResponse> {
     const session = await this.deps.kernel.copilotServices.sessionService.getSession(ctx.user.id, request.sessionId);
     if (!session) return errorResponse(request.sessionId, request.turnId ?? `ct-${randomUUID()}`, "Session not found.");
+    await this.acquireSessionLock(ctx, session.id);
+    const run = await this.deps.kernel.platformServices.agentRuns.createRun({
+      id: `run-${randomUUID()}`,
+      userId: ctx.user.id,
+      sessionId: session.id,
+      requestId: ctx.request.requestId,
+      mode: "action",
+      model: this.config.model,
+    });
+    const startedAt = Date.now();
+    try {
     const turnId = request.turnId ?? `ct-${randomUUID()}`;
     const workspace = await this.deps.kernel.copilotServices.workspaceService.getWorkspace(ctx.user.id, session.id);
     const toolName = toolForAction(request.action.type);
     const toolArgs = argsForAction(request.action, workspace);
-    const result = await this.tools.execute(toolName, toolArgs, {
+    const result = await this.executeToolWithLog(toolName, toolArgs, {
       ctx,
       session,
       workspace,
       request: { sessionId: session.id, message: request.action.type, clientState: request.clientState as CopilotChatRequest["clientState"] },
       turnId,
-    });
+    }, run.id);
     const decision: AgentDecision = {
       mode: "call_tool",
       assistantMessage: "",
@@ -113,7 +156,19 @@ export class AgentRuntime {
     const nextWorkspace = mergeWorkspace(session.id, workspace, decision, [result]);
     const response = this.presenter.present({ sessionId: session.id, turnId, decision, toolResults: [result], workspace: nextWorkspace });
     await this.persistResponse(ctx.user.id, response, request.action.type === "accept" ? "save_resume" : request.action.type.startsWith("revise") ? "revision" : "decision");
+    await this.deps.kernel.platformServices.agentRuns.completeRun(run.id, { turnId, decisionMode: decision.mode, latencyMs: Date.now() - startedAt });
     return response;
+    } catch (error) {
+      const mapped = mapError(error);
+      await this.deps.kernel.platformServices.agentRuns.failRun(run.id, {
+        errorCode: mapped.code,
+        errorMessage: mapped.message,
+        latencyMs: Date.now() - startedAt,
+      });
+      throw error;
+    } finally {
+      await this.releaseSessionLock(ctx, session.id);
+    }
   }
 
   public async handleStream(
@@ -191,16 +246,120 @@ export class AgentRuntime {
     turnId: string,
     decision: AgentDecision,
     ingestionWarnings: string[],
+    agentRunId: string,
   ): Promise<AgentToolResult[]> {
     const calls = normalizeToolCalls(decision);
     const results: AgentToolResult[] = [];
     for (const call of calls) {
+      await this.deps.kernel.platformServices.usage.consume({ userId: ctx.user.id, metric: "tool_call" });
       if (call.toolName === "generate_resume_variants") {
+        await this.deps.kernel.platformServices.usage.consume({ userId: ctx.user.id, metric: "generation" });
         await this.ingestResumeIfNeeded(ctx, session, ingestionWarnings);
       }
-      results.push(await this.tools.execute(call.toolName, call.arguments, { ctx, session, workspace, request, turnId }));
+      results.push(await this.executeToolWithLog(call.toolName, call.arguments, { ctx, session, workspace, request, turnId }, agentRunId));
     }
     return results;
+  }
+
+  private async executeToolWithLog(
+    toolName: string,
+    args: Record<string, unknown>,
+    context: Parameters<AgentToolRegistry["execute"]>[2],
+    agentRunId: string,
+  ): Promise<AgentToolResult> {
+    const startedAt = Date.now();
+    const toolRun = await this.deps.kernel.platformServices.agentRuns.createToolRun({
+      id: `toolrun-${randomUUID()}`,
+      agentRunId,
+      userId: context.ctx.user.id,
+      sessionId: context.session.id,
+      toolName,
+      inputSummary: summarizeToolInput(args),
+    });
+    try {
+      const result = await this.tools.execute(toolName, args, context);
+      await this.deps.kernel.platformServices.agentRuns.completeToolRun(toolRun.id, {
+        status: result.status === "success" ? "completed" : result.status,
+        latencyMs: Date.now() - startedAt,
+        outputSummary: summarizeToolOutput(result),
+      });
+      return result;
+    } catch (error) {
+      const mapped = mapError(error);
+      await this.deps.kernel.platformServices.agentRuns.completeToolRun(toolRun.id, {
+        status: "failed",
+        latencyMs: Date.now() - startedAt,
+        errorCode: mapped.code,
+        errorMessage: mapped.message,
+      });
+      throw error;
+    }
+  }
+
+  private async acquireSessionLock(ctx: KernelRequestContext, sessionId: string): Promise<void> {
+    const acquired = await this.deps.kernel.platformServices.sessionLocks.acquire({
+      userId: ctx.user.id,
+      sessionId,
+      ownerRequestId: ctx.request.requestId,
+      ttlMs: readPlatformConfig().sessionLockTtlMs,
+    });
+    if (!acquired) {
+      throw new ApiError(ErrorCodes.SESSION_LOCKED, "This session is already processing another request. Please retry shortly.", 409, { retryable: true });
+    }
+  }
+
+  private async releaseSessionLock(ctx: KernelRequestContext, sessionId: string): Promise<void> {
+    await this.deps.kernel.platformServices.sessionLocks.release({
+      userId: ctx.user.id,
+      sessionId,
+      ownerRequestId: ctx.request.requestId,
+    });
+  }
+
+  private assertPromptWithinLimit(request: CopilotChatRequest): void {
+    const length = [request.message, request.resumeText, request.jdText, request.targetRole].filter(Boolean).join("\n").length;
+    if (length > readPlatformConfig().maxPromptChars) {
+      throw new ApiError(ErrorCodes.QUOTA_EXCEEDED, "Input is too long for a single agent run.", 429, { retryable: false });
+    }
+  }
+
+  private async synthesizeFinalAnswer(
+    decision: AgentDecision,
+    toolResults: AgentToolResult[],
+    response: CopilotChatResponse,
+  ): Promise<string> {
+    if (readPlatformConfig().finalAnswerSynthesis !== "llm" || toolResults.length === 0) {
+      return response.assistantMessage.content;
+    }
+    try {
+      const result = await this.deps.kernel.frontDeskModelClient?.chat({
+        messages: [
+          {
+            role: "system",
+            content: "Write a concise user-facing final answer from safe summaries only. Do not expose tool names, arguments, prompts, chain-of-thought, or provider internals.",
+          },
+          {
+            role: "user",
+            content: JSON.stringify({
+              decisionMessage: decision.assistantMessage,
+              toolResults: toolResults.map((tool) => ({ status: tool.status, assistantMessage: tool.assistantMessage })),
+              workspace: {
+                activePanel: response.workspace.activePanel,
+                variantCount: response.workspace.variants.length,
+                experienceCount: response.workspace.experiences?.length ?? 0,
+                resumeCount: response.workspace.resumes?.length ?? 0,
+                jdCount: response.workspace.jds?.length ?? 0,
+              },
+            }),
+          },
+        ],
+        temperature: 0.2,
+        maxTokens: 500,
+      });
+      return result?.content?.trim() || response.assistantMessage.content;
+    } catch {
+      return response.assistantMessage.content;
+    }
   }
 
   private async saveMessage(userId: string, message: CopilotMessage): Promise<CopilotMessage> {
@@ -347,6 +506,32 @@ function argsForAction(
     return { variantId };
   }
   return { variantId, decision: action.type, payload: action.payload };
+}
+
+function summarizeToolInput(args: Record<string, unknown>): Record<string, unknown> {
+  const summary: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(args)) {
+    if (/text|content|raw|resume|jd/i.test(key) && typeof value === "string") {
+      summary[key] = { type: "string", length: value.length };
+    } else if (Array.isArray(value)) {
+      summary[key] = { type: "array", length: value.length };
+    } else if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
+      summary[key] = value;
+    } else if (value && typeof value === "object") {
+      summary[key] = { type: "object" };
+    }
+  }
+  return summary;
+}
+
+function summarizeToolOutput(result: AgentToolResult): Record<string, unknown> {
+  return {
+    status: result.status,
+    hasWorkspacePatch: Boolean(result.workspacePatch),
+    timelineItemCount: result.timelineItems?.length ?? 0,
+    nextActionCount: result.nextActions?.length ?? 0,
+    suggestedPromptCount: result.suggestedPrompts?.length ?? 0,
+  };
 }
 
 function errorResponse(sessionId: string, turnId: string, message: string): CopilotChatResponse {

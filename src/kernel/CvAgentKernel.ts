@@ -1,8 +1,8 @@
-import type { FrontDeskOrchestrator } from "../application/frontdesk/index.js";
 import type {
   GenerateResumeResult,
   ResumeGenerationService,
 } from "../application/ResumeGenerationService.js";
+import type { DocumentExperienceIngestionService } from "../application/documents/index.js";
 import type {
   ArtifactRevisionResult,
   ArtifactRevisionService,
@@ -56,10 +56,7 @@ export type KernelGenerationPersistencePort = {
 export type DefaultCvAgentKernelInput = {
   mode: KernelMode;
   warnings: string[];
-  /**
-   * @deprecated Legacy document-ingestion adapter. Product chat is handled by AgentRuntime.
-   */
-  frontDeskOrchestrator: FrontDeskOrchestrator;
+  documentExperienceIngestionService: DocumentExperienceIngestionService;
   resumeGenerationService: ResumeGenerationService;
   generationPersistenceService?: KernelGenerationPersistencePort;
   evidenceChainQueryService: EvidenceChainQueryService;
@@ -86,10 +83,7 @@ export class DefaultCvAgentKernel implements CvAgentKernel {
   };
 
   private readonly warnings: string[];
-  /**
-   * @deprecated Legacy document-ingestion adapter. Copilot chat must not depend on it.
-   */
-  private readonly frontDeskOrchestrator: FrontDeskOrchestrator;
+  private readonly documentExperienceIngestionService: DocumentExperienceIngestionService;
   private readonly resumeGenerationService: ResumeGenerationService;
   private readonly generationPersistenceService?: KernelGenerationPersistencePort;
   private readonly evidenceChainQueryService: EvidenceChainQueryService;
@@ -101,7 +95,7 @@ export class DefaultCvAgentKernel implements CvAgentKernel {
   public constructor(input: DefaultCvAgentKernelInput) {
     this.mode = input.mode;
     this.warnings = input.warnings;
-    this.frontDeskOrchestrator = input.frontDeskOrchestrator;
+    this.documentExperienceIngestionService = input.documentExperienceIngestionService;
     this.resumeGenerationService = input.resumeGenerationService;
     this.generationPersistenceService = input.generationPersistenceService;
     this.evidenceChainQueryService = input.evidenceChainQueryService;
@@ -148,10 +142,7 @@ export class DefaultCvAgentKernel implements CvAgentKernel {
     });
 
     try {
-      // Deprecated API command path: reuse FrontDeskOrchestrator for document ingestion only.
-      // TODO: split this into a direct DocumentIngestionService + ExperienceIngestionService
-      // command pipeline. Full FrontDeskAgent intent handling should remain the chat path.
-      const response = await this.frontDeskOrchestrator.handle({
+      const response = await this.documentExperienceIngestionService.ingest({
         userId: ctx.user.id,
         message: input.message ?? "Import these resume documents.",
         documents: input.documents,
@@ -170,9 +161,9 @@ export class DefaultCvAgentKernel implements CvAgentKernel {
         step: "experiences.extract",
         message: "ArchivistAgent extraction completed.",
         data: {
-          experienceCount: response.experiences?.length ?? (response.experience ? 1 : 0),
-          evidenceCount: response.evidences?.length ?? 0,
-          skillCount: response.skills?.length ?? 0,
+          experienceCount: response.experiences.length,
+          evidenceCount: response.evidences.length,
+          skillCount: response.skills.length,
         },
       });
       await emitKernelCompleted(ctx.events, {
@@ -182,11 +173,11 @@ export class DefaultCvAgentKernel implements CvAgentKernel {
       });
 
       return {
-        extractedDocuments: response.extractedDocuments ?? [],
+        extractedDocuments: response.extractedDocuments,
         experience: response.experience,
-        experiences: response.experiences ?? [],
-        evidences: response.evidences ?? [],
-        skills: response.skills ?? [],
+        experiences: response.experiences,
+        evidences: response.evidences,
+        skills: response.skills,
         warnings: response.warnings,
       };
     } catch (error) {

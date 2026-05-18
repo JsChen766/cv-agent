@@ -1691,6 +1691,131 @@ Tool implementation is split under `src/agents/tools/product/*` and `src/agents/
 
 Unknown LLM tool calls are rejected before execution. The runtime logs only `event`, `requestId`, `sessionId`, unknown tool names, and allowed tool count; it never logs prompt text, tool arguments, provider raw output, API keys, or reasoning content. The user receives a safe clarification response.
 
+#### Backend Hardening Contract
+
+Status: implemented.
+
+##### Error response contract
+
+All route errors use the common envelope:
+
+```json
+{
+  "ok": false,
+  "error": {
+    "code": "INVALID_BODY",
+    "message": "Request body must be a JSON object.",
+    "details": {},
+    "retryable": false
+  },
+  "meta": {
+    "requestId": "req-...",
+    "traceId": "trace-...",
+    "mode": "postgres"
+  }
+}
+```
+
+Supported public error codes include `INVALID_BODY`, `UNAUTHORIZED`, `FORBIDDEN`, `NOT_FOUND`, `CONFLICT`, `RATE_LIMITED`, `IDEMPOTENCY_CONFLICT`, `SESSION_LOCKED`, `QUOTA_EXCEEDED`, `PROVIDER_TIMEOUT`, `PROVIDER_ERROR`, `TOOL_VALIDATION_FAILED`, `TOOL_EXECUTION_FAILED`, `AGENT_DECISION_INVALID`, `AGENT_UNKNOWN_TOOL`, and `INTERNAL_ERROR`. Responses must not expose stack traces, provider raw payloads, prompt text, API keys, chain-of-thought, or internal tool arguments.
+
+##### Idempotency contract
+
+Mutating routes may receive:
+
+```http
+Idempotency-Key: client-generated-key
+```
+
+Behavior:
+
+- No key: execute normally.
+- Same user + same key + same request hash: return cached completed response.
+- Same user + same key + different request hash: return `409 IDEMPOTENCY_CONFLICT`.
+- Same key for a different user is independent.
+- Pending duplicate requests return `409 CONFLICT` with `retryable=true`.
+
+Persisted table: `api_idempotency_key`.
+
+##### Session lock behavior
+
+`/copilot/chat` and `/copilot/actions` acquire a user/session scoped lock before mutating messages, turns, or workspace snapshots. Default TTL is controlled by `COPILOT_SESSION_LOCK_TTL_MS=60000`. Lock conflict returns:
+
+```json
+{
+  "ok": false,
+  "error": {
+    "code": "SESSION_LOCKED",
+    "message": "This session is already processing another request. Please retry shortly.",
+    "retryable": true
+  }
+}
+```
+
+Persisted table: `copilot_session_lock`.
+
+##### Rate limit and quota behavior
+
+Config:
+
+```env
+RATE_LIMIT_ENABLED=true
+RATE_LIMIT_PER_USER_PER_MINUTE=30
+RATE_LIMIT_PER_IP_PER_MINUTE=60
+AGENT_DAILY_MESSAGE_QUOTA=200
+AGENT_DAILY_TOOL_CALL_QUOTA=500
+AGENT_DAILY_GENERATION_QUOTA=50
+LLM_MAX_PROMPT_CHARS=50000
+LLM_MAX_TOOL_CALLS_PER_RUN=5
+```
+
+Request limits return `429 RATE_LIMITED`. Agent message/tool/generation quota failures return `429 QUOTA_EXCEEDED`. Long prompt/input failures return `QUOTA_EXCEEDED` before model execution. Persisted table: `api_usage_counter`.
+
+##### Agent run log contract
+
+Every AgentRuntime chat/action run creates an `agent_run` row. Every tool execution creates an `agent_tool_run` row. Logs store:
+
+- request/session/turn ids
+- mode/model
+- status, decision mode, tool count
+- safe error code/message
+- latency and optional token usage
+- tool input/output summaries only
+
+Logs must not store complete prompts, resume/JD text, provider raw payloads, API keys, chain-of-thought, or internal tool args. Debug APIs:
+
+- `GET /debug/agent-runs?limit=50`
+- `GET /debug/agent-runs/:id`
+
+These are enabled in dev/test. Production requires `DEBUG_ROUTES_ENABLED=true`.
+
+##### Background job contract
+
+Minimal job skeleton:
+
+- `GET /jobs`
+- `POST /jobs`
+- `GET /jobs/:id`
+- `POST /jobs/:id/cancel`
+
+Supported job types: `import_pdf`, `export_pdf`, `rebuild_index`, `long_generation`. The current implementation persists job state but does not run a worker loop. Persisted table: `background_job`.
+
+##### Auth mode contract
+
+Supported modes:
+
+- `dev_header`: reads `x-user-id`, development/test only.
+- `disabled`: tests only unless `ALLOW_INSECURE_AUTH=true`.
+- `bearer_static`: reads `Authorization: Bearer ...` using `AUTH_STATIC_BEARER_TOKEN` and `AUTH_STATIC_USER_ID`.
+- `cookie_session`: reserved stub.
+
+Protected product, copilot, jobs, and debug run routes must resolve identity through `AuthResolver`. Request body `userId` is ignored.
+
+##### Final answer synthesis
+
+`FINAL_ANSWER_SYNTHESIS=off|llm`, default `off`.
+
+When `off`, `CopilotPresenter` composes `decision.assistantMessage` and public tool messages. When `llm`, AgentRuntime calls the configured model after tool execution with safe summaries only: decision message, public tool status/message, active panel, and counts. It must not pass provider raw data, full resume/JD text, prompts, or tool internal args. Synthesis failure falls back to normal composition.
+
 ---
 
 ## 14. Checklist for New Code

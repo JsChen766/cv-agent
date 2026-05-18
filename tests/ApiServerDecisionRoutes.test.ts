@@ -159,7 +159,7 @@ describe("API server artifact decision routes", () => {
     expect(response.json()).toMatchObject({
       ok: false,
       error: {
-        code: "MISSING_AUTH",
+        code: "UNAUTHORIZED",
       },
     });
   });
@@ -181,7 +181,7 @@ describe("API server artifact decision routes", () => {
     expect(response.json()).toMatchObject({
       ok: false,
       error: {
-        code: "INVALID_DECISION_REQUEST",
+        code: "INVALID_BODY",
       },
     });
   });

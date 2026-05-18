@@ -73,7 +73,7 @@ function createProductServices() {
   const cvAgentKernel = new DefaultCvAgentKernel({
     mode: "in_memory",
     warnings: [],
-    frontDeskOrchestrator: {} as never,
+    documentExperienceIngestionService: {} as never,
     resumeGenerationService: {} as never,
     evidenceChainQueryService: {} as never,
     graphViewQueryService: {} as never,

@@ -1,121 +1,131 @@
 # Coolto Agent Runtime
 
-TypeScript agent runtime foundation for Coolto. The project currently focuses on runtime primitives, document ingestion, a deterministic knowledge pipeline, generation persistence, and a thin backend API. It still avoids frontend code, full auth, real vector databases, Neo4j, pgvector, and production file storage.
+TypeScript backend for a ChatGPT/Gemini-style job-search Copilot. The product entrypoint is `/copilot/chat`: users talk naturally, the LLM-first `FrontDeskAgent` produces a schema-validated decision, and `AgentRuntime` executes product/kernel tools against persisted sessions and workspace snapshots.
 
-P8.7 RevisionAgent is implemented. The default path remains deterministic; LLM artifact generation, critique, and revision are opt-in through `ARTIFACT_GENERATOR_MODE=llm`, `CRITIC_AGENT_MODE=llm`, and `REVISION_AGENT_MODE=llm`.
-
-## Framework Goal
-
-- Data ingestion layer: collect raw experience text and turn it into structured experience knowledge.
-- Structured knowledge layer: keep experiences, evidence, skills, JD requirements, generated artifacts, evidence chains, and graph views behind replaceable repository interfaces.
-- Reasoning layer: use deterministic mock services today where future `ArchivistAgent`, `StrategistAgent`, and `ArchitectAgent` implementations can be plugged in.
-- Presentation layer: expose zod-validated `EvidenceChain`, `GraphView`, and API contract data that a future frontend panel can consume.
-
-## Architecture
-
-Runtime modules remain low-coupled:
+Current architecture:
 
 ```text
-Agent -> ModelClient -> LLMProvider
-  |          |
-  |          +-> DeepSeek / OpenRouter / Mock
-  |
-  +-> Tools -> ToolExecutor -> AgentToolRunner
-  |
-  +-> MemoryManager -> StorageAdapter
-  |
-  +-> Orchestrator -> sequential multi-agent pipeline
+HTTP API
+  -> AuthResolver
+  -> Copilot API adapter (/copilot/chat, /copilot/actions, /copilot/chat/stream)
+  -> AgentRuntime
+  -> LLM-first FrontDeskAgent
+  -> AgentToolRegistry
+      -> Product tools: experiences, JDs, resumes, imports, dashboard/sidebar
+      -> Kernel tools: generation, revision, evidence, decisions
+  -> Product Data Layer / CvAgentKernel / repositories
 ```
 
-## Tool Calling Runtime
+Boundary summary:
 
-The runtime now supports a complete OpenAI-compatible tool-calling loop:
+- `AgentRuntime` is the product chat runtime and owns session loading, memory, workspace snapshots, tool execution, run logs, locks, quota checks, and response persistence.
+- `FrontDeskAgent` is LLM-first. It emits structured `AgentDecision` JSON and never exposes chain-of-thought, provider raw payloads, system prompts, or tool arguments.
+- `AgentToolRegistry` is the only tool boundary. LLM output can request tools, but tools own all writes.
+- Product services manage durable business assets: experiences, JDs, resumes, imports, product generations, and recent read models.
+- `Copilot API` is a product protocol layer, not a second business kernel.
+- `CvAgentKernel` remains the lower-level kernel facade for document ingestion, generation, evidence queries, graph queries, revision, and decisions.
 
-1. `ToolDefinition` defines a tool name, description, JSON schema parameters, and `execute` function.
-2. `ToolExecutor` registers tools and executes model-returned `ToolCall` objects.
-3. `BaseAgent` passes tool schemas to `ModelClient.chat`. `runWithMessages()` lets runners and orchestrators provide a complete message context directly while still prepending the agent system prompt.
-4. `AgentToolRunner` runs the loop: agent output `toolCalls` -> execute tools -> append assistant/tool messages -> continue the agent -> final `AgentOutput`.
+Key API groups:
 
-DeepSeek tool calls follow the OpenAI-compatible function-calling shape:
+- `/copilot/chat`, `/copilot/actions`, `/copilot/chat/stream` - conversational product entrypoints.
+- `/copilot/sessions`, `/copilot/sidebar` - persisted chat/workspace read model.
+- `/product/*` - structured product data APIs for experiences, JDs, resumes, imports, generations, and dashboard.
+- `/jobs` - minimal background job skeleton for future long-running work.
+- `/debug/agent-modes`, `/debug/agent-runs` - runtime/debug views; run logs are dev/test only by default.
 
-- Tools are sent as `type: "function"` schemas.
-- `tool_choice` supports `auto`, `none`, `required`, or a provider-compatible string.
-- Assistant messages with tool calls are preserved with `tool_calls`.
-- Tool results are returned as `role: "tool"` messages with `tool_call_id` and JSON-serialized execution results.
-- When reasoning is present, DeepSeek assistant messages can preserve `reasoning_content` through the tool continuation request.
-- `AgentToolRunner` uses `BaseAgent.runWithMessages()` internally, so it does not need runner-specific flags in `AgentInput`. `skipAppendingUserContent` remains available for compatibility, but new runner/orchestrator code should prefer `runWithMessages()`.
+Runtime modes:
 
-Current demos:
+- Development/production default to real LLM provider config and fail fast without required API keys.
+- Mock/fake runtime is allowed only in tests or explicit local fallback.
+- Deterministic kernel modes are allowed only in tests or when `ALLOW_DETERMINISTIC_RUNTIME=true` is explicitly set for local debugging.
+- PostgreSQL mode runs migrations and uses Postgres repositories. Without `DATABASE_URL`, the API uses in-memory repositories for local/test work.
 
-- `npm run dev:tool`: manually constructs `ToolCall` objects and executes them with `ToolExecutor`.
-- `npm run dev:agent-tool-runner`: uses a fake provider to demonstrate an agent returning `toolCalls`, automatic tool execution, tool result messages, and a final answer.
+Minimal `.env` for local real runtime:
 
-Business document tools now live under `src/tools/document/`. They are still parser-only tools: they do not call agents or write Experience/Evidence records.
+```env
+NODE_ENV=development
+AUTH_MODE=dev_header
+DATABASE_URL=postgres://user:pass@localhost:5432/cv_agent
+AGENT_PROVIDER=deepseek
+AGENT_MODEL=deepseek-chat
+AGENT_BASE_URL=https://api.deepseek.com
+AGENT_API_KEY=...
+FRONTDESK_AGENT_MODE=llm
+EXPERIENCE_EXTRACTOR_MODE=llm
+ARTIFACT_GENERATOR_MODE=llm
+CRITIC_AGENT_MODE=llm
+REVISION_AGENT_MODE=llm
+ALLOW_MOCK_RUNTIME=false
+ALLOW_DETERMINISTIC_RUNTIME=false
+ALLOW_DETERMINISTIC_ROUTER=false
+RATE_LIMIT_ENABLED=true
+RATE_LIMIT_PER_USER_PER_MINUTE=30
+AGENT_DAILY_MESSAGE_QUOTA=200
+AGENT_DAILY_TOOL_CALL_QUOTA=500
+AGENT_DAILY_GENERATION_QUOTA=50
+COPILOT_SESSION_LOCK_TTL_MS=60000
+FINAL_ANSWER_SYNTHESIS=off
+DEBUG_ROUTES_ENABLED=false
+```
 
-## Text Tool Strategy
+Local start:
 
-Future text-reading tools should return `ExtractedTextDocument` from `src/tools/text/types.ts`:
+```bash
+npm run dev:api
+```
 
-```ts
+Tests:
+
+```bash
+npm run typecheck
+npm run test
+```
+
+Security constraints:
+
+- Never return chain-of-thought, `reasoning_content`, provider raw payloads, system prompts, API keys, or internal tool arguments.
+- User identity comes from `AuthResolver`, never from request body.
+- PostgreSQL schema intentionally avoids database-level foreign keys.
+- Tests do not require real Neon/Postgres or DeepSeek by default.
+
+## Backend Hardening
+
+The backend includes a shared hardening layer:
+
+- Unified error envelope with stable error codes such as `INVALID_BODY`, `UNAUTHORIZED`, `RATE_LIMITED`, `IDEMPOTENCY_CONFLICT`, `SESSION_LOCKED`, `QUOTA_EXCEEDED`, and `INTERNAL_ERROR`.
+- `Idempotency-Key` support for key mutating routes. Same user/key/body replays the cached response; same key with a different body returns `409 IDEMPOTENCY_CONFLICT`.
+- Per-session Copilot lock prevents concurrent writes to the same workspace. Lock conflicts return `409 SESSION_LOCKED`.
+- Optional request rate limiting and daily agent quotas.
+- Agent run and tool run logs with sanitized input/output summaries.
+- Optional `FINAL_ANSWER_SYNTHESIS=llm` final response synthesis from safe summaries only.
+
+Error response:
+
+```json
 {
-  documentId: string;
-  sourceType: "manual_text" | "markdown" | "pdf_text" | "docx_text" | "github_text";
-  title?: string;
-  text: string;
-  textPreview: string;
-  textLength: number;
-  sourceRef: string;
-  metadata: Record<string, unknown>;
-  createdAt: string;
+  "ok": false,
+  "error": {
+    "code": "RATE_LIMITED",
+    "message": "Usage limit exceeded.",
+    "retryable": true
+  },
+  "meta": {
+    "requestId": "req-...",
+    "traceId": "trace-...",
+    "mode": "postgres"
+  }
 }
 ```
 
-Text tools may return the full `text`, but agents and orchestrators should not permanently stuff large extracted text into `ConversationSession`. Long text should be controlled before it enters the model context through `TokenBudgetManager`, `ContextAssembler`, and a future `ExtractedDocumentStore` or retrieval layer. Tool responses should include `textPreview`, `textLength`, `metadata`, `sourceRef`, and `sourceType` so callers can inspect and route large documents without relying on the full text every turn.
-
-Text-reading tools do not call `ArchivistAgent`, write `Experience` or `Evidence` records, or decide whether text is resume experience. Those decisions belong to `FrontDeskAgent`, an orchestrator, or `ExperienceIngestionService`.
-
-## Agent Side Product Kernel v0.2
-
-The project now includes a minimal product kernel that can ingest real document inputs and expose them through a thin HTTP API:
-
-- `src/tools/document/` defines `DocumentInput`, `ExtractedTextDocument`, `DocumentParserRegistry`, and `DocumentLoaderTool`.
-- `DocumentLoaderTool` accepts file-facing inputs (`filePath`, `buffer`, future `url`) and routes by `mimeType`, `extension`, or `fileName`.
-- Markdown, plain text, PDF, and DOCX parsing are implemented. PDF uses text extraction only; scanned/image-only PDFs return `PDF contains no extractable text. Scanned or image-based PDFs are not supported.` DOCX uses Mammoth raw-text extraction and returns warnings in metadata when Mammoth reports them.
-- Document parsing returns full `text`, `textPreview`, `textLength`, `sourceRef`, `sourceType`, and parser metadata. It does not call `ArchivistAgent` and does not write Experience or Evidence records.
-- `FrontDeskAgent` classifies user intent into structured `FrontDeskDecision` JSON, validated with zod.
-- `FrontDeskOrchestrator` executes the decision by calling document loading, `ExperienceIngestionService`, and `ResumeGenerationService`. It supports multi-document `ingest_resume_document` and multiple experiences per document, keeping first-experience compatibility fields while returning `extractedDocuments`, `experiences`, and per-document results.
-- Query services under `src/application/query/` expose persisted evidence-chain and graph-view snapshots for `explain_evidence_chain` and `show_experience_graph`.
-- `src/persistence/sqlite/` provides SQLite-backed repositories for experiences, evidences, skills, JD requirements, and generated artifacts. It uses `sql.js` so the kernel can run on Node 20 without native SQLite bindings.
-- `DocumentIngestionService` is the persistence wrapper for documents. `DocumentLoaderTool` still only parses files; saving the parsed document is an application-service concern.
-- `GenerationPersistenceService` saves generation sessions, evidence-chain snapshots, graph-view snapshots, and artifact bundle links after `ResumeGenerationService` has produced the generation result.
-
-Run the kernel demo:
+Idempotency example:
 
 ```bash
-npm run dev:agent-kernel
+curl -X POST http://127.0.0.1:3000/copilot/actions \
+  -H "content-type: application/json" \
+  -H "x-user-id: demo-user" \
+  -H "Idempotency-Key: accept-variant-1" \
+  -d '{"sessionId":"...","action":{"type":"accept","variantId":"..."}}'
 ```
-
-The demo imports a simulated Markdown resume document, extracts text, ingests Experience/Evidence/Skill records into SQLite, generates resume artifacts for a JD, and prints frontend-consumable JSON containing artifacts, evidence chains, graph views, coverage, gap, and critique reports.
-
-Run the multi-document ingestion demo:
-
-```bash
-npm run dev:multi-document-ingestion
-```
-
-It ingests `resume.md` and `project-note.txt`, creates one or more experiences per source document, merges evidence and skills, and prints a compact JSON summary with source document ids.
-
-## Minimal Backend API
-
-The API is intentionally thin. It uses cv-agent as an Agent Kernel / SDK: routes parse HTTP requests, resolve identity through an `AuthResolver`, build a `KernelRequestContext`, and delegate to the stable `CvAgentKernel` facade. There is no full auth system, frontend, production file storage, Neo4j, pgvector, Prisma, Drizzle, TypeORM, or database-level foreign keys.
-
-Keep this boundary for future backend work:
-
-```text
-HTTP layer -> AuthResolver -> KernelRequestContext -> CvAgentKernel -> Agent/Application services -> Repositories
-```
-
-Routes should call `kernel.cvAgentKernel`, not low-level repositories or internal services. `ApiKernel` still exposes internal service fields during migration for tests and demos, but they are not the route-facing contract. In PostgreSQL mode, generation persistence uses `createPostgresGenerationPersistenceService(database)` so generation sessions, evidence-chain snapshots, graph-view snapshots, and bundles are saved in one transaction. In `in_memory` mode, the kernel uses the generic non-transactional `GenerationPersistenceService`.
 
 ### P8.0 Contract Hardening
 
