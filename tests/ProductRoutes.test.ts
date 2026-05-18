@@ -106,6 +106,31 @@ describe("Product API routes", () => {
     expect(data.variants.length).toBeGreaterThan(0);
   });
 
+  it("lists product generations and dashboard read model user-scoped", async () => {
+    const created = await server.inject({
+      method: "POST",
+      url: "/product/generations/from-jd",
+      headers: { "x-user-id": "user-1" },
+      payload: { jdText: "React TypeScript performance optimization role.", targetRole: "Frontend Engineer" },
+    });
+    const generationId = (created.json() as ApiSuccess<{ generationId: string }>).data.generationId;
+
+    const ownList = await server.inject({ method: "GET", url: "/product/generations", headers: { "x-user-id": "user-1" } });
+    const otherList = await server.inject({ method: "GET", url: "/product/generations", headers: { "x-user-id": "user-2" } });
+    expect((ownList.json() as ApiSuccess<unknown[]>).data.length).toBe(1);
+    expect((otherList.json() as ApiSuccess<unknown[]>).data.length).toBe(0);
+
+    const detail = await server.inject({ method: "GET", url: `/product/generations/${generationId}`, headers: { "x-user-id": "user-1" } });
+    const otherDetail = await server.inject({ method: "GET", url: `/product/generations/${generationId}`, headers: { "x-user-id": "user-2" } });
+    expect(detail.statusCode).toBe(200);
+    expect(otherDetail.statusCode).toBe(404);
+
+    const dashboard = await server.inject({ method: "GET", url: "/product/dashboard", headers: { "x-user-id": "user-1" } });
+    const dashboardData = (dashboard.json() as ApiSuccess<{ generationCount: number; recentGenerations: unknown[] }>).data;
+    expect(dashboardData.generationCount).toBe(1);
+    expect(dashboardData.recentGenerations.length).toBe(1);
+  });
+
   it("rejects invalid product enum values", async () => {
     const response = await server.inject({
       method: "POST",

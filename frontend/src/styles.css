@@ -74,12 +74,13 @@ label {
 
 .app-shell {
   display: grid;
-  grid-template-columns: minmax(440px, 48%) minmax(500px, 52%);
+  grid-template-columns: 220px minmax(420px, 45%) minmax(500px, 1fr);
   gap: 16px;
   height: 100vh;
   padding: 16px;
 }
 
+.sidebar-panel,
 .chat-panel,
 .workspace-panel {
   min-height: 0;
@@ -87,6 +88,40 @@ label {
   border: 1px solid #e7e3dc;
   background: rgba(255, 255, 255, 0.78);
   border-radius: 16px;
+}
+
+.sidebar-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 16px;
+  overflow-y: auto;
+}
+
+.sidebar-section {
+  display: grid;
+  gap: 8px;
+}
+
+.sidebar-section div {
+  display: grid;
+  gap: 6px;
+}
+
+.sidebar-section button,
+.sidebar-section span {
+  display: block;
+  overflow: hidden;
+  width: 100%;
+  border: 1px solid #e8e3dc;
+  border-radius: 10px;
+  padding: 8px 9px;
+  color: #625d55;
+  background: #ffffff;
+  font-size: 12px;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .chat-panel {
@@ -386,6 +421,21 @@ h3 {
 
 .message-actions {
   margin-top: 12px;
+}
+
+.suggested-prompts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.suggested-prompts button {
+  border-radius: 999px;
+  padding: 6px 10px;
+  color: #3f5f7a;
+  background: #f5f9fc;
+  font-size: 12px;
 }
 
 .action-button {

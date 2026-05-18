@@ -57,6 +57,11 @@ export type ProductAction = {
   };
 };
 
+export type SuggestedPrompt = {
+  label: string;
+  message: string;
+};
+
 export type ProductTimelineItem = {
   id: string;
   type:
@@ -127,9 +132,67 @@ export type CopilotWorkspace = {
   id: string;
   sessionId: string;
   activeVariantId?: string | null;
+  activePanel?: "variants" | "experience_library" | "resume_history" | "resume_editor" | "jd_library" | "import_candidates";
+  productGenerationId?: string | null;
+  jdId?: string | null;
+  resumeId?: string | null;
   variants: ProductVariant[];
+  experiences?: ProductExperienceSummary[];
+  jds?: ProductJDSummary[];
+  resumes?: ProductResumeSummary[];
+  activeResume?: ProductResumeDetail;
+  importCandidates?: ProductImportCandidateSummary[];
   status: "empty" | "ready" | "generating" | "awaiting_user_decision" | "accepted" | "revision_needed";
   summary?: string;
+  updatedAt: string;
+};
+
+export type ProductExperienceSummary = {
+  id: string;
+  category: string;
+  title: string;
+  organization?: string;
+  role?: string;
+  status: string;
+  currentRevisionId?: string;
+  createdAt: string;
+  updatedAt: string;
+  content?: string;
+};
+
+export type ProductJDSummary = {
+  id: string;
+  title: string;
+  company?: string;
+  targetRole?: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type ProductResumeSummary = {
+  id: string;
+  title: string;
+  targetRole?: string;
+  jdId?: string;
+  status: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type ProductResumeDetail = ProductResumeSummary & {
+  items: Array<{ id: string; title: string; contentSnapshot: string }>;
+};
+
+export type ProductImportCandidateSummary = {
+  id: string;
+  jobId: string;
+  title: string;
+  category: string;
+  organization?: string;
+  role?: string;
+  content: string;
+  status: string;
+  createdAt: string;
   updatedAt: string;
 };
 
@@ -164,12 +227,36 @@ export type CopilotChatResponse = {
   timeline: ProductTimelineItem[];
   workspace: CopilotWorkspace;
   nextActions: ProductAction[];
+  suggestedPrompts?: SuggestedPrompt[];
   raw: {
     artifactIds: string[];
     evidenceChainIds: string[];
     critiqueItemIds: string[];
     decisionIds: string[];
   };
+};
+
+export type CopilotSessionSummary = {
+  id: string;
+  title?: string | null;
+  targetRole?: string | null;
+  status?: string;
+  updatedAt: string;
+};
+
+export type CopilotSessionDetail = {
+  session: CopilotSessionSummary;
+  messages: CopilotMessage[];
+  workspace?: CopilotWorkspace | null;
+  turns: unknown[];
+};
+
+export type CopilotSidebarResponse = {
+  recentSessions: CopilotSessionSummary[];
+  recentResumes: ProductResumeSummary[];
+  recentJDs: ProductJDSummary[];
+  recentExperiences: ProductExperienceSummary[];
+  recentActivities: Array<{ id: string; type: string; title: string; description?: string | null; createdAt: string }>;
 };
 
 export type AgentModesResponse = {

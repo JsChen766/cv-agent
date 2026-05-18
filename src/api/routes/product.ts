@@ -187,6 +187,23 @@ export async function registerProductRoutes(
     return productSuccess(await kernel.productServices.importService.rejectCandidate(ctx.user.id, param(request, "id")), kernel, ctx);
   });
 
+  app.get("/product/dashboard", async (request) => {
+    const ctx = createKernelRequestContext(request, await authResolver.resolve(request));
+    return productSuccess(await kernel.copilotServices.workspaceService.getDashboard(ctx.user.id), kernel, ctx);
+  });
+
+  app.get("/product/generations", async (request) => {
+    const ctx = createKernelRequestContext(request, await authResolver.resolve(request));
+    return productSuccess(await kernel.productServices.generationProductService.listGenerations(ctx.user.id, readLimit(request.query)), kernel, ctx);
+  });
+
+  app.get("/product/generations/:id", async (request) => {
+    const ctx = createKernelRequestContext(request, await authResolver.resolve(request));
+    const generation = await kernel.productServices.generationProductService.getGeneration(ctx.user.id, param(request, "id"));
+    if (!generation) throw new ApiError("NOT_FOUND", "Generation not found.", 404);
+    return productSuccess(generation, kernel, ctx);
+  });
+
   app.post("/product/generations/from-jd", async (request) => {
     const ctx = createKernelRequestContext(request, await authResolver.resolve(request));
     const body = requireRecord(request.body);

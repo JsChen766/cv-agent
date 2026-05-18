@@ -27,6 +27,15 @@ import {
 import {
   readAgentModeConfig,
 } from "../../providers/factory/index.js";
+import {
+  CopilotSessionService,
+  CopilotWorkspaceService,
+} from "../../copilot/services/index.js";
+import {
+  InMemoryCopilotPersistence,
+  PostgresCopilotPersistence,
+  type CopilotPersistence,
+} from "../../copilot/persistence/index.js";
 import type {
   DocumentRepository,
   EvidenceChainSnapshot,
@@ -120,6 +129,7 @@ export async function createPostgresKernelFromDatabase(
   const productResumeRepository = new PostgresProductResumeRepository(database);
   const productImportRepository = new PostgresProductImportRepository(database);
   const productGenerationRepository = new PostgresProductGenerationRepository(database);
+  const copilotPersistence = new PostgresCopilotPersistence(database);
   const generationPersistenceService = createPostgresGenerationPersistenceService(database);
 
   return buildKernel({
@@ -140,6 +150,7 @@ export async function createPostgresKernelFromDatabase(
     productResumeRepository,
     productImportRepository,
     productGenerationRepository,
+    copilotPersistence,
     generationPersistenceService,
     close: () => database.close(),
   });
@@ -164,6 +175,7 @@ function createInMemoryKernel(): ApiKernel {
   const productResumeRepository = new InMemoryProductResumeRepository();
   const productImportRepository = new InMemoryProductImportRepository();
   const productGenerationRepository = new InMemoryProductGenerationRepository();
+  const copilotPersistence = new InMemoryCopilotPersistence();
 
   return buildKernel({
     mode: "in_memory",
@@ -184,6 +196,7 @@ function createInMemoryKernel(): ApiKernel {
     productResumeRepository,
     productImportRepository,
     productGenerationRepository,
+    copilotPersistence,
     close: async () => {},
   });
 }
@@ -293,6 +306,10 @@ function buildKernel(input: BuildKernelInput): ApiKernel {
     importService,
     generationProductService,
   };
+  const copilotServices = {
+    sessionService: new CopilotSessionService(input.copilotPersistence),
+    workspaceService: new CopilotWorkspaceService(input.copilotPersistence, productServices),
+  };
 
   return {
     mode: input.mode,
@@ -304,6 +321,7 @@ function buildKernel(input: BuildKernelInput): ApiKernel {
     evidenceChainQueryService,
     graphViewQueryService,
     productServices,
+    copilotServices,
     frontDeskModelClient: agentProvider.modelClient,
     close: input.close,
   };
@@ -328,6 +346,7 @@ type BuildKernelInput = {
   productResumeRepository: ProductResumeRepository;
   productImportRepository: ProductImportRepository;
   productGenerationRepository: ProductGenerationRepository;
+  copilotPersistence: CopilotPersistence;
   generationPersistenceService?: GenerationPersistencePort;
   close(): Promise<void>;
 };

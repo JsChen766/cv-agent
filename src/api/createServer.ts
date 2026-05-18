@@ -8,6 +8,7 @@ import type { AuthResolver } from "./auth/index.js";
 import { createAuthResolver } from "./auth/index.js";
 import { failure } from "./response.js";
 import { registerCopilotRoutes } from "./routes/copilot.js";
+import { registerCopilotDashboardRoutes } from "./routes/copilotDashboard.js";
 import { registerDebugRoutes } from "./routes/debug.js";
 import { registerDocumentRoutes } from "./routes/documents.js";
 import { registerDecisionRoutes } from "./routes/decisions.js";
@@ -46,6 +47,7 @@ export async function createServer(kernel: ApiKernel, options: CreateServerOptio
   await registerDecisionRoutes(app, kernel, authResolver);
   await registerEvidenceRoutes(app, kernel, authResolver);
   await registerProductRoutes(app, kernel, authResolver);
+  await registerCopilotDashboardRoutes(app, kernel, authResolver);
   await registerCopilotRoutes(app, kernel, authResolver);
 
   return app;

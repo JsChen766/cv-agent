@@ -11,6 +11,7 @@ import type { ProductToolResult } from "../product/tools/ProductToolRegistry.js"
 import { CopilotResponseBuilder } from "./CopilotResponseBuilder.js";
 import { ConversationalFrontDeskAgent } from "./frontdesk/ConversationalFrontDeskAgent.js";
 import type { FrontDeskDecision } from "./frontdesk/FrontDeskDecision.js";
+import { detectLocale, type CopilotLocale } from "./locale.js";
 import type {
   CopilotSession,
   CopilotTurn,
@@ -23,6 +24,7 @@ import type {
   ProductAction,
   SuggestedPrompt,
 } from "./types.js";
+import type { CopilotActivityType } from "./persistence/index.js";
 
 export type CopilotOrchestratorDeps = {
   kernel: ApiKernel;
@@ -50,71 +52,52 @@ export class CopilotOrchestrator {
 
   // ── Session ──
 
-  public getOrCreateSession(input: {
+  public async getOrCreateSession(input: {
     sessionId?: string;
     userId: string;
     resumeText?: string;
     jdText?: string;
     targetRole?: string;
-  }): CopilotSession {
-    if (input.sessionId && this.sessions.has(input.sessionId)) {
-      const s = this.sessions.get(input.sessionId)!;
-      if (input.resumeText) s.resumeText = input.resumeText;
-      if (input.jdText) s.jdText = input.jdText;
-      if (input.targetRole) s.targetRole = input.targetRole;
-      s.updatedAt = new Date().toISOString();
-      return s;
-    }
-    const now = new Date().toISOString();
-    const session: CopilotSession = {
-      id: `cs-${randomUUID()}`,
-      userId: input.userId,
-      targetRole: input.targetRole ?? null,
-      resumeText: input.resumeText ?? null,
-      jdText: input.jdText ?? null,
-      resumeIngested: false,
-      createdAt: now,
-      updatedAt: now,
-    };
+  }): Promise<CopilotSession> {
+    const session = await this.kernel.copilotServices.sessionService.getOrCreateSession(input.userId, input);
     this.sessions.set(session.id, session);
+    await this.loadSessionState(input.userId, session.id);
     return session;
   }
 
-  public getSession(id: string): CopilotSession | undefined {
-    return this.sessions.get(id);
+  public async getSession(userId: string, id: string): Promise<CopilotSession | undefined> {
+    const session = await this.kernel.copilotServices.sessionService.getSession(userId, id);
+    if (session) {
+      this.sessions.set(session.id, session);
+      await this.loadSessionState(userId, session.id);
+    }
+    return session ?? undefined;
   }
 
   // ── Turn ──
 
-  public createTurn(sessionId: string, userMessageId: string): CopilotTurn {
-    const turn: CopilotTurn = {
-      id: `ct-${randomUUID()}`,
-      sessionId,
-      userMessageId,
-      status: "running",
-      createdAt: new Date().toISOString(),
-    };
+  public async createTurn(userId: string, sessionId: string, userMessageId: string): Promise<CopilotTurn> {
+    const turn = await this.kernel.copilotServices.sessionService.createTurn(userId, sessionId, userMessageId);
     this.turns.set(turn.id, turn);
     return turn;
   }
 
-  public completeTurn(turnId: string, assistantMessageId: string): void {
-    const turn = this.turns.get(turnId);
+  public async completeTurn(userId: string, turnId: string, assistantMessageId: string): Promise<void> {
+    const turn = await this.kernel.copilotServices.sessionService.completeTurn(userId, turnId, assistantMessageId);
     if (!turn) return;
-    turn.status = "completed";
-    turn.assistantMessageId = assistantMessageId;
-    turn.completedAt = new Date().toISOString();
+    this.turns.set(turn.id, turn);
   }
 
   // ── Messages ──
 
-  public saveMessage(msg: CopilotMessage): void {
+  public async saveMessage(userId: string, msg: CopilotMessage): Promise<void> {
+    await this.kernel.copilotServices.sessionService.saveMessage(userId, msg);
     const msgs = this.sessionMessages.get(msg.sessionId) ?? [];
-    msgs.push(msg);
+    if (!msgs.some((item) => item.id === msg.id)) msgs.push(msg);
     this.sessionMessages.set(msg.sessionId, msgs);
   }
 
-  public createUserMessage(sessionId: string, content: string): CopilotMessage {
+  public async createUserMessage(userId: string, sessionId: string, content: string): Promise<CopilotMessage> {
     const msg: CopilotMessage = {
       id: `msg-${randomUUID()}`,
       sessionId,
@@ -123,13 +106,14 @@ export class CopilotOrchestrator {
       kind: "plain_text",
       createdAt: new Date().toISOString(),
     };
-    this.saveMessage(msg);
+    await this.saveMessage(userId, msg);
     return msg;
   }
 
   // ── Workspace ──
 
-  public saveWorkspace(ws: CopilotWorkspace): void {
+  public async saveWorkspace(userId: string, ws: CopilotWorkspace): Promise<void> {
+    await this.kernel.copilotServices.workspaceService.saveWorkspace(userId, ws);
     this.workspaces.set(ws.id, ws);
   }
 
@@ -157,6 +141,15 @@ export class CopilotOrchestrator {
     return ws?.variants.find((v) => v.id === variantId);
   }
 
+  private async loadSessionState(userId: string, sessionId: string): Promise<void> {
+    const [workspace, recentMessages] = await Promise.all([
+      this.kernel.copilotServices.workspaceService.getWorkspace(userId, sessionId),
+      this.kernel.copilotServices.sessionService.getRecentMessages(userId, sessionId, 50),
+    ]);
+    if (workspace) this.workspaces.set(workspace.id, workspace);
+    this.sessionMessages.set(sessionId, recentMessages);
+  }
+
   // ── Chat orchestration ──
 
   public async handleChat(
@@ -164,7 +157,7 @@ export class CopilotOrchestrator {
     body: CopilotChatRequest,
   ): Promise<CopilotChatResponse & { ingestionWarnings: string[] }> {
     const ingestionWarnings: string[] = [];
-    const session = this.getOrCreateSession({
+    const session = await this.getOrCreateSession({
       sessionId: body.sessionId,
       userId: ctx.user.id,
       resumeText: body.resumeText,
@@ -172,8 +165,8 @@ export class CopilotOrchestrator {
       targetRole: body.targetRole,
     });
 
-    const userMsg = this.createUserMessage(session.id, body.message);
-    const turn = this.createTurn(session.id, userMsg.id);
+    const userMsg = await this.createUserMessage(ctx.user.id, session.id, body.message);
+    const turn = await this.createTurn(ctx.user.id, session.id, userMsg.id);
     const hasResume = Boolean(session.resumeText || body.resumeText);
     const hasJD = Boolean(session.jdText || body.jdText);
 
@@ -192,16 +185,12 @@ export class CopilotOrchestrator {
 
       const response = await this.handleFrontDeskDecision(ctx, session, turn.id, body, decision, ingestionWarnings);
       if (response) {
-        this.saveMessage(response.assistantMessage);
-        this.saveWorkspace(response.workspace);
-        this.completeTurn(turn.id, response.assistantMessage.id);
+        await this.persistResponse(ctx.user.id, response, this.activityTypeForResponse(response));
         return { ...response, ingestionWarnings };
       }
     } catch {
       const fallbackResponse = await this.handleLegacyProductFlow(ctx, session, turn.id, body, hasResume, hasJD, ingestionWarnings);
-      this.saveMessage(fallbackResponse.assistantMessage);
-      this.saveWorkspace(fallbackResponse.workspace);
-      this.completeTurn(turn.id, fallbackResponse.assistantMessage.id);
+      await this.persistResponse(ctx.user.id, fallbackResponse, this.activityTypeForResponse(fallbackResponse));
       return { ...fallbackResponse, ingestionWarnings };
     }
 
@@ -212,9 +201,7 @@ export class CopilotOrchestrator {
       "plain_text",
       this.getWorkspace(session.id),
     );
-    this.saveMessage(response.assistantMessage);
-    this.saveWorkspace(response.workspace);
-    this.completeTurn(turn.id, response.assistantMessage.id);
+    await this.persistResponse(ctx.user.id, response, "chat");
     return { ...response, ingestionWarnings };
   }
 
@@ -496,7 +483,7 @@ export class CopilotOrchestrator {
     ctx: KernelRequestContext,
     body: CopilotActionRequest,
   ): Promise<CopilotChatResponse> {
-    const session = this.getSession(body.sessionId);
+    const session = await this.getSession(ctx.user.id, body.sessionId);
     if (!session) {
       return this.errorResponse(body.sessionId, body.turnId ?? `ct-${randomUUID()}`, "Session not found.");
     }
@@ -513,20 +500,20 @@ export class CopilotOrchestrator {
       case "accept":
       case "reject":
       case "prefer":
-        return this.handleDecision(ctx, session, turnId, action.type, action.variantId ?? "", artifactId, now);
+        return this.persistAndReturn(ctx.user.id, await this.handleDecision(ctx, session, turnId, action.type, action.variantId ?? "", artifactId, now), action.type === "accept" ? "save_resume" : "decision");
 
       case "revise_more_conservative":
       case "revise_more_quantified":
-        return this.handleRevision(ctx, session, turnId, action, variant, now);
+        return this.persistAndReturn(ctx.user.id, await this.handleRevision(ctx, session, turnId, action, variant, now), "revision");
 
       case "show_evidence":
-        return this.handleShowEvidence(session, turnId, action.variantId ?? "", variant, now);
+        return this.persistAndReturn(ctx.user.id, this.handleShowEvidence(session, turnId, action.variantId ?? "", variant, now), "open_workspace");
 
       case "explain_choice":
-        return this.handleExplainChoice(session, turnId, action.variantId ?? "", variant, now);
+        return this.persistAndReturn(ctx.user.id, this.handleExplainChoice(session, turnId, action.variantId ?? "", variant, now), "open_workspace");
 
       case "confirm_metric":
-        return this.handleConfirmMetric(ctx, session, turnId, action.variantId ?? "", artifactId, action.payload, now);
+        return this.persistAndReturn(ctx.user.id, await this.handleConfirmMetric(ctx, session, turnId, action.variantId ?? "", artifactId, action.payload, now), "decision");
 
       default:
         return this.errorResponse(session.id, turnId, `Unsupported action: ${(action as { type: string }).type}`);
@@ -540,7 +527,7 @@ export class CopilotOrchestrator {
     body: CopilotChatRequest,
     sse: (event: string, data: unknown) => void,
   ): Promise<void> {
-    const session = this.getOrCreateSession({
+    const session = await this.getOrCreateSession({
       sessionId: body.sessionId,
       userId: ctx.user.id,
       resumeText: body.resumeText,
@@ -548,8 +535,8 @@ export class CopilotOrchestrator {
       targetRole: body.targetRole,
     });
 
-    const userMsg = this.createUserMessage(session.id, body.message);
-    const turn = this.createTurn(session.id, userMsg.id);
+    const userMsg = await this.createUserMessage(ctx.user.id, session.id, body.message);
+    const turn = await this.createTurn(ctx.user.id, session.id, userMsg.id);
 
     sse("copilot.turn.started", {
       type: "copilot.turn.started",
@@ -574,9 +561,7 @@ export class CopilotOrchestrator {
       if (decision.mode !== "generate_resume_variants" || !hasJD) {
         const response = await this.handleFrontDeskDecision(ctx, session, turn.id, body, decision, []);
         if (response) {
-          this.saveMessage(response.assistantMessage);
-          this.saveWorkspace(response.workspace);
-          this.completeTurn(turn.id, response.assistantMessage.id);
+          await this.persistResponse(ctx.user.id, response, this.activityTypeForResponse(response));
           this.emitCopilotResponse(sse, response);
           return;
         }
@@ -638,9 +623,7 @@ export class CopilotOrchestrator {
       this.storeArtifactSnapshots(session.id, generatedArtifacts);
       this.applyNoVariantsWarning(response, generatedArtifacts.length);
 
-      this.saveMessage(response.assistantMessage);
-      this.saveWorkspace(response.workspace);
-      this.completeTurn(turn.id, response.assistantMessage.id);
+      await this.persistResponse(ctx.user.id, response, "generation");
 
       this.emitCopilotResponse(sse, response);
     } catch (error) {
@@ -689,6 +672,71 @@ export class CopilotOrchestrator {
       turnId: response.turnId,
       workspaceStatus: response.workspace.status,
     });
+  }
+
+  private async persistAndReturn(
+    userId: string,
+    response: CopilotChatResponse,
+    activityType: CopilotActivityType,
+  ): Promise<CopilotChatResponse> {
+    await this.persistResponse(userId, response, activityType);
+    return response;
+  }
+
+  private async persistResponse(
+    userId: string,
+    response: CopilotChatResponse,
+    activityType: CopilotActivityType,
+  ): Promise<void> {
+    await this.saveMessage(userId, response.assistantMessage);
+    await this.saveWorkspace(userId, response.workspace);
+    await this.completeTurn(userId, response.turnId, response.assistantMessage.id);
+    await this.kernel.copilotServices.workspaceService.recordActivity(userId, {
+      sessionId: response.sessionId,
+      type: activityType,
+      title: this.activityTitle(activityType, response),
+      description: response.assistantMessage.content.slice(0, 240),
+      entityType: this.activityEntityType(activityType),
+      entityId: response.workspace.productGenerationId ?? response.workspace.resumeId ?? response.workspace.jdId ?? null,
+    });
+  }
+
+  private activityTypeForResponse(response: CopilotChatResponse): CopilotActivityType {
+    if (response.workspace.activePanel === "variants" || response.timeline.some((item) => item.type === "variants_generated")) return "generation";
+    if (response.workspace.activePanel === "import_candidates") return "import";
+    if (response.workspace.activePanel === "experience_library") return "save_experience";
+    if (response.workspace.activePanel === "resume_editor") return "save_resume";
+    if (response.assistantMessage.kind === "evidence_explanation") return "open_workspace";
+    return "chat";
+  }
+
+  private activityTitle(type: CopilotActivityType, response: CopilotChatResponse): string {
+    switch (type) {
+      case "generation":
+        return "Generated resume variants";
+      case "decision":
+        return "Recorded variant decision";
+      case "revision":
+        return "Revised variant";
+      case "import":
+        return "Imported resume text";
+      case "save_experience":
+        return "Updated experience library";
+      case "save_resume":
+        return "Saved resume draft";
+      case "open_workspace":
+        return "Opened workspace context";
+      case "chat":
+      default:
+        return response.assistantMessage.kind === "clarifying_question" ? "Asked clarification" : "Copilot chat";
+    }
+  }
+
+  private activityEntityType(type: CopilotActivityType): "experience" | "jd" | "resume" | "generation" | "session" | "variant" | null {
+    if (type === "generation") return "generation";
+    if (type === "save_resume") return "resume";
+    if (type === "save_experience") return "experience";
+    return null;
   }
 
   private async handleDecision(
@@ -766,8 +814,8 @@ export class CopilotOrchestrator {
       kind: "decision_summary",
       createdAt: now,
     };
-    this.saveMessage(msg);
-    this.saveWorkspace(ws);
+    await this.saveMessage(ctx.user.id, msg);
+    await this.saveWorkspace(ctx.user.id, ws);
 
     return {
       sessionId: session.id,
@@ -831,7 +879,7 @@ export class CopilotOrchestrator {
       ws.variants.push(revisedVariant);
       ws.status = "awaiting_user_decision";
       ws.updatedAt = now;
-      this.saveWorkspace(ws);
+      await this.saveWorkspace(ctx.user.id, ws);
     }
 
     const msg: CopilotMessage = {
@@ -843,7 +891,7 @@ export class CopilotOrchestrator {
       kind: "variant_suggestion",
       createdAt: now,
     };
-    this.saveMessage(msg);
+    await this.saveMessage(ctx.user.id, msg);
 
     return {
       sessionId: session.id,
@@ -953,7 +1001,7 @@ export class CopilotOrchestrator {
       kind: "decision_summary",
       createdAt: now,
     };
-    this.saveMessage(msg);
+    await this.saveMessage(ctx.user.id, msg);
 
     const ws = this.getWorkspace(session.id);
     return {
@@ -1055,6 +1103,12 @@ export class CopilotOrchestrator {
       session.resumeDocumentIds = ingestResult.extractedDocuments.map(d => d.documentId);
       session.resumeArtifactIds = ingestResult.evidences?.map(e => e.id) ?? [];
       session.updatedAt = new Date().toISOString();
+      await this.kernel.copilotServices.sessionService.updateSession(ctx.user.id, session.id, {
+        resumeIngested: session.resumeIngested,
+        resumeDocumentIds: session.resumeDocumentIds,
+        resumeArtifactIds: session.resumeArtifactIds,
+        updatedAt: session.updatedAt,
+      });
     } catch (err) {
       ingestionWarnings.push(`Resume ingestion failed: ${err instanceof Error ? err.message : "unknown error"}`);
     }
@@ -1152,7 +1206,7 @@ export class CopilotOrchestrator {
       }],
       workspace,
       nextActions: this.mapFrontDeskActions(frontDeskActions, workspace),
-      suggestedPrompts: this.mapSuggestedPrompts(frontDeskActions),
+      suggestedPrompts: this.mapSuggestedPrompts(frontDeskActions, detectLocale(content)),
       raw: { artifactIds: [], evidenceChainIds: [], critiqueItemIds: [], decisionIds: [] },
     };
   }
@@ -1192,12 +1246,12 @@ export class CopilotOrchestrator {
       }));
   }
 
-  private mapSuggestedPrompts(frontDeskActions: FrontDeskDecision["nextActions"]): SuggestedPrompt[] | undefined {
+  private mapSuggestedPrompts(frontDeskActions: FrontDeskDecision["nextActions"], locale: CopilotLocale): SuggestedPrompt[] | undefined {
     if (!frontDeskActions?.length) return undefined;
     const prompts = frontDeskActions
       .map((action) => {
-        const message = suggestedPromptMessage(action.type);
-        return message ? { label: action.label, message } : undefined;
+        const prompt = suggestedPromptMessage(action.type, locale);
+        return prompt ? { label: prompt.label, message: prompt.message } : undefined;
       })
       .filter((item): item is SuggestedPrompt => Boolean(item));
     return prompts.length > 0 ? prompts : undefined;
@@ -1369,18 +1423,34 @@ function arrayStringArg(value: unknown): string[] | undefined {
     : undefined;
 }
 
-function suggestedPromptMessage(type: string): string | undefined {
+function suggestedPromptMessage(type: string, locale: CopilotLocale): SuggestedPrompt | undefined {
+  if (locale === "zh-CN") {
+    switch (type) {
+      case "list_experiences":
+        return { label: "查看我的经历库", message: "查看我的经历库" };
+      case "generate_resume_for_jd":
+        return { label: "根据 JD 生成简历", message: "我想根据 JD 生成一份定制简历" };
+      case "create_experience":
+        return { label: "帮我保存一段经历", message: "帮我保存一段新的经历" };
+      case "import_resume":
+        return { label: "导入简历文本", message: "我想导入我的简历文本" };
+      case "list_resumes":
+        return { label: "查看历史简历", message: "查看我的历史简历" };
+      default:
+        return undefined;
+    }
+  }
   switch (type) {
     case "list_experiences":
-      return "Show my experience library.";
+      return { label: "Show my experience library.", message: "Show my experience library." };
     case "generate_resume_for_jd":
-      return "I want to generate a tailored resume from a JD.";
+      return { label: "Generate from JD", message: "I want to generate a tailored resume from a JD." };
     case "create_experience":
-      return "Help me save a new experience.";
+      return { label: "Save an experience", message: "Help me save a new experience." };
     case "import_resume":
-      return "I want to import my resume text.";
+      return { label: "Import resume text", message: "I want to import my resume text." };
     case "list_resumes":
-      return "Show my resume history.";
+      return { label: "Show resume history", message: "Show my resume history." };
     default:
       return undefined;
   }

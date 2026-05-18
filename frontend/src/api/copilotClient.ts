@@ -4,6 +4,9 @@ import type {
   CopilotActionInput,
   CopilotChatInput,
   CopilotChatResponse,
+  CopilotSessionDetail,
+  CopilotSessionSummary,
+  CopilotSidebarResponse,
 } from "../types/copilot";
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://127.0.0.1:3000";
@@ -43,6 +46,18 @@ export function sendCopilotAction(input: CopilotActionInput): Promise<CopilotCha
     method: "POST",
     body: JSON.stringify(input),
   });
+}
+
+export function getCopilotSessions(limit = 30): Promise<CopilotSessionSummary[]> {
+  return request<CopilotSessionSummary[]>(`/copilot/sessions?limit=${limit}`, { method: "GET" });
+}
+
+export function getCopilotSession(id: string): Promise<CopilotSessionDetail> {
+  return request<CopilotSessionDetail>(`/copilot/sessions/${id}`, { method: "GET" });
+}
+
+export function getCopilotSidebar(): Promise<CopilotSidebarResponse> {
+  return request<CopilotSidebarResponse>("/copilot/sidebar", { method: "GET" });
 }
 
 export async function streamCopilotChat(

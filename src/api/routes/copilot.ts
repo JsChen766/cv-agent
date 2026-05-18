@@ -38,7 +38,7 @@ export async function registerCopilotRoutes(
     const ctx = createKernelRequestContext(request, resolvedAuth);
     const body = parseCopilotActionBody(request.body);
 
-    const session = orchestrator.getSession(body.sessionId);
+    const session = await orchestrator.getSession(ctx.user.id, body.sessionId);
     if (!session) {
       throw new ApiError("SESSION_NOT_FOUND", "Session not found.", 404);
     }

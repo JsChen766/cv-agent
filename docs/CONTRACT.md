@@ -1457,6 +1457,79 @@ P10.1.6 adds `suggestedPrompts?: Array<{ label: string; message: string }>` to `
 
 `/copilot/actions` keeps P9 actions. Accepting a generated variant also saves it to a product resume draft when the current workspace is tied to a `product_generation`.
 
+#### P10.2 Copilot Persistence + Sidebar Read Model
+
+Status: implemented.
+
+P10.2 upgrades Copilot from an in-memory demo chat loop to a persisted session/read-model layer. The Agent Kernel still owns intelligence. The Product Layer still owns experiences, JDs, resumes, imports, and generations. The Copilot layer owns chat orchestration state:
+
+```text
+copilot_session
+copilot_message
+copilot_turn
+copilot_workspace
+copilot_activity
+```
+
+All tables are user-scoped and intentionally avoid database-level foreign keys. The workspace row stores `workspace_json`, a complete `CopilotWorkspace` snapshot, so a refreshed frontend or restarted API process can restore current variants, active panel, product generation id, JD id, resume id, and related product summaries without recomputing the generation.
+
+Repository/service boundary:
+
+```text
+CopilotPersistence
+  sessions
+  messages
+  turns
+  workspaces
+  activities
+
+CopilotSessionService
+  getOrCreateSession
+  getSession / listSessions / archiveSession
+  saveMessage / listMessages / getRecentMessages
+  createTurn / completeTurn / failTurn
+
+CopilotWorkspaceService
+  saveWorkspace / getWorkspace
+  recordActivity
+  getSidebar
+  getDashboard
+```
+
+Both in-memory and PostgreSQL adapters are implemented. Default tests use in-memory persistence and do not require Neon or DeepSeek.
+
+New APIs:
+
+```text
+GET /copilot/sessions
+GET /copilot/sessions/:id
+PATCH /copilot/sessions/:id
+GET /copilot/sidebar
+GET /product/dashboard
+GET /product/generations
+GET /product/generations/:id
+```
+
+`GET /copilot/sessions/:id` returns:
+
+```ts
+{
+  session: CopilotSession;
+  messages: CopilotMessage[];
+  workspace: CopilotWorkspace | null;
+  turns: CopilotTurn[];
+}
+```
+
+`GET /copilot/sidebar` returns recent sessions, resumes, JDs, experiences, generations, and activities. `GET /product/dashboard` returns counts plus the same recent read lists.
+
+`ProductAction` and `SuggestedPrompt` are different contracts:
+
+- `ProductAction` is a direct operation on the current workspace, such as accept, revise, show evidence, or explain choice. Frontend calls `/copilot/actions`.
+- `SuggestedPrompt` is a natural-language continuation. Frontend sends `suggestedPrompt.message` to `/copilot/chat`.
+
+`suggestedPrompts` are locale-aware. `clientState.locale=zh-CN` has priority, then primarily Chinese message text, then English default. Chinese prompt chips include "查看我的经历库", "根据 JD 生成简历", "帮我保存一段经历", "导入简历文本", and "查看历史简历".
+
 Curl examples:
 
 ```bash

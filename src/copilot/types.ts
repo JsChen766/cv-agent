@@ -8,12 +8,13 @@ import type {
 
 export type CopilotSession = {
   id: string;
-  userId?: string | null;
+  userId: string;
   title?: string | null;
   targetRole?: string | null;
   resumeText?: string | null;
   jdText?: string | null;
   currentWorkspaceId?: string | null;
+  status: "active" | "archived" | "deleted";
   resumeIngested: boolean;
   resumeDocumentIds?: string[];
   resumeArtifactIds?: string[];

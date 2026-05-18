@@ -930,6 +930,55 @@ Product tools are used only when the user clearly asks for workspace operations 
 
 P10.1.6 adds `suggestedPrompts` for chat-only prompt chips and makes explicit workspace instructions execute directly from chat. For example, "show evidence", "why recommend the first one", "make it more conservative", "make it more quantified", and "use the first one" run against the active or first variant when available.
 
+### P10.2 Copilot Persistence + Sidebar Read Model
+
+P10.2 persists Copilot session state so the chat UI can restore history and workspace snapshots after refresh or service restart. The Product Layer still owns durable business assets; the Copilot layer owns chat sessions, messages, turns, workspace snapshots, and recent activity.
+
+New Copilot persistence tables, added by `0005_copilot_persistence.sql`, are user-scoped and contain no database-level foreign keys:
+
+```text
+copilot_session
+copilot_message
+copilot_turn
+copilot_workspace
+copilot_activity
+```
+
+`CopilotSessionService` handles session creation/restoration, message storage, turn completion/failure, and session listing. `CopilotWorkspaceService` handles workspace snapshot persistence, activity writes, sidebar data, and product dashboard read models. Both in-memory and PostgreSQL implementations exist; default tests still use in-memory repositories and deterministic/mock agents.
+
+New APIs:
+
+```text
+GET /copilot/sessions
+GET /copilot/sessions/:id
+PATCH /copilot/sessions/:id
+GET /copilot/sidebar
+GET /product/dashboard
+GET /product/generations
+GET /product/generations/:id
+```
+
+Examples:
+
+```bash
+curl -H "x-user-id: demo-user" "http://127.0.0.1:3000/copilot/sessions?limit=30"
+curl -H "x-user-id: demo-user" http://127.0.0.1:3000/copilot/sessions/:sessionId
+curl -X PATCH http://127.0.0.1:3000/copilot/sessions/:sessionId \
+  -H "content-type: application/json" -H "x-user-id: demo-user" \
+  -d '{"title":"Frontend Engineer application","status":"active"}'
+curl -H "x-user-id: demo-user" http://127.0.0.1:3000/copilot/sidebar
+curl -H "x-user-id: demo-user" http://127.0.0.1:3000/product/dashboard
+curl -H "x-user-id: demo-user" "http://127.0.0.1:3000/product/generations?limit=20"
+curl -H "x-user-id: demo-user" http://127.0.0.1:3000/product/generations/:generationId
+```
+
+`suggestedPrompts` are locale-aware. `clientState.locale=zh-CN` or primarily Chinese user text returns Chinese prompt chips. `ProductAction` and `SuggestedPrompt` are intentionally separate:
+
+- `ProductAction` is a direct operation on the current workspace, such as accept, revise, show evidence, or explain choice. It calls `/copilot/actions`.
+- `SuggestedPrompt` is recommended natural-language continuation. The frontend sends `suggestedPrompt.message` back to `/copilot/chat`; it is not an action.
+
+The minimal frontend now displays suggested prompt chips under the latest assistant message and has a lightweight sidebar backed by `/copilot/sidebar`. It can restore a recent session by calling `/copilot/sessions/:id` and rehydrating messages plus workspace.
+
 Local curl checks:
 
 ```bash

@@ -1,11 +1,20 @@
-import { FormEvent, useEffect, useMemo, useState } from "react";
-import { getAgentModes, sendCopilotAction, sendCopilotChat } from "./api/copilotClient";
+import { FormEvent, ReactNode, useEffect, useMemo, useState } from "react";
+import {
+  getAgentModes,
+  getCopilotSession,
+  getCopilotSessions,
+  getCopilotSidebar,
+  sendCopilotAction,
+  sendCopilotChat,
+} from "./api/copilotClient";
 import type {
   AgentModesResponse,
   CopilotChatResponse,
+  CopilotSidebarResponse,
   CopilotMessage,
   CopilotWorkspace,
   ProductAction,
+  SuggestedPrompt,
   ProductTimelineItem,
   ProductVariant,
 } from "./types/copilot";
@@ -27,6 +36,7 @@ type ContextState = {
 
 type UIMessage = CopilotMessage & {
   actions?: ProductAction[];
+  suggestedPrompts?: SuggestedPrompt[];
 };
 
 type PendingAction = {
@@ -51,6 +61,7 @@ function App() {
   const [workspace, setWorkspace] = useState<CopilotWorkspace>();
   const [timeline, setTimeline] = useState<ProductTimelineItem[]>([]);
   const [agentModes, setAgentModes] = useState<AgentModesResponse>();
+  const [sidebar, setSidebar] = useState<CopilotSidebarResponse>();
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string>();
   const [pendingAction, setPendingAction] = useState<PendingAction>();
@@ -59,6 +70,13 @@ function App() {
     getAgentModes()
       .then(setAgentModes)
       .catch((err) => setError(readError(err)));
+    refreshSidebar();
+    getCopilotSessions(1)
+      .then((sessions) => {
+        const latest = sessions[0];
+        if (latest) setSessionId(latest.id);
+      })
+      .catch(() => undefined);
   }, []);
 
   const activeVariantId = workspace?.activeVariantId ?? workspace?.variants[0]?.id;
@@ -74,9 +92,12 @@ function App() {
     event.preventDefault();
     const trimmedMessage = message.trim();
     if (!trimmedMessage) return;
-
-    setMessages((current) => [...current, makeLocalMessage("user", trimmedMessage, sessionId)]);
     setMessage("");
+    await submitChatMessage(trimmedMessage);
+  }
+
+  async function submitChatMessage(trimmedMessage: string) {
+    setMessages((current) => [...current, makeLocalMessage("user", trimmedMessage, sessionId)]);
     setLoading(true);
     setError(undefined);
 
@@ -94,10 +115,33 @@ function App() {
         },
       });
       applyChatResponse(response, "replace");
+      refreshSidebar();
     } catch (err) {
       const errorMessage = readError(err);
       setError(errorMessage);
       setMessages((current) => [...current, makeLocalMessage("system", errorMessage, sessionId)]);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  function refreshSidebar() {
+    getCopilotSidebar()
+      .then(setSidebar)
+      .catch(() => undefined);
+  }
+
+  async function restoreSession(id: string) {
+    setLoading(true);
+    setError(undefined);
+    try {
+      const detail = await getCopilotSession(id);
+      setSessionId(detail.session.id);
+      setMessages(detail.messages);
+      if (detail.workspace) setWorkspace(detail.workspace);
+      setTimeline([]);
+    } catch (err) {
+      setError(readError(err));
     } finally {
       setLoading(false);
     }
@@ -159,7 +203,11 @@ function App() {
   function applyChatResponse(response: CopilotChatResponse, timelineMode: "replace" | "append") {
     setSessionId(response.sessionId);
     setTurnId(response.turnId);
-    setMessages((current) => [...current, { ...response.assistantMessage, actions: response.nextActions }]);
+    setMessages((current) => [...current, {
+      ...response.assistantMessage,
+      actions: response.nextActions,
+      suggestedPrompts: response.suggestedPrompts,
+    }]);
     setWorkspace((current) => (
       response.workspace.variants.length > 0 || !current ? response.workspace : current
     ));
@@ -181,6 +229,25 @@ function App() {
 
   return (
     <main className="app-shell">
+      <aside className="sidebar-panel">
+        <h2>Copilot</h2>
+        <SidebarSection title="最近会话">
+          {(sidebar?.recentSessions ?? []).slice(0, 8).map((item) => (
+            <button key={item.id} type="button" onClick={() => restoreSession(item.id)}>
+              {item.title || item.targetRole || item.id}
+            </button>
+          ))}
+        </SidebarSection>
+        <SidebarSection title="经历库">
+          {(sidebar?.recentExperiences ?? []).slice(0, 6).map((item) => <span key={item.id}>{item.title}</span>)}
+        </SidebarSection>
+        <SidebarSection title="历史简历">
+          {(sidebar?.recentResumes ?? []).slice(0, 6).map((item) => <span key={item.id}>{item.title}</span>)}
+        </SidebarSection>
+        <SidebarSection title="JD 记录">
+          {(sidebar?.recentJDs ?? []).slice(0, 6).map((item) => <span key={item.id}>{item.title}</span>)}
+        </SidebarSection>
+      </aside>
       <section className="chat-panel">
         <header className="panel-header">
           <div>
@@ -194,7 +261,13 @@ function App() {
           {messages.length === 0 ? (
             <WelcomeCard onPrompt={setMessage} onOpenContext={openContext} />
           ) : messages.map((item) => (
-            <ChatMessage key={item.id} message={item} onAction={startAction} disabled={loading || !sessionId} />
+            <ChatMessage
+              key={item.id}
+              message={item}
+              onAction={startAction}
+              onSuggestedPrompt={(prompt) => submitChatMessage(prompt.message)}
+              disabled={loading || !sessionId}
+            />
           ))}
           {loading ? <div className="typing">Coolto 正在思考...</div> : null}
           {error ? <div className="error-note">{error}</div> : null}
@@ -334,6 +407,15 @@ function AgentModesBar({ agentModes }: { agentModes?: AgentModesResponse }) {
   );
 }
 
+function SidebarSection({ title, children }: { title: string; children: ReactNode }) {
+  return (
+    <section className="sidebar-section">
+      <h3>{title}</h3>
+      <div>{children}</div>
+    </section>
+  );
+}
+
 function WelcomeCard({ onPrompt, onOpenContext }: { onPrompt: (prompt: string) => void; onOpenContext: () => void }) {
   return (
     <div className="welcome-card">
@@ -371,10 +453,12 @@ function ContextChips({ context }: { context: ContextState }) {
 function ChatMessage({
   message,
   onAction,
+  onSuggestedPrompt,
   disabled,
 }: {
   message: UIMessage;
   onAction: (action: ProductAction) => void;
+  onSuggestedPrompt: (prompt: SuggestedPrompt) => void;
   disabled: boolean;
 }) {
   return (
@@ -386,6 +470,15 @@ function ChatMessage({
       <div className="message-content">{message.content}</div>
       {message.actions && message.actions.length > 0 ? (
         <ActionButtons actions={message.actions} onAction={onAction} disabled={disabled} className="message-actions" />
+      ) : null}
+      {message.suggestedPrompts && message.suggestedPrompts.length > 0 ? (
+        <div className="suggested-prompts">
+          {message.suggestedPrompts.map((prompt) => (
+            <button key={prompt.message} type="button" disabled={disabled} onClick={() => onSuggestedPrompt(prompt)}>
+              {prompt.label}
+            </button>
+          ))}
+        </div>
       ) : null}
     </article>
   );
