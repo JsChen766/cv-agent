@@ -11,7 +11,6 @@ import type {
   CopilotWorkspace,
   ProductAction,
 } from "../../copilot/types.js";
-import { detectLocale } from "../../copilot/locale.js";
 import type { CopilotActivityType } from "../../copilot/persistence/index.js";
 import { CopilotPresenter } from "../../copilot/CopilotPresenter.js";
 import { AgentToolRegistry, type AgentToolResult } from "../tools/AgentToolRegistry.js";
@@ -68,14 +67,12 @@ export class AgentRuntime {
       this.deps.kernel.copilotServices.sessionService.getRecentMessages(ctx.user.id, session.id, 6),
     ]);
 
-    let decision: AgentDecision;
-    if (this.config.frontDeskAgentMode === "mock" || this.config.frontDeskAgentMode === "fake") {
-      decision = await this.frontDesk.decide(this.decisionInput(ctx, request, session, workspace, recentMessages));
-    } else {
-      decision = await this.frontDesk.decide(this.decisionInput(ctx, request, session, workspace, recentMessages));
-    }
+    let decision = await this.frontDesk.decide(this.decisionInput(ctx, request, session, workspace, recentMessages));
 
-    if (!this.decisionToolCallsAreValid(decision)) {
+    if (!this.decisionToolCallsAreValid(decision, {
+      requestId: ctx.request.requestId,
+      sessionId: session.id,
+    })) {
       decision = safeClarificationDecision();
     }
 
@@ -169,9 +166,21 @@ export class AgentRuntime {
     };
   }
 
-  private decisionToolCallsAreValid(decision: AgentDecision): boolean {
+  private decisionToolCallsAreValid(
+    decision: AgentDecision,
+    input: { requestId: string; sessionId: string },
+  ): boolean {
     const calls = decision.toolCalls ?? [];
-    return calls.every((call) => this.tools.hasTool(call.toolName));
+    const unknownTools = [...new Set(calls.map((call) => call.toolName).filter((name) => !this.tools.hasTool(name)))];
+    if (unknownTools.length === 0) return true;
+    console.warn("[AgentRuntime] unknown tool call", {
+      event: "agent_unknown_tool_call",
+      requestId: input.requestId,
+      sessionId: input.sessionId,
+      unknownTools,
+      allowedToolCount: this.tools.getToolSchemas().length,
+    });
+    return false;
   }
 
   private async executeDecisionTools(

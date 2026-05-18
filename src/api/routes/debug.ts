@@ -5,6 +5,10 @@ import { readAgentModeConfig } from "../../providers/factory/agentModes.js";
 import { AgentProviderFactory } from "../../providers/factory/AgentProviderFactory.js";
 import type { AgentProviderFactoryConfig } from "../../providers/factory/types.js";
 import { readAgentRuntimeConfig } from "../../agents/runtime/AgentRuntimeConfig.js";
+import {
+  DETERMINISTIC_RUNTIME_WARNING,
+  readAllowDeterministicRuntime,
+} from "../../agents/runtime/AgentRuntimeGuards.js";
 
 export async function registerDebugRoutes(
   app: FastifyInstance,
@@ -28,8 +32,35 @@ function buildAgentModesReport(kernel: ApiKernel): {
   toolCallingMode: string;
   allowMockRuntime: boolean;
   allowDeterministicRouter: boolean;
+  allowDeterministicRuntime: boolean;
   hasApiKey: boolean;
-  database: string;
+  agentRuntime: {
+    provider: string;
+    model: string;
+    frontDeskAgentMode: string;
+    toolCallingMode: string;
+    allowMockRuntime: boolean;
+    allowDeterministicRouter: boolean;
+    allowDeterministicRuntime: boolean;
+    hasApiKey: boolean;
+  };
+  legacyKernelAgents: {
+    legacyFrontDeskPresent: boolean;
+    legacyFrontDeskInUseByCopilot: false;
+    experienceExtractorMode: string;
+    artifactGeneratorMode: string;
+    criticAgentMode: string;
+    revisionAgentMode: string;
+  };
+  database: {
+    mode: string;
+    hasDatabaseUrl: boolean;
+  };
+  safety: {
+    mockRuntimeAllowed: boolean;
+    deterministicRuntimeAllowed: boolean;
+    warnings: string[];
+  };
   runtimeMode: string;
   nodeEnv: string;
   dbMode: string;
@@ -47,6 +78,7 @@ function buildAgentModesReport(kernel: ApiKernel): {
   const warnings: string[] = [...kernel.warnings];
   const runtimeConfig = readAgentRuntimeConfig();
   warnings.push(...runtimeConfig.warnings);
+  const allowDeterministicRuntime = readAllowDeterministicRuntime();
 
   let providerConfig: AgentProviderFactoryConfig | null = null;
   let provider: string = runtimeConfig.provider;
@@ -70,11 +102,42 @@ function buildAgentModesReport(kernel: ApiKernel): {
     warnings.push("DATABASE_URL is set but kernel is not in postgres mode.");
   }
 
-  const database = kernel.mode ?? "in_memory";
+  const databaseMode = kernel.mode ?? "in_memory";
 
   if (provider === "mock") {
     warnings.push("Provider is in mock mode. LLM features are not live.");
   }
+  if (allowDeterministicRuntime && process.env.NODE_ENV !== "test") {
+    warnings.push(DETERMINISTIC_RUNTIME_WARNING);
+  }
+  const uniqueWarnings = [...new Set(warnings)];
+  const agentRuntime = {
+    provider,
+    model,
+    frontDeskAgentMode: runtimeConfig.frontDeskAgentMode,
+    toolCallingMode: runtimeConfig.toolCallingMode,
+    allowMockRuntime: runtimeConfig.allowMockRuntime,
+    allowDeterministicRouter: runtimeConfig.allowDeterministicRouter,
+    allowDeterministicRuntime,
+    hasApiKey: runtimeConfig.hasApiKey,
+  };
+  const legacyKernelAgents = {
+    legacyFrontDeskPresent: Boolean(kernel.frontDeskOrchestrator),
+    legacyFrontDeskInUseByCopilot: false as const,
+    experienceExtractorMode: agentModes.experienceExtractorMode,
+    artifactGeneratorMode: agentModes.artifactGeneratorMode,
+    criticAgentMode: agentModes.criticAgentMode,
+    revisionAgentMode: agentModes.revisionAgentMode,
+  };
+  const database = {
+    mode: databaseMode,
+    hasDatabaseUrl,
+  };
+  const safety = {
+    mockRuntimeAllowed: runtimeConfig.allowMockRuntime,
+    deterministicRuntimeAllowed: allowDeterministicRuntime,
+    warnings: uniqueWarnings,
+  };
 
   return {
     provider,
@@ -83,11 +146,15 @@ function buildAgentModesReport(kernel: ApiKernel): {
     toolCallingMode: runtimeConfig.toolCallingMode,
     allowMockRuntime: runtimeConfig.allowMockRuntime,
     allowDeterministicRouter: runtimeConfig.allowDeterministicRouter,
+    allowDeterministicRuntime,
     hasApiKey: runtimeConfig.hasApiKey,
+    agentRuntime,
+    legacyKernelAgents,
     database,
+    safety,
     runtimeMode: kernel.mode,
     nodeEnv: process.env.NODE_ENV ?? "development",
-    dbMode: database,
+    dbMode: databaseMode,
     frontDeskMode: agentModes.frontDeskAgentMode,
     experienceExtractorMode: agentModes.experienceExtractorMode,
     artifactGeneratorMode: agentModes.artifactGeneratorMode,
@@ -96,6 +163,6 @@ function buildAgentModesReport(kernel: ApiKernel): {
     allowMockFallback,
     hasDatabaseUrl,
     hasDeepSeekApiKey,
-    warnings,
+    warnings: uniqueWarnings,
   };
 }

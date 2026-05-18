@@ -32,15 +32,37 @@ describe("GET /debug/agent-modes", () => {
     await kernel.close();
   });
 
-  it("returns flat data with provider, database, runtimeMode, nodeEnv, agent modes", async () => {
+  it("returns structured runtime, legacy, database, and safety data", async () => {
     const response = await server.inject({ method: "GET", url: "/debug/agent-modes" });
     expect(response.statusCode).toBe(200);
     const body = response.json() as ApiSuccess<Record<string, unknown>>;
     expect(body.ok).toBe(true);
 
     const d = body.data as Record<string, unknown>;
+    const agentRuntime = d.agentRuntime as Record<string, unknown>;
+    const legacyKernelAgents = d.legacyKernelAgents as Record<string, unknown>;
+    const database = d.database as Record<string, unknown>;
+    const safety = d.safety as Record<string, unknown>;
     expect(typeof d.provider).toBe("string");
-    expect(typeof d.database).toBe("string");
+    expect(typeof agentRuntime.provider).toBe("string");
+    expect(typeof agentRuntime.model).toBe("string");
+    expect(typeof agentRuntime.frontDeskAgentMode).toBe("string");
+    expect(typeof agentRuntime.toolCallingMode).toBe("string");
+    expect(typeof agentRuntime.allowMockRuntime).toBe("boolean");
+    expect(typeof agentRuntime.allowDeterministicRouter).toBe("boolean");
+    expect(typeof agentRuntime.allowDeterministicRuntime).toBe("boolean");
+    expect(typeof agentRuntime.hasApiKey).toBe("boolean");
+    expect(legacyKernelAgents.legacyFrontDeskPresent).toBe(true);
+    expect(legacyKernelAgents.legacyFrontDeskInUseByCopilot).toBe(false);
+    expect(typeof legacyKernelAgents.experienceExtractorMode).toBe("string");
+    expect(typeof legacyKernelAgents.artifactGeneratorMode).toBe("string");
+    expect(typeof legacyKernelAgents.criticAgentMode).toBe("string");
+    expect(typeof legacyKernelAgents.revisionAgentMode).toBe("string");
+    expect(typeof database.mode).toBe("string");
+    expect(typeof database.hasDatabaseUrl).toBe("boolean");
+    expect(typeof safety.mockRuntimeAllowed).toBe("boolean");
+    expect(typeof safety.deterministicRuntimeAllowed).toBe("boolean");
+    expect(Array.isArray(safety.warnings)).toBe(true);
     expect(typeof d.runtimeMode).toBe("string");
     expect(typeof d.nodeEnv).toBe("string");
     expect(typeof d.frontDeskMode).toBe("string");
@@ -53,6 +75,7 @@ describe("GET /debug/agent-modes", () => {
     expect(typeof d.hasDatabaseUrl).toBe("boolean");
     expect(typeof d.hasDeepSeekApiKey).toBe("boolean");
     expect(Array.isArray(d.warnings)).toBe(true);
+    expect(JSON.stringify(body)).not.toContain("test-key");
   });
 
   it("warns when AGENT_PROVIDER is deepseek but no API key", async () => {

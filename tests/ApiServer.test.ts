@@ -369,10 +369,18 @@ describe("dev CORS", () => {
       const originalNodeEnv = process.env.NODE_ENV;
       const originalEnableDevCors = process.env.ENABLE_DEV_CORS;
       const originalAgentApiKey = process.env.AGENT_API_KEY;
+      const originalExtractorMode = process.env.EXPERIENCE_EXTRACTOR_MODE;
+      const originalGeneratorMode = process.env.ARTIFACT_GENERATOR_MODE;
+      const originalCriticMode = process.env.CRITIC_AGENT_MODE;
+      const originalRevisionMode = process.env.REVISION_AGENT_MODE;
       process.env.AUTH_MODE = "dev_header";
       process.env.AGENT_PROVIDER = "deepseek";
       process.env.AGENT_API_KEY = "test-key";
       process.env.FRONTDESK_AGENT_MODE = "llm";
+      process.env.EXPERIENCE_EXTRACTOR_MODE = "llm";
+      process.env.ARTIFACT_GENERATOR_MODE = "llm";
+      process.env.CRITIC_AGENT_MODE = "llm";
+      process.env.REVISION_AGENT_MODE = "llm";
       process.env.NODE_ENV = "production";
       delete process.env.DATABASE_URL;
       delete process.env.ENABLE_DEV_CORS;
@@ -400,16 +408,28 @@ describe("dev CORS", () => {
       }
       if (originalAgentApiKey !== undefined) process.env.AGENT_API_KEY = originalAgentApiKey;
       else delete process.env.AGENT_API_KEY;
+      restoreEnv("EXPERIENCE_EXTRACTOR_MODE", originalExtractorMode);
+      restoreEnv("ARTIFACT_GENERATOR_MODE", originalGeneratorMode);
+      restoreEnv("CRITIC_AGENT_MODE", originalCriticMode);
+      restoreEnv("REVISION_AGENT_MODE", originalRevisionMode);
     });
 
     it("enables CORS in production when ENABLE_DEV_CORS=true", async () => {
       const originalNodeEnv = process.env.NODE_ENV;
       const originalEnableDevCors = process.env.ENABLE_DEV_CORS;
       const originalAgentApiKey = process.env.AGENT_API_KEY;
+      const originalExtractorMode = process.env.EXPERIENCE_EXTRACTOR_MODE;
+      const originalGeneratorMode = process.env.ARTIFACT_GENERATOR_MODE;
+      const originalCriticMode = process.env.CRITIC_AGENT_MODE;
+      const originalRevisionMode = process.env.REVISION_AGENT_MODE;
       process.env.AUTH_MODE = "dev_header";
       process.env.AGENT_PROVIDER = "deepseek";
       process.env.AGENT_API_KEY = "test-key";
       process.env.FRONTDESK_AGENT_MODE = "llm";
+      process.env.EXPERIENCE_EXTRACTOR_MODE = "llm";
+      process.env.ARTIFACT_GENERATOR_MODE = "llm";
+      process.env.CRITIC_AGENT_MODE = "llm";
+      process.env.REVISION_AGENT_MODE = "llm";
       process.env.NODE_ENV = "production";
       process.env.ENABLE_DEV_CORS = "true";
       delete process.env.DATABASE_URL;
@@ -437,8 +457,20 @@ describe("dev CORS", () => {
       }
       if (originalAgentApiKey !== undefined) process.env.AGENT_API_KEY = originalAgentApiKey;
       else delete process.env.AGENT_API_KEY;
-    });
+      restoreEnv("EXPERIENCE_EXTRACTOR_MODE", originalExtractorMode);
+      restoreEnv("ARTIFACT_GENERATOR_MODE", originalGeneratorMode);
+      restoreEnv("CRITIC_AGENT_MODE", originalCriticMode);
+      restoreEnv("REVISION_AGENT_MODE", originalRevisionMode);
   });
+});
+
+function restoreEnv(name: string, value: string | undefined): void {
+  if (value === undefined) {
+    delete process.env[name];
+  } else {
+    process.env[name] = value;
+  }
+}
 
 function makeRevisionArtifact(userId: string): GeneratedArtifact {
   return {

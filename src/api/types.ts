@@ -28,11 +28,15 @@ export type ApiKernel = {
    */
   cvAgentKernel: CvAgentKernel;
   /**
+   * @deprecated Legacy document-ingestion adapter kept for cvAgentKernel.documents.ingest().
+   * Copilot product chat must use AgentRuntime through the Copilot API adapter.
+   */
+  frontDeskOrchestrator: FrontDeskOrchestrator;
+  /**
    * Legacy/transitional internal service fields.
    * They remain for compatibility with existing tests and demos, but should not
    * be used by new API routes.
    */
-  frontDeskOrchestrator: FrontDeskOrchestrator;
   resumeGenerationService: ResumeGenerationService;
   generationPersistenceService?: GenerationPersistencePort;
   evidenceChainQueryService: EvidenceChainQueryService;

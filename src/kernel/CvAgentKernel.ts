@@ -56,6 +56,9 @@ export type KernelGenerationPersistencePort = {
 export type DefaultCvAgentKernelInput = {
   mode: KernelMode;
   warnings: string[];
+  /**
+   * @deprecated Legacy document-ingestion adapter. Product chat is handled by AgentRuntime.
+   */
   frontDeskOrchestrator: FrontDeskOrchestrator;
   resumeGenerationService: ResumeGenerationService;
   generationPersistenceService?: KernelGenerationPersistencePort;
@@ -83,6 +86,9 @@ export class DefaultCvAgentKernel implements CvAgentKernel {
   };
 
   private readonly warnings: string[];
+  /**
+   * @deprecated Legacy document-ingestion adapter. Copilot chat must not depend on it.
+   */
   private readonly frontDeskOrchestrator: FrontDeskOrchestrator;
   private readonly resumeGenerationService: ResumeGenerationService;
   private readonly generationPersistenceService?: KernelGenerationPersistencePort;
@@ -142,7 +148,7 @@ export class DefaultCvAgentKernel implements CvAgentKernel {
     });
 
     try {
-      // API command path: reuse FrontDeskOrchestrator for now while keeping the facade stable.
+      // Deprecated API command path: reuse FrontDeskOrchestrator for document ingestion only.
       // TODO: split this into a direct DocumentIngestionService + ExperienceIngestionService
       // command pipeline. Full FrontDeskAgent intent handling should remain the chat path.
       const response = await this.frontDeskOrchestrator.handle({

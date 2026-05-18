@@ -96,6 +96,7 @@ AGENT_MAX_TOKENS=2000
 
 FRONTDESK_AGENT_MODE=llm
 ALLOW_MOCK_RUNTIME=false
+ALLOW_DETERMINISTIC_RUNTIME=false
 ALLOW_DETERMINISTIC_ROUTER=false
 EXPERIENCE_EXTRACTOR_MODE=deterministic | llm
 ARTIFACT_GENERATOR_MODE=deterministic | llm
@@ -134,30 +135,25 @@ P8.1-P10.2 runtime notes:
 2. Development and production default to `AGENT_PROVIDER=deepseek`.
 3. `FRONTDESK_AGENT_MODE=llm` requires `AGENT_API_KEY` or provider-specific compatible key.
 4. `ALLOW_MOCK_RUNTIME` defaults to false outside `NODE_ENV=test`.
-5. `ALLOW_DETERMINISTIC_ROUTER` defaults to false.
-6. `FRONTDESK_AGENT_MODE=fake|mock` is allowed only in tests or explicit local fallback.
-7. FrontDeskAgent validates structured JSON and returns a safe clarification on invalid output; it does not silently route through deterministic rules.
-8. `EXPERIENCE_EXTRACTOR_MODE=deterministic` keeps the default deterministic ingestion path.
-9. `EXPERIENCE_EXTRACTOR_MODE=llm` routes experience extraction through `AgentProviderFactory`.
-10. LLMExperienceExtractor validates JSON, repairs once, and falls back to deterministic extraction when fallback is enabled.
-11. ExperienceExtractor.extract returns ExperienceExtractionResult with experiences[] and warnings.
-12. LLMExperienceExtractor preserves all returned experiences instead of ingesting only the first.
-13. A single source document can create multiple Experience records with separate Evidence records and merged/de-duplicated Skill records.
-14. `ARTIFACT_GENERATOR_MODE=deterministic` keeps the default deterministic generation path.
-15. `ARTIFACT_GENERATOR_MODE=llm` routes artifact generation through `AgentProviderFactory` and `LLMArtifactGenerator`.
-16. LLMArtifactGenerator validates JSON, repairs once, and falls back to deterministic generation when fallback is enabled.
-17. Generated artifacts include `metadata.enhancement` with status, claims, support levels, risk levels, and confirmation questions.
-18. Deterministic no-evidence draft artifacts are marked consistently as `needs_review` with `metadata.enhancement.status=needs_confirmation`.
-19. `CRITIC_AGENT_MODE=deterministic` keeps the default deterministic critique path.
-20. `CRITIC_AGENT_MODE=llm` routes artifact critique through `AgentProviderFactory` and `LLMArtifactCritic`.
-21. LLMArtifactCritic validates JSON, repairs once, and falls back to deterministic critique when fallback is enabled.
-22. CriticAgent is not a RevisionAgent: it reviews risk and suggestions but does not rewrite final artifacts.
-23. Critic output may include `claimReviews`, `confirmationQuestions`, and `safeRewriteSuggestion` in addition to the stable verdict/risk fields.
-24. DeterministicArtifactCritic performs numeric secondary validation against cited evidence excerpts and requires confirmation for unsupported numeric tokens.
-25. `REVISION_AGENT_MODE=deterministic` keeps the default safe revision path.
-26. `REVISION_AGENT_MODE=llm` routes artifact revision through `AgentProviderFactory` and `LLMArtifactRevisionAgent`.
-27. RevisionAgent consumes artifact, critique item, evidence chain, user instruction, and optional user confirmations.
-28. Revised artifacts preserve source experience/evidence IDs, refresh `metadata.enhancement`, and add `metadata.revision`.
+5. `ALLOW_DETERMINISTIC_RUNTIME` defaults to false outside `NODE_ENV=test`.
+6. `ALLOW_DETERMINISTIC_ROUTER` defaults to false.
+7. `FRONTDESK_AGENT_MODE=fake|mock` is allowed only in tests or explicit local fallback.
+8. FrontDeskAgent validates structured JSON and returns a safe clarification on invalid output; it does not silently route through deterministic rules.
+9. In development/production, deterministic kernel modes are rejected unless `ALLOW_DETERMINISTIC_RUNTIME=true` is explicitly set for local debugging.
+10. Production/staging should run `EXPERIENCE_EXTRACTOR_MODE=llm`, `ARTIFACT_GENERATOR_MODE=llm`, `CRITIC_AGENT_MODE=llm`, and `REVISION_AGENT_MODE=llm`.
+11. LLMExperienceExtractor validates JSON, repairs once, and falls back to deterministic extraction only when explicit fallback is enabled.
+12. ExperienceExtractor.extract returns ExperienceExtractionResult with experiences[] and warnings.
+13. LLMExperienceExtractor preserves all returned experiences instead of ingesting only the first.
+14. A single source document can create multiple Experience records with separate Evidence records and merged/de-duplicated Skill records.
+15. LLMArtifactGenerator validates JSON, repairs once, and falls back to deterministic generation only when explicit fallback is enabled.
+16. Generated artifacts include `metadata.enhancement` with status, claims, support levels, risk levels, and confirmation questions.
+17. Deterministic no-evidence draft artifacts are marked consistently as `needs_review` with `metadata.enhancement.status=needs_confirmation`.
+18. LLMArtifactCritic validates JSON, repairs once, and falls back to deterministic critique only when explicit fallback is enabled.
+19. CriticAgent is not a RevisionAgent: it reviews risk and suggestions but does not rewrite final artifacts.
+20. Critic output may include `claimReviews`, `confirmationQuestions`, and `safeRewriteSuggestion` in addition to the stable verdict/risk fields.
+21. DeterministicArtifactCritic performs numeric secondary validation against cited evidence excerpts and requires confirmation for unsupported numeric tokens.
+22. RevisionAgent consumes artifact, critique item, evidence chain, user instruction, and optional user confirmations.
+23. Revised artifacts preserve source experience/evidence IDs, refresh `metadata.enhancement`, and add `metadata.revision`.
 29. The minimal API entrypoint is `POST /generations/artifacts/revise`.
 30. `KernelRequestContext.events` supports public agent events for frontend progress display without exposing model raw chain-of-thought.
 31. `POST /generations/stream` returns experimental NDJSON progress events and a final generation result.
@@ -1267,7 +1263,40 @@ Response:
   "ok": true,
   "data": {
     "provider": "mock",
-    "database": "in_memory",
+    "model": "mock",
+    "frontDeskAgentMode": "mock",
+    "toolCallingMode": "json_decision",
+    "allowMockRuntime": true,
+    "allowDeterministicRouter": false,
+    "allowDeterministicRuntime": true,
+    "hasApiKey": false,
+    "agentRuntime": {
+      "provider": "mock",
+      "model": "mock",
+      "frontDeskAgentMode": "mock",
+      "toolCallingMode": "json_decision",
+      "allowMockRuntime": true,
+      "allowDeterministicRouter": false,
+      "allowDeterministicRuntime": true,
+      "hasApiKey": false
+    },
+    "legacyKernelAgents": {
+      "legacyFrontDeskPresent": true,
+      "legacyFrontDeskInUseByCopilot": false,
+      "experienceExtractorMode": "deterministic",
+      "artifactGeneratorMode": "deterministic",
+      "criticAgentMode": "deterministic",
+      "revisionAgentMode": "deterministic"
+    },
+    "database": {
+      "mode": "in_memory",
+      "hasDatabaseUrl": false
+    },
+    "safety": {
+      "mockRuntimeAllowed": true,
+      "deterministicRuntimeAllowed": true,
+      "warnings": ["Provider is in mock mode."]
+    },
     "runtimeMode": "development",
     "frontDeskMode": "mock",
     "experienceExtractorMode": "deterministic",
@@ -1275,7 +1304,6 @@ Response:
     "criticAgentMode": "deterministic",
     "revisionAgentMode": "deterministic",
     "allowMockFallback": true,
-    "model": "mock",
     "hasDatabaseUrl": false,
     "hasDeepSeekApiKey": false,
     "warnings": ["Provider is in mock mode."]
@@ -1632,7 +1660,12 @@ AGENT_TEMPERATURE=0.2
 AGENT_MAX_TOKENS=2000
 FRONTDESK_AGENT_MODE=llm
 ALLOW_MOCK_RUNTIME=false
+ALLOW_DETERMINISTIC_RUNTIME=false
 ALLOW_DETERMINISTIC_ROUTER=false
+EXPERIENCE_EXTRACTOR_MODE=llm
+ARTIFACT_GENERATOR_MODE=llm
+CRITIC_AGENT_MODE=llm
+REVISION_AGENT_MODE=llm
 ```
 
 Test-only fake mode:
@@ -1645,6 +1678,18 @@ ALLOW_MOCK_RUNTIME=true
 ```
 
 `GET /debug/agent-modes` reports provider, model, frontDeskAgentMode, toolCallingMode, allowMockRuntime, allowDeterministicRouter, hasApiKey, and db mode. Development/production must not silently use mock, fake, or deterministic output.
+
+#### P10.2 Architecture Closure
+
+Status: implemented.
+
+`AgentRuntime` is the only product chat execution entrypoint. `CopilotOrchestrator` remains a compatibility facade for `/copilot/chat`, `/copilot/actions`, and `/copilot/chat/stream`. The legacy `application/frontdesk/FrontDeskOrchestrator` is deprecated and retained only for `cvAgentKernel.documents.ingest()` until document ingestion moves to a direct command pipeline; Copilot routes do not use it.
+
+Development and production reject deterministic/mock/fake runtime modes unless explicitly enabled. `ALLOW_DETERMINISTIC_RUNTIME=true` is only for local debugging and surfaces a warning in `/debug/agent-modes`.
+
+Tool implementation is split under `src/agents/tools/product/*` and `src/agents/tools/kernel/*`. `AgentToolRegistry` only composes definitions, exposes tool schemas, checks `hasTool`, and executes schema-validated tools.
+
+Unknown LLM tool calls are rejected before execution. The runtime logs only `event`, `requestId`, `sessionId`, unknown tool names, and allowed tool count; it never logs prompt text, tool arguments, provider raw output, API keys, or reasoning content. The user receives a safe clarification response.
 
 ---
 

@@ -444,6 +444,7 @@ P8.1 added `AgentProviderFactory`; the current P10 architecture uses it as part 
 - `AGENT_BASE_URL` can override the compatible endpoint.
 - `AGENT_TIMEOUT_MS` defaults to `30000`; `AGENT_MAX_RETRIES` defaults to `0`.
 - `ALLOW_MOCK_RUNTIME=false` by default outside tests.
+- `ALLOW_DETERMINISTIC_RUNTIME=false` by default outside tests.
 - `ALLOW_DETERMINISTIC_ROUTER=false` by default.
 
 FrontDesk mode is LLM-first:
@@ -452,9 +453,9 @@ FrontDesk mode is LLM-first:
 - `FRONTDESK_AGENT_MODE=fake|mock` is allowed only in `NODE_ENV=test` or when `ALLOW_MOCK_RUNTIME=true`.
 - Invalid FrontDesk JSON is schema-validated and becomes a safe clarification unless deterministic fallback is explicitly enabled.
 
-Experience extractor mode is also active:
+Experience extractor mode is also active. In development and production, deterministic kernel modes require explicit `ALLOW_DETERMINISTIC_RUNTIME=true`; product-quality runtime should use `llm`.
 
-- `EXPERIENCE_EXTRACTOR_MODE=deterministic` is the default stable mode.
+- `EXPERIENCE_EXTRACTOR_MODE=deterministic` is allowed in tests or explicit local debugging.
 - `EXPERIENCE_EXTRACTOR_MODE=llm` uses `AgentProviderFactory` and `LLMExperienceExtractor`.
 - LLM extraction parses JSON, validates with zod, repairs once, and falls back to deterministic extraction when fallback is enabled.
 - `ExperienceExtractor.extract()` returns `ExperienceExtractionResult` with `experiences[]`; deterministic and agent-backed extractors wrap their single extraction in that result.
@@ -466,7 +467,7 @@ Experience extractor mode is also active:
 
 Artifact generator mode is also active:
 
-- `ARTIFACT_GENERATOR_MODE=deterministic` is the default stable mode.
+- `ARTIFACT_GENERATOR_MODE=deterministic` is allowed in tests or explicit local debugging.
 - `ARTIFACT_GENERATOR_MODE=llm` uses `AgentProviderFactory` and `LLMArtifactGenerator`.
 - LLM artifact generation allows evidence-grounded rewriting, reasonable inference, and user-confirmable enhancement candidates.
 - It does not allow unsupported high-risk claims to be marked as ready-to-use bullets.
@@ -485,14 +486,14 @@ CRITIC_AGENT_MODE=deterministic|llm
 REVISION_AGENT_MODE=deterministic|llm
 ```
 
-- `CRITIC_AGENT_MODE=deterministic` is the default stable mode.
+- `CRITIC_AGENT_MODE=deterministic` is allowed in tests or explicit local debugging.
 - `CRITIC_AGENT_MODE=llm` uses `AgentProviderFactory` and `LLMArtifactCritic`.
 - CriticAgent is not a RevisionAgent. It reviews artifact risk and gives suggestions; it does not rewrite final artifacts.
 - The critic reads `artifact.metadata.enhancement.status`, claim `supportLevel` / `riskLevel`, `confirmationQuestions`, and evidence-chain risk.
 - Critique output includes `verdict`, `unsupportedClaims`, `missingEvidence`, `rewriteSuggestions`, and optional `claimReviews`, `safeRewriteSuggestion`, and `confirmationQuestions`.
 - Deterministic critic also performs a numeric secondary check: numbers in artifact content that are absent from cited evidence require confirmation unless enhancement metadata already marks the claim as `needs_user_confirmation` or `unsupported`.
 - Deterministic no-evidence draft artifacts are marked consistently as `needs_review` with `metadata.enhancement.status=needs_confirmation`.
-- `REVISION_AGENT_MODE=deterministic` is the default safe revision path.
+- `REVISION_AGENT_MODE=deterministic` is allowed in tests or explicit local debugging.
 - `REVISION_AGENT_MODE=llm` uses `AgentProviderFactory` and `LLMArtifactRevisionAgent`.
 - RevisionAgent consumes an artifact, critique item, evidence chain, user instruction, and optional user confirmations, then returns a revised `GeneratedArtifact`.
 - RevisionAgent supports `make_more_conservative`, `remove_unsupported_claims`, `apply_user_confirmation`, `make_more_quantified`, `align_to_requirement`, `rewrite_for_tone`, and `custom`.
@@ -509,23 +510,25 @@ AGENT_API_KEY=...
 AGENT_BASE_URL=https://api.deepseek.com
 FRONTDESK_AGENT_MODE=llm
 ALLOW_MOCK_RUNTIME=false
+ALLOW_DETERMINISTIC_RUNTIME=false
 ALLOW_DETERMINISTIC_ROUTER=false
-EXPERIENCE_EXTRACTOR_MODE=deterministic
-ARTIFACT_GENERATOR_MODE=deterministic
-CRITIC_AGENT_MODE=deterministic
-REVISION_AGENT_MODE=deterministic
+EXPERIENCE_EXTRACTOR_MODE=llm
+ARTIFACT_GENERATOR_MODE=llm
+CRITIC_AGENT_MODE=llm
+REVISION_AGENT_MODE=llm
 
 # Test-only fake runtime
 NODE_ENV=test
 TEST_MODEL_PROVIDER=fake
 FRONTDESK_AGENT_MODE=fake
 ALLOW_MOCK_RUNTIME=true
+ALLOW_DETERMINISTIC_RUNTIME=true
 EXPERIENCE_EXTRACTOR_MODE=deterministic
 ARTIFACT_GENERATOR_MODE=deterministic
 CRITIC_AGENT_MODE=deterministic
 REVISION_AGENT_MODE=deterministic
 
-# Real DeepSeek ArtifactGenerator only
+# Local debugging: real DeepSeek ArtifactGenerator only
 FRONTDESK_AGENT_MODE=llm
 EXPERIENCE_EXTRACTOR_MODE=deterministic
 ARTIFACT_GENERATOR_MODE=llm
@@ -534,8 +537,9 @@ REVISION_AGENT_MODE=deterministic
 AGENT_PROVIDER=deepseek
 AGENT_API_KEY=...
 ALLOW_MOCK_RUNTIME=false
+ALLOW_DETERMINISTIC_RUNTIME=true
 
-# Real DeepSeek CriticAgent only
+# Local debugging: real DeepSeek CriticAgent only
 FRONTDESK_AGENT_MODE=llm
 EXPERIENCE_EXTRACTOR_MODE=deterministic
 ARTIFACT_GENERATOR_MODE=deterministic
@@ -544,8 +548,9 @@ REVISION_AGENT_MODE=deterministic
 AGENT_PROVIDER=deepseek
 AGENT_API_KEY=...
 ALLOW_MOCK_RUNTIME=false
+ALLOW_DETERMINISTIC_RUNTIME=true
 
-# Real DeepSeek ExperienceExtractor only
+# Local debugging: real DeepSeek ExperienceExtractor only
 FRONTDESK_AGENT_MODE=llm
 EXPERIENCE_EXTRACTOR_MODE=llm
 ARTIFACT_GENERATOR_MODE=deterministic
@@ -554,8 +559,9 @@ REVISION_AGENT_MODE=deterministic
 AGENT_PROVIDER=deepseek
 AGENT_API_KEY=...
 ALLOW_MOCK_RUNTIME=false
+ALLOW_DETERMINISTIC_RUNTIME=true
 
-# Real DeepSeek FrontDesk
+# Local debugging: real DeepSeek FrontDesk only
 FRONTDESK_AGENT_MODE=llm
 EXPERIENCE_EXTRACTOR_MODE=deterministic
 ARTIFACT_GENERATOR_MODE=deterministic
@@ -565,6 +571,7 @@ AGENT_PROVIDER=deepseek
 AGENT_API_KEY=...
 AGENT_MODEL=deepseek-chat
 ALLOW_MOCK_RUNTIME=false
+ALLOW_DETERMINISTIC_RUNTIME=true
 
 # Real DeepSeek full P8 chain
 FRONTDESK_AGENT_MODE=llm
@@ -575,6 +582,7 @@ REVISION_AGENT_MODE=llm
 AGENT_PROVIDER=deepseek
 AGENT_API_KEY=...
 ALLOW_MOCK_RUNTIME=false
+ALLOW_DETERMINISTIC_RUNTIME=false
 
 # Production recommendation
 NODE_ENV=production
@@ -587,6 +595,7 @@ REVISION_AGENT_MODE=llm
 AGENT_PROVIDER=deepseek
 AGENT_API_KEY=...
 ALLOW_MOCK_RUNTIME=false
+ALLOW_DETERMINISTIC_RUNTIME=false
 ```
 
 ### Connecting real LLMs (DeepSeek / OpenRouter)
@@ -1015,7 +1024,12 @@ AGENT_TEMPERATURE=0.2
 AGENT_MAX_TOKENS=2000
 FRONTDESK_AGENT_MODE=llm
 ALLOW_MOCK_RUNTIME=false
+ALLOW_DETERMINISTIC_RUNTIME=false
 ALLOW_DETERMINISTIC_ROUTER=false
+EXPERIENCE_EXTRACTOR_MODE=llm
+ARTIFACT_GENERATOR_MODE=llm
+CRITIC_AGENT_MODE=llm
+REVISION_AGENT_MODE=llm
 ```
 
 Test-only fake mode:
@@ -1026,6 +1040,35 @@ TEST_MODEL_PROVIDER=fake
 FRONTDESK_AGENT_MODE=fake
 ALLOW_MOCK_RUNTIME=true
 ```
+
+#### P10.2 Architecture Closure
+
+`AgentRuntime` is the only product chat execution entrypoint. `CopilotOrchestrator` remains a compatibility facade for the existing `/copilot/*` API contract. The older `application/frontdesk/FrontDeskOrchestrator` is deprecated and retained only for `cvAgentKernel.documents.ingest()` until document ingestion is split into a direct command pipeline; `/copilot/chat`, `/copilot/actions`, and `/copilot/chat/stream` do not use it.
+
+Development and production now fail fast if kernel agents are configured as deterministic/mock/fake unless `ALLOW_DETERMINISTIC_RUNTIME=true` is explicitly set for local debugging. Test mode still allows fake/mock/deterministic paths.
+
+`AgentToolRegistry` has been split into tool modules:
+
+```text
+src/agents/tools/
+  AgentToolTypes.ts
+  AgentToolRegistry.ts
+  schemas.ts
+  helpers.ts
+  product/
+    experienceTools.ts
+    jdTools.ts
+    resumeTools.ts
+    importTools.ts
+    dashboardTools.ts
+  kernel/
+    generationTools.ts
+    revisionTools.ts
+    evidenceTools.ts
+    decisionTools.ts
+```
+
+`/debug/agent-modes` now reports structured `agentRuntime`, `legacyKernelAgents`, `database`, and `safety` blocks. Unknown model-requested tools are rejected before execution, logged with request/session/tool names only, and converted into a safe clarification response.
 
 The minimal frontend now displays suggested prompt chips under the latest assistant message and has a lightweight sidebar backed by `/copilot/sidebar`. It can restore a recent session by calling `/copilot/sessions/:id` and rehydrating messages plus workspace.
 

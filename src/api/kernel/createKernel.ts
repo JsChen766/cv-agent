@@ -96,6 +96,7 @@ import {
   createFrontDeskModelClient,
   uniqueWarnings,
 } from "./agentModeFactories.js";
+import { validateDeterministicKernelAgentModes } from "../../agents/runtime/AgentRuntimeGuards.js";
 
 export async function createKernel(): Promise<ApiKernel> {
   const databaseUrl = process.env.DATABASE_URL;
@@ -203,6 +204,7 @@ function createInMemoryKernel(): ApiKernel {
 
 function buildKernel(input: BuildKernelInput): ApiKernel {
   const agentModes = readAgentModeConfig();
+  const runtimeGuardWarnings = validateDeterministicKernelAgentModes(agentModes);
   const documentLoader = new DocumentLoaderTool();
   const documentIngestionService = new DocumentIngestionService(documentLoader, input.documentRepository);
   const experienceExtractor = createExperienceExtractor({
@@ -256,6 +258,8 @@ function buildKernel(input: BuildKernelInput): ApiKernel {
   const frontDeskAgent = createFrontDeskAgent({
     modelClient: agentProvider.modelClient,
   });
+  // Deprecated legacy adapter: retained for cvAgentKernel.documents.ingest().
+  // Product chat routes use AgentRuntime, not this orchestrator.
   const frontDeskOrchestrator = new FrontDeskOrchestrator(
     frontDeskAgent,
     documentLoader,
@@ -276,6 +280,7 @@ function buildKernel(input: BuildKernelInput): ApiKernel {
     ...artifactGenerator.warnings,
     ...artifactCritic.warnings,
     ...revisionAgent.warnings,
+    ...runtimeGuardWarnings,
   ]);
   const cvAgentKernel = new DefaultCvAgentKernel({
     mode: input.mode,

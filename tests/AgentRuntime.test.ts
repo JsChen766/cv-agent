@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ModelClient } from "../src/core/model/ModelClient.js";
 import type { LLMProvider } from "../src/core/model/LLMProvider.js";
 import type { LLMChatRequest, LLMChatResponse, LLMStreamChunk } from "../src/core/model/types.js";
@@ -73,6 +73,7 @@ describe("AgentRuntime", () => {
   });
 
   it("turns invalid tool calls into a safe clarification", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     kernel.frontDeskModelClient = new ModelClient({
       provider: new InvalidToolProvider(),
       defaultModel: "invalid-tool",
@@ -81,6 +82,12 @@ describe("AgentRuntime", () => {
     const response = await runtime.handleChat(ctx(), { message: "Run an unsafe internal tool." });
     expect(response.assistantMessage.kind).toBe("clarifying_question");
     expect(JSON.stringify(response)).not.toContain("tool_args");
+    expect(JSON.stringify(response)).not.toContain("internal_prompt_dump");
+    expect(warn).toHaveBeenCalledWith("[AgentRuntime] unknown tool call", expect.objectContaining({
+      event: "agent_unknown_tool_call",
+      unknownTools: ["internal_prompt_dump"],
+    }));
+    warn.mockRestore();
   });
 
   it("does not allow mock runtime outside test unless explicitly enabled", () => {
