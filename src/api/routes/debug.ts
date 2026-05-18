@@ -4,6 +4,7 @@ import type { ApiKernel } from "../types.js";
 import { readAgentModeConfig } from "../../providers/factory/agentModes.js";
 import { AgentProviderFactory } from "../../providers/factory/AgentProviderFactory.js";
 import type { AgentProviderFactoryConfig } from "../../providers/factory/types.js";
+import { readAgentRuntimeConfig } from "../../agents/runtime/AgentRuntimeConfig.js";
 
 export async function registerDebugRoutes(
   app: FastifyInstance,
@@ -22,40 +23,42 @@ export async function registerDebugRoutes(
 
 function buildAgentModesReport(kernel: ApiKernel): {
   provider: string;
+  model: string;
+  frontDeskAgentMode: string;
+  toolCallingMode: string;
+  allowMockRuntime: boolean;
+  allowDeterministicRouter: boolean;
+  hasApiKey: boolean;
   database: string;
   runtimeMode: string;
   nodeEnv: string;
+  dbMode: string;
   frontDeskMode: string;
   experienceExtractorMode: string;
   artifactGeneratorMode: string;
   criticAgentMode: string;
   revisionAgentMode: string;
   allowMockFallback: boolean;
-  model: string;
   hasDatabaseUrl: boolean;
   hasDeepSeekApiKey: boolean;
   warnings: string[];
 } {
   const agentModes = readAgentModeConfig();
   const warnings: string[] = [...kernel.warnings];
+  const runtimeConfig = readAgentRuntimeConfig();
+  warnings.push(...runtimeConfig.warnings);
 
   let providerConfig: AgentProviderFactoryConfig | null = null;
-  let provider = "unknown";
-  let model = "unknown";
+  let provider: string = runtimeConfig.provider;
+  let model = runtimeConfig.model;
   let allowMockFallback = false;
-  let hasDeepSeekApiKey = false;
+  let hasDeepSeekApiKey = runtimeConfig.hasApiKey;
 
   try {
     providerConfig = AgentProviderFactory.fromEnv();
     provider = providerConfig.provider;
-    model = providerConfig.model ?? (provider === "deepseek" ? "deepseek-chat" : "mock");
+    model = providerConfig.model ?? runtimeConfig.model;
     allowMockFallback = providerConfig.allowMockFallback ?? false;
-    hasDeepSeekApiKey = Boolean(providerConfig.apiKey);
-
-    if (provider === "deepseek" && !hasDeepSeekApiKey) {
-      provider = "mock";
-      warnings.push("AGENT_PROVIDER is deepseek but DEEPSEEK_API_KEY is missing. Falling back to mock provider.");
-    }
   } catch {
     provider = "error";
     model = "error";
@@ -75,16 +78,22 @@ function buildAgentModesReport(kernel: ApiKernel): {
 
   return {
     provider,
+    model,
+    frontDeskAgentMode: runtimeConfig.frontDeskAgentMode,
+    toolCallingMode: runtimeConfig.toolCallingMode,
+    allowMockRuntime: runtimeConfig.allowMockRuntime,
+    allowDeterministicRouter: runtimeConfig.allowDeterministicRouter,
+    hasApiKey: runtimeConfig.hasApiKey,
     database,
     runtimeMode: kernel.mode,
     nodeEnv: process.env.NODE_ENV ?? "development",
+    dbMode: database,
     frontDeskMode: agentModes.frontDeskAgentMode,
     experienceExtractorMode: agentModes.experienceExtractorMode,
     artifactGeneratorMode: agentModes.artifactGeneratorMode,
     criticAgentMode: agentModes.criticAgentMode,
     revisionAgentMode: agentModes.revisionAgentMode,
     allowMockFallback,
-    model,
     hasDatabaseUrl,
     hasDeepSeekApiKey,
     warnings,

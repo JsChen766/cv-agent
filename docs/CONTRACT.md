@@ -84,14 +84,19 @@ Current implemented behavior uses `x-user-id` only through the `dev_header` reso
 
 ### 2.3 LLM Mode
 
-Do not delete mock/deterministic paths. Real LLM should be configurable.
+Real LLM is the product runtime. Mock/fake paths are test-only or explicit local fallback.
 
 ```env
-AGENT_PROVIDER=mock | deepseek
-DEEPSEEK_API_KEY=...
-DEEPSEEK_MODEL=deepseek-chat
+AGENT_PROVIDER=deepseek | openai | compatible
+AGENT_MODEL=deepseek-chat
+AGENT_BASE_URL=https://api.deepseek.com
+AGENT_API_KEY=...
+AGENT_TEMPERATURE=0.2
+AGENT_MAX_TOKENS=2000
 
-FRONTDESK_AGENT_MODE=mock | llm
+FRONTDESK_AGENT_MODE=llm
+ALLOW_MOCK_RUNTIME=false
+ALLOW_DETERMINISTIC_ROUTER=false
 EXPERIENCE_EXTRACTOR_MODE=deterministic | llm
 ARTIFACT_GENERATOR_MODE=deterministic | llm
 CRITIC_AGENT_MODE=deterministic | llm
@@ -101,17 +106,21 @@ REVISION_AGENT_MODE=deterministic | llm
 Default test mode:
 
 ```env
-AGENT_PROVIDER=mock
-FRONTDESK_AGENT_MODE=mock
+NODE_ENV=test
+TEST_MODEL_PROVIDER=fake
+FRONTDESK_AGENT_MODE=fake
+ALLOW_MOCK_RUNTIME=true
 EXPERIENCE_EXTRACTOR_MODE=deterministic
 ARTIFACT_GENERATOR_MODE=deterministic
 CRITIC_AGENT_MODE=deterministic
+REVISION_AGENT_MODE=deterministic
 ```
 
 Production / staging may gradually enable:
 
 ```env
 AGENT_PROVIDER=deepseek
+AGENT_API_KEY=...
 FRONTDESK_AGENT_MODE=llm
 EXPERIENCE_EXTRACTOR_MODE=llm
 ARTIFACT_GENERATOR_MODE=llm
@@ -119,15 +128,15 @@ CRITIC_AGENT_MODE=llm
 REVISION_AGENT_MODE=llm
 ```
 
-P8.1-P8.7 implementation notes:
+P8.1-P10.2 runtime notes:
 
-1. `AgentProviderFactory` creates `ModelClient` instances for `mock` or `deepseek`.
-2. Non-production defaults to `AGENT_PROVIDER=mock`.
-3. Production defaults to `AGENT_PROVIDER=deepseek` and requires `DEEPSEEK_API_KEY`.
-4. `ALLOW_MOCK_FALLBACK` defaults to true outside production and false in production.
-5. `FRONTDESK_AGENT_MODE=mock` forces MockProvider and ignores DeepSeek config for FrontDesk routing.
-6. `FRONTDESK_AGENT_MODE=llm` routes FrontDeskAgent through `AgentProviderFactory`.
-7. FrontDeskAgent validates JSON, repairs once, and falls back to an `unknown` decision unless fallback is disabled.
+1. `AgentProviderFactory` creates `ModelClient` instances for `deepseek`, `openai`, `compatible`, or test-only `mock`.
+2. Development and production default to `AGENT_PROVIDER=deepseek`.
+3. `FRONTDESK_AGENT_MODE=llm` requires `AGENT_API_KEY` or provider-specific compatible key.
+4. `ALLOW_MOCK_RUNTIME` defaults to false outside `NODE_ENV=test`.
+5. `ALLOW_DETERMINISTIC_ROUTER` defaults to false.
+6. `FRONTDESK_AGENT_MODE=fake|mock` is allowed only in tests or explicit local fallback.
+7. FrontDeskAgent validates structured JSON and returns a safe clarification on invalid output; it does not silently route through deterministic rules.
 8. `EXPERIENCE_EXTRACTOR_MODE=deterministic` keeps the default deterministic ingestion path.
 9. `EXPERIENCE_EXTRACTOR_MODE=llm` routes experience extraction through `AgentProviderFactory`.
 10. LLMExperienceExtractor validates JSON, repairs once, and falls back to deterministic extraction when fallback is enabled.
@@ -1062,9 +1071,9 @@ Status: implemented.
 Status: implemented.
 
 - Added `AgentProviderFactory`.
-- Supports `AGENT_PROVIDER=mock|deepseek`.
-- Production defaults to DeepSeek and requires `DEEPSEEK_API_KEY`.
-- Non-production defaults to MockProvider.
+- Supports `AGENT_PROVIDER=deepseek|openai|compatible|mock`.
+- Development and production default to DeepSeek and require `AGENT_API_KEY` or a compatible provider key.
+- Mock/fake provider is test-only unless `ALLOW_MOCK_RUNTIME=true`.
 - Added agent mode env parsing for future LLM-backed rollout.
 - `FRONTDESK_AGENT_MODE` now controls FrontDesk provider wiring.
 - Default tests remain deterministic and do not call DeepSeek.
@@ -1433,25 +1442,33 @@ POST /product/generations/:id/accept-variant
 Copilot product tools:
 
 ```text
+AgentToolRegistry
 create_experience
 list_experiences
+update_experience
 import_resume_text
 accept_import_candidate
 save_jd
 list_jds
-create_resume_from_jd
+generate_resume_variants
 save_variant_to_resume
 list_resumes
 open_resume
+get_dashboard
+get_sidebar
+revise_variant
+show_evidence
+explain_choice
+record_variant_decision
 ```
 
-`/copilot/chat` now enters through a conversational FrontDeskAgent decision layer before product tools or generation are considered. Supported decision modes are `chat_only`, `ask_clarification`, `use_product_tool`, `generate_resume_variants`, `explain_workspace`, and `smalltalk`.
+`/copilot/chat` now enters through `CopilotApiAdapter -> AgentRuntime -> FrontDeskAgent -> AgentToolRegistry`. Supported AgentDecision modes are `respond`, `ask_clarification`, `call_tool`, `call_tools`, `generate`, `revise`, and `explain_workspace`.
 
-The FrontDeskAgent is a job-search chat assistant, not only an intent classifier. Normal chat, product capability questions, job-search advice, resume writing guidance, confusion, and smalltalk return direct assistant text and do not require a JD. Product tools are called only when the user clearly asks for workspace operations such as adding an experience, listing experiences, importing resume text, saving/listing JDs, generating variants for a JD, accepting a variant into a resume draft, listing resumes, or opening product workspaces.
+The FrontDeskAgent is LLM-first. Normal chat, product capability questions, job-search advice, resume writing guidance, confusion, and smalltalk return direct assistant text and do not require a JD. Product tools are called only when the model emits a schema-valid tool request for workspace operations such as adding an experience, listing experiences, importing resume text, saving/listing JDs, generating variants for a JD, accepting a variant into a resume draft, listing resumes, or opening product workspaces.
 
-`FRONTDESK_CONVERSATION_MODE=deterministic | llm` controls the decision layer. The default is `deterministic` for stable tests. In `llm` mode, model output is structured JSON and must pass runtime validation before use. Invalid model output or provider failure falls back to deterministic routing.
+`FRONTDESK_AGENT_MODE=llm` controls the decision layer in development and production. Model output is structured JSON and must pass zod validation before use. Invalid model output becomes a safe clarification. Deterministic routing is not used unless `ALLOW_DETERMINISTIC_ROUTER=true`.
 
-`ProductIntentRouter` remains as a deterministic fallback and guardrail. The response envelope remains the P9 `CopilotChatResponse`; new workspace fields are additive and `workspace.variants` remains compatible with the minimal frontend. Responses must not expose chain-of-thought, `reasoning_content`, provider raw payloads, internal prompts, or tool arguments.
+`ProductIntentRouter` is legacy fallback only. The response envelope remains the P9 `CopilotChatResponse`; new workspace fields are additive and `workspace.variants` remains compatible with the minimal frontend. Responses must not expose chain-of-thought, `reasoning_content`, provider raw payloads, internal prompts, or tool arguments.
 
 P10.1.6 adds `suggestedPrompts?: Array<{ label: string; message: string }>` to `CopilotChatResponse` for chat-only recommendations that should be shown as prompt chips rather than product actions. Explicit workspace commands in chat, such as asking for evidence, asking why a variant was recommended, requesting a conservative or quantified revision, or accepting the first variant, execute immediately when the current workspace has a usable variant.
 
@@ -1579,6 +1596,55 @@ Future P10 work:
 - Logging/tracing.
 - Production auth.
 - PDF export and product export jobs.
+
+#### Architecture Refactor: Real Agent Runtime
+
+Status: implemented.
+
+Copilot is now the product API name, not a second business kernel. The runtime path is:
+
+```text
+/copilot/chat
+  -> CopilotApiAdapter
+  -> AgentRuntime
+  -> FrontDeskAgent
+  -> AgentToolRegistry
+  -> Product Services / Kernel Services
+```
+
+Responsibilities:
+
+- `AgentRuntime`: loads or creates session, saves user/assistant messages, loads recent memory and workspace, calls FrontDeskAgent, executes tools, persists workspace snapshots, completes turns, and records activity.
+- `FrontDeskAgent`: LLM-first agent that emits schema-validated `AgentDecision` JSON.
+- `AgentToolRegistry`: owns all tool schemas and execution. LLMs cannot write data directly.
+- `Product Services`: stable business writes for experiences, JDs, resumes, imports, and product generations.
+- `Kernel Services`: intelligence operations such as extraction, generation, critique, revision, and evidence.
+- `CopilotOrchestrator`: compatibility facade only.
+
+Runtime config is fully env-driven:
+
+```env
+AGENT_PROVIDER=deepseek | openai | compatible
+AGENT_MODEL=deepseek-chat
+AGENT_BASE_URL=https://api.deepseek.com
+AGENT_API_KEY=...
+AGENT_TEMPERATURE=0.2
+AGENT_MAX_TOKENS=2000
+FRONTDESK_AGENT_MODE=llm
+ALLOW_MOCK_RUNTIME=false
+ALLOW_DETERMINISTIC_ROUTER=false
+```
+
+Test-only fake mode:
+
+```env
+NODE_ENV=test
+TEST_MODEL_PROVIDER=fake
+FRONTDESK_AGENT_MODE=fake
+ALLOW_MOCK_RUNTIME=true
+```
+
+`GET /debug/agent-modes` reports provider, model, frontDeskAgentMode, toolCallingMode, allowMockRuntime, allowDeterministicRouter, hasApiKey, and db mode. Development/production must not silently use mock, fake, or deterministic output.
 
 ---
 

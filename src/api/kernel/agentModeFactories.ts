@@ -45,9 +45,9 @@ export type CreatedArtifactRevisionAgent = {
 };
 
 export function createFrontDeskModelClient(input: {
-  mode: "mock" | "llm";
+  mode: "mock" | "fake" | "llm";
 }): CreatedFrontDeskModelClient {
-  if (input.mode === "mock") {
+  if (input.mode === "mock" || input.mode === "fake") {
     return {
       modelClient: new ModelClient({
         provider: new MockProvider(),

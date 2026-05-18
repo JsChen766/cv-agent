@@ -6,7 +6,7 @@ import {
 } from "../src/providers/factory/index.js";
 
 describe("AgentProviderFactory", () => {
-  it("defaults non-production env to mock", () => {
+  it("defaults test env to mock", () => {
     const config = AgentProviderFactory.fromEnv({
       NODE_ENV: "test",
     });
@@ -24,6 +24,7 @@ describe("AgentProviderFactory", () => {
       provider: "mock",
       timeoutMs: 5_000,
       maxRetries: 1,
+      runtimeMode: "test",
     });
 
     expect(result.providerName).toBe("mock");
@@ -79,7 +80,7 @@ describe("AgentProviderFactory", () => {
   it("rejects invalid AGENT_PROVIDER", () => {
     expect(() => AgentProviderFactory.fromEnv({
       AGENT_PROVIDER: "other",
-    })).toThrow('Unknown AGENT_PROVIDER "other". Supported values are mock and deepseek.');
+    })).toThrow('Unknown AGENT_PROVIDER "other". Supported values are deepseek, openai, compatible, mock.');
   });
 
   it("parses timeout and retry env values", () => {
@@ -111,15 +112,15 @@ describe("AgentProviderFactory", () => {
     } as unknown as AgentProviderFactoryConfig;
 
     expect(() => AgentProviderFactory.create(config)).toThrow(
-      'Unknown AGENT_PROVIDER "invalid". Supported values are mock and deepseek.',
+      'Unknown AGENT_PROVIDER "invalid". Supported values are deepseek, openai, compatible, mock.',
     );
   });
 });
 
 describe("readAgentModeConfig", () => {
-  it("returns deterministic defaults for future LLM-backed modes", () => {
+  it("returns fake FrontDesk default in test and deterministic defaults for kernel services", () => {
     expect(readAgentModeConfig({})).toEqual({
-      frontDeskAgentMode: "mock",
+      frontDeskAgentMode: "fake",
       experienceExtractorMode: "deterministic",
       artifactGeneratorMode: "deterministic",
       criticAgentMode: "deterministic",
@@ -146,6 +147,6 @@ describe("readAgentModeConfig", () => {
   it("rejects invalid agent mode values", () => {
     expect(() => readAgentModeConfig({
       FRONTDESK_AGENT_MODE: "deterministic",
-    })).toThrow("FRONTDESK_AGENT_MODE must be one of: mock, llm.");
+    })).toThrow("FRONTDESK_AGENT_MODE must be one of: mock, fake, llm.");
   });
 });

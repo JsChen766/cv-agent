@@ -1,7 +1,7 @@
-export type AgentExecutionMode = "mock" | "deterministic" | "llm";
+export type AgentExecutionMode = "mock" | "fake" | "deterministic" | "llm";
 
 export type AgentModeConfig = {
-  frontDeskAgentMode: "mock" | "llm";
+  frontDeskAgentMode: "mock" | "fake" | "llm";
   experienceExtractorMode: "deterministic" | "llm";
   artifactGeneratorMode: "deterministic" | "llm";
   criticAgentMode: "deterministic" | "llm";
@@ -13,8 +13,8 @@ export function readAgentModeConfig(env: NodeJS.ProcessEnv = process.env): Agent
     frontDeskAgentMode: readMode(
       env.FRONTDESK_AGENT_MODE,
       "FRONTDESK_AGENT_MODE",
-      ["mock", "llm"],
-      "mock",
+      ["mock", "fake", "llm"],
+      process.env.NODE_ENV === "test" ? "fake" : "llm",
     ),
     experienceExtractorMode: readMode(
       env.EXPERIENCE_EXTRACTOR_MODE,

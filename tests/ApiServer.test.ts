@@ -368,9 +368,11 @@ describe("dev CORS", () => {
     it("does not enable CORS in production without ENABLE_DEV_CORS", async () => {
       const originalNodeEnv = process.env.NODE_ENV;
       const originalEnableDevCors = process.env.ENABLE_DEV_CORS;
+      const originalAgentApiKey = process.env.AGENT_API_KEY;
       process.env.AUTH_MODE = "dev_header";
-      process.env.AGENT_PROVIDER = "mock";
-      process.env.FRONTDESK_AGENT_MODE = "mock";
+      process.env.AGENT_PROVIDER = "deepseek";
+      process.env.AGENT_API_KEY = "test-key";
+      process.env.FRONTDESK_AGENT_MODE = "llm";
       process.env.NODE_ENV = "production";
       delete process.env.DATABASE_URL;
       delete process.env.ENABLE_DEV_CORS;
@@ -396,14 +398,18 @@ describe("dev CORS", () => {
       if (originalEnableDevCors !== undefined) {
         process.env.ENABLE_DEV_CORS = originalEnableDevCors;
       }
+      if (originalAgentApiKey !== undefined) process.env.AGENT_API_KEY = originalAgentApiKey;
+      else delete process.env.AGENT_API_KEY;
     });
 
     it("enables CORS in production when ENABLE_DEV_CORS=true", async () => {
       const originalNodeEnv = process.env.NODE_ENV;
       const originalEnableDevCors = process.env.ENABLE_DEV_CORS;
+      const originalAgentApiKey = process.env.AGENT_API_KEY;
       process.env.AUTH_MODE = "dev_header";
-      process.env.AGENT_PROVIDER = "mock";
-      process.env.FRONTDESK_AGENT_MODE = "mock";
+      process.env.AGENT_PROVIDER = "deepseek";
+      process.env.AGENT_API_KEY = "test-key";
+      process.env.FRONTDESK_AGENT_MODE = "llm";
       process.env.NODE_ENV = "production";
       process.env.ENABLE_DEV_CORS = "true";
       delete process.env.DATABASE_URL;
@@ -429,6 +435,8 @@ describe("dev CORS", () => {
       if (originalEnableDevCors !== undefined) {
         process.env.ENABLE_DEV_CORS = originalEnableDevCors;
       }
+      if (originalAgentApiKey !== undefined) process.env.AGENT_API_KEY = originalAgentApiKey;
+      else delete process.env.AGENT_API_KEY;
     });
   });
 

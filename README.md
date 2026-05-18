@@ -435,20 +435,22 @@ const demo = createInMemoryCooltoDemoService();
 
 ### Agent Provider Factory
 
-P8.1 adds `AgentProviderFactory` under `src/providers/factory/`. It centralizes `ModelClient` creation for LLM-backed agents while keeping the deterministic/mock pipeline stable.
+P8.1 added `AgentProviderFactory`; the current P10 architecture uses it as part of the real Agent Runtime. Mock/fake providers are test-only or explicit local fallback, not the default product runtime.
 
-- `AGENT_PROVIDER=mock|deepseek`
-- Non-production defaults to `mock`.
-- Production defaults to `deepseek` and requires `DEEPSEEK_API_KEY`.
-- `DEEPSEEK_MODEL` defaults to `deepseek-chat`.
+- `AGENT_PROVIDER=deepseek|openai|compatible|mock`
+- Development and production default to `deepseek` and require `AGENT_API_KEY` or `DEEPSEEK_API_KEY`.
+- Test defaults to `mock`/`fake`.
+- `AGENT_MODEL` defaults to `deepseek-chat` for DeepSeek-compatible providers.
+- `AGENT_BASE_URL` can override the compatible endpoint.
 - `AGENT_TIMEOUT_MS` defaults to `30000`; `AGENT_MAX_RETRIES` defaults to `0`.
-- `ALLOW_MOCK_FALLBACK` defaults to `true` outside production and `false` in production.
+- `ALLOW_MOCK_RUNTIME=false` by default outside tests.
+- `ALLOW_DETERMINISTIC_ROUTER=false` by default.
 
-FrontDesk mode is now active:
+FrontDesk mode is LLM-first:
 
-- `FRONTDESK_AGENT_MODE=mock` forces `MockProvider` for `FrontDeskAgent` and does not require `DEEPSEEK_API_KEY`, even if `AGENT_PROVIDER=deepseek`.
-- `FRONTDESK_AGENT_MODE=llm` uses `AgentProviderFactory`; with `AGENT_PROVIDER=deepseek` and a key, FrontDesk intent routing uses DeepSeek.
-- Invalid FrontDesk JSON is parsed robustly, repaired once, then falls back to an `unknown` decision unless fallback is disabled.
+- `FRONTDESK_AGENT_MODE=llm` is the dev/prod runtime path.
+- `FRONTDESK_AGENT_MODE=fake|mock` is allowed only in `NODE_ENV=test` or when `ALLOW_MOCK_RUNTIME=true`.
+- Invalid FrontDesk JSON is schema-validated and becomes a safe clarification unless deterministic fallback is explicitly enabled.
 
 Experience extractor mode is also active:
 
@@ -476,7 +478,7 @@ Artifact generator mode is also active:
 Critic mode is also active:
 
 ```bash
-FRONTDESK_AGENT_MODE=mock|llm
+FRONTDESK_AGENT_MODE=llm|fake|mock
 EXPERIENCE_EXTRACTOR_MODE=deterministic|llm
 ARTIFACT_GENERATOR_MODE=deterministic|llm
 CRITIC_AGENT_MODE=deterministic|llm
@@ -500,50 +502,58 @@ REVISION_AGENT_MODE=deterministic|llm
 Common configurations:
 
 ```bash
-# Local default
-AGENT_PROVIDER=mock
-FRONTDESK_AGENT_MODE=mock
+# Local real Agent Runtime
+AGENT_PROVIDER=deepseek
+AGENT_MODEL=deepseek-chat
+AGENT_API_KEY=...
+AGENT_BASE_URL=https://api.deepseek.com
+FRONTDESK_AGENT_MODE=llm
+ALLOW_MOCK_RUNTIME=false
+ALLOW_DETERMINISTIC_ROUTER=false
 EXPERIENCE_EXTRACTOR_MODE=deterministic
 ARTIFACT_GENERATOR_MODE=deterministic
 CRITIC_AGENT_MODE=deterministic
 REVISION_AGENT_MODE=deterministic
 
-# Local FrontDesk LLM fallback test
-FRONTDESK_AGENT_MODE=llm
+# Test-only fake runtime
+NODE_ENV=test
+TEST_MODEL_PROVIDER=fake
+FRONTDESK_AGENT_MODE=fake
+ALLOW_MOCK_RUNTIME=true
 EXPERIENCE_EXTRACTOR_MODE=deterministic
 ARTIFACT_GENERATOR_MODE=deterministic
-AGENT_PROVIDER=deepseek
-ALLOW_MOCK_FALLBACK=true
+CRITIC_AGENT_MODE=deterministic
+REVISION_AGENT_MODE=deterministic
 
 # Real DeepSeek ArtifactGenerator only
-FRONTDESK_AGENT_MODE=mock
+FRONTDESK_AGENT_MODE=llm
 EXPERIENCE_EXTRACTOR_MODE=deterministic
 ARTIFACT_GENERATOR_MODE=llm
 CRITIC_AGENT_MODE=deterministic
 REVISION_AGENT_MODE=deterministic
 AGENT_PROVIDER=deepseek
-DEEPSEEK_API_KEY=...
-ALLOW_MOCK_FALLBACK=false
+AGENT_API_KEY=...
+ALLOW_MOCK_RUNTIME=false
 
 # Real DeepSeek CriticAgent only
-FRONTDESK_AGENT_MODE=mock
+FRONTDESK_AGENT_MODE=llm
 EXPERIENCE_EXTRACTOR_MODE=deterministic
 ARTIFACT_GENERATOR_MODE=deterministic
 CRITIC_AGENT_MODE=llm
 REVISION_AGENT_MODE=deterministic
 AGENT_PROVIDER=deepseek
-DEEPSEEK_API_KEY=...
-ALLOW_MOCK_FALLBACK=false
+AGENT_API_KEY=...
+ALLOW_MOCK_RUNTIME=false
 
 # Real DeepSeek ExperienceExtractor only
-FRONTDESK_AGENT_MODE=mock
+FRONTDESK_AGENT_MODE=llm
 EXPERIENCE_EXTRACTOR_MODE=llm
 ARTIFACT_GENERATOR_MODE=deterministic
 CRITIC_AGENT_MODE=deterministic
 REVISION_AGENT_MODE=deterministic
 AGENT_PROVIDER=deepseek
-DEEPSEEK_API_KEY=...
-ALLOW_MOCK_FALLBACK=false
+AGENT_API_KEY=...
+ALLOW_MOCK_RUNTIME=false
 
 # Real DeepSeek FrontDesk
 FRONTDESK_AGENT_MODE=llm
@@ -552,9 +562,9 @@ ARTIFACT_GENERATOR_MODE=deterministic
 CRITIC_AGENT_MODE=deterministic
 REVISION_AGENT_MODE=deterministic
 AGENT_PROVIDER=deepseek
-DEEPSEEK_API_KEY=...
-DEEPSEEK_MODEL=deepseek-chat
-ALLOW_MOCK_FALLBACK=false
+AGENT_API_KEY=...
+AGENT_MODEL=deepseek-chat
+ALLOW_MOCK_RUNTIME=false
 
 # Real DeepSeek full P8 chain
 FRONTDESK_AGENT_MODE=llm
@@ -563,8 +573,8 @@ ARTIFACT_GENERATOR_MODE=llm
 CRITIC_AGENT_MODE=llm
 REVISION_AGENT_MODE=llm
 AGENT_PROVIDER=deepseek
-DEEPSEEK_API_KEY=...
-ALLOW_MOCK_FALLBACK=false
+AGENT_API_KEY=...
+ALLOW_MOCK_RUNTIME=false
 
 # Production recommendation
 NODE_ENV=production
@@ -575,8 +585,8 @@ ARTIFACT_GENERATOR_MODE=llm
 CRITIC_AGENT_MODE=llm
 REVISION_AGENT_MODE=llm
 AGENT_PROVIDER=deepseek
-DEEPSEEK_API_KEY=...
-ALLOW_MOCK_FALLBACK=false
+AGENT_API_KEY=...
+ALLOW_MOCK_RUNTIME=false
 ```
 
 ### Connecting real LLMs (DeepSeek / OpenRouter)
@@ -916,17 +926,17 @@ POST /product/generations/from-jd
 POST /product/generations/:id/accept-variant
 ```
 
-Copilot now has deterministic product intent routing and product tools for `create_experience`, `list_experiences`, `import_resume_text`, `accept_import_candidate`, `save_jd`, `list_jds`, `create_resume_from_jd`, `save_variant_to_resume`, `list_resumes`, and `open_resume`. `/copilot/chat` remains the primary product entrypoint and keeps the P9 response envelope and `workspace.variants` contract.
+Copilot now enters through `AgentRuntime` and uses `AgentToolRegistry` for product/kernel tools such as `create_experience`, `list_experiences`, `import_resume_text`, `accept_import_candidate`, `save_jd`, `list_jds`, `generate_resume_variants`, `save_variant_to_resume`, `list_resumes`, `open_resume`, `revise_variant`, `show_evidence`, and `explain_choice`. `/copilot/chat` remains the primary product entrypoint and keeps the P9 response envelope and `workspace.variants` contract.
 
 ### P10.1.5 Conversational FrontDeskAgent
 
-`/copilot/chat` now enters through a conversational front desk decision layer instead of treating every message as a product command or generation request. The decision schema supports `chat_only`, `ask_clarification`, `use_product_tool`, `generate_resume_variants`, `explain_workspace`, and `smalltalk`.
+`/copilot/chat` now enters through a conversational LLM-first front desk decision layer instead of treating every message as a product command or generation request. The decision schema supports `respond`, `ask_clarification`, `call_tool`, `call_tools`, `generate`, `revise`, and `explain_workspace`.
 
-By default `FRONTDESK_CONVERSATION_MODE` is `deterministic` so tests stay stable. `llm` mode uses the configured model client with structured JSON validation and falls back to deterministic routing if model output is invalid or unavailable.
+By default development and production use `FRONTDESK_AGENT_MODE=llm`. Tests may use `FRONTDESK_AGENT_MODE=fake` with `ALLOW_MOCK_RUNTIME=true`. Invalid model output is schema-validated and becomes a safe clarification unless deterministic fallback is explicitly enabled.
 
 Product tools are used only when the user clearly asks for workspace operations such as listing experiences, saving an experience, importing resume text, saving/listing JDs, generating variants from a JD, accepting a variant, or opening resume history. Normal chat, product capability questions, resume writing guidance, job-search advice, and smalltalk return direct assistant text and do not require a JD.
 
-`ProductIntentRouter` is still present as a deterministic fallback and guardrail. Responses must not expose chain-of-thought, `reasoning_content`, provider raw payloads, internal prompts, or tool arguments.
+`ProductIntentRouter` is legacy fallback only and is not the default brain. Responses must not expose chain-of-thought, `reasoning_content`, provider raw payloads, internal prompts, or tool arguments.
 
 P10.1.6 adds `suggestedPrompts` for chat-only prompt chips and makes explicit workspace instructions execute directly from chat. For example, "show evidence", "why recommend the first one", "make it more conservative", "make it more quantified", and "use the first one" run against the active or first variant when available.
 
@@ -976,6 +986,46 @@ curl -H "x-user-id: demo-user" http://127.0.0.1:3000/product/generations/:genera
 
 - `ProductAction` is a direct operation on the current workspace, such as accept, revise, show evidence, or explain choice. It calls `/copilot/actions`.
 - `SuggestedPrompt` is recommended natural-language continuation. The frontend sends `suggestedPrompt.message` back to `/copilot/chat`; it is not an action.
+
+### Architecture Refactor: Real Agent Runtime
+
+P10.2 now treats Copilot as the product API name and `AgentRuntime` as the execution entrypoint.
+
+```text
+/copilot/chat
+  -> CopilotApiAdapter
+  -> AgentRuntime
+  -> LLM-first FrontDeskAgent
+  -> AgentToolRegistry
+  -> Product Services / Kernel Services
+```
+
+`FrontDeskAgent` asks the configured model for a schema-validated `AgentDecision`. It can respond, ask clarification, call one or more tools, generate variants, revise a variant, or explain the workspace. It must not expose chain-of-thought, `reasoning_content`, provider raw payloads, internal prompts, or tool arguments.
+
+`AgentToolRegistry` is the single tool boundary. Product tools cover experiences, JDs, resumes, imports, dashboard, and sidebar. Kernel tools cover resume variant generation, revision, evidence display, choice explanation, and variant decisions. LLM output can request tools, but tools own all database writes.
+
+`ProductIntentRouter` and deterministic frontdesk behavior are not the default brain. They are legacy/test fallback paths only when explicitly enabled by env. Development and production should run with real provider config:
+
+```bash
+AGENT_PROVIDER=deepseek
+AGENT_MODEL=deepseek-chat
+AGENT_API_KEY=...
+AGENT_BASE_URL=https://api.deepseek.com
+AGENT_TEMPERATURE=0.2
+AGENT_MAX_TOKENS=2000
+FRONTDESK_AGENT_MODE=llm
+ALLOW_MOCK_RUNTIME=false
+ALLOW_DETERMINISTIC_ROUTER=false
+```
+
+Test-only fake mode:
+
+```bash
+NODE_ENV=test
+TEST_MODEL_PROVIDER=fake
+FRONTDESK_AGENT_MODE=fake
+ALLOW_MOCK_RUNTIME=true
+```
 
 The minimal frontend now displays suggested prompt chips under the latest assistant message and has a lightweight sidebar backed by `/copilot/sidebar`. It can restore a recent session by calling `/copilot/sessions/:id` and rehydrating messages plus workspace.
 
