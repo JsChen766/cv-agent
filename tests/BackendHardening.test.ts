@@ -99,6 +99,7 @@ describe("backend hardening", () => {
   });
 
   it("creates agent run and tool run logs without sensitive fields", async () => {
+    process.env.DEBUG_ROUTES_ENABLED = "true";
     const chat = await server.inject({
       method: "POST",
       url: "/copilot/chat",

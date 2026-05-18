@@ -28,13 +28,6 @@ export async function createServer(kernel: ApiKernel, options: CreateServerOptio
 
   await registerDevCors(app);
 
-  app.addHook("preHandler", async (request) => {
-    await kernel.platformServices.usage.checkRequest({
-      userId: readHeader(request.headers["x-user-id"]),
-      ip: request.ip,
-    });
-  });
-
   app.setErrorHandler((error, request, reply) => {
     const requestId = readHeader(request.headers["x-request-id"]) ?? `req-${randomUUID()}`;
     const mapped = errorResponse(error, {

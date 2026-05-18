@@ -40,13 +40,7 @@ class PostgresIdempotencyService {
     requestHash: string;
     ttlMs?: number;
   }): Promise<IdempotencyBeginResult> {
-    const existing = await this.find(input.userId, input.key);
     const now = new Date();
-    if (existing && new Date(existing.expiresAt).getTime() > now.getTime()) {
-      if (existing.requestHash !== input.requestHash) return { type: "conflict", entry: existing, reason: "hash_mismatch" };
-      if (existing.status === "completed") return { type: "replay", entry: existing };
-      return { type: "conflict", entry: existing, reason: "pending" };
-    }
     const entry: IdempotencyEntry = {
       id: `idem-${randomUUID()}`,
       userId: input.userId,
@@ -59,13 +53,33 @@ class PostgresIdempotencyService {
       updatedAt: now.toISOString(),
       expiresAt: new Date(now.getTime() + (input.ttlMs ?? 24 * 60 * 60 * 1000)).toISOString(),
     };
-    await this.database.query(
-      `INSERT INTO api_idempotency_key (id, user_id, key, request_method, request_path, request_hash, status, created_at, updated_at, expires_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
-       ON CONFLICT (id) DO NOTHING`,
-      [entry.id, entry.userId, entry.key, entry.requestMethod, entry.requestPath, entry.requestHash, entry.status, entry.createdAt, entry.updatedAt, entry.expiresAt],
+    const result = await this.database.query<any>(
+      `INSERT INTO api_idempotency_key (id, user_id, key, request_method, request_path, request_hash, status, response_status, response_body_json, created_at, updated_at, expires_at)
+       VALUES ($1,$2,$3,$4,$5,$6,'pending',NULL,NULL,$7,$8,$9)
+       ON CONFLICT (user_id, key)
+       DO UPDATE SET
+         id=EXCLUDED.id,
+         request_method=EXCLUDED.request_method,
+         request_path=EXCLUDED.request_path,
+         request_hash=EXCLUDED.request_hash,
+         response_status=NULL,
+         response_body_json=NULL,
+         status='pending',
+         created_at=EXCLUDED.created_at,
+         updated_at=EXCLUDED.updated_at,
+         expires_at=EXCLUDED.expires_at
+       WHERE api_idempotency_key.expires_at <= $10
+       RETURNING *`,
+      [entry.id, entry.userId, entry.key, entry.requestMethod, entry.requestPath, entry.requestHash, entry.createdAt, entry.updatedAt, entry.expiresAt, entry.createdAt],
     );
-    return { type: "started", entry };
+    const started = result.rows[0] ? mapIdempotency(result.rows[0]) : null;
+    if (started) return { type: "started", entry: started };
+
+    const existing = await this.find(input.userId, input.key);
+    if (!existing) return { type: "started", entry };
+    if (existing.requestHash !== input.requestHash) return { type: "conflict", entry: existing, reason: "hash_mismatch" };
+    if (existing.status === "completed") return { type: "replay", entry: existing };
+    return { type: "conflict", entry: existing, reason: "pending" };
   }
 
   public async complete(userId: string, key: string, responseStatus: number, responseBody: unknown): Promise<void> {
@@ -91,17 +105,31 @@ class PostgresSessionLockService {
 
   public async acquire(input: { userId: string; sessionId: string; ownerRequestId: string; ttlMs?: number }): Promise<boolean> {
     const now = new Date();
-    const existing = await this.database.query<any>(`SELECT * FROM copilot_session_lock WHERE session_id=$1`, [input.sessionId]);
-    const row = existing.rows[0];
-    if (row && row.user_id === input.userId && new Date(row.locked_until).getTime() > now.getTime()) {
-      return row.owner_request_id === input.ownerRequestId;
-    }
-    await this.database.query(`DELETE FROM copilot_session_lock WHERE session_id=$1`, [input.sessionId]);
-    await this.database.query(
-      `INSERT INTO copilot_session_lock (session_id, user_id, owner_request_id, locked_until, created_at, updated_at) VALUES ($1,$2,$3,$4,$5,$6)`,
-      [input.sessionId, input.userId, input.ownerRequestId, new Date(now.getTime() + (input.ttlMs ?? readPlatformConfig().sessionLockTtlMs)).toISOString(), now.toISOString(), now.toISOString()],
+    const nowIso = now.toISOString();
+    const result = await this.database.query<any>(
+      `INSERT INTO copilot_session_lock (session_id, user_id, owner_request_id, locked_until, created_at, updated_at)
+       VALUES ($1,$2,$3,$4,$5,$6)
+       ON CONFLICT (session_id)
+       DO UPDATE SET
+         user_id=EXCLUDED.user_id,
+         owner_request_id=EXCLUDED.owner_request_id,
+         locked_until=EXCLUDED.locked_until,
+         updated_at=EXCLUDED.updated_at
+       WHERE copilot_session_lock.locked_until <= $7
+          OR (copilot_session_lock.user_id = EXCLUDED.user_id AND copilot_session_lock.owner_request_id = EXCLUDED.owner_request_id)
+       RETURNING *`,
+      [
+        input.sessionId,
+        input.userId,
+        input.ownerRequestId,
+        new Date(now.getTime() + (input.ttlMs ?? readPlatformConfig().sessionLockTtlMs)).toISOString(),
+        nowIso,
+        nowIso,
+        nowIso,
+      ],
     );
-    return true;
+    const row = result.rows[0];
+    return Boolean(row && row.user_id === input.userId && row.owner_request_id === input.ownerRequestId);
   }
 
   public async release(input: { userId: string; sessionId: string; ownerRequestId: string }): Promise<void> {

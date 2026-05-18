@@ -5,6 +5,7 @@ import type { ApiKernel } from "../types.js";
 import type { AuthResolver } from "../auth/index.js";
 import { createKernelRequestContext } from "../context.js";
 import { withIdempotency } from "../idempotency.js";
+import { applyRateLimit } from "../rateLimit.js";
 import type {
   ProductExperienceCategory,
   ProductExperienceRevisionSource,
@@ -17,14 +18,20 @@ export async function registerProductRoutes(
   kernel: ApiKernel,
   authResolver: AuthResolver<FastifyRequest>,
 ): Promise<void> {
-  app.get("/product/experiences", async (request) => {
+  const contextFor = async (request: FastifyRequest) => {
     const ctx = createKernelRequestContext(request, await authResolver.resolve(request));
+    await applyRateLimit(kernel, ctx, request);
+    return ctx;
+  };
+
+  app.get("/product/experiences", async (request) => {
+    const ctx = await contextFor(request);
     const data = await kernel.productServices.experienceService.listExperiences(ctx.user.id, { limit: readLimit(request.query) });
     return productSuccess(data, kernel, ctx);
   });
 
   app.post("/product/experiences", async (request, reply) => {
-    const ctx = createKernelRequestContext(request, await authResolver.resolve(request));
+    const ctx = await contextFor(request);
     const body = requireRecord(request.body);
     return withIdempotency(request, reply, kernel, ctx.user.id, async () => {
       const data = await kernel.productServices.experienceService.createExperience(ctx.user.id, {
@@ -40,58 +47,64 @@ export async function registerProductRoutes(
   });
 
   app.get("/product/experiences/:id", async (request) => {
-    const ctx = createKernelRequestContext(request, await authResolver.resolve(request));
+    const ctx = await contextFor(request);
     const experience = await kernel.productServices.experienceService.getExperience(ctx.user.id, param(request, "id"));
     if (!experience) throw new ApiError("NOT_FOUND", "Experience not found.", 404);
     const revisions = await kernel.productServices.experienceService.listRevisions(ctx.user.id, experience.id);
     return productSuccess({ experience, revisions }, kernel, ctx);
   });
 
-  app.patch("/product/experiences/:id", async (request) => {
-    const ctx = createKernelRequestContext(request, await authResolver.resolve(request));
+  app.patch("/product/experiences/:id", async (request, reply) => {
+    const ctx = await contextFor(request);
     const body = requireRecord(request.body);
-    const patch = {
-      title: optionalString(body.title),
-      organization: optionalString(body.organization),
-      role: optionalString(body.role),
-      ...(Array.isArray(body.tags) ? { tags: stringArray(body.tags) } : {}),
-    };
-    const updated = await kernel.productServices.experienceService.updateExperience(ctx.user.id, param(request, "id"), {
-      ...patch,
+    return withIdempotency(request, reply, kernel, ctx.user.id, async () => {
+      const patch = {
+        title: optionalString(body.title),
+        organization: optionalString(body.organization),
+        role: optionalString(body.role),
+        ...(Array.isArray(body.tags) ? { tags: stringArray(body.tags) } : {}),
+      };
+      const updated = await kernel.productServices.experienceService.updateExperience(ctx.user.id, param(request, "id"), {
+        ...patch,
+      });
+      if (!updated) throw new ApiError("NOT_FOUND", "Experience not found.", 404);
+      return productSuccess(updated, kernel, ctx);
     });
-    if (!updated) throw new ApiError("NOT_FOUND", "Experience not found.", 404);
-    return productSuccess(updated, kernel, ctx);
   });
 
-  app.post("/product/experiences/:id/revisions", async (request) => {
-    const ctx = createKernelRequestContext(request, await authResolver.resolve(request));
+  app.post("/product/experiences/:id/revisions", async (request, reply) => {
+    const ctx = await contextFor(request);
     const body = requireRecord(request.body);
-    const revision = await kernel.productServices.experienceService.createRevision(ctx.user.id, param(request, "id"), {
-      content: requiredString(body.content, "content"),
-      source: readRevisionSource(body.source),
+    return withIdempotency(request, reply, kernel, ctx.user.id, async () => {
+      const revision = await kernel.productServices.experienceService.createRevision(ctx.user.id, param(request, "id"), {
+        content: requiredString(body.content, "content"),
+        source: readRevisionSource(body.source),
+      });
+      return productSuccess(revision, kernel, ctx);
     });
-    return productSuccess(revision, kernel, ctx);
   });
 
-  app.post("/product/experiences/:id/variants", async (request) => {
-    const ctx = createKernelRequestContext(request, await authResolver.resolve(request));
+  app.post("/product/experiences/:id/variants", async (request, reply) => {
+    const ctx = await contextFor(request);
     const body = requireRecord(request.body);
-    const variant = await kernel.productServices.experienceService.createVariant(ctx.user.id, param(request, "id"), requiredString(body.revisionId, "revisionId"), {
-      content: requiredString(body.content, "content"),
-      variantType: readVariantType(body.variantType),
-      language: readLanguage(body.language),
-      targetJdId: optionalString(body.targetJdId),
+    return withIdempotency(request, reply, kernel, ctx.user.id, async () => {
+      const variant = await kernel.productServices.experienceService.createVariant(ctx.user.id, param(request, "id"), requiredString(body.revisionId, "revisionId"), {
+        content: requiredString(body.content, "content"),
+        variantType: readVariantType(body.variantType),
+        language: readLanguage(body.language),
+        targetJdId: optionalString(body.targetJdId),
+      });
+      return productSuccess(variant, kernel, ctx);
     });
-    return productSuccess(variant, kernel, ctx);
   });
 
   app.get("/product/jds", async (request) => {
-    const ctx = createKernelRequestContext(request, await authResolver.resolve(request));
+    const ctx = await contextFor(request);
     return productSuccess(await kernel.productServices.jdService.listJDs(ctx.user.id, readLimit(request.query)), kernel, ctx);
   });
 
   app.post("/product/jds", async (request, reply) => {
-    const ctx = createKernelRequestContext(request, await authResolver.resolve(request));
+    const ctx = await contextFor(request);
     const body = requireRecord(request.body);
     return withIdempotency(request, reply, kernel, ctx.user.id, async () => {
       const jd = await kernel.productServices.jdService.saveJD(ctx.user.id, {
@@ -105,19 +118,19 @@ export async function registerProductRoutes(
   });
 
   app.get("/product/jds/:id", async (request) => {
-    const ctx = createKernelRequestContext(request, await authResolver.resolve(request));
+    const ctx = await contextFor(request);
     const jd = await kernel.productServices.jdService.getJD(ctx.user.id, param(request, "id"));
     if (!jd) throw new ApiError("NOT_FOUND", "JD not found.", 404);
     return productSuccess(jd, kernel, ctx);
   });
 
   app.get("/product/resumes", async (request) => {
-    const ctx = createKernelRequestContext(request, await authResolver.resolve(request));
+    const ctx = await contextFor(request);
     return productSuccess(await kernel.productServices.resumeService.listResumes(ctx.user.id, readLimit(request.query)), kernel, ctx);
   });
 
   app.post("/product/resumes", async (request, reply) => {
-    const ctx = createKernelRequestContext(request, await authResolver.resolve(request));
+    const ctx = await contextFor(request);
     const body = requireRecord(request.body);
     return withIdempotency(request, reply, kernel, ctx.user.id, async () => productSuccess(await kernel.productServices.resumeService.createResume(ctx.user.id, {
         title: optionalString(body.title),
@@ -127,47 +140,52 @@ export async function registerProductRoutes(
   });
 
   app.get("/product/resumes/:id", async (request) => {
-    const ctx = createKernelRequestContext(request, await authResolver.resolve(request));
+    const ctx = await contextFor(request);
     const resume = await kernel.productServices.resumeService.getResume(ctx.user.id, param(request, "id"));
     if (!resume) throw new ApiError("NOT_FOUND", "Resume not found.", 404);
     return productSuccess(resume, kernel, ctx);
   });
 
-  app.post("/product/resumes/:id/items", async (request) => {
-    const ctx = createKernelRequestContext(request, await authResolver.resolve(request));
+  app.post("/product/resumes/:id/items", async (request, reply) => {
+    const ctx = await contextFor(request);
     const body = requireRecord(request.body);
-    const item = await kernel.productServices.resumeService.addResumeItem(ctx.user.id, param(request, "id"), {
-      title: requiredString(body.title, "title"),
-      contentSnapshot: requiredString(body.contentSnapshot, "contentSnapshot"),
-      sectionType: readSectionType(body.sectionType),
-      sourceExperienceId: optionalString(body.sourceExperienceId),
-      sourceVariantId: optionalString(body.sourceVariantId),
-      sourceArtifactId: optionalString(body.sourceArtifactId),
+    return withIdempotency(request, reply, kernel, ctx.user.id, async () => {
+      const item = await kernel.productServices.resumeService.addResumeItem(ctx.user.id, param(request, "id"), {
+        title: requiredString(body.title, "title"),
+        contentSnapshot: requiredString(body.contentSnapshot, "contentSnapshot"),
+        sectionType: readSectionType(body.sectionType),
+        sourceExperienceId: optionalString(body.sourceExperienceId),
+        sourceVariantId: optionalString(body.sourceVariantId),
+        sourceArtifactId: optionalString(body.sourceArtifactId),
+      });
+      return productSuccess(item, kernel, ctx);
     });
-    return productSuccess(item, kernel, ctx);
   });
 
-  app.patch("/product/resume-items/:id", async (request) => {
-    const ctx = createKernelRequestContext(request, await authResolver.resolve(request));
+  app.patch("/product/resume-items/:id", async (request, reply) => {
+    const ctx = await contextFor(request);
     const body = requireRecord(request.body);
-    const item = await kernel.productServices.resumeService.updateResumeItem(ctx.user.id, param(request, "id"), {
-      title: optionalString(body.title),
-      contentSnapshot: optionalString(body.contentSnapshot),
-      hidden: typeof body.hidden === "boolean" ? body.hidden : undefined,
-      pinned: typeof body.pinned === "boolean" ? body.pinned : undefined,
+    return withIdempotency(request, reply, kernel, ctx.user.id, async () => {
+      const item = await kernel.productServices.resumeService.updateResumeItem(ctx.user.id, param(request, "id"), {
+        title: optionalString(body.title),
+        contentSnapshot: optionalString(body.contentSnapshot),
+        hidden: typeof body.hidden === "boolean" ? body.hidden : undefined,
+        pinned: typeof body.pinned === "boolean" ? body.pinned : undefined,
+      });
+      if (!item) throw new ApiError("NOT_FOUND", "Resume item not found.", 404);
+      return productSuccess(item, kernel, ctx);
     });
-    if (!item) throw new ApiError("NOT_FOUND", "Resume item not found.", 404);
-    return productSuccess(item, kernel, ctx);
   });
 
-  app.post("/product/resumes/:id/reorder", async (request) => {
-    const ctx = createKernelRequestContext(request, await authResolver.resolve(request));
+  app.post("/product/resumes/:id/reorder", async (request, reply) => {
+    const ctx = await contextFor(request);
     const body = requireRecord(request.body);
-    return productSuccess(await kernel.productServices.resumeService.reorderResumeItems(ctx.user.id, param(request, "id"), stringArray(body.orderedIds)), kernel, ctx);
+    return withIdempotency(request, reply, kernel, ctx.user.id, async () =>
+      productSuccess(await kernel.productServices.resumeService.reorderResumeItems(ctx.user.id, param(request, "id"), stringArray(body.orderedIds)), kernel, ctx));
   });
 
   app.post("/product/imports/text", async (request, reply) => {
-    const ctx = createKernelRequestContext(request, await authResolver.resolve(request));
+    const ctx = await contextFor(request);
     const body = requireRecord(request.body);
     return withIdempotency(request, reply, kernel, ctx.user.id, async () => {
       const job = await kernel.productServices.importService.createTextImportJob(ctx.user.id, requiredString(body.rawText, "rawText"));
@@ -177,42 +195,44 @@ export async function registerProductRoutes(
   });
 
   app.get("/product/imports/:id", async (request) => {
-    const ctx = createKernelRequestContext(request, await authResolver.resolve(request));
+    const ctx = await contextFor(request);
     const job = await kernel.productServices.importService.getImportJob(ctx.user.id, param(request, "id"));
     if (!job) throw new ApiError("NOT_FOUND", "Import job not found.", 404);
     const candidates = await kernel.productServices.importService.listCandidatesByJob(ctx.user.id, job.id);
     return productSuccess({ job, candidates }, kernel, ctx);
   });
 
-  app.post("/product/import-candidates/:id/accept", async (request) => {
-    const ctx = createKernelRequestContext(request, await authResolver.resolve(request));
-    return productSuccess(await kernel.productServices.importService.acceptCandidate(ctx.user.id, param(request, "id")), kernel, ctx);
+  app.post("/product/import-candidates/:id/accept", async (request, reply) => {
+    const ctx = await contextFor(request);
+    return withIdempotency(request, reply, kernel, ctx.user.id, async () =>
+      productSuccess(await kernel.productServices.importService.acceptCandidate(ctx.user.id, param(request, "id")), kernel, ctx));
   });
 
-  app.post("/product/import-candidates/:id/reject", async (request) => {
-    const ctx = createKernelRequestContext(request, await authResolver.resolve(request));
-    return productSuccess(await kernel.productServices.importService.rejectCandidate(ctx.user.id, param(request, "id")), kernel, ctx);
+  app.post("/product/import-candidates/:id/reject", async (request, reply) => {
+    const ctx = await contextFor(request);
+    return withIdempotency(request, reply, kernel, ctx.user.id, async () =>
+      productSuccess(await kernel.productServices.importService.rejectCandidate(ctx.user.id, param(request, "id")), kernel, ctx));
   });
 
   app.get("/product/dashboard", async (request) => {
-    const ctx = createKernelRequestContext(request, await authResolver.resolve(request));
+    const ctx = await contextFor(request);
     return productSuccess(await kernel.copilotServices.workspaceService.getDashboard(ctx.user.id), kernel, ctx);
   });
 
   app.get("/product/generations", async (request) => {
-    const ctx = createKernelRequestContext(request, await authResolver.resolve(request));
+    const ctx = await contextFor(request);
     return productSuccess(await kernel.productServices.generationProductService.listGenerations(ctx.user.id, readLimit(request.query)), kernel, ctx);
   });
 
   app.get("/product/generations/:id", async (request) => {
-    const ctx = createKernelRequestContext(request, await authResolver.resolve(request));
+    const ctx = await contextFor(request);
     const generation = await kernel.productServices.generationProductService.getGeneration(ctx.user.id, param(request, "id"));
     if (!generation) throw new ApiError("NOT_FOUND", "Generation not found.", 404);
     return productSuccess(generation, kernel, ctx);
   });
 
   app.post("/product/generations/from-jd", async (request, reply) => {
-    const ctx = createKernelRequestContext(request, await authResolver.resolve(request));
+    const ctx = await contextFor(request);
     const body = requireRecord(request.body);
     const jdId = optionalString(body.jdId);
     const jdText = optionalString(body.jdText);
@@ -232,7 +252,7 @@ export async function registerProductRoutes(
   });
 
   app.post("/product/generations/:id/accept-variant", async (request, reply) => {
-    const ctx = createKernelRequestContext(request, await authResolver.resolve(request));
+    const ctx = await contextFor(request);
     const body = requireRecord(request.body);
     return withIdempotency(request, reply, kernel, ctx.user.id, async () => productSuccess(await kernel.productServices.generationProductService.saveAcceptedVariantToResume(ctx.user.id, {
         generationId: param(request, "id"),

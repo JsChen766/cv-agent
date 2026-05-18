@@ -2,6 +2,7 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import type { AuthResolver } from "../auth/index.js";
 import { createKernelRequestContext } from "../context.js";
 import { ApiError } from "../errors.js";
+import { applyRateLimit } from "../rateLimit.js";
 import type { ApiKernel, GenerateJsonBody } from "../types.js";
 import {
   createAgentEvent,
@@ -16,18 +17,18 @@ export async function registerStreamingRoutes(
 ): Promise<void> {
   app.post("/generations/stream", async (request, reply) => {
     const resolvedAuth = await authResolver.resolve(request);
+    const ctx = createKernelRequestContext(request, resolvedAuth);
+    await applyRateLimit(kernel, ctx, request);
     const body = parseGenerateBody(request.body);
     startNdjson(reply, request);
 
     const sink = new NdjsonAgentEventSink((event) => {
       reply.raw.write(`${JSON.stringify({ event })}\n`);
     });
-    const ctx = createKernelRequestContext(request, resolvedAuth, {
-      eventSink: sink,
-    });
+    const streamCtx = createKernelRequestContext(request, resolvedAuth, { eventSink: sink });
 
     try {
-      const result = await kernel.cvAgentKernel.generations.create(ctx, {
+      const result = await kernel.cvAgentKernel.generations.create(streamCtx, {
         jdText: body.jdText,
         targetRole: body.targetRole,
       });
@@ -36,8 +37,8 @@ export async function registerStreamingRoutes(
       sink.emit({
         type: "kernel.failed",
         status: "failed",
-        requestId: ctx.request.requestId,
-        traceId: ctx.request.traceId,
+        requestId: streamCtx.request.requestId,
+        traceId: streamCtx.request.traceId,
         step: "generations.stream",
         message: "Streaming generation failed.",
         data: { errorType: error instanceof Error ? error.name : "UnknownError" },

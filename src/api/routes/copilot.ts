@@ -6,6 +6,7 @@ import { ApiError } from "../errors.js";
 import { success } from "../response.js";
 import type { ApiKernel } from "../types.js";
 import { withIdempotency } from "../idempotency.js";
+import { applyRateLimit } from "../rateLimit.js";
 import { CopilotOrchestrator } from "../../copilot/CopilotOrchestrator.js";
 import type { CopilotActionRequest, CopilotChatRequest } from "../../copilot/types.js";
 
@@ -22,6 +23,7 @@ export async function registerCopilotRoutes(
   app.post("/copilot/chat", async (request, reply) => {
     const resolvedAuth = await authResolver.resolve(request);
     const ctx = createKernelRequestContext(request, resolvedAuth);
+    await applyRateLimit(kernel, ctx, request);
     const body = parseCopilotChatBody(request.body);
 
     return withIdempotency(request, reply, kernel, ctx.user.id, async () => {
@@ -39,6 +41,7 @@ export async function registerCopilotRoutes(
   app.post("/copilot/actions", async (request, reply) => {
     const resolvedAuth = await authResolver.resolve(request);
     const ctx = createKernelRequestContext(request, resolvedAuth);
+    await applyRateLimit(kernel, ctx, request);
     const body = parseCopilotActionBody(request.body);
 
     const session = await orchestrator.getSession(ctx.user.id, body.sessionId);
@@ -60,6 +63,10 @@ export async function registerCopilotRoutes(
   app.post("/copilot/chat/stream", async (request, reply) => {
     const resolvedAuth = await authResolver.resolve(request);
     const ctx = createKernelRequestContext(request, resolvedAuth);
+    await applyRateLimit(kernel, ctx, request);
+    if (readHeader(request.headers["idempotency-key"])) {
+      throw new ApiError("INVALID_BODY", "SSE stream does not support idempotent replay.", 400);
+    }
     const body = parseCopilotChatBody(request.body);
 
     reply.hijack();

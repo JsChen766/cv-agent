@@ -4,6 +4,7 @@ import type { ApiKernel } from "../types.js";
 import type { GraphScopeType } from "../../application/query/index.js";
 import type { AuthResolver } from "../auth/index.js";
 import { createKernelRequestContext } from "../context.js";
+import { applyRateLimit } from "../rateLimit.js";
 import { success } from "../response.js";
 
 export async function registerEvidenceRoutes(
@@ -14,6 +15,7 @@ export async function registerEvidenceRoutes(
   app.get<{ Params: { sessionId: string } }>("/generations/:sessionId/evidence-chains", async (request) => {
     const resolvedAuth = await authResolver.resolve(request);
     const ctx = createKernelRequestContext(request, resolvedAuth);
+    await applyRateLimit(kernel, ctx, request);
     const result = await kernel.cvAgentKernel.generations.getEvidenceChains(ctx, {
       sessionId: request.params.sessionId,
     });
@@ -28,6 +30,7 @@ export async function registerEvidenceRoutes(
   app.get<{ Params: { scopeType: string; scopeId: string } }>("/graphs/:scopeType/:scopeId", async (request) => {
     const resolvedAuth = await authResolver.resolve(request);
     const ctx = createKernelRequestContext(request, resolvedAuth);
+    await applyRateLimit(kernel, ctx, request);
     const scopeType = parseScopeType(request.params.scopeType);
     const result = await kernel.cvAgentKernel.generations.getGraph(ctx, {
       scopeType,

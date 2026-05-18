@@ -349,6 +349,7 @@ CREATE TABLE IF NOT EXISTS api_idempotency_key (
   expires_at TIMESTAMPTZ NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_api_idempotency_user_key ON api_idempotency_key(user_id, key);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_api_idempotency_user_key_unique ON api_idempotency_key(user_id, key);
 CREATE INDEX IF NOT EXISTS idx_api_idempotency_expires_at ON api_idempotency_key(expires_at);
 
 CREATE TABLE IF NOT EXISTS copilot_session_lock (

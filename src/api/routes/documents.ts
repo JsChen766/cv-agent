@@ -4,6 +4,8 @@ import type { ApiKernel, IngestDocumentJsonBody } from "../types.js";
 import type { DocumentInput } from "../../tools/document/index.js";
 import type { AuthResolver } from "../auth/index.js";
 import { createKernelRequestContext } from "../context.js";
+import { withIdempotency } from "../idempotency.js";
+import { applyRateLimit } from "../rateLimit.js";
 import { success } from "../response.js";
 
 export async function registerDocumentRoutes(
@@ -11,22 +13,25 @@ export async function registerDocumentRoutes(
   kernel: ApiKernel,
   authResolver: AuthResolver<FastifyRequest>,
 ): Promise<void> {
-  app.post("/documents/ingest", async (request) => {
+  app.post("/documents/ingest", async (request, reply) => {
     const resolvedAuth = await authResolver.resolve(request);
     const ctx = createKernelRequestContext(request, resolvedAuth);
+    await applyRateLimit(kernel, ctx, request);
     const body = parseIngestBody(request.body);
-    const document = toDocumentInput(ctx.user.id, body);
+    return withIdempotency(request, reply, kernel, ctx.user.id, async () => {
+      const document = toDocumentInput(ctx.user.id, body);
 
-    const result = await kernel.cvAgentKernel.documents.ingest(ctx, {
-      message: "Import this resume document.",
-      documents: [document],
-    });
+      const result = await kernel.cvAgentKernel.documents.ingest(ctx, {
+        message: "Import this resume document.",
+        documents: [document],
+      });
 
-    return success(result, {
-      requestId: ctx.request.requestId,
-      traceId: ctx.request.traceId,
-      mode: kernel.mode,
-      ...(kernel.warnings.length > 0 ? { warnings: kernel.warnings } : {}),
+      return success(result, {
+        requestId: ctx.request.requestId,
+        traceId: ctx.request.traceId,
+        mode: kernel.mode,
+        ...(kernel.warnings.length > 0 ? { warnings: kernel.warnings } : {}),
+      });
     });
   });
 }

@@ -1693,7 +1693,7 @@ Unknown LLM tool calls are rejected before execution. The runtime logs only `eve
 
 #### Backend Hardening Contract
 
-Status: implemented.
+Status: implemented through Backend Hardening v2.
 
 ##### Error response contract
 
@@ -1736,6 +1736,14 @@ Behavior:
 
 Persisted table: `api_idempotency_key`.
 
+Backend Hardening v2 requirements:
+
+- PostgreSQL must enforce one live row per `(user_id, key)` with a unique index.
+- `begin()` must be atomic. It must not use SELECT-then-INSERT for the first writer path.
+- Expired keys may be atomically replaced and started again.
+- `POST /copilot/chat/stream` rejects `Idempotency-Key` with `400 INVALID_BODY` because SSE responses are not replayable.
+- Mutating product, copilot, jobs, documents, generation, and decision routes should use this contract.
+
 ##### Session lock behavior
 
 `/copilot/chat` and `/copilot/actions` acquire a user/session scoped lock before mutating messages, turns, or workspace snapshots. Default TTL is controlled by `COPILOT_SESSION_LOCK_TTL_MS=60000`. Lock conflict returns:
@@ -1753,6 +1761,14 @@ Persisted table: `api_idempotency_key`.
 
 Persisted table: `copilot_session_lock`.
 
+PostgreSQL lock acquisition is a single atomic upsert on `session_id`:
+
+- no row: acquire succeeds
+- expired row: current request may replace it
+- same owner request: reentrant acquire succeeds
+- different unexpired owner: acquire fails
+- release deletes only when `owner_request_id` matches
+
 ##### Rate limit and quota behavior
 
 Config:
@@ -1766,9 +1782,14 @@ AGENT_DAILY_TOOL_CALL_QUOTA=500
 AGENT_DAILY_GENERATION_QUOTA=50
 LLM_MAX_PROMPT_CHARS=50000
 LLM_MAX_TOOL_CALLS_PER_RUN=5
+COPILOT_SESSION_LOCK_TTL_MS=60000
+DEBUG_ROUTES_ENABLED=false
+DEBUG_AGENT_RUNS_ENABLED=false
 ```
 
 Request limits return `429 RATE_LIMITED`. Agent message/tool/generation quota failures return `429 QUOTA_EXCEEDED`. Long prompt/input failures return `QUOTA_EXCEEDED` before model execution. Persisted table: `api_usage_counter`.
+
+Rate limiting runs after `AuthResolver` for protected routes. User-level quota must use `ctx.user.id`, not `x-user-id` directly, so bearer/static and future token/cookie auth cannot be bypassed by spoofing development headers. Missing auth should fail before consuming user quota. `/health` may remain unauthenticated.
 
 ##### Agent run log contract
 
@@ -1786,7 +1807,7 @@ Logs must not store complete prompts, resume/JD text, provider raw payloads, API
 - `GET /debug/agent-runs?limit=50`
 - `GET /debug/agent-runs/:id`
 
-These are enabled in dev/test. Production requires `DEBUG_ROUTES_ENABLED=true`.
+These routes are disabled by default in every environment. They require authentication and either `DEBUG_ROUTES_ENABLED=true` or `DEBUG_AGENT_RUNS_ENABLED=true`. They return only the current user's run logs and must not include prompts, provider raw payloads, API keys, full resume/JD text, or tool arguments.
 
 ##### Background job contract
 
@@ -1808,7 +1829,21 @@ Supported modes:
 - `bearer_static`: reads `Authorization: Bearer ...` using `AUTH_STATIC_BEARER_TOKEN` and `AUTH_STATIC_USER_ID`.
 - `cookie_session`: reserved stub.
 
-Protected product, copilot, jobs, and debug run routes must resolve identity through `AuthResolver`. Request body `userId` is ignored.
+Protected product, copilot, documents, generation, decision, evidence, jobs, and debug run routes must resolve identity through `AuthResolver`. Request body `userId` is ignored.
+
+##### Backend Hardening v2 runtime decomposition
+
+`AgentRuntime` is a thin coordinator. Runtime submodules own the non-functional concerns:
+
+- `AgentQuotaGuard`: prompt size, message/tool/generation quota, max tool calls.
+- `AgentSessionLock`: acquire/release session locks with `finally` release.
+- `AgentRunLogger`: agent run and tool run log lifecycle.
+- `ToolExecutionService`: tool validation, unknown-tool logging, quota consumption, tool execution.
+- `FinalAnswerSynthesizer`: optional `FINAL_ANSWER_SYNTHESIS=llm` safe summary synthesis.
+- `WorkspaceMerger`: workspace patch merging and action/tool mapping.
+- `ActivityRecorder`: assistant message, turn completion, workspace snapshot, activity persistence.
+- `ResumeIngestionCoordinator`: resume ingestion before generation.
+- `StreamEmitter`: converts chat responses to SSE events.
 
 ##### Final answer synthesis
 

@@ -31,7 +31,7 @@ Key API groups:
 - `/copilot/sessions`, `/copilot/sidebar` - persisted chat/workspace read model.
 - `/product/*` - structured product data APIs for experiences, JDs, resumes, imports, generations, and dashboard.
 - `/jobs` - minimal background job skeleton for future long-running work.
-- `/debug/agent-modes`, `/debug/agent-runs` - runtime/debug views; run logs are dev/test only by default.
+- `/debug/agent-modes`, `/debug/agent-runs` - runtime/debug views; agent run logs require an explicit debug env flag.
 
 Runtime modes:
 
@@ -60,12 +60,16 @@ ALLOW_DETERMINISTIC_RUNTIME=false
 ALLOW_DETERMINISTIC_ROUTER=false
 RATE_LIMIT_ENABLED=true
 RATE_LIMIT_PER_USER_PER_MINUTE=30
+RATE_LIMIT_PER_IP_PER_MINUTE=60
 AGENT_DAILY_MESSAGE_QUOTA=200
 AGENT_DAILY_TOOL_CALL_QUOTA=500
 AGENT_DAILY_GENERATION_QUOTA=50
+LLM_MAX_PROMPT_CHARS=50000
+LLM_MAX_TOOL_CALLS_PER_RUN=5
 COPILOT_SESSION_LOCK_TTL_MS=60000
 FINAL_ANSWER_SYNTHESIS=off
 DEBUG_ROUTES_ENABLED=false
+DEBUG_AGENT_RUNS_ENABLED=false
 ```
 
 Local start:
@@ -93,11 +97,20 @@ Security constraints:
 The backend includes a shared hardening layer:
 
 - Unified error envelope with stable error codes such as `INVALID_BODY`, `UNAUTHORIZED`, `RATE_LIMITED`, `IDEMPOTENCY_CONFLICT`, `SESSION_LOCKED`, `QUOTA_EXCEEDED`, and `INTERNAL_ERROR`.
-- `Idempotency-Key` support for key mutating routes. Same user/key/body replays the cached response; same key with a different body returns `409 IDEMPOTENCY_CONFLICT`.
-- Per-session Copilot lock prevents concurrent writes to the same workspace. Lock conflicts return `409 SESSION_LOCKED`.
-- Optional request rate limiting and daily agent quotas.
+- `Idempotency-Key` support for mutating routes. Same user/key/body replays the cached response; same key with a different body returns `409 IDEMPOTENCY_CONFLICT`. PostgreSQL mode uses an atomic `(user_id, key)` upsert; keys are user-scoped.
+- Per-session Copilot lock prevents concurrent writes to the same workspace. PostgreSQL mode uses an atomic `copilot_session_lock` upsert; lock conflicts return `409 SESSION_LOCKED`.
+- Optional request rate limiting and daily agent quotas run after `AuthResolver`, so user quota is based on the resolved authenticated user instead of a spoofable body/header.
 - Agent run and tool run logs with sanitized input/output summaries.
 - Optional `FINAL_ANSWER_SYNTHESIS=llm` final response synthesis from safe summaries only.
+- `/debug/agent-runs` and `/debug/agent-runs/:id` are disabled unless `DEBUG_ROUTES_ENABLED=true` or `DEBUG_AGENT_RUNS_ENABLED=true`.
+
+Backend Hardening v2 tightened the implementation:
+
+- `api_idempotency_key` now has a unique `(user_id, key)` index; expired keys may be atomically replaced.
+- `copilot_session_lock` acquisition is single-statement atomic and release is owner-only.
+- Protected `/copilot/*`, `/product/*`, `/documents`, `/generations`, `/decisions`, `/evidence`, `/jobs`, and debug run routes apply rate limits only after auth succeeds.
+- Mutating product, copilot, jobs, documents, generation, and decision routes are idempotency-aware. `POST /copilot/chat/stream` rejects `Idempotency-Key` with `400 INVALID_BODY` because SSE responses are not replayable.
+- `AgentRuntime` is now a thin coordinator around `AgentQuotaGuard`, `AgentSessionLock`, `AgentRunLogger`, `ToolExecutionService`, `FinalAnswerSynthesizer`, `WorkspaceMerger`, `ActivityRecorder`, `ResumeIngestionCoordinator`, and `StreamEmitter`.
 
 Error response:
 

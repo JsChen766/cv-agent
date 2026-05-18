@@ -3,6 +3,8 @@ import { ApiError } from "../errors.js";
 import type { ApiKernel, GenerateJsonBody } from "../types.js";
 import type { AuthResolver } from "../auth/index.js";
 import { createKernelRequestContext } from "../context.js";
+import { withIdempotency } from "../idempotency.js";
+import { applyRateLimit } from "../rateLimit.js";
 import { success } from "../response.js";
 import {
   validateEvidenceChain,
@@ -23,37 +25,43 @@ export async function registerGenerationRoutes(
   kernel: ApiKernel,
   authResolver: AuthResolver<FastifyRequest>,
 ): Promise<void> {
-  app.post("/generations", async (request) => {
+  app.post("/generations", async (request, reply) => {
     const resolvedAuth = await authResolver.resolve(request);
     const ctx = createKernelRequestContext(request, resolvedAuth);
+    await applyRateLimit(kernel, ctx, request);
     const body = parseGenerateBody(request.body);
-    const result = await kernel.cvAgentKernel.generations.create(ctx, {
-      jdText: body.jdText,
-      targetRole: body.targetRole,
-    });
+    return withIdempotency(request, reply, kernel, ctx.user.id, async () => {
+      const result = await kernel.cvAgentKernel.generations.create(ctx, {
+        jdText: body.jdText,
+        targetRole: body.targetRole,
+      });
 
-    return success(result, {
-      requestId: ctx.request.requestId,
-      traceId: ctx.request.traceId,
-      mode: kernel.mode,
-      ...(kernel.warnings.length > 0 ? { warnings: kernel.warnings } : {}),
+      return success(result, {
+        requestId: ctx.request.requestId,
+        traceId: ctx.request.traceId,
+        mode: kernel.mode,
+        ...(kernel.warnings.length > 0 ? { warnings: kernel.warnings } : {}),
+      });
     });
   });
 
-  app.post("/generations/artifacts/revise", async (request) => {
+  app.post("/generations/artifacts/revise", async (request, reply) => {
     const resolvedAuth = await authResolver.resolve(request);
     const ctx = createKernelRequestContext(request, resolvedAuth);
+    await applyRateLimit(kernel, ctx, request);
     const body = parseReviseArtifactBody(request.body);
     if (body.artifact.userId !== ctx.user.id) {
       throw new ApiError("FORBIDDEN", "Cannot revise an artifact that belongs to another user.", 403);
     }
-    const result = await kernel.cvAgentKernel.generations.reviseArtifact(ctx, body);
+    return withIdempotency(request, reply, kernel, ctx.user.id, async () => {
+      const result = await kernel.cvAgentKernel.generations.reviseArtifact(ctx, body);
 
-    return success(result, {
-      requestId: ctx.request.requestId,
-      traceId: ctx.request.traceId,
-      mode: kernel.mode,
-      ...(kernel.warnings.length > 0 ? { warnings: kernel.warnings } : {}),
+      return success(result, {
+        requestId: ctx.request.requestId,
+        traceId: ctx.request.traceId,
+        mode: kernel.mode,
+        ...(kernel.warnings.length > 0 ? { warnings: kernel.warnings } : {}),
+      });
     });
   });
 }

@@ -2,6 +2,8 @@ import type { FastifyInstance, FastifyRequest } from "fastify";
 import type { AuthResolver } from "../auth/index.js";
 import { createKernelRequestContext } from "../context.js";
 import { ApiError } from "../errors.js";
+import { withIdempotency } from "../idempotency.js";
+import { applyRateLimit } from "../rateLimit.js";
 import { success } from "../response.js";
 import type { ApiKernel } from "../types.js";
 
@@ -10,8 +12,14 @@ export async function registerCopilotDashboardRoutes(
   kernel: ApiKernel,
   authResolver: AuthResolver<FastifyRequest>,
 ): Promise<void> {
-  app.get("/copilot/sessions", async (request) => {
+  const contextFor = async (request: FastifyRequest) => {
     const ctx = createKernelRequestContext(request, await authResolver.resolve(request));
+    await applyRateLimit(kernel, ctx, request);
+    return ctx;
+  };
+
+  app.get("/copilot/sessions", async (request) => {
+    const ctx = await contextFor(request);
     const sessions = await kernel.copilotServices.sessionService.listSessions(ctx.user.id, {
       limit: readLimit(request.query) ?? 30,
       status: "active",
@@ -20,7 +28,7 @@ export async function registerCopilotDashboardRoutes(
   });
 
   app.get("/copilot/sessions/:id", async (request) => {
-    const ctx = createKernelRequestContext(request, await authResolver.resolve(request));
+    const ctx = await contextFor(request);
     const id = param(request, "id");
     const session = await kernel.copilotServices.sessionService.getSession(ctx.user.id, id);
     if (!session) throw new ApiError("NOT_FOUND", "Session not found.", 404);
@@ -32,20 +40,22 @@ export async function registerCopilotDashboardRoutes(
     return routeSuccess({ session, messages, workspace, turns }, kernel, ctx);
   });
 
-  app.patch("/copilot/sessions/:id", async (request) => {
-    const ctx = createKernelRequestContext(request, await authResolver.resolve(request));
+  app.patch("/copilot/sessions/:id", async (request, reply) => {
+    const ctx = await contextFor(request);
     const body = requireRecord(request.body);
-    const status = readStatus(body.status);
-    const updated = await kernel.copilotServices.sessionService.updateSession(ctx.user.id, param(request, "id"), {
-      title: optionalString(body.title),
-      ...(status ? { status } : {}),
+    return withIdempotency(request, reply, kernel, ctx.user.id, async () => {
+      const status = readStatus(body.status);
+      const updated = await kernel.copilotServices.sessionService.updateSession(ctx.user.id, param(request, "id"), {
+        title: optionalString(body.title),
+        ...(status ? { status } : {}),
+      });
+      if (!updated) throw new ApiError("NOT_FOUND", "Session not found.", 404);
+      return routeSuccess(updated, kernel, ctx);
     });
-    if (!updated) throw new ApiError("NOT_FOUND", "Session not found.", 404);
-    return routeSuccess(updated, kernel, ctx);
   });
 
   app.get("/copilot/sidebar", async (request) => {
-    const ctx = createKernelRequestContext(request, await authResolver.resolve(request));
+    const ctx = await contextFor(request);
     return routeSuccess(await kernel.copilotServices.workspaceService.getSidebar(ctx.user.id), kernel, ctx);
   });
 }

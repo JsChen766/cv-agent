@@ -4,6 +4,7 @@ import type { ApiKernel } from "../types.js";
 import type { AuthResolver } from "../auth/index.js";
 import { createKernelRequestContext } from "../context.js";
 import { ApiError, ErrorCodes } from "../errors.js";
+import { applyRateLimit } from "../rateLimit.js";
 import { readAgentModeConfig } from "../../providers/factory/agentModes.js";
 import { AgentProviderFactory } from "../../providers/factory/AgentProviderFactory.js";
 import type { AgentProviderFactoryConfig } from "../../providers/factory/types.js";
@@ -32,6 +33,7 @@ export async function registerDebugRoutes(
     assertDebugRunsEnabled();
     if (!authResolver) throw new ApiError(ErrorCodes.UNAUTHORIZED, "Authentication is required.", 401);
     const ctx = createKernelRequestContext(request, await authResolver.resolve(request));
+    await applyRateLimit(kernel, ctx, request);
     const data = await kernel.platformServices.agentRuns.listRuns(ctx.user.id, readLimit(request.query));
     return success(data, {
       requestId: ctx.request.requestId,
@@ -44,6 +46,7 @@ export async function registerDebugRoutes(
     assertDebugRunsEnabled();
     if (!authResolver) throw new ApiError(ErrorCodes.UNAUTHORIZED, "Authentication is required.", 401);
     const ctx = createKernelRequestContext(request, await authResolver.resolve(request));
+    await applyRateLimit(kernel, ctx, request);
     const id = (request.params as Record<string, unknown>).id;
     if (typeof id !== "string" || !id.trim()) throw new ApiError(ErrorCodes.INVALID_BODY, "id is required.", 400);
     const data = await kernel.platformServices.agentRuns.getRun(ctx.user.id, id);
@@ -203,8 +206,10 @@ function buildAgentModesReport(kernel: ApiKernel): {
 }
 
 function assertDebugRunsEnabled(): void {
-  if (process.env.NODE_ENV === "production" && process.env.DEBUG_ROUTES_ENABLED !== "true") {
-    throw new ApiError(ErrorCodes.FORBIDDEN, "Debug agent run routes are disabled in production.", 403);
+  const agentRunsEnabled = process.env.DEBUG_AGENT_RUNS_ENABLED === "true";
+  const debugRoutesEnabled = process.env.DEBUG_ROUTES_ENABLED === "true";
+  if (!agentRunsEnabled && !debugRoutesEnabled) {
+    throw new ApiError(ErrorCodes.FORBIDDEN, "Debug agent run routes are disabled. Set DEBUG_ROUTES_ENABLED=true or DEBUG_AGENT_RUNS_ENABLED=true to enable them.", 403);
   }
 }
 

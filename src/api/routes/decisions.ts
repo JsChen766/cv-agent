@@ -2,6 +2,8 @@ import type { FastifyInstance, FastifyRequest } from "fastify";
 import type { AuthResolver } from "../auth/index.js";
 import { createKernelRequestContext } from "../context.js";
 import { ApiError } from "../errors.js";
+import { withIdempotency } from "../idempotency.js";
+import { applyRateLimit } from "../rateLimit.js";
 import { success } from "../response.js";
 import type { ApiKernel } from "../types.js";
 import type {
@@ -14,23 +16,27 @@ export async function registerDecisionRoutes(
   kernel: ApiKernel,
   authResolver: AuthResolver<FastifyRequest>,
 ): Promise<void> {
-  app.post("/generations/artifacts/decisions", async (request) => {
+  app.post("/generations/artifacts/decisions", async (request, reply) => {
     const resolvedAuth = await authResolver.resolve(request);
     const ctx = createKernelRequestContext(request, resolvedAuth);
+    await applyRateLimit(kernel, ctx, request);
     const input = parseDecisionBody(request.body);
-    const result = await kernel.cvAgentKernel.generations.recordArtifactDecision(ctx, input);
+    return withIdempotency(request, reply, kernel, ctx.user.id, async () => {
+      const result = await kernel.cvAgentKernel.generations.recordArtifactDecision(ctx, input);
 
-    return success(result, {
-      requestId: ctx.request.requestId,
-      traceId: ctx.request.traceId,
-      mode: kernel.mode,
-      ...(kernel.warnings.length > 0 ? { warnings: kernel.warnings } : {}),
+      return success(result, {
+        requestId: ctx.request.requestId,
+        traceId: ctx.request.traceId,
+        mode: kernel.mode,
+        ...(kernel.warnings.length > 0 ? { warnings: kernel.warnings } : {}),
+      });
     });
   });
 
   app.get<{ Params: { artifactId: string } }>("/generations/artifacts/:artifactId/decisions", async (request) => {
     const resolvedAuth = await authResolver.resolve(request);
     const ctx = createKernelRequestContext(request, resolvedAuth);
+    await applyRateLimit(kernel, ctx, request);
     const result = await kernel.cvAgentKernel.generations.listArtifactDecisions(ctx, {
       artifactId: request.params.artifactId,
     });
@@ -46,6 +52,7 @@ export async function registerDecisionRoutes(
   app.get<{ Params: { sessionId: string } }>("/generations/:sessionId/artifact-decisions", async (request) => {
     const resolvedAuth = await authResolver.resolve(request);
     const ctx = createKernelRequestContext(request, resolvedAuth);
+    await applyRateLimit(kernel, ctx, request);
     const result = await kernel.cvAgentKernel.generations.listArtifactDecisions(ctx, {
       sessionId: request.params.sessionId,
     });
