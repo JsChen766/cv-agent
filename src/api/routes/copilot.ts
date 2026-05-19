@@ -129,6 +129,6 @@ function parseCopilotActionBody(body: unknown): CopilotActionRequest {
       variantId: typeof body.action.variantId === "string" ? body.action.variantId : undefined,
       payload: isRecord(body.action.payload) ? body.action.payload as Record<string, unknown> : undefined,
     },
-    clientState: isRecord(body.clientState) ? body.clientState as Record<string, unknown> : undefined,
+    clientState: isRecord(body.clientState) ? body.clientState as CopilotActionRequest["clientState"] : undefined,
   };
 }

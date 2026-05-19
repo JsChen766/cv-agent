@@ -6,8 +6,9 @@ import { createKernel } from "../src/api/kernel/createKernel.js";
 import type { ApiKernel } from "../src/api/types.js";
 import type { KernelRequestContext } from "../src/kernel/context.js";
 import { AgentRuntime } from "../src/agents/runtime/AgentRuntime.js";
-import { AgentDecisionSchema } from "../src/agents/schema/AgentDecision.js";
+import { AgentDecisionSchema, type AgentDecision } from "../src/agents/schema/AgentDecision.js";
 import { readAgentRuntimeConfig } from "../src/agents/runtime/AgentRuntimeConfig.js";
+import type { FrontDeskAgentInput } from "../src/agents/frontdesk/FrontDeskAgent.js";
 
 describe("AgentDecision schema", () => {
   it("accepts valid JSON decisions", () => {
@@ -53,6 +54,84 @@ describe("AgentRuntime", () => {
     const response = await runtime.handleChat(ctx(), { message: "Hello, what can you do?" });
     expect(response.assistantMessage.content).toContain("Coolto Copilot");
     expect(response.suggestedPrompts?.length).toBeGreaterThan(0);
+  });
+
+  it("passes expanded clientState through to FrontDeskAgent decision input", async () => {
+    const runtime = new AgentRuntime({ kernel });
+    const clientState = {
+      mainMode: "resume_editor",
+      activeJDId: "pjd-123",
+      activeResumeId: "pres-456",
+      activeExperienceId: "pexp-789",
+      intentSource: "composer" as const,
+    };
+    let capturedInput: FrontDeskAgentInput | undefined;
+    const frontDesk = (runtime as unknown as {
+      frontDesk: { decide(input: FrontDeskAgentInput): Promise<AgentDecision> };
+    }).frontDesk;
+    const originalDecide = frontDesk.decide.bind(frontDesk);
+    const decideSpy = vi.spyOn(frontDesk, "decide").mockImplementation(async (input) => {
+      capturedInput = input;
+      return originalDecide(input);
+    });
+
+    await runtime.handleChat(ctx(), { message: "Hello, what can you do?", clientState });
+
+    expect(capturedInput?.request.clientState).toEqual(clientState);
+    decideSpy.mockRestore();
+  });
+
+  it("debug logs sanitized clientState only when context debug is enabled", async () => {
+    const originalDebugRoutes = process.env.DEBUG_ROUTES_ENABLED;
+    const originalContextDebug = process.env.ENABLE_COPILOT_CONTEXT_DEBUG;
+    const debugSpy = vi.spyOn(console, "debug").mockImplementation(() => {});
+    const runtime = new AgentRuntime({ kernel });
+    const selectedText = "x".repeat(350);
+
+    try {
+      delete process.env.DEBUG_ROUTES_ENABLED;
+      delete process.env.ENABLE_COPILOT_CONTEXT_DEBUG;
+      await runtime.handleChat(ctx("debug-disabled-user"), {
+        message: "Hello, what can you do?",
+        clientState: { mainMode: "resume_editor", selectedText },
+      });
+      expect(debugSpy).not.toHaveBeenCalled();
+
+      process.env.ENABLE_COPILOT_CONTEXT_DEBUG = "true";
+      await runtime.handleChat(ctx("debug-enabled-user"), {
+        message: "Hello, what can you do?",
+        clientState: {
+          mainMode: "resume_editor",
+          selectedText,
+          Authorization: "Bearer should-not-log",
+          cookie: "session=should-not-log",
+          customText: "sensitive custom text",
+        },
+      });
+
+      expect(debugSpy).toHaveBeenCalledWith("[AgentRuntime] copilot_client_state", expect.objectContaining({
+        event: "copilot_client_state",
+        kind: "chat",
+        clientState: expect.objectContaining({
+          mainMode: "resume_editor",
+          selectedText: "x".repeat(300),
+          selectedTextLength: 350,
+          selectedTextTruncated: true,
+          customText: { type: "string", length: "sensitive custom text".length },
+        }),
+      }));
+      const logged = debugSpy.mock.calls.at(-1)?.[1] as { clientState?: Record<string, unknown> } | undefined;
+      expect(logged?.clientState?.Authorization).toBeUndefined();
+      expect(logged?.clientState?.cookie).toBeUndefined();
+      expect(JSON.stringify(logged)).not.toContain("should-not-log");
+      expect(JSON.stringify(logged)).not.toContain("sensitive custom text");
+    } finally {
+      if (originalDebugRoutes === undefined) delete process.env.DEBUG_ROUTES_ENABLED;
+      else process.env.DEBUG_ROUTES_ENABLED = originalDebugRoutes;
+      if (originalContextDebug === undefined) delete process.env.ENABLE_COPILOT_CONTEXT_DEBUG;
+      else process.env.ENABLE_COPILOT_CONTEXT_DEBUG = originalContextDebug;
+      debugSpy.mockRestore();
+    }
   });
 
   it("executes a model-selected product tool", async () => {

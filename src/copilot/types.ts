@@ -161,6 +161,26 @@ export type SuggestedPrompt = {
   message: string;
 };
 
+export type CopilotClientState = {
+  locale?: string;
+  mainMode?: string;
+  activeSessionId?: string;
+  activeJDId?: string;
+  activeResumeId?: string;
+  activeExperienceId?: string;
+  activeVariantId?: string;
+  activeResumeItemId?: string;
+  activeImportJobId?: string;
+  activeCandidateIds?: string[];
+  selectedText?: string;
+  selectedSection?: string;
+  visibleArtifactTypes?: string[];
+  visibleArtifactIds?: string[];
+  intentSource?: "composer" | "sidebar" | "artifact_action" | "asset_detail" | "system";
+  sourceComponent?: string;
+  [key: string]: unknown;
+};
+
 export type ProductTimelineItem = {
   id: string;
   type:
@@ -186,11 +206,7 @@ export type CopilotChatRequest = {
   resumeText?: string;
   jdText?: string;
   targetRole?: string;
-  clientState?: {
-    activeVariantId?: string;
-    selectedSection?: string;
-    locale?: string;
-  };
+  clientState?: CopilotClientState;
 };
 
 export type CopilotChatResponse = {
@@ -217,7 +233,7 @@ export type CopilotActionRequest = {
     variantId?: string;
     payload?: Record<string, unknown>;
   };
-  clientState?: Record<string, unknown>;
+  clientState?: CopilotClientState;
 };
 
 export type CopilotStreamEvent =

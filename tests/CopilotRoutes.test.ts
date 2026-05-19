@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createServer } from "../src/api/createServer.js";
 import { createKernel } from "../src/api/kernel/createKernel.js";
 import type { ApiSuccess } from "../src/api/response.js";
@@ -138,6 +138,41 @@ describe("POST /copilot/chat", () => {
       "查看我的经历库",
       "我想根据 JD 生成一份定制简历",
     ]));
+  });
+
+  it("accepts expanded clientState context fields", async () => {
+    const debugSpy = vi.spyOn(console, "debug").mockImplementation(() => {});
+    try {
+      const response = await server.inject({
+        method: "POST", url: "/copilot/chat",
+        headers: { "x-user-id": "user-1" },
+        payload: {
+          message: "Hello, what can you do?",
+          clientState: {
+            mainMode: "resume_editor",
+            activeJDId: "pjd-123",
+            activeResumeId: "pres-456",
+            selectedText: "selected UI text",
+            intentSource: "composer",
+          },
+        },
+      });
+
+      expect(response.statusCode).toBe(200);
+      const body = response.json() as ApiSuccess<CopilotChatResponse>;
+      expect(body.ok).toBe(true);
+      expect(debugSpy).toHaveBeenCalledWith("[AgentRuntime] copilot_client_state", expect.objectContaining({
+        kind: "chat",
+        clientState: expect.objectContaining({
+          mainMode: "resume_editor",
+          activeJDId: "pjd-123",
+          activeResumeId: "pres-456",
+          selectedText: "selected UI text",
+        }),
+      }));
+    } finally {
+      debugSpy.mockRestore();
+    }
   });
 
   it("imports resume text without requiring a JD", async () => {
