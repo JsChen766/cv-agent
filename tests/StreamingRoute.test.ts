@@ -55,6 +55,25 @@ describe("Streaming generation route", () => {
     expect(response.body).toContain("\"final\"");
   });
 
+  it("returns credentialed CORS headers for local frontend stream requests", async () => {
+    const response = await server.inject({
+      method: "POST",
+      url: "/generations/stream",
+      headers: {
+        origin: "http://localhost:5173",
+        "x-user-id": "user-1",
+      },
+      payload: {
+        jdText: "We need a data analyst with SQL and dashboard experience.",
+        targetRole: "Data Analyst",
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.headers["access-control-allow-origin"]).toBe("http://localhost:5173");
+    expect(response.headers["access-control-allow-credentials"]).toBe("true");
+  });
+
   it("rejects missing x-user-id before opening the stream", async () => {
     const response = await server.inject({
       method: "POST",

@@ -300,6 +300,7 @@ describe("dev CORS", () => {
 
       expect(response.statusCode).toBe(204);
       expect(response.headers["access-control-allow-origin"]).toBe("http://127.0.0.1:5173");
+      expect(response.headers["access-control-allow-credentials"]).toBe("true");
       expect(response.headers["access-control-allow-methods"]).toContain("GET");
       expect(response.headers["access-control-allow-methods"]).toContain("POST");
       expect(response.headers["access-control-allow-headers"]).toContain("content-type");
@@ -317,6 +318,7 @@ describe("dev CORS", () => {
 
       expect(response.statusCode).toBe(200);
       expect(response.headers["access-control-allow-origin"]).toBe("http://localhost:5173");
+      expect(response.headers["access-control-allow-credentials"]).toBe("true");
     });
 
     it("returns CORS headers when origin is null (file:// use case)", async () => {

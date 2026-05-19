@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import type { AuthResolver } from "../auth/index.js";
 import { createKernelRequestContext } from "../context.js";
+import { resolveDevCorsOrigin } from "../cors.js";
 import { ApiError, ErrorCodes } from "../errors.js";
 import { success } from "../response.js";
 import type { ApiKernel } from "../types.js";
@@ -69,14 +70,19 @@ export async function registerCopilotRoutes(
       throw new ApiError(ErrorCodes.INVALID_BODY, "SSE stream does not support idempotent replay.", 400);
     }
     const body = parseCopilotChatBody(request.body);
-
-    reply.hijack();
-    reply.raw.writeHead(200, {
+    const corsOrigin = resolveDevCorsOrigin(request);
+    const headers: Record<string, string> = {
       "content-type": "text/event-stream; charset=utf-8",
       "cache-control": "no-cache",
       connection: "keep-alive",
-      "access-control-allow-origin": readHeader(request.headers["origin"]) ?? "*",
-    });
+    };
+    if (corsOrigin !== null) {
+      headers["access-control-allow-origin"] = corsOrigin;
+      headers["access-control-allow-credentials"] = "true";
+    }
+
+    reply.hijack();
+    reply.raw.writeHead(200, headers);
 
     const sse = (event: string, data: unknown) => {
       reply.raw.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);

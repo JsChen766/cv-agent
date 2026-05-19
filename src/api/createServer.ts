@@ -5,6 +5,7 @@ import fastifyCors from "@fastify/cors";
 import type { ApiKernel } from "./types.js";
 import type { AuthResolver } from "./auth/index.js";
 import { createAuthResolver } from "./auth/index.js";
+import { isAllowedDevCorsOrigin, isDevCorsEnabled } from "./cors.js";
 import { readPlatformConfig } from "../platform/config.js";
 import { readHeader } from "./routes/helpers.js";
 import { errorResponse } from "./errors/index.js";
@@ -66,13 +67,6 @@ export async function createServer(kernel: ApiKernel, options: CreateServerOptio
   return app;
 }
 
-function isDevCorsEnabled(): boolean {
-  if (process.env.NODE_ENV === "production" && process.env.ENABLE_DEV_CORS !== "true") {
-    return false;
-  }
-  return true;
-}
-
 async function registerDevCors(app: ReturnType<typeof Fastify>): Promise<void> {
   if (!isDevCorsEnabled()) return;
 
@@ -80,7 +74,7 @@ async function registerDevCors(app: ReturnType<typeof Fastify>): Promise<void> {
     origin: isAllowedDevCorsOrigin,
     methods: ["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
     allowedHeaders: ["content-type", "authorization", "cookie", "x-user-id", "x-request-id", "x-trace-id", "idempotency-key"],
-    credentials: false,
+    credentials: true,
   });
 }
 
@@ -90,28 +84,4 @@ function areInternalKernelRoutesEnabled(): boolean {
   } catch {
     return process.env.NODE_ENV === "test";
   }
-}
-
-function isAllowedDevCorsOrigin(origin: string | undefined, callback: (error: Error | null, allowed: boolean) => void): void {
-  callback(null, isAllowedOrigin(origin));
-}
-
-function isAllowedOrigin(origin: string | undefined): boolean {
-  if (origin === undefined || origin === "null") return true;
-  if (parseConfiguredCorsOrigins().includes(origin)) return true;
-
-  try {
-    const url = new URL(origin);
-    const isLocalHost = url.hostname === "127.0.0.1" || url.hostname === "localhost";
-    return isLocalHost && (url.protocol === "http:" || url.protocol === "https:");
-  } catch {
-    return false;
-  }
-}
-
-function parseConfiguredCorsOrigins(): string[] {
-  return (process.env.DEV_CORS_ORIGIN ?? "")
-    .split(",")
-    .map((s) => s.trim())
-    .filter((s) => s.length > 0);
 }
