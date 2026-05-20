@@ -260,7 +260,7 @@ export async function registerProductRoutes(
     }
     return withIdempotency(request, reply, kernel, ctx.user.id, async () => {
       await kernel.platformServices.usage.consume({ userId: ctx.user.id, metric: "generation" });
-      const result = await kernel.productServices.generationProductService.generateResumeFromJD(ctx, {
+      const result = await kernel.productServices.generationProductService.generateResumeFromJD({
         userId: ctx.user.id,
         jdId,
         jdText,

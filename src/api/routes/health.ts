@@ -7,7 +7,7 @@ export async function registerHealthRoutes(app: FastifyInstance, kernel: ApiKern
   app.get("/health", async (request) => {
     const requestId = readHeader(request.headers["x-request-id"]) ?? `req-${randomUUID()}`;
     const traceId = readHeader(request.headers["x-trace-id"]) ?? requestId;
-    return success(await kernel.cvAgentKernel.health(), {
+    return success({ status: "ok", mode: kernel.mode, warnings: kernel.warnings }, {
       requestId,
       traceId,
       mode: kernel.mode,

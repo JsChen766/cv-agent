@@ -1,5 +1,4 @@
-import type { LLMProvider } from "../core/model/LLMProvider.js";
-import type { LLMChatRequest, LLMChatResponse, LLMStreamChunk } from "../core/model/types.js";
+import type { LLMChatRequest, LLMChatResponse, LLMProvider, LLMStreamChunk } from "../agent-core/model/types.js";
 import { normalizeOpenAIChatResponse, parseJsonResponse, toOpenAIRequestToolCalls } from "./providerUtils.js";
 
 export type OpenAICompatibleProviderConfig = {

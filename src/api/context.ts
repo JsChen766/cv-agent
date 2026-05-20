@@ -1,11 +1,45 @@
 import { randomUUID } from "node:crypto";
 import type { FastifyRequest } from "fastify";
-import type {
-  KernelRequestContext,
-  KernelRequestSource,
-} from "../kernel/index.js";
-import type { AgentEventSink } from "../kernel/events/index.js";
 import type { ResolvedAuth } from "./auth/index.js";
+
+export type KernelRequestSource =
+  | "web"
+  | "mini_program"
+  | "api"
+  | "cli"
+  | "test";
+
+export type KernelAuthMode =
+  | "dev_header"
+  | "disabled"
+  | "cookie_session"
+  | "bearer_static"
+  | "bearer_token"
+  | "service";
+
+export type KernelRequestContext = {
+  user: {
+    id: string;
+    email?: string;
+    displayName?: string;
+    roles?: string[];
+  };
+  auth: {
+    mode: KernelAuthMode;
+    sessionId?: string;
+    tokenId?: string;
+  };
+  request: {
+    requestId: string;
+    traceId: string;
+    source: KernelRequestSource;
+    userAgent?: string;
+    ipHash?: string;
+  };
+  tenant?: {
+    id?: string;
+  };
+};
 
 export function createKernelRequestContext(
   request: FastifyRequest,
@@ -14,7 +48,6 @@ export function createKernelRequestContext(
     source?: KernelRequestSource;
     requestId?: string;
     traceId?: string;
-    eventSink?: AgentEventSink;
   } = {},
 ): KernelRequestContext {
   const requestId = options.requestId ??
@@ -43,7 +76,22 @@ export function createKernelRequestContext(
       source: options.source ?? "api",
       ...(userAgent ? { userAgent } : {}),
     },
-    ...(options.eventSink ? { events: options.eventSink } : {}),
+  };
+}
+
+export type KernelRequestContextOverrides = {
+  user?: Partial<KernelRequestContext["user"]>;
+  auth?: Partial<KernelRequestContext["auth"]>;
+  request?: Partial<KernelRequestContext["request"]>;
+  tenant?: KernelRequestContext["tenant"];
+};
+
+export function createTestKernelContext(overrides: KernelRequestContextOverrides = {}): KernelRequestContext {
+  return {
+    user: { id: "test-user", roles: ["user"], ...overrides.user },
+    auth: { mode: "dev_header", ...overrides.auth },
+    request: { requestId: "req-test", traceId: "trace-test", source: "test", ...overrides.request },
+    ...(overrides.tenant ? { tenant: overrides.tenant } : {}),
   };
 }
 

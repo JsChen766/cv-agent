@@ -43,7 +43,7 @@ export function createResumeAgentTools(): ToolDefinition[] {
       requiresConfirmation: true,
       riskLevel: "medium",
       execute: async (input, context) => {
-        const result = await context.kernel.productServices.generationProductService.generateResumeFromJD(context.requestContext, {
+        const result = await context.kernel.productServices.generationProductService.generateResumeFromJD({
           userId: context.userId,
           sessionId: context.sessionId,
           jdId: typeof input.jdId === "string" ? input.jdId : undefined,

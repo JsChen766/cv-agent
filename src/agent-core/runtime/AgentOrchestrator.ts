@@ -25,7 +25,7 @@ import { ToolExecutor } from "../tools/ToolExecutor.js";
 import { ToolRegistry } from "../tools/ToolRegistry.js";
 import type { ToolResult } from "../tools/ToolResult.js";
 import type { AgentName, PlanStep } from "../validation/AgentOutputSchemas.js";
-import type { KernelRequestContext } from "../../kernel/context.js";
+import type { KernelRequestContext } from "../../api/context.js";
 import type { AgentContext } from "./AgentContext.js";
 import { AgentError } from "./AgentError.js";
 import { AgentTraceRecorder } from "./AgentTrace.js";

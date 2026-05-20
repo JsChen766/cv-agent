@@ -1,4 +1,4 @@
-import type { ModelClient } from "../../core/model/ModelClient.js";
+import type { ModelClient } from "../model/ModelClient.js";
 import type { PromptRegistry } from "../prompts/PromptRegistry.js";
 import { BaseAgent } from "./BaseAgent.js";
 

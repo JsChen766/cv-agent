@@ -1,5 +1,5 @@
-import type { ModelClient } from "../../core/model/ModelClient.js";
-import { parseAgentJson } from "../../core/json/parseAgentJson.js";
+import type { ModelClient } from "../model/ModelClient.js";
+import { parseAgentJson } from "../validation/parseAgentJson.js";
 import type { AgentContext } from "../runtime/AgentContext.js";
 import { AgentError } from "../runtime/AgentError.js";
 import type { PromptRegistry } from "../prompts/PromptRegistry.js";
@@ -47,7 +47,7 @@ export abstract class BaseAgent implements Agent {
           { role: "user", content: JSON.stringify(this.buildPayload(input)) },
         ],
       });
-      const parsed = parseAgentJson(response.content, { expectedRoot: "object" });
+      const parsed = parseAgentJson(response.content);
       const result = AgentDecisionSchema.safeParse(parsed);
       if (!result.success) {
         throw new AgentError("INVALID_AGENT_OUTPUT", "Agent returned invalid output.", {

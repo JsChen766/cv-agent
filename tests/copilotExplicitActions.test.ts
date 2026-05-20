@@ -2,7 +2,7 @@ import { readFile } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
 import { AgentOrchestrator } from "../src/agent-core/runtime/AgentOrchestrator.js";
 import { CopilotOrchestrator } from "../src/copilot/CopilotOrchestrator.js";
-import { createTestKernelContext } from "../src/kernel/context.js";
+import { createTestKernelContext } from "../src/api/context.js";
 import { createP12Kernel } from "./p12Helpers.js";
 
 describe("P12.2 explicit copilot actions", () => {

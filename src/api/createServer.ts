@@ -6,24 +6,17 @@ import type { ApiKernel } from "./types.js";
 import type { AuthResolver } from "./auth/index.js";
 import { createAuthResolver } from "./auth/index.js";
 import { isAllowedDevCorsOrigin, isDevCorsEnabled } from "./cors.js";
-import { readPlatformConfig } from "../platform/config.js";
 import { readHeader } from "./routes/helpers.js";
 import { errorResponse } from "./errors/index.js";
 import { registerAuthRoutes } from "./routes/auth.js";
 import { registerAgentDebugRoutes } from "./routes/agentDebug.js";
 import { registerCopilotRoutes } from "./routes/copilot.js";
 import { registerCopilotDashboardRoutes } from "./routes/copilotDashboard.js";
-import { registerDebugRoutes } from "./routes/debug.js";
-import { registerDocumentRoutes } from "./routes/documents.js";
-import { registerDecisionRoutes } from "./routes/decisions.js";
-import { registerEvidenceRoutes } from "./routes/evidence.js";
 import { registerExportRoutes } from "./routes/exports.js";
 import { registerFileRoutes } from "./routes/files.js";
-import { registerGenerationRoutes } from "./routes/generations.js";
 import { registerHealthRoutes } from "./routes/health.js";
 import { registerJobRoutes } from "./routes/jobs.js";
 import { registerProductRoutes } from "./routes/product.js";
-import { registerStreamingRoutes } from "./routes/streaming.js";
 
 export type CreateServerOptions = {
   authResolver?: AuthResolver<FastifyRequest>;
@@ -51,14 +44,6 @@ export async function createServer(kernel: ApiKernel, options: CreateServerOptio
   await registerHealthRoutes(app, kernel);
   await registerAuthRoutes(app, kernel, authResolver);
   await registerAgentDebugRoutes(app, kernel, authResolver);
-  await registerDebugRoutes(app, kernel, authResolver);
-  if (areInternalKernelRoutesEnabled()) {
-    await registerDocumentRoutes(app, kernel, authResolver);
-    await registerGenerationRoutes(app, kernel, authResolver);
-    await registerStreamingRoutes(app, kernel, authResolver);
-    await registerDecisionRoutes(app, kernel, authResolver);
-    await registerEvidenceRoutes(app, kernel, authResolver);
-  }
   await registerProductRoutes(app, kernel, authResolver);
   await registerCopilotDashboardRoutes(app, kernel, authResolver);
   await registerCopilotRoutes(app, kernel, authResolver);
@@ -78,12 +63,4 @@ async function registerDevCors(app: ReturnType<typeof Fastify>): Promise<void> {
     allowedHeaders: ["content-type", "authorization", "cookie", "x-user-id", "x-request-id", "x-trace-id", "idempotency-key"],
     credentials: true,
   });
-}
-
-function areInternalKernelRoutesEnabled(): boolean {
-  try {
-    return readPlatformConfig().internalKernelRoutesEnabled;
-  } catch {
-    return process.env.NODE_ENV === "test";
-  }
 }

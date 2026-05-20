@@ -7,9 +7,9 @@ const productionFiles = [
   "src/api/routes/copilot.ts",
   "src/copilot/CopilotOrchestrator.ts",
   "src/agent-core/runtime/AgentOrchestrator.ts",
-  "src/api/routes/debug.ts",
   "src/api/kernel/createKernel.ts",
-  "src/providers/factory/AgentProviderFactory.ts",
+  "src/providers/DeepSeekProvider.ts",
+  "src/providers/OpenAICompatibleProvider.ts",
 ];
 
 describe("P12.2 architecture consolidation", () => {
@@ -19,6 +19,8 @@ describe("P12.2 architecture consolidation", () => {
       expect(source).not.toContain("agents/tools");
       expect(source).not.toContain("agents/runtime");
       expect(source).not.toContain("agents/frontdesk");
+      expect(source).not.toContain("providers/factory");
+      expect(source).not.toContain("MockProvider");
     }
   });
 

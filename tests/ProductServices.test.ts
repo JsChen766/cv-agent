@@ -1,7 +1,6 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { createKernel } from "../src/api/kernel/createKernel.js";
 import type { ApiKernel } from "../src/api/types.js";
-import { createTestKernelContext, type KernelRequestContext } from "../src/kernel/context.js";
 
 function setupEnv() {
   process.env.AUTH_MODE = "dev_header";
@@ -13,10 +12,6 @@ function setupEnv() {
   process.env.REVISION_AGENT_MODE = "deterministic";
   process.env.NODE_ENV = "test";
   delete process.env.DATABASE_URL;
-}
-
-function ctx(userId = "user-1"): KernelRequestContext {
-  return createTestKernelContext({ user: { id: userId }, request: { requestId: "req-1", traceId: "trace-1" } });
 }
 
 describe("Product services", () => {
@@ -88,7 +83,7 @@ describe("Product services", () => {
   });
 
   it("generateResumeFromJD creates a product_generation", async () => {
-    const result = await kernel.productServices.generationProductService.generateResumeFromJD(ctx(), {
+    const result = await kernel.productServices.generationProductService.generateResumeFromJD({
       userId: "user-1",
       jdText: "React TypeScript performance optimization role.",
       targetRole: "Frontend Engineer",

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { ToolCall } from "../src/core/tool/types.js";
+import type { ToolCall } from "../src/agent-core/model/types.js";
 import { normalizeOpenAIChatResponse, toOpenAIRequestToolCalls } from "../src/providers/providerUtils.js";
 
 describe("normalizeOpenAIChatResponse", () => {

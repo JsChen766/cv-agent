@@ -1,5 +1,3 @@
-import type { GeneratedArtifact } from "../knowledge/types.js";
-
 export type ProductExperienceCategory = "work" | "project" | "education" | "award" | "skill" | "other";
 export type ProductExperienceStatus = "active" | "archived" | "deleted";
 export type ProductExperienceRevisionSource = "manual" | "import" | "copilot" | "resume_upload";
@@ -89,6 +87,16 @@ export type ProductResumeItem = {
   updatedAt: string;
 };
 
+export type ProductGeneratedVariant = {
+  id: string;
+  userId: string;
+  content: string;
+  sourceExperienceIds?: string[];
+  sourceEvidenceIds?: string[];
+  scores?: Record<string, number>;
+  createdAt: string;
+};
+
 export type ProductGeneration = {
   id: string;
   userId: string;
@@ -98,7 +106,7 @@ export type ProductGeneration = {
   targetRole?: string;
   inputSnapshot: Record<string, unknown>;
   outputSnapshot?: {
-    variants?: GeneratedArtifact[];
+    variants?: ProductGeneratedVariant[];
     [key: string]: unknown;
   };
   selectedVariantIds: string[];

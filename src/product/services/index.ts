@@ -1,14 +1,11 @@
 import { randomUUID } from "node:crypto";
-import type { KernelRequestContext } from "../../kernel/context.js";
-import type { CvAgentKernel } from "../../kernel/index.js";
-import type { CreateGenerationResult } from "../../kernel/types.js";
-import type { GeneratedArtifact } from "../../knowledge/types.js";
 import type {
   ProductExperience,
   ProductExperienceCategory,
   ProductExperienceRevision,
   ProductExperienceVariant,
   ProductGeneration,
+  ProductGeneratedVariant,
   ProductImportCandidate,
   ProductImportJob,
   ProductJDRecord,
@@ -340,16 +337,15 @@ export class GenerationProductService {
     private readonly repository: ProductGenerationRepository,
     private readonly jdService: JDService,
     private readonly resumeService: ResumeService,
-    private readonly cvAgentKernel: CvAgentKernel,
   ) {}
 
-  public async generateResumeFromJD(ctx: KernelRequestContext, input: {
+  public async generateResumeFromJD(input: {
     userId: string;
     sessionId?: string;
     jdId?: string;
     jdText?: string;
     targetRole?: string;
-  }): Promise<{ generation: ProductGeneration; jd: ProductJDRecord; variants: GeneratedArtifact[]; generationResult: CreateGenerationResult }> {
+  }): Promise<{ generation: ProductGeneration; jd: ProductJDRecord; variants: ProductGeneratedVariant[] }> {
     if (!input.jdId && !input.jdText?.trim()) {
       throw new Error("JD text or jdId is required.");
     }
@@ -360,10 +356,7 @@ export class GenerationProductService {
           targetRole: input.targetRole,
         });
     if (!jd) throw new Error("JD not found.");
-    const result = await this.cvAgentKernel.generations.create(ctx, {
-      jdText: jd.rawText,
-      targetRole: input.targetRole ?? jd.targetRole ?? "Target Role",
-    });
+    const variants = buildDraftVariants(input.userId, jd.rawText, input.targetRole ?? jd.targetRole);
     const generation: ProductGeneration = {
       id: `pgen-${randomUUID()}`,
       userId: input.userId,
@@ -375,22 +368,20 @@ export class GenerationProductService {
         targetRole: input.targetRole ?? jd.targetRole,
       },
       outputSnapshot: {
-        variants: result.artifacts,
-        evidenceChainIds: result.evidenceChains.map((chain) => chain.id),
-        critiqueItemIds: result.critiqueReport.items.map((item) => item.artifactId),
+        variants,
       },
       selectedVariantIds: [],
       createdAt: new Date().toISOString(),
     };
     await this.repository.createGeneration(generation);
-    return { generation, jd, variants: result.artifacts, generationResult: result };
+    return { generation, jd, variants };
   }
 
   public async saveAcceptedVariantToResume(userId: string, input: {
     generationId: string;
     variantId: string;
     resumeId?: string;
-  }): Promise<{ generation: ProductGeneration; resume: ProductResume; item: ProductResumeItem; variant: GeneratedArtifact }> {
+  }): Promise<{ generation: ProductGeneration; resume: ProductResume; item: ProductResumeItem; variant: ProductGeneratedVariant }> {
     const generation = await this.repository.getGeneration(userId, input.generationId);
     if (!generation) throw new Error("Generation not found.");
     const variants = generation.outputSnapshot?.variants ?? [];
@@ -426,6 +417,21 @@ export class GenerationProductService {
   public listGenerations(userId: string, limit?: number): Promise<ProductGeneration[]> {
     return this.repository.listGenerationsByUser(userId, { limit });
   }
+}
+
+function buildDraftVariants(userId: string, jdText: string, targetRole?: string): ProductGeneratedVariant[] {
+  const now = new Date().toISOString();
+  const role = targetRole?.trim() || "Target Role";
+  const jdPreview = jdText.replace(/\s+/g, " ").trim().slice(0, 180);
+  return [{
+    id: `pvar-${randomUUID()}`,
+    userId,
+    content: `${role} resume draft based on JD: ${jdPreview}`,
+    sourceExperienceIds: [],
+    sourceEvidenceIds: [],
+    scores: {},
+    createdAt: now,
+  }];
 }
 
 function optional(value: string | undefined): string | undefined {

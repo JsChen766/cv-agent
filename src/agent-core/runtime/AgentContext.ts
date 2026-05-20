@@ -1,7 +1,7 @@
 import type { ApiKernel } from "../../api/types.js";
 import type { ActiveAssetContext } from "../../copilot/ActiveAssetContextBuilder.js";
 import type { CopilotClientState, CopilotMessage, CopilotWorkspace } from "../../copilot/types.js";
-import type { KernelRequestContext } from "../../kernel/context.js";
+import type { KernelRequestContext } from "../../api/context.js";
 import type { ToolDefinition } from "../tools/Tool.js";
 import type { AgentTrace } from "./AgentTrace.js";
 

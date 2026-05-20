@@ -1,9 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createServer } from "../src/api/createServer.js";
-import { createKernel } from "../src/api/kernel/createKernel.js";
 import type { ApiSuccess } from "../src/api/response.js";
 import type { ApiKernel } from "../src/api/types.js";
 import type { CopilotChatResponse } from "../src/copilot/types.js";
+import { createP12Kernel } from "./p12Helpers.js";
 
 function setupEnv() {
   process.env.AUTH_MODE = "dev_header";
@@ -24,7 +24,7 @@ describe("Copilot routes on agent-core runtime", () => {
 
   beforeEach(async () => {
     setupEnv();
-    kernel = await createKernel();
+    kernel = await createP12Kernel();
     server = await createServer(kernel);
   });
 

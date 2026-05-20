@@ -1,5 +1,4 @@
 import { createHash, randomUUID } from "node:crypto";
-import { DocumentLoaderTool } from "../tools/document/index.js";
 import { readPlatformConfig } from "../platform/config.js";
 import type { FileRepository } from "./FileRepository.js";
 import type { FileStorage } from "./FileStorage.js";
@@ -7,8 +6,6 @@ import { assertFileUploadEnabled, sourceTypeForMime, validateFile } from "./File
 import type { ParsedDocument, UploadedFile } from "./types.js";
 
 export class FileService {
-  private readonly loader = new DocumentLoaderTool();
-
   public constructor(
     private readonly repository: FileRepository,
     private readonly storage: FileStorage,
@@ -55,13 +52,7 @@ export class FileService {
     try {
       await this.repository.updateFile(userId, id, { parserStatus: "running" });
       const buffer = await this.storage.read(file.storageKey);
-      const extracted = await this.loader.load({
-        userId,
-        fileName: file.originalName,
-        mimeType: file.mimeType,
-        sourceRef: `file:${file.id}`,
-        buffer,
-      });
+      const extracted = extractText(file.originalName, file.mimeType, buffer);
       const maxChars = readPlatformConfig().fileMaxParsedTextChars;
       const text = extracted.text.length > maxChars ? extracted.text.slice(0, maxChars) : extracted.text;
       const document = await this.repository.createParsedDocument({
@@ -88,6 +79,17 @@ export class FileService {
   public getParsedDocumentByFileId(userId: string, fileId: string): Promise<ParsedDocument | null> {
     return this.repository.getParsedDocumentByFileId(userId, fileId);
   }
+}
+
+function extractText(fileName: string, mimeType: string, buffer: Buffer): { text: string; metadata: Record<string, unknown> } {
+  return {
+    text: buffer.toString("utf8"),
+    metadata: {
+      parser: "PlainTextFileParser",
+      fileName,
+      mimeType,
+    },
+  };
 }
 
 function sanitizeName(name: string): string {

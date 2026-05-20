@@ -1,5 +1,5 @@
 import type { ApiKernel } from "../api/types.js";
-import type { KernelRequestContext } from "../kernel/context.js";
+import type { KernelRequestContext } from "../api/context.js";
 import type {
   CopilotActionRequest,
   CopilotChatRequest,

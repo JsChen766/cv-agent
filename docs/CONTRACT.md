@@ -439,7 +439,7 @@ export type CvAgentKernel = {
 };
 ```
 
-Current `ApiKernel` still exposes internal services during migration for tests and demos. Backend routes now call `cvAgentKernel` instead of those internal services.
+Current `ApiKernel` exposes only the services required by the consolidated agent-core backend: product services, Copilot session/workspace services, auth, files, exports, jobs, platform services, and the optional `frontDeskModelClient`.
 
 ### 5.3 SDK Boundary Rules
 
@@ -1060,7 +1060,7 @@ Status: implemented.
 - `bearer_token` and `service` return reserved-but-not-implemented errors.
 - Added `CvAgentKernel` facade.
 - Moved current routes to the API response envelope.
-- Routes now resolve auth, build `KernelRequestContext`, and call `cvAgentKernel`.
+- Routes now resolve auth, build `KernelRequestContext`, and call product/Copilot services directly.
 
 ### P8.1 Real LLM Provider Configuration
 
@@ -1683,11 +1683,11 @@ ALLOW_MOCK_RUNTIME=true
 
 Status: implemented.
 
-`AgentRuntime` is the only product chat execution entrypoint. `CopilotOrchestrator` remains a compatibility facade for `/copilot/chat`, `/copilot/actions`, and `/copilot/chat/stream`. The legacy `application/frontdesk/FrontDeskOrchestrator` is deprecated and retained only for `cvAgentKernel.documents.ingest()` until document ingestion moves to a direct command pipeline; Copilot routes do not use it.
+`AgentOrchestrator` is the only product chat execution entrypoint. `CopilotOrchestrator` remains a compatibility facade for `/copilot/chat`, `/copilot/actions`, and `/copilot/chat/stream`.
 
 Development and production reject deterministic/mock/fake runtime modes unless explicitly enabled. `ALLOW_DETERMINISTIC_RUNTIME=true` is only for local debugging and surfaces a warning in `/debug/agent-modes`.
 
-Tool implementation is split under `src/agents/tools/product/*` and `src/agents/tools/kernel/*`. `AgentToolRegistry` only composes definitions, exposes tool schemas, checks `hasTool`, and executes schema-validated tools.
+Tool implementation is split between `src/agent-core/tools` for the framework and `src/agent-tools` for product tools. `ToolRegistry` only composes definitions, exposes schemas, checks registration, and delegates schema-validated execution.
 
 Unknown LLM tool calls are rejected before execution. The runtime logs only `event`, `requestId`, `sessionId`, unknown tool names, and allowed tool count; it never logs prompt text, tool arguments, provider raw output, API keys, or reasoning content. The user receives a safe clarification response.
 
@@ -2013,7 +2013,7 @@ GET    /files/:id/parsed-document
 
 #### Parsing
 
-- PDF: `PdfDocumentParser` (project has existing parser in `src/tools/document/`).
+- Uploaded file parsing is handled by `FileService`; the old external `src/tools/document` framework was removed.
 - DOCX: `DocxDocumentParser`.
 - Plain text: direct read through `TextParser`.
 - Parse failure returns safe error, no stack traces.

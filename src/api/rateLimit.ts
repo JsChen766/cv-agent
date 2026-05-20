@@ -1,5 +1,5 @@
 import type { FastifyRequest } from "fastify";
-import type { KernelRequestContext } from "../kernel/context.js";
+import type { KernelRequestContext } from "./context.js";
 import type { ApiKernel } from "./types.js";
 
 export async function applyRateLimit(

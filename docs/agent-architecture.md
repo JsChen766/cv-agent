@@ -11,7 +11,7 @@ The only formal Copilot agent runtime is `src/agent-core`.
 - Prompt loading: `src/agent-core/prompts`
 - Validation schemas: `src/agent-core/validation`
 
-`src/agents/runtime`, `src/agents/tools`, and `src/agents/frontdesk` were removed. They were the old Copilot runtime/tool stack and are no longer production entrypoints.
+The old `src/agents`, `src/core`, `src/kernel`, `src/application`, `src/knowledge`, `src/tools`, `src/workflows`, and `src/examples` trees have been removed from `src`. They were the previous demo/kernel/application framework and are no longer production entrypoints.
 
 ## Canonical Tool Framework
 
@@ -37,17 +37,18 @@ The only formal business tool directory is `src/agent-tools`.
 
 Each tool must define `name`, `description`, `ownerAgent`, `inputSchema`, `outputSchema`, `mutability`, `requiresConfirmation`, `riskLevel`, and `execute`.
 
-## Legacy `src/agents`
+## Removed Legacy Frameworks
 
-The remaining top-level files in `src/agents/*.ts` are legacy kernel agents used by older application factories, demos, and kernel tests:
+The repository no longer keeps a second agent/runtime/tool framework under `src`.
 
-- `ArchivistAgent.ts`
-- `ArchitectAgent.ts`
-- `CriticAgent.ts`
-- `FrontDeskAgent.ts`
-- `StrategistAgent.ts`
+- Old agents: removed from `src/agents`
+- Old generic runtime/kernel: removed from `src/core` and `src/kernel`
+- Old application pipeline: removed from `src/application`
+- Old knowledge/RAG prototype: removed from `src/knowledge`
+- Old external demo tools: removed from `src/tools`
+- Old demos/workflows/contracts: removed from `src/examples`, `src/workflows`, and `src/api-contracts`
 
-They are not the Copilot runtime. They are temporarily retained because application services still import them. Future work should migrate their useful model adapters into `src/agent-core/agents` or domain services, then remove `src/agents` entirely.
+Model invocation now lives under `src/agent-core/model`. Real provider adapters are limited to `src/providers/DeepSeekProvider.ts` and `src/providers/OpenAICompatibleProvider.ts`; mock/provider-factory code has been removed.
 
 ## API Execution Paths
 
