@@ -10,6 +10,7 @@ import { readPlatformConfig } from "../platform/config.js";
 import { readHeader } from "./routes/helpers.js";
 import { errorResponse } from "./errors/index.js";
 import { registerAuthRoutes } from "./routes/auth.js";
+import { registerAgentDebugRoutes } from "./routes/agentDebug.js";
 import { registerCopilotRoutes } from "./routes/copilot.js";
 import { registerCopilotDashboardRoutes } from "./routes/copilotDashboard.js";
 import { registerDebugRoutes } from "./routes/debug.js";
@@ -49,6 +50,7 @@ export async function createServer(kernel: ApiKernel, options: CreateServerOptio
 
   await registerHealthRoutes(app, kernel);
   await registerAuthRoutes(app, kernel, authResolver);
+  await registerAgentDebugRoutes(app, kernel, authResolver);
   await registerDebugRoutes(app, kernel, authResolver);
   if (areInternalKernelRoutesEnabled()) {
     await registerDocumentRoutes(app, kernel, authResolver);

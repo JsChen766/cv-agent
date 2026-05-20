@@ -41,12 +41,125 @@ export class MockProvider implements LLMProvider {
 
   private mockJsonResponse(request: LLMChatRequest, userContent: string): unknown {
     const agentName = request.metadata?.agentName;
+    if (agentName === "frontdesk") return this.mockP12FrontDesk(userContent);
+    if (agentName === "experience_receiver") return this.mockP12ExperienceReceiver(userContent);
+    if (agentName === "strategist") return this.mockP12Strategist(userContent);
+    if (agentName === "architect") return this.mockP12Architect(userContent);
+    if (agentName === "critic") return this.mockP12Critic(userContent);
     if (agentName === "archivist") return this.mockArchivist(userContent);
     if (agentName === "strategist") return this.mockStrategist();
     if (agentName === "architect") return this.mockArtifactResponse(userContent);
     if (agentName === "frontdesk_agent_runtime") return this.mockAgentRuntimeDecision(userContent);
     if (agentName === "frontdesk") return this.mockFrontDeskResponse(userContent);
     return { provider: this.name, input: userContent, model: request.model };
+  }
+
+  private mockP12FrontDesk(userContent: string): Record<string, unknown> {
+    const payload = this.parseObject(userContent);
+    const message = typeof payload.userMessage === "string" ? payload.userMessage : userContent;
+    const lower = message.toLowerCase();
+    const routeTo = (() => {
+      if (lower.includes("experience") || lower.includes("weex") || message.includes("经历") || message.includes("保存") || message.includes("删") || message.includes("删除")) return "experience_receiver";
+      if (lower.includes("evidence") || lower.includes("unsupported") || message.includes("证据") || message.includes("夸大")) return "critic";
+      if (lower.includes("resume") || lower.includes("export") || lower.includes("jd") || message.includes("简历") || message.includes("导出")) return "architect";
+      if (lower.includes("strategy") || lower.includes("target role") || message.includes("策略") || message.includes("投递")) return "strategist";
+      return "frontdesk";
+    })();
+    if (routeTo === "frontdesk") {
+      return {
+        agentName: "frontdesk",
+        responseType: "ask_clarification",
+        assistantMessage: "你想查看经历库、保存经历、生成简历，还是检查证据？",
+        plan: [],
+        missingInputs: ["intent"],
+        confidence: 0.6,
+      };
+    }
+    return {
+      agentName: "frontdesk",
+      responseType: "route",
+      routeTo,
+      assistantMessage: "我会把这个请求交给对应的专门 Agent 处理。",
+      plan: [],
+      missingInputs: [],
+      confidence: 0.9,
+    };
+  }
+
+  private mockP12ExperienceReceiver(userContent: string): Record<string, unknown> {
+    const payload = this.parseObject(userContent);
+    const message = typeof payload.userMessage === "string" ? payload.userMessage : userContent;
+    const lower = message.toLowerCase();
+    const clientState = this.readNested(payload, ["clientState"]) as Record<string, unknown> | undefined;
+    const activeExperienceId = typeof clientState?.activeExperienceId === "string" ? clientState.activeExperienceId : undefined;
+    if (/(delete|remove)/i.test(message) || message.includes("删") || message.includes("删除")) {
+      const query = message.match(/[A-Za-z0-9_-]{2,}/)?.[0] ?? message;
+      return this.p12Decision("experience_receiver", [{ toolName: "search_experiences", arguments: { query }, summary: "Search the target experience before deletion." }]);
+    }
+    if (lower.includes("save") || message.includes("保存")) {
+      return this.p12Decision("experience_receiver", [{ toolName: "save_experience_from_text", arguments: { text: message }, summary: "Save this experience after confirmation." }]);
+    }
+    if (lower.includes("update") || lower.includes("change") || message.includes("改")) {
+      if (!activeExperienceId) {
+        return {
+          agentName: "experience_receiver",
+          responseType: "ask_clarification",
+          assistantMessage: "请先指定要修改哪条经历。",
+          plan: [],
+          missingInputs: ["experienceId"],
+          confidence: 0.7,
+        };
+      }
+      return this.p12Decision("experience_receiver", [{
+        toolName: "update_experience",
+        arguments: { experienceId: activeExperienceId, content: message },
+        summary: "Update this experience after confirmation.",
+      }]);
+    }
+    if (lower.includes("empty") || lower.includes("library") || message.includes("经历库") || message.includes("为空")) {
+      return this.p12Decision("experience_receiver", [{ toolName: "list_experiences", arguments: {}, summary: "List the experience library." }]);
+    }
+    return this.p12Decision("experience_receiver", [{ toolName: "list_experiences", arguments: {}, summary: "List the experience library." }]);
+  }
+
+  private mockP12Strategist(_userContent?: string): Record<string, unknown> {
+    return this.p12Decision("strategist", [{ toolName: "list_experiences", arguments: {}, summary: "Review available experiences for strategy." }]);
+  }
+
+  private mockP12Architect(userContent: string): Record<string, unknown> {
+    const payload = this.parseObject(userContent);
+    const message = typeof payload.userMessage === "string" ? payload.userMessage : userContent;
+    const lower = message.toLowerCase();
+    if (lower.includes("export") || message.includes("导出")) {
+      const clientState = this.readNested(payload, ["clientState"]) as Record<string, unknown> | undefined;
+      return this.p12Decision("architect", [{
+        toolName: "export_resume",
+        arguments: { resumeId: typeof clientState?.activeResumeId === "string" ? clientState.activeResumeId : "missing-resume", format: "html" },
+        summary: "Export resume after confirmation.",
+      }]);
+    }
+    return this.p12Decision("architect", [{
+      toolName: "generate_resume_from_jd",
+      arguments: { jdText: message, targetRole: "Target Role" },
+      summary: "Generate resume from JD after confirmation.",
+    }]);
+  }
+
+  private mockP12Critic(userContent: string): Record<string, unknown> {
+    const payload = this.parseObject(userContent);
+    const message = typeof payload.userMessage === "string" ? payload.userMessage : userContent;
+    return this.p12Decision("critic", [{ toolName: "check_unsupported_claims", arguments: { text: message }, summary: "Check unsupported claims." }]);
+  }
+
+  private p12Decision(agentName: string, steps: Array<{ toolName: string; arguments: Record<string, unknown>; summary: string }>): Record<string, unknown> {
+    return {
+      agentName,
+      responseType: "plan",
+      assistantMessage: "",
+      plan: steps.map((step, index) => ({ id: `step-${index + 1}`, agentName, ...step })),
+      missingInputs: [],
+      confidence: 0.9,
+    };
   }
 
   private mockAgentRuntimeDecision(userContent: string): Record<string, unknown> {

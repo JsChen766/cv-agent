@@ -11,6 +11,7 @@ import { applyRateLimit } from "../rateLimit.js";
 import { CopilotOrchestrator } from "../../copilot/CopilotOrchestrator.js";
 import type { CopilotActionRequest, CopilotChatRequest } from "../../copilot/types.js";
 import { isRecord, readHeader } from "./helpers.js";
+import { registerPendingActionRoutes } from "./pendingActions.js";
 
 // Module-level orchestrator — scoped to the kernel instance
 let orchestrator: CopilotOrchestrator;
@@ -92,6 +93,8 @@ export async function registerCopilotRoutes(
 
     reply.raw.end();
   });
+
+  await registerPendingActionRoutes(app, kernel, authResolver, () => orchestrator);
 }
 
 function parseCopilotChatBody(body: unknown): CopilotChatRequest {

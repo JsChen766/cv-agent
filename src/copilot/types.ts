@@ -218,7 +218,7 @@ export type ProductTimelineItem = {
   relatedExportId?: string;
 };
 
-export type CopilotActionResultStatus = "success" | "needs_input" | "failed";
+export type CopilotActionResultStatus = "success" | "needs_input" | "needs_confirmation" | "failed";
 
 export type CopilotActionResult = {
   actionType?: string;
@@ -291,6 +291,9 @@ export type CopilotRawSection = {
   evidenceChainIds: string[];
   critiqueItemIds: string[];
   decisionIds: string[];
+  agentTrace?: unknown;
+  toolResults?: unknown[];
+  pendingActions?: unknown[];
   metadata?: Record<string, unknown>;
   exportId?: string;
   jobId?: string;

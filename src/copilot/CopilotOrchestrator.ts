@@ -5,9 +5,7 @@ import type {
   CopilotChatRequest,
   CopilotStreamEvent,
 } from "./types.js";
-import { AgentRuntime } from "../agents/runtime/AgentRuntime.js";
-import { CopilotApiAdapter } from "./CopilotApiAdapter.js";
-import { CopilotActionAdapter } from "./CopilotActionAdapter.js";
+import { AgentOrchestrator } from "../agent-core/runtime/AgentOrchestrator.js";
 
 export type CopilotOrchestratorDeps = {
   kernel: ApiKernel;
@@ -18,14 +16,14 @@ export type CopilotOrchestratorDeps = {
  * Copilot is the product API surface; AgentRuntime is the execution boundary.
  */
 export class CopilotOrchestrator {
-  private readonly runtime: AgentRuntime;
-  private readonly chatAdapter: CopilotApiAdapter;
-  private readonly actionAdapter: CopilotActionAdapter;
+  private readonly runtime: AgentOrchestrator;
 
   public constructor(deps: CopilotOrchestratorDeps) {
-    this.runtime = new AgentRuntime({ kernel: deps.kernel });
-    this.chatAdapter = new CopilotApiAdapter(this.runtime);
-    this.actionAdapter = new CopilotActionAdapter(this.runtime);
+    this.runtime = new AgentOrchestrator({ kernel: deps.kernel });
+  }
+
+  public get pendingActions() {
+    return this.runtime.pendingActions;
   }
 
   public getSession(userId: string, id: string) {
@@ -33,11 +31,23 @@ export class CopilotOrchestrator {
   }
 
   public handleChat(ctx: KernelRequestContext, body: CopilotChatRequest) {
-    return this.chatAdapter.handleChat(ctx, body);
+    return this.runtime.handleChat(ctx, body);
   }
 
   public handleAction(ctx: KernelRequestContext, body: CopilotActionRequest) {
-    return this.actionAdapter.handleAction(ctx, body);
+    return this.runtime.handleChat(ctx, {
+      sessionId: body.sessionId,
+      message: body.action.type,
+      clientState: {
+        ...body.clientState,
+        activeVariantId: body.action.variantId ?? body.clientState?.activeVariantId,
+        ...(body.action.payload ?? {}),
+      },
+    });
+  }
+
+  public runtimeConfirm(ctx: KernelRequestContext, pendingActionId: string) {
+    return this.runtime.confirmPendingAction(ctx, pendingActionId);
   }
 
   public handleStream(
@@ -45,6 +55,31 @@ export class CopilotOrchestrator {
     body: CopilotChatRequest,
     emit: (event: CopilotStreamEvent["type"], data: unknown) => void,
   ) {
-    return this.chatAdapter.handleStream(ctx, body, emit);
+    return this.runtime.handleChat(ctx, body)
+      .then((response) => {
+        emit("copilot.turn.started", { type: "copilot.turn.started", sessionId: response.sessionId, turnId: response.turnId });
+        emit("copilot.message.created", response.assistantMessage);
+        emit("copilot.workspace.updated", {
+          type: "copilot.workspace.updated",
+          sessionId: response.sessionId,
+          status: response.workspace.status,
+          variantCount: response.workspace.variants.length,
+        });
+        emit("copilot.action.required", { type: "copilot.action.required", actions: response.nextActions });
+        emit("copilot.completed", {
+          type: "copilot.completed",
+          sessionId: response.sessionId,
+          turnId: response.turnId,
+          workspaceStatus: response.workspace.status,
+        });
+      })
+      .catch((error) => {
+        emit("copilot.failed", {
+          type: "copilot.failed",
+          sessionId: body.sessionId ?? "",
+          turnId: "",
+          message: error instanceof Error ? error.message : "Copilot failed",
+        });
+      });
   }
 }
