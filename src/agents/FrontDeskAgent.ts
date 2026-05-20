@@ -1,12 +1,8 @@
 import { z } from "zod";
 import { BaseAgent } from "../core/agent/BaseAgent.js";
 import type { BaseAgentConfig } from "../core/agent/types.js";
-import {
-  FrontDeskDecisionParseError,
-  buildFrontDeskRepairPrompt,
-  buildFrontDeskSystemPrompt,
-  parseFrontDeskDecision,
-} from "./frontdesk/index.js";
+import { parseAgentJson } from "../core/json/index.js";
+import { validateWithSchema } from "../knowledge/schemas/validate.js";
 
 export const FrontDeskIntentSchema = z.enum([
   "ingest_resume_document",
@@ -139,4 +135,58 @@ export class FrontDeskAgent extends BaseAgent {
       `User message: ${input.message}`,
     ].join("\n");
   }
+}
+
+class FrontDeskDecisionParseError extends Error {
+  public constructor(
+    message: string,
+    public readonly reason: string,
+    public readonly rawPreview: string,
+  ) {
+    super(message);
+    this.name = "FrontDeskDecisionParseError";
+  }
+}
+
+function parseFrontDeskDecision(raw: string): FrontDeskDecision {
+  let parsed: unknown;
+  try {
+    parsed = parseAgentJson(raw, { expectedRoot: "object" });
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    throw new FrontDeskDecisionParseError(`FrontDeskAgent response is not valid JSON. ${reason}`, reason, raw.slice(0, 300));
+  }
+
+  const validation = validateWithSchema(FrontDeskDecisionSchema, parsed);
+  if (!validation.ok) {
+    throw new FrontDeskDecisionParseError(
+      `FrontDeskAgent decision schema validation failed: ${validation.errors.join("; ")}`,
+      validation.errors.join("; "),
+      raw.slice(0, 300),
+    );
+  }
+  return validation.data;
+}
+
+function buildFrontDeskSystemPrompt(): string {
+  return [
+    "You are the FrontDeskAgent for a CV/resume agent kernel.",
+    "You only classify user intent and extract routing metadata.",
+    "You must return JSON only.",
+    "Do not generate resume content.",
+    "Do not ingest experience yourself.",
+    "Do not explain evidence chains yourself.",
+    "Valid intent values: ingest_resume_document, add_experience_text, generate_resume_for_jd, revise_generated_artifact, explain_evidence_chain, show_experience_graph, ask_followup_question, unknown.",
+    "Return one JSON object with intent, confidence, summary, requiredActions, and optional followUpQuestion.",
+  ].join("\n");
+}
+
+function buildFrontDeskRepairPrompt(input: { invalidResponse: string; parseError: string }): string {
+  return [
+    "Convert the following invalid FrontDeskAgent response into valid JSON matching the FrontDeskDecision schema.",
+    "Return JSON only. Do not add markdown or explanations.",
+    `Parse error: ${input.parseError}`,
+    "Invalid response:",
+    input.invalidResponse.slice(0, 2_000),
+  ].join("\n");
 }

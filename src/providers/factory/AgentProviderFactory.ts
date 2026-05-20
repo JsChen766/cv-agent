@@ -2,7 +2,7 @@ import { ModelClient } from "../../core/model/ModelClient.js";
 import { DeepSeekProvider } from "../DeepSeekProvider.js";
 import { MockProvider } from "../MockProvider.js";
 import { OpenAICompatibleProvider } from "../OpenAICompatibleProvider.js";
-import { readRuntimeMode } from "../../agents/runtime/AgentRuntimeConfig.js";
+import { readRuntimeMode } from "../../agent-core/runtime/AgentRuntimeConfig.js";
 import type {
   AgentModelClientConfig,
   AgentProviderFactoryConfig,

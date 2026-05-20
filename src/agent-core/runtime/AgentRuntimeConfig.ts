@@ -83,9 +83,7 @@ function readProvider(
   const value = readString(runtimeMode === "test" ? configured ?? testProvider : configured);
   if (!value) return runtimeMode === "test" && allowMockRuntime ? "mock" : "deepseek";
   if (value === "fake") return "mock";
-  if (value === "mock" || value === "deepseek" || value === "openai" || value === "compatible") {
-    return value;
-  }
+  if (value === "mock" || value === "deepseek" || value === "openai" || value === "compatible") return value;
   throw new Error(`Unknown AGENT_PROVIDER "${value}". Supported values are deepseek, openai, compatible, mock.`);
 }
 
@@ -105,9 +103,7 @@ function readNumber(value: string | undefined, name: string): number | undefined
   const text = readString(value);
   if (!text) return undefined;
   const parsed = Number(text);
-  if (!Number.isFinite(parsed) || parsed < 0) {
-    throw new Error(`${name} must be a non-negative number.`);
-  }
+  if (!Number.isFinite(parsed) || parsed < 0) throw new Error(`${name} must be a non-negative number.`);
   return parsed;
 }
 

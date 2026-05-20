@@ -8,11 +8,11 @@ import { applyRateLimit } from "../rateLimit.js";
 import { readAgentModeConfig } from "../../providers/factory/agentModes.js";
 import { AgentProviderFactory } from "../../providers/factory/AgentProviderFactory.js";
 import type { AgentProviderFactoryConfig } from "../../providers/factory/types.js";
-import { readAgentRuntimeConfig } from "../../agents/runtime/AgentRuntimeConfig.js";
+import { readAgentRuntimeConfig } from "../../agent-core/runtime/AgentRuntimeConfig.js";
 import {
   DETERMINISTIC_RUNTIME_WARNING,
   readAllowDeterministicRuntime,
-} from "../../agents/runtime/AgentRuntimeGuards.js";
+} from "../../agent-core/runtime/AgentRuntimeGuards.js";
 import { readLimit } from "./helpers.js";
 
 export async function registerDebugRoutes(
@@ -223,4 +223,3 @@ function assertDebugRunsEnabled(): void {
     throw new ApiError(ErrorCodes.FORBIDDEN, "Debug agent run routes are disabled. Set DEBUG_ROUTES_ENABLED=true or DEBUG_AGENT_RUNS_ENABLED=true to enable them.", 403);
   }
 }
-

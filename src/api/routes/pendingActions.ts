@@ -18,7 +18,7 @@ export async function registerPendingActionRoutes(
     const sessionId = typeof request.query === "object" && request.query && "sessionId" in request.query
       ? String((request.query as { sessionId?: unknown }).sessionId ?? "")
       : undefined;
-    return success(getOrchestrator().pendingActions.list(ctx.user.id, sessionId || undefined), {
+    return success(await getOrchestrator().pendingActions.list(ctx.user.id, sessionId || undefined), {
       requestId: ctx.request.requestId,
       traceId: ctx.request.traceId,
       mode: kernel.mode,
@@ -29,7 +29,7 @@ export async function registerPendingActionRoutes(
     const resolvedAuth = await authResolver.resolve(request);
     const ctx = createKernelRequestContext(request, resolvedAuth);
     const id = readId(request.params);
-    const action = getOrchestrator().pendingActions.get(ctx.user.id, id);
+    const action = await getOrchestrator().pendingActions.get(ctx.user.id, id);
     if (!action) throw new ApiError(ErrorCodes.NOT_FOUND, "Pending action not found.", 404);
     return success(action, { requestId: ctx.request.requestId, traceId: ctx.request.traceId, mode: kernel.mode });
   });
@@ -44,7 +44,7 @@ export async function registerPendingActionRoutes(
   app.post("/copilot/pending-actions/:id/cancel", async (request) => {
     const resolvedAuth = await authResolver.resolve(request);
     const ctx = createKernelRequestContext(request, resolvedAuth);
-    const action = getOrchestrator().pendingActions.cancel(ctx.user.id, readId(request.params));
+    const action = await getOrchestrator().pendingActions.cancel(ctx.user.id, readId(request.params));
     return success(action, { requestId: ctx.request.requestId, traceId: ctx.request.traceId, mode: kernel.mode });
   });
 }

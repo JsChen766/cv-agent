@@ -113,7 +113,7 @@ import {
   createFrontDeskModelClient,
   uniqueWarnings,
 } from "./agentModeFactories.js";
-import { validateDeterministicKernelAgentModes } from "../../agents/runtime/AgentRuntimeGuards.js";
+import { validateDeterministicKernelAgentModes } from "../../agent-core/runtime/AgentRuntimeGuards.js";
 
 export async function createKernel(): Promise<ApiKernel> {
   const databaseUrl = process.env.DATABASE_URL;

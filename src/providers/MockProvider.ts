@@ -41,11 +41,11 @@ export class MockProvider implements LLMProvider {
 
   private mockJsonResponse(request: LLMChatRequest, userContent: string): unknown {
     const agentName = request.metadata?.agentName;
-    if (agentName === "frontdesk") return this.mockP12FrontDesk(userContent);
-    if (agentName === "experience_receiver") return this.mockP12ExperienceReceiver(userContent);
-    if (agentName === "strategist") return this.mockP12Strategist(userContent);
-    if (agentName === "architect") return this.mockP12Architect(userContent);
-    if (agentName === "critic") return this.mockP12Critic(userContent);
+    if (agentName === "agent-core:frontdesk") return this.mockP12FrontDesk(userContent);
+    if (agentName === "agent-core:experience_receiver") return this.mockP12ExperienceReceiver(userContent);
+    if (agentName === "agent-core:strategist") return this.mockP12Strategist(userContent);
+    if (agentName === "agent-core:architect") return this.mockP12Architect(userContent);
+    if (agentName === "agent-core:critic") return this.mockP12Critic(userContent);
     if (agentName === "archivist") return this.mockArchivist(userContent);
     if (agentName === "strategist") return this.mockStrategist();
     if (agentName === "architect") return this.mockArtifactResponse(userContent);

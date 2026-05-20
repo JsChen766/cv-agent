@@ -15,14 +15,14 @@ describe("P12 PendingActionService", () => {
     const tool = registry.get("save_experience_from_text");
     expect(tool).toBeDefined();
 
-    const action = service.create({
+    const action = await service.create({
       userId: "user-1",
       sessionId: "cs-test",
       tool: tool!,
       toolArguments: { text: "Built WEEX analytics dashboard." },
     });
     expect(action.status).toBe("pending");
-    expect(service.get("wrong-user", action.id)).toBeUndefined();
+    expect(await service.get("wrong-user", action.id)).toBeUndefined();
 
     const result = await service.confirm({
       userId: "user-1",
@@ -35,12 +35,12 @@ describe("P12 PendingActionService", () => {
     expect(result.result.status).toBe("success");
     expect((await kernel.productServices.experienceService.listExperiences("user-1")).length).toBe(1);
 
-    const cancellable = service.create({ userId: "user-1", sessionId: "cs-test", tool: tool!, toolArguments: { text: "Another" } });
-    expect(service.cancel("user-1", cancellable.id).status).toBe("cancelled");
+    const cancellable = await service.create({ userId: "user-1", sessionId: "cs-test", tool: tool!, toolArguments: { text: "Another" } });
+    expect((await service.cancel("user-1", cancellable.id)).status).toBe("cancelled");
 
-    const expired = service.create({ userId: "user-1", sessionId: "cs-test", tool: tool!, toolArguments: { text: "Expired" } });
+    const expired = await service.create({ userId: "user-1", sessionId: "cs-test", tool: tool!, toolArguments: { text: "Expired" } });
     expired.expiresAt = new Date(Date.now() - 1000).toISOString();
-    expect(service.get("user-1", expired.id)?.status).toBe("expired");
+    expect((await service.get("user-1", expired.id))?.status).toBe("expired");
     await kernel.close();
   });
 });

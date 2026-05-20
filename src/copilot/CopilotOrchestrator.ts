@@ -35,15 +35,7 @@ export class CopilotOrchestrator {
   }
 
   public handleAction(ctx: KernelRequestContext, body: CopilotActionRequest) {
-    return this.runtime.handleChat(ctx, {
-      sessionId: body.sessionId,
-      message: body.action.type,
-      clientState: {
-        ...body.clientState,
-        activeVariantId: body.action.variantId ?? body.clientState?.activeVariantId,
-        ...(body.action.payload ?? {}),
-      },
-    });
+    return this.runtime.handleExplicitAction(ctx, body);
   }
 
   public runtimeConfirm(ctx: KernelRequestContext, pendingActionId: string) {

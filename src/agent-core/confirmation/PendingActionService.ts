@@ -6,6 +6,8 @@ import type { ToolExecutor } from "../tools/ToolExecutor.js";
 import type { ToolRegistry } from "../tools/ToolRegistry.js";
 import type { ToolResult } from "../tools/ToolResult.js";
 import type { PendingAction } from "./PendingAction.js";
+import { InMemoryPendingActionRepository } from "./InMemoryPendingActionRepository.js";
+import type { PendingActionRepository } from "./PendingActionRepository.js";
 
 export type CreatePendingActionInput = {
   userId: string;
@@ -20,9 +22,9 @@ export type CreatePendingActionInput = {
 };
 
 export class PendingActionService {
-  private readonly actions = new Map<string, PendingAction>();
+  public constructor(private readonly repository: PendingActionRepository = new InMemoryPendingActionRepository()) {}
 
-  public create(input: CreatePendingActionInput): PendingAction {
+  public async create(input: CreatePendingActionInput): Promise<PendingAction> {
     const now = new Date();
     const pending: PendingAction = {
       id: `pa-${randomUUID()}`,
@@ -40,34 +42,36 @@ export class PendingActionService {
       createdAt: now.toISOString(),
       expiresAt: new Date(now.getTime() + 30 * 60 * 1000).toISOString(),
     };
-    this.actions.set(pending.id, pending);
-    return pending;
+    return this.repository.create(pending);
   }
 
-  public list(userId: string, sessionId?: string): PendingAction[] {
-    return Array.from(this.actions.values()).filter((action) => (
-      action.userId === userId &&
-      (!sessionId || action.sessionId === sessionId) &&
-      action.status === "pending" &&
-      !isExpired(action)
-    ));
+  public async list(userId: string, sessionId?: string): Promise<PendingAction[]> {
+    const actions = await this.repository.list(userId, sessionId);
+    const active: PendingAction[] = [];
+    for (const action of actions) {
+      if (action.status === "pending" && isExpired(action)) {
+        await this.repository.update({ ...action, status: "expired" });
+        continue;
+      }
+      if (action.status === "pending") active.push(action);
+    }
+    return active;
   }
 
-  public get(userId: string, id: string): PendingAction | undefined {
-    const action = this.actions.get(id);
-    if (!action || action.userId !== userId) return undefined;
+  public async get(userId: string, id: string): Promise<PendingAction | undefined> {
+    const action = await this.repository.getById(userId, id);
+    if (!action) return undefined;
     if (isExpired(action) && action.status === "pending") {
-      action.status = "expired";
+      return this.repository.update({ ...action, status: "expired" });
     }
     return action;
   }
 
-  public cancel(userId: string, id: string): PendingAction {
-    const action = this.get(userId, id);
+  public async cancel(userId: string, id: string): Promise<PendingAction> {
+    const action = await this.get(userId, id);
     if (!action) throw new AgentError("PERMISSION_DENIED", "Pending action not found.", { statusCode: 404 });
     if (action.status !== "pending") throw new AgentError("CONFIRMATION_EXPIRED", "Pending action is not pending.", { statusCode: 409 });
-    action.status = "cancelled";
-    return action;
+    return this.repository.update({ ...action, status: "cancelled" });
   }
 
   public async confirm(input: {
@@ -77,11 +81,11 @@ export class PendingActionService {
     executor: ToolExecutor;
     context: AgentContext;
   }): Promise<{ action: PendingAction; result: ToolResult }> {
-    const action = this.get(input.userId, input.id);
+    const action = await this.get(input.userId, input.id);
     if (!action) throw new AgentError("PERMISSION_DENIED", "Pending action not found.", { statusCode: 404 });
     if (action.status !== "pending") throw new AgentError("CONFIRMATION_EXPIRED", "Pending action is not pending.", { statusCode: 409 });
     if (isExpired(action)) {
-      action.status = "expired";
+      await this.repository.update({ ...action, status: "expired" });
       throw new AgentError("CONFIRMATION_EXPIRED", "Pending action expired.", { statusCode: 409 });
     }
     const tool = input.registry.get(action.toolName);
@@ -89,13 +93,13 @@ export class PendingActionService {
     const parsed = tool.inputSchema.safeParse(action.toolArguments);
     if (!parsed.success) throw new AgentError("TOOL_VALIDATION_FAILED", "Pending action input is invalid.", { statusCode: 400 });
 
-    action.status = "confirmed";
+    await this.repository.update({ ...action, status: "confirmed" });
     try {
       const result = await input.executor.executeDefinition(tool, parsed.data as Record<string, unknown>, input.context);
-      action.status = result.status === "success" ? "executed" : "failed";
-      return { action, result };
+      const updated = await this.repository.update({ ...action, status: result.status === "success" ? "executed" : "failed" });
+      return { action: updated, result };
     } catch (error) {
-      action.status = "failed";
+      await this.repository.update({ ...action, status: "failed" });
       throw error;
     }
   }

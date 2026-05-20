@@ -41,7 +41,7 @@ export abstract class BaseAgent implements Agent {
         responseFormat: "json",
         temperature: 0.1,
         maxTokens: 800,
-        metadata: { agentName: this.name },
+        metadata: { agentName: `agent-core:${this.name}` },
         messages: [
           { role: "system", content: this.deps.promptRegistry.get(this.name) },
           { role: "user", content: JSON.stringify(this.buildPayload(input)) },
