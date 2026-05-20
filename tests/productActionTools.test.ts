@@ -1,34 +1,15 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { createKernel } from "../src/api/kernel/createKernel.js";
+import { describe, expect, it, vi } from "vitest";
 import type { ApiKernel } from "../src/api/types.js";
 import { AgentToolRegistry } from "../src/agents/tools/AgentToolRegistry.js";
 import type { AgentToolExecutionContext } from "../src/agents/tools/AgentToolTypes.js";
+import type { CopilotSession } from "../src/copilot/types.js";
+import type { ResumeExport } from "../src/exports/types.js";
 import { createTestKernelContext } from "../src/kernel/context.js";
+import type { ProductExperience, ProductExperienceRevision } from "../src/product/types.js";
 
 describe("product action tools", () => {
-  let kernel: ApiKernel;
-  let registry: AgentToolRegistry;
-
-  beforeEach(async () => {
-    process.env.NODE_ENV = "test";
-    process.env.AUTH_MODE = "dev_header";
-    process.env.AGENT_PROVIDER = "mock";
-    process.env.FRONTDESK_AGENT_MODE = "mock";
-    process.env.EXPERIENCE_EXTRACTOR_MODE = "deterministic";
-    process.env.ARTIFACT_GENERATOR_MODE = "deterministic";
-    process.env.CRITIC_AGENT_MODE = "deterministic";
-    process.env.REVISION_AGENT_MODE = "deterministic";
-    delete process.env.DATABASE_URL;
-    kernel = await createKernel();
-    registry = new AgentToolRegistry(kernel);
-  });
-
-  afterEach(async () => {
-    await kernel.close();
-  });
-
-  it("export_resume returns needs_input and actionResult when resumeId is missing", async () => {
-    const result = await registry.execute("export_resume", {}, await toolContext(kernel));
+  it("export_resume returns needs_input when resumeId is missing", async () => {
+    const result = await registryFor(mockKernel()).execute("export_resume", {}, toolContext());
 
     expect(result.status).toBe("needs_input");
     expect(result.actionResult).toMatchObject({
@@ -38,35 +19,35 @@ describe("product action tools", () => {
     });
   });
 
-  it("export_resume returns export actionResult, workspace patch, and export_created timeline", async () => {
-    const resume = await kernel.productServices.resumeService.createResume("user-1", { title: "Frontend draft" });
-    const result = await registry.execute("export_resume", { resumeId: resume.id, format: "html" }, await toolContext(kernel));
+  it("export_resume returns structured export result on success", async () => {
+    const createExport = vi.fn().mockResolvedValue({
+      exportRecord: exportRecord({ id: "export-1", resumeId: "resume-1", jobId: "job-1" }),
+      job: { id: "job-1" },
+    });
+    const result = await registryFor(mockKernel({ exportService: { createExport } }))
+      .execute("export_resume", { resumeId: "resume-1", format: "html" }, toolContext());
 
+    expect(createExport).toHaveBeenCalledWith("user-1", {
+      resumeId: "resume-1",
+      format: "html",
+      templateId: undefined,
+    });
     expect(result.status).toBe("success");
     expect(result.actionResult).toMatchObject({
       actionType: "export_resume",
       status: "success",
-      exportRecord: expect.objectContaining({
-        id: expect.stringMatching(/^export-/),
-        resumeId: resume.id,
-        format: "html",
-        status: "pending",
-        jobId: expect.stringMatching(/^job-/),
-      }),
+      exportRecord: expect.objectContaining({ id: "export-1", resumeId: "resume-1", jobId: "job-1" }),
     });
     expect(result.workspacePatch).toMatchObject({
-      activeExportId: expect.stringMatching(/^export-/),
-      exportRecords: [expect.objectContaining({ resumeId: resume.id, format: "html" })],
+      activeExportId: "export-1",
+      exportRecords: [expect.objectContaining({ id: "export-1" })],
     });
-    expect(result.timelineItems?.[0]).toMatchObject({
-      type: "export_created",
-      title: "Resume export created",
-      relatedExportId: expect.stringMatching(/^export-/),
-    });
+    expect(result.timelineItems?.[0]?.type).toBe("export_created");
+    expect(result.raw).toMatchObject({ exportId: "export-1", jobId: "job-1" });
   });
 
-  it("optimize_resume_item returns needs_input and actionResult when text is missing", async () => {
-    const result = await registry.execute("optimize_resume_item", {}, await toolContext(kernel));
+  it("optimize_resume_item returns needs_input when selectedText and resumeItemId are missing", async () => {
+    const result = await registryFor(mockKernel()).execute("optimize_resume_item", {}, toolContext());
 
     expect(result.status).toBe("needs_input");
     expect(result.actionResult).toMatchObject({
@@ -76,29 +57,50 @@ describe("product action tools", () => {
     });
   });
 
-  it("optimize_resume_item returns revisionSuggestion for selectedText", async () => {
-    const result = await registry.execute("optimize_resume_item", {
-      selectedText: "Built React systems for internal users.",
+  it("optimize_resume_item returns model-backed revisionSuggestion for selectedText", async () => {
+    const result = await registryFor(mockKernel({
+      frontDeskModelClient: {
+        chat: vi.fn().mockResolvedValue({ content: "Improved resume bullet." }),
+      },
+    })).execute("optimize_resume_item", {
+      resumeId: "resume-1",
       resumeItemId: "item-1",
+      selectedText: "Built React systems for internal users.",
       instruction: "make_more_quantified",
-    }, await toolContext(kernel));
+    }, toolContext());
 
     expect(result.status).toBe("success");
-    expect(result.actionResult).toMatchObject({
-      actionType: "optimize_resume_item",
-      status: "success",
-      revisionSuggestion: expect.objectContaining({
-        kind: "resume_item",
-        sourceId: "item-1",
-        sourceTextPreview: "Built React systems for internal users.",
-        usedModel: true,
-      }),
+    expect(result.actionResult?.revisionSuggestion).toMatchObject({
+      kind: "resume_item",
+      sourceId: "item-1",
+      rewrittenText: "Improved resume bullet.",
+      usedModel: true,
     });
-    expect(result.actionResult?.revisionSuggestion?.rewrittenText?.length).toBeGreaterThan(0);
   });
 
-  it("rewrite_experience returns needs_input and actionResult when text is missing", async () => {
-    const result = await registry.execute("rewrite_experience", {}, await toolContext(kernel));
+  it("optimize_resume_item falls back without exposing provider errors when model client fails", async () => {
+    const result = await registryFor(mockKernel({
+      frontDeskModelClient: {
+        chat: vi.fn().mockRejectedValue(new Error("provider raw failure")),
+      },
+    })).execute("optimize_resume_item", {
+      resumeItemId: "item-1",
+      selectedText: "Built React systems for internal users.",
+      instruction: "make_more_conservative",
+    }, toolContext());
+
+    expect(result.status).toBe("success");
+    expect(result.actionResult?.revisionSuggestion).toMatchObject({
+      kind: "resume_item",
+      sourceId: "item-1",
+      usedModel: false,
+    });
+    expect(result.actionResult?.revisionSuggestion?.rewrittenText).toContain("Suggestion:");
+    expect(JSON.stringify(result)).not.toContain("provider raw failure");
+  });
+
+  it("rewrite_experience returns needs_input when selectedText is missing and no experience can be read", async () => {
+    const result = await registryFor(mockKernel()).execute("rewrite_experience", {}, toolContext());
 
     expect(result.status).toBe("needs_input");
     expect(result.actionResult).toMatchObject({
@@ -108,51 +110,151 @@ describe("product action tools", () => {
     });
   });
 
-  it("rewrite_experience returns revisionSuggestion for selectedText", async () => {
-    const result = await registry.execute("rewrite_experience", {
-      selectedText: "Led frontend migration from legacy stack.",
+  it("rewrite_experience returns model-backed experience revisionSuggestion", async () => {
+    const result = await registryFor(mockKernel({
+      frontDeskModelClient: {
+        chat: vi.fn().mockResolvedValue({ content: "Improved experience text." }),
+      },
+    })).execute("rewrite_experience", {
       experienceId: "exp-1",
-    }, await toolContext(kernel));
+      selectedText: "Led frontend migration from legacy stack.",
+    }, toolContext());
 
     expect(result.status).toBe("success");
-    expect(result.actionResult).toMatchObject({
-      actionType: "rewrite_experience",
-      status: "success",
-      revisionSuggestion: expect.objectContaining({
-        kind: "experience",
-        sourceId: "exp-1",
-        sourceTextPreview: "Led frontend migration from legacy stack.",
-        usedModel: true,
-      }),
+    expect(result.actionResult?.revisionSuggestion).toMatchObject({
+      kind: "experience",
+      sourceId: "exp-1",
+      rewrittenText: "Improved experience text.",
+      usedModel: true,
     });
   });
 
-  it("falls back without throwing when model client fails", async () => {
-    kernel.frontDeskModelClient = {
-      chat: async () => {
-        throw new Error("model unavailable");
+  it("rewrite_experience can read current or latest revision when only experienceId is provided", async () => {
+    const experience = productExperience({ id: "exp-1", currentRevisionId: undefined });
+    const revisions = [
+      experienceRevision({ id: "rev-old", content: "Older experience content.", createdAt: "2026-01-01T00:00:00.000Z" }),
+      experienceRevision({ id: "rev-new", content: "Newest experience content.", createdAt: "2026-01-03T00:00:00.000Z" }),
+    ];
+    const result = await registryFor(mockKernel({
+      productServices: {
+        experienceService: {
+          getExperience: vi.fn().mockResolvedValue(experience),
+          listRevisions: vi.fn().mockResolvedValue(revisions),
+        },
       },
-    } as unknown as ApiKernel["frontDeskModelClient"];
-    registry = new AgentToolRegistry(kernel);
-
-    const result = await registry.execute("optimize_resume_item", {
-      selectedText: "Built React systems for internal users.",
-      instruction: "make_more_conservative",
-    }, await toolContext(kernel));
+      frontDeskModelClient: {
+        chat: vi.fn().mockResolvedValue({ content: "Newest content rewritten." }),
+      },
+    })).execute("rewrite_experience", { experienceId: "exp-1" }, toolContext());
 
     expect(result.status).toBe("success");
-    expect(result.actionResult?.revisionSuggestion?.usedModel).toBe(false);
-    expect(result.actionResult?.revisionSuggestion?.rewrittenText).toContain("Suggestion:");
+    expect(result.actionResult?.revisionSuggestion).toMatchObject({
+      kind: "experience",
+      sourceId: "exp-1",
+      sourceTextPreview: "Newest experience content.",
+      rewrittenText: "Newest content rewritten.",
+    });
   });
 });
 
-async function toolContext(kernel: ApiKernel): Promise<AgentToolExecutionContext> {
-  const session = await kernel.copilotServices.sessionService.getOrCreateSession("user-1", {});
+function registryFor(kernel: ApiKernel): AgentToolRegistry {
+  return new AgentToolRegistry(kernel);
+}
+
+function mockKernel(overrides: {
+  exportService?: Partial<ApiKernel["exportService"]>;
+  productServices?: {
+    resumeService?: Partial<ApiKernel["productServices"]["resumeService"]>;
+    experienceService?: Partial<ApiKernel["productServices"]["experienceService"]>;
+  };
+  frontDeskModelClient?: Partial<NonNullable<ApiKernel["frontDeskModelClient"]>>;
+} = {}): ApiKernel {
+  return {
+    productServices: {
+      resumeService: {
+        getResume: vi.fn().mockResolvedValue(null),
+        ...overrides.productServices?.resumeService,
+      },
+      experienceService: {
+        getExperience: vi.fn().mockResolvedValue(null),
+        listRevisions: vi.fn().mockResolvedValue([]),
+        ...overrides.productServices?.experienceService,
+      },
+    },
+    exportService: {
+      createExport: vi.fn().mockResolvedValue({
+        exportRecord: exportRecord(),
+        job: { id: "job-1" },
+      }),
+      ...overrides.exportService,
+    },
+    frontDeskModelClient: overrides.frontDeskModelClient ?? {
+      chat: vi.fn().mockResolvedValue({ content: "Model rewrite." }),
+    },
+  } as unknown as ApiKernel;
+}
+
+function toolContext(): AgentToolExecutionContext {
   return {
     ctx: createTestKernelContext({ user: { id: "user-1" } }),
-    session,
+    session: session(),
     workspace: null,
-    request: { sessionId: session.id, message: "tool test", clientState: {} },
+    request: { sessionId: "session-1", message: "tool test", clientState: {} },
     turnId: "turn-test",
+  };
+}
+
+function session(): CopilotSession {
+  return {
+    id: "session-1",
+    userId: "user-1",
+    status: "active",
+    resumeIngested: false,
+    createdAt: "2026-01-01T00:00:00.000Z",
+    updatedAt: "2026-01-01T00:00:00.000Z",
+  };
+}
+
+function exportRecord(overrides: Partial<ResumeExport> = {}): ResumeExport {
+  return {
+    id: "export-1",
+    userId: "user-1",
+    resumeId: "resume-1",
+    jobId: "job-1",
+    format: "html",
+    templateId: "default",
+    status: "pending",
+    createdAt: "2026-01-01T00:00:00.000Z",
+    updatedAt: "2026-01-01T00:00:00.000Z",
+    ...overrides,
+  };
+}
+
+function productExperience(overrides: Partial<ProductExperience> = {}): ProductExperience {
+  return {
+    id: "exp-1",
+    userId: "user-1",
+    category: "project",
+    title: "Search rewrite",
+    organization: "Acme",
+    role: "Frontend Engineer",
+    tags: [],
+    status: "active",
+    currentRevisionId: "rev-current",
+    createdAt: "2026-01-01T00:00:00.000Z",
+    updatedAt: "2026-01-01T00:00:00.000Z",
+    ...overrides,
+  };
+}
+
+function experienceRevision(overrides: Partial<ProductExperienceRevision> = {}): ProductExperienceRevision {
+  return {
+    id: "rev-1",
+    experienceId: "exp-1",
+    userId: "user-1",
+    content: "Revision content.",
+    source: "manual",
+    createdAt: "2026-01-01T00:00:00.000Z",
+    ...overrides,
   };
 }

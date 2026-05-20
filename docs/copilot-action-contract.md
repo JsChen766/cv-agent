@@ -109,6 +109,19 @@ Frontend should read `raw.primaryActionResult` first. `assistantMessage` and tim
 `export_created` is an official timeline type for successful export job creation.
 `export_resume` is still recorded as Copilot activity type `decision` until the Postgres `copilot_activity.type` check constraint is migrated to include `export`.
 
+## Testing / Contract Guarantees
+
+The action contract tests assert these compatibility guarantees:
+
+- Every `ProductActionType` must map to a registered backend tool, or deliberately return `undefined` from `toolForAction`.
+- `toolForAction` must never route to an unregistered compatibility placeholder such as `handle_product_action`.
+- `export_resume` must return `actionResult.exportRecord` on success, along with `workspacePatch.activeExportId`, `workspacePatch.exportRecords[]`, `raw.exportId`, `raw.jobId`, and a timeline item with `type = "export_created"`.
+- `optimize_resume_item` and `rewrite_experience` must return `actionResult.revisionSuggestion` on success.
+- `CopilotPresenter` must copy tool `actionResult` values into `raw.actionResults` and set the first one as `raw.primaryActionResult`.
+- Frontend code should read `raw.primaryActionResult` first for action status and payload details.
+- `assistantMessage` and timeline text are compatibility fallbacks for older backend responses and display-only flows.
+- `export_created` is a formal `ProductTimelineItem.type`, not free-form timeline text.
+
 ## Export Entry Points
 
 `export_resume` has two supported entry points:

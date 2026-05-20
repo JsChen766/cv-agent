@@ -4,7 +4,15 @@ import type { ApiKernel } from "../src/api/types.js";
 import { AgentRuntime } from "../src/agents/runtime/AgentRuntime.js";
 import { activityTypeForDecision, argsForAction, toolForAction } from "../src/agents/runtime/WorkspaceMerger.js";
 import { AgentToolRegistry } from "../src/agents/tools/AgentToolRegistry.js";
-import type { ProductAction, ProductActionType } from "../src/copilot/types.js";
+import type { AgentToolResult } from "../src/agents/tools/AgentToolTypes.js";
+import type {
+  CopilotActionResult,
+  CopilotActionResultStatus,
+  CopilotRawSection,
+  ProductAction,
+  ProductActionType,
+  ProductTimelineItem,
+} from "../src/copilot/types.js";
 import { createTestKernelContext } from "../src/kernel/context.js";
 
 const allActionTypes: ProductActionType[] = [
@@ -46,14 +54,43 @@ describe("copilot action contract", () => {
 
   it("allows ProductAction payload", () => {
     const action: ProductAction = {
-      id: "export-current-resume",
-      type: "export_resume",
-      label: "Export",
+      id: "generate-from-jd",
+      type: "generate_from_jd",
+      label: "Generate from JD",
       primary: true,
-      payload: { resumeId: "pres-1", format: "html" },
+      payload: { jdId: "jd-1" },
     };
 
-    expect(action.payload).toEqual({ resumeId: "pres-1", format: "html" });
+    expect(action.payload).toEqual({ jdId: "jd-1" });
+  });
+
+  it("exposes structured action result types without removing existing raw fields", () => {
+    const status: CopilotActionResultStatus = "success";
+    const actionResult: CopilotActionResult = {
+      actionType: "export_resume",
+      status,
+      exportRecord: { id: "export-1" },
+    };
+    const raw: CopilotRawSection = {
+      artifactIds: ["artifact-1"],
+      evidenceChainIds: ["chain-1"],
+      critiqueItemIds: ["critique-1"],
+      decisionIds: ["decision-1"],
+      actionResults: [actionResult],
+      primaryActionResult: actionResult,
+    };
+    const timelineItem: ProductTimelineItem = {
+      id: "tl-1",
+      type: "export_created",
+      title: "Resume export created",
+      status: "completed",
+      createdAt: "2026-01-01T00:00:00.000Z",
+    };
+    const toolResult: AgentToolResult = { status: "success", actionResult };
+
+    expect(raw.primaryActionResult?.status).toBe("success");
+    expect(timelineItem.type).toBe("export_created");
+    expect(toolResult.actionResult).toBe(actionResult);
   });
 
   it("maps every ProductActionType to the expected tool", () => {

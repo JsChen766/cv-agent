@@ -118,7 +118,8 @@ describe("P11.2 Backend Capability Completion", () => {
         method: "POST", url: "/auth/dev-login",
         payload: { email: "temporary@example.com" },
       });
-      const cookie = login.headers["set-cookie"];
+      const cookieHeader = login.headers["set-cookie"];
+      const cookie = Array.isArray(cookieHeader) ? cookieHeader[0] : cookieHeader;
 
       // Manually revoke the session to simulate expiry/revocation
       const token = cookie?.match(/coolto_session=([^;]+)/)?.[1];
