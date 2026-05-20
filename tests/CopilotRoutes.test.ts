@@ -589,6 +589,7 @@ describe("POST /copilot/actions", () => {
   let server: Awaited<ReturnType<typeof createServer>>;
   let sessionId: string;
   let variantId: string;
+  let activeJDId: string;
   let initialVariantCount: number;
 
   beforeEach(async () => {
@@ -608,6 +609,7 @@ describe("POST /copilot/actions", () => {
     });
     const chatData = (chatResponse.json() as ApiSuccess<CopilotChatResponse>).data;
     sessionId = chatData.sessionId;
+    activeJDId = chatData.workspace.jdId ?? "";
     const firstVariant = chatData.workspace.variants[0];
     expect(firstVariant).toBeDefined();
     variantId = firstVariant!.id;
@@ -725,6 +727,42 @@ describe("POST /copilot/actions", () => {
       payload: { sessionId: "non-existent", action: { type: "accept", variantId: "v1" } },
     });
     expect(response.statusCode).toBe(404);
+  });
+
+  it("accepts new product action types with safe routing", async () => {
+    expect(activeJDId).toMatch(/^pjd-/);
+    const actionPayloads = [
+      {
+        sessionId,
+        action: { type: "generate_from_jd" },
+        clientState: { activeJDId },
+      },
+      {
+        sessionId,
+        action: { type: "optimize_resume_item", payload: { selectedText: "Improve this bullet." } },
+        clientState: { activeResumeId: "resume-1", activeResumeItemId: "item-1", selectedText: "Improve this bullet." },
+      },
+      {
+        sessionId,
+        action: { type: "rewrite_experience" },
+        clientState: { activeExperienceId: "experience-1", selectedText: "Rewrite this experience." },
+      },
+      {
+        sessionId,
+        action: { type: "export_resume" },
+        clientState: { activeResumeId: "resume-1" },
+      },
+    ];
+
+    for (const payload of actionPayloads) {
+      const response = await server.inject({
+        method: "POST", url: "/copilot/actions",
+        headers: { "x-user-id": "user-1" },
+        payload,
+      });
+      expect(response.statusCode).toBe(200);
+      expect((response.json() as ApiSuccess<CopilotChatResponse>).ok).toBe(true);
+    }
   });
 });
 

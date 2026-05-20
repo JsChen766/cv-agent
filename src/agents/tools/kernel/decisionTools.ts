@@ -51,5 +51,31 @@ export function createDecisionTools(kernel: ApiKernel): AgentToolDefinition[] {
         };
       },
     },
+    {
+      name: "handle_product_action",
+      description: "Safely acknowledge product actions that are completed by the frontend or product API.",
+      schema: z.object({
+        actionType: z.enum(["export_resume"]),
+        resumeId: z.string().optional(),
+        payload: z.record(z.string(), z.unknown()).optional(),
+      }),
+      jsonSchema: objectSchema({ actionType: { type: "string" }, resumeId: { type: "string" } }, ["actionType"]),
+      execute: async (args) => {
+        if (args.actionType === "export_resume") {
+          return {
+            status: "success",
+            assistantMessage: args.resumeId
+              ? "Resume export is ready to continue in the product export flow."
+              : "Please choose a resume before exporting.",
+            workspacePatch: args.resumeId ? { activePanel: "resume_editor", resumeId: args.resumeId } : undefined,
+            rawIds: { decisionIds: args.resumeId ? [args.resumeId] : [] },
+          };
+        }
+        return {
+          status: "needs_input",
+          assistantMessage: "I need a bit more information before I can do that.",
+        };
+      },
+    },
   ];
 }

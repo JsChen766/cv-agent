@@ -44,6 +44,16 @@ describe("runtime FrontDeskAgent", () => {
       request: { message: "这段怎么改？", clientState },
       session: session(),
       workspace: null,
+      activeAssetContext: {
+        activeResume: {
+          id: "resume-1",
+          selectedItem: {
+            id: "item-123",
+            contentPreview: "Selected resume item preview",
+            contentLength: 28,
+          },
+        },
+      },
       recentMessages: [],
       tools: [],
     });
@@ -51,10 +61,18 @@ describe("runtime FrontDeskAgent", () => {
     const systemPrompt = provider.requests[0]?.messages[0]?.content;
     const userPayload = JSON.parse(String(provider.requests[0]?.messages[1]?.content)) as {
       requestContext: { clientState: unknown };
+      activeAssetContext: unknown;
     };
 
     expect(systemPrompt).toContain("requestContext.clientState");
+    expect(systemPrompt).toContain("activeAssetContext");
     expect(userPayload.requestContext.clientState).toEqual(clientState);
+    expect(userPayload.activeAssetContext).toMatchObject({
+      activeResume: {
+        id: "resume-1",
+        selectedItem: { id: "item-123" },
+      },
+    });
   });
 });
 

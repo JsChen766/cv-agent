@@ -10,6 +10,10 @@ import type {
   CopilotStreamEvent,
   CopilotWorkspace,
 } from "../../copilot/types.js";
+import {
+  ActiveAssetContextBuilder,
+  type ActiveAssetContext,
+} from "../../copilot/ActiveAssetContextBuilder.js";
 import { CopilotPresenter } from "../../copilot/CopilotPresenter.js";
 import { sanitizeClientStateForDebug } from "../../copilot/sanitizeClientStateForDebug.js";
 import { AgentToolRegistry } from "../tools/AgentToolRegistry.js";
@@ -48,6 +52,7 @@ export class AgentRuntime {
   private readonly finalAnswers: FinalAnswerSynthesizer;
   private readonly recorder: ActivityRecorder;
   private readonly streamEmitter = new StreamEmitter();
+  private readonly activeAssetContextBuilder: ActiveAssetContextBuilder;
 
   public constructor(private readonly deps: AgentRuntimeDeps) {
     this.config = deps.config ?? readAgentRuntimeConfig();
@@ -63,6 +68,7 @@ export class AgentRuntime {
     this.toolExecution = new ToolExecutionService(this.tools, this.quota, this.runLogger, resumeIngestion);
     this.finalAnswers = new FinalAnswerSynthesizer(deps.kernel);
     this.recorder = new ActivityRecorder(deps.kernel);
+    this.activeAssetContextBuilder = new ActiveAssetContextBuilder(deps.kernel);
   }
 
   public async getSession(userId: string, sessionId: string): Promise<CopilotSession | undefined> {
@@ -85,13 +91,6 @@ export class AgentRuntime {
 
     await this.locks.acquire(ctx, session.id);
     const run = await this.runLogger.createRun({ ctx, sessionId: session.id, mode: this.config.frontDeskAgentMode, model: this.config.model });
-    debugCopilotClientState({
-      requestId: ctx.request.requestId,
-      sessionId: session.id,
-      userId: ctx.user.id,
-      request,
-      session,
-    });
     const startedAt = Date.now();
     try {
       const userMessage = await this.recorder.saveUserMessage(ctx.user.id, userMessageFor(session, request.message));
@@ -100,7 +99,20 @@ export class AgentRuntime {
         this.deps.kernel.copilotServices.workspaceService.getWorkspace(ctx.user.id, session.id),
         this.deps.kernel.copilotServices.sessionService.getRecentMessages(ctx.user.id, session.id, 6),
       ]);
-      let decision = await this.frontDesk.decide(this.decisionInput(ctx, request, session, workspace, recentMessages));
+      const activeAssetContext = await this.activeAssetContextBuilder.build({
+        userId: ctx.user.id,
+        request,
+        workspace,
+      });
+      debugCopilotClientState({
+        requestId: ctx.request.requestId,
+        sessionId: session.id,
+        userId: ctx.user.id,
+        request,
+        session,
+        activeAssetContext,
+      });
+      let decision = await this.frontDesk.decide(this.decisionInput(ctx, request, session, workspace, recentMessages, activeAssetContext));
       decision = this.toolExecution.sanitizeDecision(decision, { requestId: ctx.request.requestId, sessionId: session.id });
 
       const toolResults = await this.toolExecution.executeDecisionTools(
@@ -129,24 +141,35 @@ export class AgentRuntime {
 
     await this.locks.acquire(ctx, session.id);
     const run = await this.runLogger.createRun({ ctx, sessionId: session.id, mode: "action", model: this.config.model });
-    debugCopilotClientState({
-      requestId: ctx.request.requestId,
-      sessionId: session.id,
-      userId: ctx.user.id,
-      request: { sessionId: session.id, message: request.action.type, clientState: request.clientState as CopilotChatRequest["clientState"] },
-      session,
-    });
     const startedAt = Date.now();
     try {
       const turnId = request.turnId ?? `ct-${randomUUID()}`;
       const workspace = await this.deps.kernel.copilotServices.workspaceService.getWorkspace(ctx.user.id, session.id);
+      const actionRequest: CopilotChatRequest = {
+        sessionId: session.id,
+        message: request.action.type,
+        clientState: request.clientState as CopilotChatRequest["clientState"],
+      };
+      const activeAssetContext = await this.activeAssetContextBuilder.build({
+        userId: ctx.user.id,
+        request: actionRequest,
+        workspace,
+      });
+      debugCopilotClientState({
+        requestId: ctx.request.requestId,
+        sessionId: session.id,
+        userId: ctx.user.id,
+        request: actionRequest,
+        session,
+        activeAssetContext,
+      });
       const toolName = toolForAction(request.action.type);
-      const toolArgs = argsForAction(request.action, workspace);
+      const toolArgs = argsForAction(request.action, workspace, request.clientState);
       const toolResult = await this.toolExecution.executeToolWithLog(toolName, toolArgs, {
         ctx,
         session,
         workspace,
-        request: { sessionId: session.id, message: request.action.type, clientState: request.clientState as CopilotChatRequest["clientState"] },
+        request: actionRequest,
         turnId,
       }, run.id);
       const decision: AgentDecision = {
@@ -185,6 +208,7 @@ export class AgentRuntime {
     session: CopilotSession,
     workspace: CopilotWorkspace | null,
     recentMessages: CopilotMessage[],
+    activeAssetContext?: ActiveAssetContext,
   ) {
     return {
       requestId: ctx.request.requestId,
@@ -193,6 +217,7 @@ export class AgentRuntime {
       request,
       session,
       workspace,
+      activeAssetContext,
       recentMessages,
       tools: this.tools.getToolSchemas(),
       temperature: this.config.temperature,
@@ -256,6 +281,7 @@ function debugCopilotClientState(input: {
   userId: string;
   request: CopilotChatRequest;
   session: CopilotSession;
+  activeAssetContext?: ActiveAssetContext;
 }): void {
   if (!isCopilotContextDebugEnabled()) return;
   const jdText = input.request.jdText ?? input.session.jdText ?? "";
@@ -271,9 +297,23 @@ function debugCopilotClientState(input: {
     hasResumeText: resumeText.length > 0,
     jdTextLength: jdText.length,
     resumeTextLength: resumeText.length,
+    activeAssetContext: summarizeActiveAssetContext(input.request, input.activeAssetContext),
   });
 }
 
 function isCopilotContextDebugEnabled(): boolean {
   return process.env.DEBUG_ROUTES_ENABLED === "true" || process.env.ENABLE_COPILOT_CONTEXT_DEBUG === "true";
+}
+
+function summarizeActiveAssetContext(
+  request: CopilotChatRequest,
+  activeAssetContext: ActiveAssetContext | undefined,
+): Record<string, unknown> {
+  return {
+    keys: activeAssetContext ? Object.keys(activeAssetContext) : [],
+    activeJDResolved: Boolean(request.clientState?.activeJDId && activeAssetContext?.activeJD),
+    activeResumeResolved: Boolean(request.clientState?.activeResumeId && activeAssetContext?.activeResume),
+    activeResumeItemResolved: Boolean(request.clientState?.activeResumeItemId && activeAssetContext?.activeResume?.selectedItem),
+    activeExperienceResolved: Boolean(request.clientState?.activeExperienceId && activeAssetContext?.activeExperience),
+  };
 }

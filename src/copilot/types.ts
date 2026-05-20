@@ -135,7 +135,11 @@ export type ProductAction = {
     | "revise_more_conservative"
     | "revise_more_quantified"
     | "show_evidence"
-    | "explain_choice";
+    | "explain_choice"
+    | "generate_from_jd"
+    | "optimize_resume_item"
+    | "rewrite_experience"
+    | "export_resume";
   label: string;
   description?: string;
   variantId?: string;
