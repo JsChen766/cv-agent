@@ -724,6 +724,7 @@ function timelineTypeLabel(value: ProductTimelineItem["type"]) {
     variants_generated: "生成候选",
     critique_completed: "完成审查",
     revision_completed: "完成修订",
+    export_created: "创建导出",
     decision_recorded: "记录决策",
     evidence_opened: "查看证据",
     warning: "提醒",

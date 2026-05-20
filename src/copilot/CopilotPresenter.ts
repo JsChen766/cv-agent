@@ -64,6 +64,9 @@ function messageKind(decision: AgentDecision, toolResults: AgentToolResult[]): C
   if (decision.mode === "ask_clarification" || toolResults.some((result) => result.status === "needs_input")) {
     return "clarifying_question";
   }
+  if (toolResults.some((result) => result.timelineItems?.some((item) => item.type === "export_created"))) {
+    return "decision_summary";
+  }
   if (toolResults.some((result) => result.timelineItems?.some((item) => item.type === "evidence_opened"))) {
     return "evidence_explanation";
   }
@@ -103,12 +106,14 @@ function mergeSuggestedPrompts(decision: AgentDecision, results: AgentToolResult
 
 function mergeRawIds(results: AgentToolResult[]): CopilotChatResponse["raw"] {
   const rawFields = results.reduce<Record<string, unknown>>((merged, result) => ({ ...merged, ...(result.raw ?? {}) }), {});
+  const actionResults = results.map((result) => result.actionResult).filter((item): item is NonNullable<AgentToolResult["actionResult"]> => Boolean(item));
   return {
     artifactIds: unique(results.flatMap((result) => result.rawIds?.artifactIds ?? [])),
     evidenceChainIds: unique(results.flatMap((result) => result.rawIds?.evidenceChainIds ?? [])),
     critiqueItemIds: unique(results.flatMap((result) => result.rawIds?.critiqueItemIds ?? [])),
     decisionIds: unique(results.flatMap((result) => result.rawIds?.decisionIds ?? [])),
     ...rawFields,
+    ...(actionResults.length > 0 ? { actionResults, primaryActionResult: actionResults[0] } : {}),
   };
 }
 

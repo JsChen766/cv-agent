@@ -45,11 +45,14 @@ It uses the same safe model-assisted rewrite path and falls back locally if need
 
 `export_resume` returns:
 
+- `timelineItems[0].type = "export_created"`
 - `timelineItems[0].title = "Resume export created"`
 - `timelineItems[0].relatedExportId`
 - `workspacePatch.activeExportId`
 - `workspacePatch.exportRecords[]`
 - `raw.exportId`, `raw.jobId`, `raw.resumeId`, `raw.format`
+- `raw.primaryActionResult`
+- `raw.actionResults[]`
 - `rawIds.decisionIds` containing the export id and job id
 
 Example structured export response fields:
@@ -72,10 +75,39 @@ Example structured export response fields:
     "exportId": "export-123",
     "jobId": "job-123",
     "resumeId": "pres-123",
-    "format": "html"
+    "format": "html",
+    "primaryActionResult": {
+      "actionType": "export_resume",
+      "status": "success",
+      "message": "Created a HTML export job. It will be available in export records when ready.",
+      "exportRecord": {
+        "id": "export-123",
+        "resumeId": "pres-123",
+        "format": "html",
+        "status": "pending",
+        "jobId": "job-123"
+      }
+    }
   }
 }
 ```
+
+## Structured Action Result
+
+`/copilot/actions` returns structured action status under `response.raw`:
+
+- `response.raw.primaryActionResult`: the first tool result that includes an action result.
+- `response.raw.actionResults`: all action results from tool execution.
+- `actionResult.status`: `success`, `needs_input`, or `failed`.
+- `actionResult.exportRecord`: structured export id, resume id, format, status, job id, and creation time.
+- `actionResult.revisionSuggestion`: structured rewrite output for `optimize_resume_item` and `rewrite_experience`.
+
+Frontend should read `raw.primaryActionResult` first. `assistantMessage` and timeline text are fallback display signals only.
+`revisionSuggestion.rewrittenText` is capped by the backend and must not include provider raw payloads, cookies, tokens, or chain-of-thought.
+`revisionSuggestion.sourceTextPreview` is capped to a short preview.
+
+`export_created` is an official timeline type for successful export job creation.
+`export_resume` is still recorded as Copilot activity type `decision` until the Postgres `copilot_activity.type` check constraint is migrated to include `export`.
 
 ## Export Entry Points
 
@@ -92,6 +124,7 @@ The frontend may still call product APIs directly for richer flows, but these ac
 For Copilot actions, prefer these signals in order:
 
 - HTTP error: route or auth level failure.
+- `raw.primaryActionResult.status`: structured action outcome.
 - Failed timeline item: action executed but failed.
 - `assistantMessage` with a clear `needs_input` prompt: required context is missing.
 - `workspace.exportRecords` and `raw.exportId`: export job was created.

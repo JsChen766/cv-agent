@@ -206,6 +206,7 @@ export type ProductTimelineItem = {
     | "variants_generated"
     | "critique_completed"
     | "revision_completed"
+    | "export_created"
     | "decision_recorded"
     | "evidence_opened"
     | "warning";
@@ -215,6 +216,34 @@ export type ProductTimelineItem = {
   createdAt: string;
   relatedVariantId?: string;
   relatedExportId?: string;
+};
+
+export type CopilotActionResultStatus = "success" | "needs_input" | "failed";
+
+export type CopilotActionResult = {
+  actionType?: string;
+  status: CopilotActionResultStatus;
+  message?: string;
+  reason?: string;
+  missingInputs?: string[];
+  exportRecord?: {
+    id: string;
+    resumeId?: string;
+    format?: string;
+    status?: string;
+    jobId?: string;
+    createdAt?: string;
+  };
+  revisionSuggestion?: {
+    kind: "resume_item" | "experience" | "variant";
+    sourceId?: string;
+    sourceTextPreview?: string;
+    rewrittenText?: string;
+    usedModel?: boolean;
+  };
+  evidenceId?: string;
+  variantId?: string;
+  metadata?: Record<string, unknown>;
 };
 
 export type CopilotChatRequest = {
@@ -267,4 +296,6 @@ export type CopilotRawSection = {
   jobId?: string;
   resumeId?: string;
   format?: string;
+  actionResults?: CopilotActionResult[];
+  primaryActionResult?: CopilotActionResult;
 };

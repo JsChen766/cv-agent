@@ -2,6 +2,7 @@ import type { z } from "zod";
 import type { KernelRequestContext } from "../../kernel/context.js";
 import type {
   CopilotChatRequest,
+  CopilotActionResult,
   CopilotSession,
   CopilotWorkspace,
   ProductAction,
@@ -23,6 +24,7 @@ export type AgentToolResult = {
     decisionIds?: string[];
   };
   raw?: Record<string, unknown>;
+  actionResult?: CopilotActionResult;
   nextActions?: ProductAction[];
   suggestedPrompts?: SuggestedPrompt[];
 };
