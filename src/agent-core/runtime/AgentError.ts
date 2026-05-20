@@ -29,20 +29,26 @@ export class AgentError extends Error {
 
   public toUserMessage(): string {
     switch (this.code) {
+      case "MODEL_FAILED":
+        return "Agent 模型暂时不可用，我已切换到基础规则模式。请再试一次或补充更具体的信息。";
+      case "INVALID_AGENT_OUTPUT":
+        return "我理解了你的请求，但刚才没有生成可执行计划。请稍微换种说法，或者告诉我是要查看、保存、修改还是生成。";
       case "TOOL_VALIDATION_FAILED":
-        return "I need a bit more information before I can safely do that.";
+        return "这个操作还缺少必要信息。";
       case "TOOL_NOT_FOUND":
-        return "That operation is not available yet.";
+        return "这个操作目前还没有对应工具。";
+      case "TOOL_EXECUTION_FAILED":
+        return "工具执行失败，请稍后重试。";
       case "CONFIRMATION_REQUIRED":
-        return "Please confirm before I make that change.";
+        return "请在确认后我再执行这个操作。";
       case "CONFIRMATION_EXPIRED":
-        return "This confirmation request has expired. Please ask me to prepare it again.";
+        return "这个确认请求已经过期，请重新操作。";
       case "PERMISSION_DENIED":
-        return "You do not have permission to perform that action.";
+        return "你没有执行这个操作的权限。";
       case "PRODUCT_STATE_NOT_FOUND":
-        return "I could not find the product item needed for that action.";
+        return "找不到操作所需的产品数据。";
       default:
-        return "I could not complete that request safely.";
+        return "处理你的请求时遇到了问题，请换个说法再试一次。";
     }
   }
 }

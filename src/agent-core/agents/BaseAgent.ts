@@ -5,9 +5,13 @@ import { AgentError } from "../runtime/AgentError.js";
 import type { PromptRegistry } from "../prompts/PromptRegistry.js";
 import {
   AgentDecisionSchema,
+  repairAgentDecision,
   type AgentDecision,
   type AgentName,
 } from "../validation/AgentOutputSchemas.js";
+import { fallbackAgentDecision } from "./deterministicAgentFallback.js";
+
+const DEBUG = process.env.ENABLE_AGENT_DECISION_DEBUG === "true";
 
 export type AgentInput = {
   context: AgentContext;
@@ -33,9 +37,11 @@ export abstract class BaseAgent implements Agent {
   ) {}
 
   public async decide(input: AgentInput): Promise<AgentDecision> {
+    // If no modelClient, use deterministic fallback directly
     if (!this.deps.modelClient) {
-      throw new AgentError("MODEL_FAILED", "Agent model client is not configured.");
+      return this.applyFallback(input, "modelClient not configured");
     }
+
     try {
       const response = await this.deps.modelClient.chat({
         responseFormat: "json",
@@ -47,18 +53,87 @@ export abstract class BaseAgent implements Agent {
           { role: "user", content: JSON.stringify(this.buildPayload(input)) },
         ],
       });
-      const parsed = parseAgentJson(response.content);
-      const result = AgentDecisionSchema.safeParse(parsed);
-      if (!result.success) {
-        throw new AgentError("INVALID_AGENT_OUTPUT", "Agent returned invalid output.", {
-          statusCode: 502,
-          details: { agentName: this.name },
+
+      if (DEBUG) {
+        console.debug("[AgentDecision]", {
+          agentName: this.name,
+          rawPreview: response.content.slice(0, 300),
         });
       }
-      return result.data;
+
+      // Try to parse JSON
+      let parsed: unknown;
+      try {
+        parsed = parseAgentJson(response.content);
+      } catch {
+        // Try extract JSON from text as a last resort
+        const extracted = this.extractJsonFromText(response.content);
+        if (extracted !== null) {
+          parsed = extracted;
+        } else {
+          if (DEBUG) console.debug("[AgentDecision] JSON parse failed, using fallback");
+          return this.applyFallback(input, "JSON parse failed");
+        }
+      }
+
+      // Try schema validation
+      const result = AgentDecisionSchema.safeParse(parsed);
+      if (result.success) {
+        // Quality check: defaults may have filled in empty values
+        // Always attempt repair to ensure minimum quality
+        const repaired = repairAgentDecision(parsed, this.name);
+        if (repaired) {
+          if (DEBUG) console.debug("[AgentDecision] parsed+repaired success");
+          return repaired;
+        }
+        if (DEBUG) console.debug("[AgentDecision] parsed success");
+        return result.data;
+      }
+
+      // Try repair
+      const repaired = repairAgentDecision(parsed, this.name);
+      if (repaired) {
+        if (DEBUG) console.debug("[AgentDecision] repaired success");
+        return repaired;
+      }
+
+      if (DEBUG) console.debug("[AgentDecision] schema validation failed, using fallback");
+      return this.applyFallback(input, "schema validation failed");
     } catch (error) {
-      if (error instanceof AgentError) throw error;
-      throw new AgentError("MODEL_FAILED", "Agent model call failed.", { cause: error });
+      if (error instanceof AgentError) {
+        // Only throw if it's a fatal error (provider truly unavailable)
+        // For MODEL_FAILED, still try fallback
+        if (error.code === "MODEL_FAILED") {
+          return this.applyFallback(input, `model failed: ${error.message}`);
+        }
+        throw error;
+      }
+      return this.applyFallback(input, `unexpected error: ${String(error)}`);
+    }
+  }
+
+  private applyFallback(input: AgentInput, reason: string): AgentDecision {
+    if (DEBUG) {
+      console.debug("[AgentDecision]", {
+        agentName: this.name,
+        fallbackReason: reason,
+        fallbackUsed: true,
+      });
+    }
+    return fallbackAgentDecision(this.name, {
+      userMessage: input.context.userMessage,
+      clientState: input.context.clientState ?? {},
+    });
+  }
+
+  private extractJsonFromText(text: string): unknown | null {
+    // Try to find a JSON object in the text
+    const match = text.match(/\{[\s\S]*\}/);
+    if (!match) return null;
+    try {
+      return JSON.parse(match[0]);
+    } catch {
+      return null;
     }
   }
 

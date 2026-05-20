@@ -30,6 +30,8 @@ import type { AgentContext } from "./AgentContext.js";
 import { AgentError } from "./AgentError.js";
 import { AgentTraceRecorder } from "./AgentTrace.js";
 
+const PRODUCT_INTRO = "我是你的求职经历 Copilot，可以帮你整理经历、分析 JD、生成和修改简历。有什么我可以帮你的？";
+
 export type AgentOrchestratorDeps = {
   kernel: ApiKernel;
   pendingActions?: PendingActionService;
@@ -106,9 +108,30 @@ export class AgentOrchestrator {
         responseType: frontDeskDecision.responseType,
       });
 
-      if (frontDeskDecision.responseType === "ask_clarification" || !frontDeskDecision.routeTo) {
+      // responseType "final" — return assistantMessage directly, no specialist
+      if (frontDeskDecision.responseType === "final") {
         return this.finishRun(ctx.user.id, run, {
-          assistantText: frontDeskDecision.assistantMessage || "Please provide the missing input so I can continue.",
+          assistantText: frontDeskDecision.assistantMessage || PRODUCT_INTRO,
+          toolResults: [],
+          pendingActions: [],
+          workspacePatch: {},
+        });
+      }
+
+      // responseType "ask_clarification" — return clarification
+      if (frontDeskDecision.responseType === "ask_clarification") {
+        return this.finishRun(ctx.user.id, run, {
+          assistantText: frontDeskDecision.assistantMessage || "请补充更多信息，我好继续帮你。",
+          toolResults: [],
+          pendingActions: [],
+          workspacePatch: {},
+        });
+      }
+
+      // responseType "route" but routeTo missing — return clarification
+      if (!frontDeskDecision.routeTo) {
+        return this.finishRun(ctx.user.id, run, {
+          assistantText: frontDeskDecision.assistantMessage || "我不确定应该如何处理这个请求，请再描述一下。",
           toolResults: [],
           pendingActions: [],
           workspacePatch: {},
@@ -123,6 +146,49 @@ export class AgentOrchestrator {
         status: "running",
       });
       const specialistDecision = await specialist.decide({ context: run.context, routeHint: frontDeskDecision.routeTo });
+
+      // Specialist "final" — return assistantMessage directly
+      if (specialistDecision.responseType === "final") {
+        run.trace.complete(planStep, "success", { stepCount: 0 });
+        return this.finishRun(ctx.user.id, run, {
+          assistantText: specialistDecision.assistantMessage || "Done.",
+          toolResults: [],
+          pendingActions: [],
+          workspacePatch: {},
+        });
+      }
+
+      // Specialist "ask_clarification" — return clarification
+      if (specialistDecision.responseType === "ask_clarification") {
+        run.trace.complete(planStep, "success", { stepCount: 0 });
+        return this.finishRun(ctx.user.id, run, {
+          assistantText: specialistDecision.assistantMessage || "请补充更多信息。",
+          toolResults: [],
+          pendingActions: [],
+          workspacePatch: {},
+        });
+      }
+
+      // Specialist with empty plan but has assistantMessage — return the message
+      if (specialistDecision.plan.length === 0) {
+        run.trace.complete(planStep, "success", { stepCount: 0 });
+        if (specialistDecision.assistantMessage) {
+          return this.finishRun(ctx.user.id, run, {
+            assistantText: specialistDecision.assistantMessage,
+            toolResults: [],
+            pendingActions: [],
+            workspacePatch: {},
+          });
+        }
+        // Empty plan and no message — return clarification, not error
+        return this.finishRun(ctx.user.id, run, {
+          assistantText: "我理解了你的请求，但需要更具体的信息才能执行操作。请告诉我是要查看、保存、修改还是生成。",
+          toolResults: [],
+          pendingActions: [],
+          workspacePatch: {},
+        });
+      }
+
       const plan = this.validatePlan(specialistDecision.plan, specialist);
       run.trace.complete(planStep, "success", { stepCount: plan.length });
 
@@ -273,7 +339,26 @@ export class AgentOrchestrator {
     if (!tool) throw new AgentError("TOOL_NOT_FOUND", "Planned tool is not registered.", { statusCode: 404 });
     const parsed = tool.inputSchema.safeParse(step.arguments);
     if (!parsed.success) {
-      return { result: failedActionResult(tool.name, "The action is missing required input.") };
+      const missingFields = parsed.error.issues
+        .map((issue) => issue.path.join("."))
+        .filter(Boolean)
+        .join(", ");
+      return {
+        result: {
+          status: "needs_input",
+          message: missingFields
+            ? `这个操作还缺少必要信息：${missingFields}。`
+            : "这个操作还缺少必要信息。",
+          actionResult: {
+            actionType: tool.name,
+            status: "needs_input",
+            reason: "missing_required_input",
+            message: missingFields
+              ? `Missing: ${missingFields}`
+              : "Missing required input.",
+          },
+        },
+      };
     }
     const args = parsed.data as Record<string, unknown>;
     if (!tool.requiresConfirmation) {

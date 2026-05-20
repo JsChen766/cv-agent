@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest";
 import { PromptRegistry } from "../src/agent-core/prompts/PromptRegistry.js";
-import { AgentError } from "../src/agent-core/runtime/AgentError.js";
 import { FrontDeskAgent } from "../src/agent-core/agents/FrontDeskAgent.js";
 import { createAgentTools } from "../src/agent-tools/index.js";
 import { createP12Kernel, testContext } from "./p12Helpers.js";
@@ -16,11 +15,31 @@ describe("P12 agent prompt contract", () => {
     expect(toolNames).toContain("check_unsupported_claims");
   });
 
-  it("returns INVALID_AGENT_OUTPUT when schema validation fails", async () => {
+  it("returns a valid decision instead of throwing when model output is invalid", async () => {
     const kernel = await createP12Kernel();
     const badModel = { chat: async () => ({ content: JSON.stringify({ invalid: true }) }) } as unknown as typeof kernel.frontDeskModelClient;
     const agent = new FrontDeskAgent({ modelClient: badModel, promptRegistry: new PromptRegistry() });
-    await expect(agent.decide({ context: testContext(kernel, createAgentTools()) })).rejects.toMatchObject({ code: "INVALID_AGENT_OUTPUT" } satisfies Partial<AgentError>);
+    // Should not throw — repair+fallback should produce a valid decision
+    const result = await agent.decide({ context: testContext(kernel, createAgentTools()) });
+    expect(result.agentName).toBe("frontdesk");
+    expect(result.responseType).toBeDefined();
+    expect(result.assistantMessage).toBeTruthy();
+    expect(result.assistantMessage).not.toContain("cannot safely");
+    expect(Array.isArray(result.plan)).toBe(true);
+    expect(Array.isArray(result.missingInputs)).toBe(true);
+    await kernel.close();
+  });
+
+  it("returns a valid decision without modelClient instead of throwing", async () => {
+    const kernel = await createP12Kernel();
+    const agent = new FrontDeskAgent({ promptRegistry: new PromptRegistry() });
+    const ctx = testContext(kernel, createAgentTools());
+    const ctxWithMsg = { ...ctx, userMessage: "你好" };
+    const result = await agent.decide({ context: ctxWithMsg });
+    expect(result.agentName).toBe("frontdesk");
+    expect(result.responseType).toBe("final");
+    expect(result.assistantMessage).toBeTruthy();
+    expect(result.assistantMessage).not.toContain("cannot safely");
     await kernel.close();
   });
 });
