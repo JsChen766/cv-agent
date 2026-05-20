@@ -13,6 +13,7 @@ import { createDashboardTools } from "./product/dashboardTools.js";
 import { createExperienceTools } from "./product/experienceTools.js";
 import { createImportTools } from "./product/importTools.js";
 import { createJDTools } from "./product/jdTools.js";
+import { createProductActionTools } from "./product/actionTools.js";
 import { createResumeTools } from "./product/resumeTools.js";
 
 export class AgentToolRegistry {
@@ -25,6 +26,7 @@ export class AgentToolRegistry {
       ...createJDTools(kernel),
       ...createResumeTools(kernel),
       ...createDashboardTools(kernel),
+      ...createProductActionTools(kernel),
       ...createGenerationTools(kernel),
       ...createRevisionTools(kernel),
       ...createEvidenceTools(),

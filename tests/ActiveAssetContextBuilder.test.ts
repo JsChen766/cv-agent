@@ -110,6 +110,53 @@ describe("ActiveAssetContextBuilder", () => {
     expect(context.activeExperience?.contentPreview?.length).toBeLessThanOrEqual(800);
   });
 
+  it("prefers currentRevisionId over a newer experience revision", async () => {
+    const created = await kernel.productServices.experienceService.createExperience("user-1", {
+      title: "Current revision wins",
+      category: "project",
+      content: "Current revision content",
+    });
+    await kernel.productServices.experienceService.createRevision("user-1", created.experience.id, {
+      content: "Newer non-current content",
+      source: "copilot",
+    });
+    await kernel.productServices.experienceService.updateExperience("user-1", created.experience.id, {
+      currentRevisionId: created.revision.id,
+    });
+
+    const context = await builder.build({
+      userId: "user-1",
+      request: { message: "rewrite", clientState: { activeExperienceId: created.experience.id } },
+      workspace: null,
+    });
+
+    expect(context.activeExperience?.contentPreview).toBe("Current revision content");
+  });
+
+  it("falls back to newest createdAt revision when currentRevisionId is missing", async () => {
+    const created = await kernel.productServices.experienceService.createExperience("user-1", {
+      title: "Latest fallback",
+      category: "project",
+      content: "Older revision content",
+    });
+    await new Promise((resolve) => setTimeout(resolve, 2));
+    await kernel.productServices.experienceService.createRevision("user-1", created.experience.id, {
+      content: "Newest fallback content",
+      source: "copilot",
+    });
+    await kernel.productServices.experienceService.updateExperience("user-1", created.experience.id, {
+      currentRevisionId: undefined,
+    });
+
+    const context = await builder.build({
+      userId: "user-1",
+      request: { message: "rewrite", clientState: { activeExperienceId: created.experience.id } },
+      workspace: null,
+    });
+
+    expect(context.activeExperience?.contentPreview).toBe("Newest fallback content");
+  });
+
   it("does not throw and returns an empty context when assets are missing", async () => {
     await expect(builder.build({
       userId: "user-1",

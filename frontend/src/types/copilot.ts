@@ -31,20 +31,27 @@ export type CopilotMessage = {
   createdAt: string;
 };
 
+export type ProductActionType =
+  | "accept"
+  | "reject"
+  | "prefer"
+  | "confirm_metric"
+  | "revise_more_conservative"
+  | "revise_more_quantified"
+  | "show_evidence"
+  | "explain_choice"
+  | "generate_from_jd"
+  | "optimize_resume_item"
+  | "rewrite_experience"
+  | "export_resume";
+
 export type ProductAction = {
   id: string;
-  type:
-    | "accept"
-    | "reject"
-    | "prefer"
-    | "confirm_metric"
-    | "revise_more_conservative"
-    | "revise_more_quantified"
-    | "show_evidence"
-    | "explain_choice";
+  type: ProductActionType;
   label: string;
   description?: string;
   variantId?: string;
+  payload?: Record<string, unknown>;
   primary: boolean;
   inputSchema?: {
     fields: Array<{
@@ -213,7 +220,7 @@ export type CopilotActionInput = {
   sessionId: string;
   turnId?: string;
   action: {
-    type: ProductAction["type"];
+    type: ProductActionType;
     variantId?: string;
     payload?: Record<string, unknown>;
   };

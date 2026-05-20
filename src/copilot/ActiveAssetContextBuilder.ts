@@ -162,7 +162,11 @@ export class ActiveAssetContextBuilder {
     currentRevisionId: string | undefined,
   ): Promise<ProductExperienceRevision | undefined> {
     const revisions = await this.kernel.productServices.experienceService.listRevisions(userId, experienceId);
-    return revisions.find((revision) => revision.id === currentRevisionId) ?? revisions[0];
+    if (currentRevisionId) {
+      const current = revisions.find((revision) => revision.id === currentRevisionId);
+      if (current) return current;
+    }
+    return [...revisions].sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt))[0];
   }
 
   private buildActiveVariant(

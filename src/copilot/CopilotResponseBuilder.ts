@@ -7,6 +7,7 @@ import type {
   CopilotMessage,
   CopilotWorkspace,
   ProductAction,
+  ProductActionType,
   ProductTimelineItem,
   ProductVariant,
 } from "./types.js";
@@ -429,7 +430,7 @@ export class CopilotResponseBuilder {
     const recommended = variants.find((v) => v.role === "recommended") ?? variants[0];
     if (!recommended) return [];
 
-    const criticalTypes: ProductAction["type"][] = recommended.status === "needs_confirmation"
+    const criticalTypes: ProductActionType[] = recommended.status === "needs_confirmation"
       ? ["confirm_metric", "accept", "show_evidence", "explain_choice", "revise_more_conservative"]
       : ["accept", "show_evidence", "explain_choice", "revise_more_conservative"];
 

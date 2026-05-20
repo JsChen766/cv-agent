@@ -647,7 +647,7 @@ function makeLocalMessage(role: "user" | "system", content: string, currentSessi
 }
 
 function actionLabel(action: ProductAction) {
-  const labels: Record<ProductAction["type"], string> = {
+  const labels: Partial<Record<ProductAction["type"], string>> = {
     accept: "采用",
     reject: "放弃",
     prefer: "设为首选",

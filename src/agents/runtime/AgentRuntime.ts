@@ -17,6 +17,7 @@ import {
 import { CopilotPresenter } from "../../copilot/CopilotPresenter.js";
 import { sanitizeClientStateForDebug } from "../../copilot/sanitizeClientStateForDebug.js";
 import { AgentToolRegistry } from "../tools/AgentToolRegistry.js";
+import type { AgentToolResult } from "../tools/AgentToolTypes.js";
 import { FrontDeskAgent } from "../frontdesk/FrontDeskAgent.js";
 import { readAgentRuntimeConfig, type AgentRuntimeConfig } from "./AgentRuntimeConfig.js";
 import type { AgentDecision } from "../schema/AgentDecision.js";
@@ -165,17 +166,22 @@ export class AgentRuntime {
       });
       const toolName = toolForAction(request.action.type);
       const toolArgs = argsForAction(request.action, workspace, request.clientState);
-      const toolResult = await this.toolExecution.executeToolWithLog(toolName, toolArgs, {
-        ctx,
-        session,
-        workspace,
-        request: actionRequest,
-        turnId,
-      }, run.id);
+      const toolResult: AgentToolResult = toolName && this.tools.hasTool(toolName)
+        ? await this.toolExecution.executeToolWithLog(toolName, toolArgs, {
+            ctx,
+            session,
+            workspace,
+            request: actionRequest,
+            turnId,
+          }, run.id)
+        : {
+            status: "failed",
+            assistantMessage: "I cannot safely perform that action yet.",
+          };
       const decision: AgentDecision = {
         mode: "call_tool",
         assistantMessage: "",
-        toolCalls: [{ toolName, arguments: toolArgs }],
+        toolCalls: toolName ? [{ toolName, arguments: toolArgs }] : [],
         confidence: 1,
       };
       const response = this.present(session.id, turnId, decision, workspace, [toolResult]);

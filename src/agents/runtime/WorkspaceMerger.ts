@@ -2,7 +2,7 @@ import type {
   CopilotActionRequest,
   CopilotClientState,
   CopilotWorkspace,
-  ProductAction,
+  ProductActionType,
 } from "../../copilot/types.js";
 import type { CopilotActivityType } from "../../copilot/persistence/index.js";
 import type { AgentDecision } from "../schema/AgentDecision.js";
@@ -58,7 +58,7 @@ export function activityTitle(type: CopilotActivityType): string {
   }
 }
 
-export function toolForAction(type: ProductAction["type"]): string {
+export function toolForAction(type: ProductActionType | string): string | undefined {
   switch (type) {
     case "revise_more_conservative":
     case "revise_more_quantified":
@@ -72,14 +72,17 @@ export function toolForAction(type: ProductAction["type"]): string {
     case "generate_from_jd":
       return "generate_resume_variants";
     case "optimize_resume_item":
+      return "optimize_resume_item";
     case "rewrite_experience":
-      return "revise_variant";
+      return "rewrite_experience";
     case "export_resume":
-      return "handle_product_action";
+      return "export_resume";
     case "reject":
     case "prefer":
     case "confirm_metric":
       return "record_variant_decision";
+    default:
+      return undefined;
   }
 }
 
@@ -88,51 +91,64 @@ export function argsForAction(
   workspace: CopilotWorkspace | null,
   clientState?: CopilotClientState,
 ): Record<string, unknown> {
-  const variantId = action.variantId ?? workspace?.activeVariantId ?? workspace?.variants[0]?.id;
+  const payload = action.payload ?? {};
+  const variantId = readString(payload.variantId)
+    ?? action.variantId
+    ?? clientState?.activeVariantId
+    ?? workspace?.activeVariantId
+    ?? workspace?.variants[0]?.id;
   if (action.type === "accept") {
-    return { generationId: workspace?.productGenerationId, variantId, resumeId: workspace?.resumeId };
+    return {
+      generationId: readString(payload.generationId) ?? workspace?.productGenerationId,
+      variantId,
+      resumeId: readString(payload.resumeId) ?? clientState?.activeResumeId ?? workspace?.resumeId,
+      payload,
+    };
   }
   if (action.type === "revise_more_conservative") {
-    return { variantId, instruction: "make_more_conservative" };
+    return { variantId, instruction: "make_more_conservative", customInstruction: readString(payload.customInstruction) };
   }
   if (action.type === "revise_more_quantified") {
-    return { variantId, instruction: "make_more_quantified" };
+    return { variantId, instruction: "make_more_quantified", customInstruction: readString(payload.customInstruction) };
   }
   if (action.type === "show_evidence" || action.type === "explain_choice") {
     return { variantId };
   }
   if (action.type === "generate_from_jd") {
     return {
-      jdId: readString(action.payload?.jdId) ?? clientState?.activeJDId ?? workspace?.jdId,
-      targetRole: readString(action.payload?.targetRole),
+      jdId: readString(payload.jdId) ?? clientState?.activeJDId ?? workspace?.jdId,
+      targetRole: readString(payload.targetRole),
     };
   }
   if (action.type === "optimize_resume_item") {
     return {
-      variantId,
-      instruction: "make_more_quantified",
-      resumeId: readString(action.payload?.resumeId) ?? clientState?.activeResumeId ?? workspace?.resumeId,
-      resumeItemId: readString(action.payload?.resumeItemId) ?? clientState?.activeResumeItemId,
-      selectedText: readString(action.payload?.selectedText) ?? clientState?.selectedText,
+      resumeId: readString(payload.resumeId) ?? clientState?.activeResumeId ?? workspace?.resumeId,
+      resumeItemId: readString(payload.resumeItemId) ?? clientState?.activeResumeItemId,
+      selectedText: readString(payload.selectedText) ?? clientState?.selectedText,
+      instruction: readString(payload.instruction) ?? "make_more_quantified",
     };
   }
   if (action.type === "rewrite_experience") {
     return {
-      variantId,
-      instruction: "make_more_quantified",
-      customInstruction: readString(action.payload?.instruction) ?? "rewrite_experience",
-      experienceId: readString(action.payload?.experienceId) ?? clientState?.activeExperienceId,
-      selectedText: readString(action.payload?.selectedText) ?? clientState?.selectedText,
+      experienceId: readString(payload.experienceId) ?? clientState?.activeExperienceId,
+      selectedText: readString(payload.selectedText) ?? clientState?.selectedText,
+      instruction: readString(payload.instruction) ?? "rewrite_experience",
     };
   }
   if (action.type === "export_resume") {
     return {
-      actionType: "export_resume",
-      resumeId: readString(action.payload?.resumeId) ?? clientState?.activeResumeId ?? workspace?.resumeId,
-      payload: action.payload,
+      resumeId: readString(payload.resumeId) ?? clientState?.activeResumeId ?? workspace?.resumeId,
+      format: readString(payload.format),
+      templateId: readString(payload.templateId),
+      payload,
     };
   }
-  return { variantId, decision: action.type, payload: action.payload };
+  return {
+    variantId,
+    decision: action.type,
+    reason: readString(payload.reason),
+    payload,
+  };
 }
 
 function isPanel(value: string): value is NonNullable<CopilotWorkspace["activePanel"]> {
