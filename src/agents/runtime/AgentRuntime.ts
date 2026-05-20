@@ -5,13 +5,13 @@ import type {
   CopilotActionRequest,
   CopilotChatRequest,
   CopilotChatResponse,
-  CopilotClientState,
   CopilotMessage,
   CopilotSession,
   CopilotStreamEvent,
   CopilotWorkspace,
 } from "../../copilot/types.js";
 import { CopilotPresenter } from "../../copilot/CopilotPresenter.js";
+import { sanitizeClientStateForDebug } from "../../copilot/sanitizeClientStateForDebug.js";
 import { AgentToolRegistry } from "../tools/AgentToolRegistry.js";
 import { FrontDeskAgent } from "../frontdesk/FrontDeskAgent.js";
 import { readAgentRuntimeConfig, type AgentRuntimeConfig } from "./AgentRuntimeConfig.js";
@@ -86,11 +86,11 @@ export class AgentRuntime {
     await this.locks.acquire(ctx, session.id);
     const run = await this.runLogger.createRun({ ctx, sessionId: session.id, mode: this.config.frontDeskAgentMode, model: this.config.model });
     debugCopilotClientState({
-      kind: "chat",
       requestId: ctx.request.requestId,
       sessionId: session.id,
-      runId: run.id,
-      clientState: request.clientState,
+      userId: ctx.user.id,
+      request,
+      session,
     });
     const startedAt = Date.now();
     try {
@@ -130,11 +130,11 @@ export class AgentRuntime {
     await this.locks.acquire(ctx, session.id);
     const run = await this.runLogger.createRun({ ctx, sessionId: session.id, mode: "action", model: this.config.model });
     debugCopilotClientState({
-      kind: "action",
       requestId: ctx.request.requestId,
       sessionId: session.id,
-      runId: run.id,
-      clientState: request.clientState,
+      userId: ctx.user.id,
+      request: { sessionId: session.id, message: request.action.type, clientState: request.clientState as CopilotChatRequest["clientState"] },
+      session,
     });
     const startedAt = Date.now();
     try {
@@ -251,75 +251,29 @@ function errorResponse(sessionId: string, turnId: string, message: string): Copi
 }
 
 function debugCopilotClientState(input: {
-  kind: "chat" | "action";
   requestId: string;
   sessionId: string;
-  runId: string;
-  clientState?: CopilotClientState;
+  userId: string;
+  request: CopilotChatRequest;
+  session: CopilotSession;
 }): void {
-  if (!isCopilotContextDebugEnabled() || !input.clientState) return;
-  console.debug("[AgentRuntime] copilot_client_state", {
-    event: "copilot_client_state",
-    kind: input.kind,
+  if (!isCopilotContextDebugEnabled()) return;
+  const jdText = input.request.jdText ?? input.session.jdText ?? "";
+  const resumeText = input.request.resumeText ?? input.session.resumeText ?? "";
+  console.debug("[AgentRuntime] copilot_context_debug", {
+    event: "copilot_context_debug",
     requestId: input.requestId,
     sessionId: input.sessionId,
-    runId: input.runId,
-    clientState: sanitizeClientStateForDebug(input.clientState),
+    userId: input.userId,
+    messagePreview: input.request.message.slice(0, 120),
+    sanitizedClientState: sanitizeClientStateForDebug(input.request.clientState),
+    hasJdText: jdText.length > 0,
+    hasResumeText: resumeText.length > 0,
+    jdTextLength: jdText.length,
+    resumeTextLength: resumeText.length,
   });
 }
 
 function isCopilotContextDebugEnabled(): boolean {
   return process.env.DEBUG_ROUTES_ENABLED === "true" || process.env.ENABLE_COPILOT_CONTEXT_DEBUG === "true";
-}
-
-function sanitizeClientStateForDebug(clientState: CopilotClientState): Record<string, unknown> {
-  const sanitized: Record<string, unknown> = {};
-  for (const [key, value] of Object.entries(clientState)) {
-    if (/cookie|authorization|token|password|secret/i.test(key)) continue;
-    if (key === "selectedText" && typeof value === "string") {
-      sanitized.selectedText = value.slice(0, 300);
-      sanitized.selectedTextLength = value.length;
-      sanitized.selectedTextTruncated = value.length > 300;
-      continue;
-    }
-    if (isKnownClientStateKey(key)) {
-      sanitized[key] = sanitizeKnownClientStateValue(value);
-      continue;
-    }
-    sanitized[key] = summarizeDebugValue(value);
-  }
-  return sanitized;
-}
-
-function isKnownClientStateKey(key: string): boolean {
-  return [
-    "locale",
-    "mainMode",
-    "activeSessionId",
-    "activeJDId",
-    "activeResumeId",
-    "activeExperienceId",
-    "activeVariantId",
-    "activeResumeItemId",
-    "activeImportJobId",
-    "activeCandidateIds",
-    "selectedSection",
-    "visibleArtifactTypes",
-    "visibleArtifactIds",
-    "intentSource",
-    "sourceComponent",
-  ].includes(key);
-}
-
-function sanitizeKnownClientStateValue(value: unknown): unknown {
-  if (Array.isArray(value)) return value.filter((item): item is string => typeof item === "string").slice(0, 50);
-  if (typeof value === "string" || typeof value === "number" || typeof value === "boolean" || value === null) return value;
-  return summarizeDebugValue(value);
-}
-
-function summarizeDebugValue(value: unknown): unknown {
-  if (typeof value === "string") return { type: "string", length: value.length };
-  if (Array.isArray(value)) return { type: "array", length: value.length };
-  if (value && typeof value === "object") return { type: "object" };
-  return value;
 }

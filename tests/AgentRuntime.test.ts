@@ -109,20 +109,26 @@ describe("AgentRuntime", () => {
         },
       });
 
-      expect(debugSpy).toHaveBeenCalledWith("[AgentRuntime] copilot_client_state", expect.objectContaining({
-        event: "copilot_client_state",
-        kind: "chat",
-        clientState: expect.objectContaining({
+      expect(debugSpy).toHaveBeenCalledWith("[AgentRuntime] copilot_context_debug", expect.objectContaining({
+        event: "copilot_context_debug",
+        requestId: "req-agent-runtime",
+        sessionId: expect.any(String),
+        userId: "debug-enabled-user",
+        messagePreview: "Hello, what can you do?",
+        sanitizedClientState: expect.objectContaining({
           mainMode: "resume_editor",
           selectedText: "x".repeat(300),
           selectedTextLength: 350,
-          selectedTextTruncated: true,
-          customText: { type: "string", length: "sensitive custom text".length },
         }),
+        hasJdText: false,
+        hasResumeText: false,
+        jdTextLength: 0,
+        resumeTextLength: 0,
       }));
-      const logged = debugSpy.mock.calls.at(-1)?.[1] as { clientState?: Record<string, unknown> } | undefined;
-      expect(logged?.clientState?.Authorization).toBeUndefined();
-      expect(logged?.clientState?.cookie).toBeUndefined();
+      const logged = debugSpy.mock.calls.at(-1)?.[1] as { sanitizedClientState?: Record<string, unknown> } | undefined;
+      expect(logged?.sanitizedClientState?.Authorization).toBeUndefined();
+      expect(logged?.sanitizedClientState?.cookie).toBeUndefined();
+      expect(logged?.sanitizedClientState?.customText).toBeUndefined();
       expect(JSON.stringify(logged)).not.toContain("should-not-log");
       expect(JSON.stringify(logged)).not.toContain("sensitive custom text");
     } finally {

@@ -149,10 +149,8 @@ describe("POST /copilot/chat", () => {
         payload: {
           message: "Hello, what can you do?",
           clientState: {
-            mainMode: "resume_editor",
-            activeJDId: "pjd-123",
-            activeResumeId: "pres-456",
-            selectedText: "selected UI text",
+            mainMode: "jd_detail",
+            activeJDId: "jd-123",
             intentSource: "composer",
           },
         },
@@ -161,13 +159,14 @@ describe("POST /copilot/chat", () => {
       expect(response.statusCode).toBe(200);
       const body = response.json() as ApiSuccess<CopilotChatResponse>;
       expect(body.ok).toBe(true);
-      expect(debugSpy).toHaveBeenCalledWith("[AgentRuntime] copilot_client_state", expect.objectContaining({
-        kind: "chat",
-        clientState: expect.objectContaining({
-          mainMode: "resume_editor",
-          activeJDId: "pjd-123",
-          activeResumeId: "pres-456",
-          selectedText: "selected UI text",
+      expect(debugSpy).toHaveBeenCalledWith("[AgentRuntime] copilot_context_debug", expect.objectContaining({
+        requestId: expect.any(String),
+        sessionId: expect.any(String),
+        userId: "user-1",
+        sanitizedClientState: expect.objectContaining({
+          mainMode: "jd_detail",
+          activeJDId: "jd-123",
+          intentSource: "composer",
         }),
       }));
     } finally {
