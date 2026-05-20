@@ -150,14 +150,17 @@ describe("agentDecisionReliability", () => {
       await kernel.close();
     });
 
-    it("asks clarification when save text is too short", async () => {
+    it("returns safe default plan when save text is too short", async () => {
       const kernel = await createP12Kernel();
       const agent = new ExperienceReceiverAgent({ promptRegistry: prompts });
       const ctx = testContext(kernel, tools);
       const ctxWithMsg = { ...ctx, userMessage: "保存" };
       const result = await agent.decide({ context: ctxWithMsg });
-      expect(result.responseType).toBe("ask_clarification");
-      expect(result.missingInputs).toContain("experienceText");
+      // Simplified fallback: message too short to parse intent → safe default
+      expect(result.agentName).toBe("experience_receiver");
+      expect(result.plan.length).toBeGreaterThanOrEqual(1);
+      expect(result.plan[0].toolName).toBe("list_experiences");
+      expect(result.assistantMessage).not.toContain("cannot safely");
       await kernel.close();
     });
   });

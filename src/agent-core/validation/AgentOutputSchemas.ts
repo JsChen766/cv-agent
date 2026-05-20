@@ -47,50 +47,57 @@ export function repairAgentDecision(raw: unknown, agentName: AgentName): AgentDe
   if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return null;
   const obj = raw as Record<string, unknown>;
 
-  // Ensure agentName
-  if (typeof obj.agentName !== "string" || !AgentNames.includes(obj.agentName as AgentName)) {
-    obj.agentName = agentName;
-  }
+  const agentNameOk =
+    typeof obj.agentName === "string" && AgentNames.includes(obj.agentName as AgentName)
+      ? (obj.agentName as AgentName)
+      : agentName;
 
-  // Ensure responseType
   const validResponseTypes = ["route", "plan", "final", "ask_clarification", "error"];
-  if (typeof obj.responseType !== "string" || !validResponseTypes.includes(obj.responseType)) {
-    obj.responseType = "ask_clarification";
-  }
+  const responseTypeOk =
+    typeof obj.responseType === "string" && validResponseTypes.includes(obj.responseType)
+      ? (obj.responseType as AgentDecision["responseType"])
+      : "ask_clarification";
 
-  // Ensure assistantMessage
-  if (typeof obj.assistantMessage !== "string" || obj.assistantMessage.trim().length === 0) {
-    obj.assistantMessage = "我来处理你的请求。";
-  }
+  const assistantMessageOk =
+    typeof obj.assistantMessage === "string" && obj.assistantMessage.trim().length > 0
+      ? obj.assistantMessage.trim()
+      : "我来处理你的请求。";
 
-  // Ensure plan is an array
-  if (!Array.isArray(obj.plan)) {
-    obj.plan = [];
-  }
+  const routeToOk =
+    typeof obj.routeTo === "string" && AgentNames.includes(obj.routeTo as AgentName)
+      ? (obj.routeTo as AgentName)
+      : undefined;
 
-  // Repair each plan step
-  obj.plan = (obj.plan as unknown[]).map((step, index) => repairPlanStep(step, index, agentName));
+  const planOk: PlanStep[] = Array.isArray(obj.plan)
+    ? (obj.plan as unknown[]).map((step, index) => repairPlanStep(step, index, agentNameOk))
+    : [];
 
-  // Ensure missingInputs
-  if (!Array.isArray(obj.missingInputs)) {
-    obj.missingInputs = [];
-  }
+  const missingInputsOk: string[] = Array.isArray(obj.missingInputs)
+    ? (obj.missingInputs as unknown[]).filter((v): v is string => typeof v === "string")
+    : [];
 
-  // Ensure confidence
   const conf = Number(obj.confidence);
-  if (typeof obj.confidence !== "number" || Number.isNaN(conf) || conf < 0 || conf > 1) {
-    obj.confidence = 0.5;
-  }
+  const confidenceOk =
+    typeof obj.confidence === "number" && !Number.isNaN(conf) && conf >= 0 && conf <= 1
+      ? conf
+      : 0.5;
 
-  // Validate with schema
-  const result = AgentDecisionSchema.safeParse(obj);
+  const repaired: AgentDecision = {
+    agentName: agentNameOk,
+    responseType: responseTypeOk,
+    assistantMessage: assistantMessageOk,
+    plan: planOk,
+    missingInputs: missingInputsOk,
+    confidence: confidenceOk,
+  };
+  if (routeToOk) repaired.routeTo = routeToOk;
+
+  const result = AgentDecisionSchema.safeParse(repaired);
   if (result.success) return result.data;
-
-  // If still invalid, build a clean fallback manually
   return null;
 }
 
-function repairPlanStep(raw: unknown, index: number, agentName: AgentName): Record<string, unknown> {
+function repairPlanStep(raw: unknown, index: number, agentName: AgentName): PlanStep {
   if (typeof raw !== "object" || raw === null) {
     return {
       id: `step-${index + 1}`,
@@ -102,27 +109,38 @@ function repairPlanStep(raw: unknown, index: number, agentName: AgentName): Reco
   }
   const step = raw as Record<string, unknown>;
 
-  if (typeof step.id !== "string" || step.id.trim().length === 0) {
-    step.id = `step-${index + 1}`;
-  }
+  const idOk =
+    typeof step.id === "string" && step.id.trim().length > 0
+      ? step.id.trim()
+      : `step-${index + 1}`;
 
-  if (typeof step.agentName !== "string" || !AgentNames.includes(step.agentName as AgentName)) {
-    step.agentName = agentName;
-  }
+  const agentNameOk =
+    typeof step.agentName === "string" && AgentNames.includes(step.agentName as AgentName)
+      ? (step.agentName as AgentName)
+      : agentName;
 
-  if (typeof step.arguments !== "object" || step.arguments === null) {
-    step.arguments = {};
-  }
+  const toolNameOk =
+    step.toolName === undefined || typeof step.toolName === "string"
+      ? (step.toolName as string | undefined)
+      : undefined;
 
-  if (typeof step.summary !== "string" || step.summary.trim().length === 0) {
-    step.summary = `Auto-repaired plan step ${index + 1}.`;
-  }
+  const argsOk =
+    typeof step.arguments === "object" && step.arguments !== null
+      ? (step.arguments as Record<string, unknown>)
+      : {};
 
-  if (step.toolName !== undefined && typeof step.toolName !== "string") {
-    step.toolName = undefined;
-  }
+  const summaryOk =
+    typeof step.summary === "string" && step.summary.trim().length > 0
+      ? step.summary.trim()
+      : `Auto-repaired plan step ${index + 1}.`;
 
-  return step;
+  return {
+    id: idOk,
+    agentName: agentNameOk,
+    toolName: toolNameOk,
+    arguments: argsOk,
+    summary: summaryOk,
+  };
 }
 
 export function isAgentDecision(value: unknown): value is AgentDecision {

@@ -86,11 +86,12 @@ describe("agentOrchestratorFinalResponse", () => {
     });
     // Should have a pending action (confirmation needed) or tool results
     expect(response.raw.toolResults).toBeDefined();
-    const hasNeedsInput = response.raw.toolResults?.some(
-      (result) => result.status === "needs_input" || (result.actionResult as { status?: string })?.status === "needs_input" || (result.actionResult as { status?: string })?.status === "needs_confirmation"
+    const results = response.raw.toolResults as Array<{ status: string; actionResult?: { status?: string } }>;
+    const hasNeedsInput = results.some(
+      (r) => r.status === "needs_input" || r.actionResult?.status === "needs_input" || r.actionResult?.status === "needs_confirmation",
     );
-    const hasFailed = response.raw.toolResults?.some(
-      (result) => result.status === "failed" || (result.actionResult as { status?: string })?.status === "failed"
+    const hasFailed = results.some(
+      (r) => r.status === "failed" || r.actionResult?.status === "failed",
     );
     // We should NOT have any failed results for missing input
     expect(hasFailed).toBeFalsy();
