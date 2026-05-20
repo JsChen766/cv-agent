@@ -58,6 +58,10 @@ export class MockProvider implements LLMProvider {
     const hasResume = Boolean(this.readNested(payload, ["requestContext", "hasResumeText"]));
     const prompts = suggestedPrompts(locale);
 
+    if (lower.includes("export") || lower.includes("download") || message.includes("导出") || message.includes("下載") || message.includes("下载")) {
+      return this.agentDecision("call_tool", locale === "zh-CN" ? "我会为当前简历创建导出任务。" : "I'll create an export job for the current resume.", "export_resume");
+    }
+
     if (lower.includes("resume history") || lower.includes("list resumes") || message.includes("历史简历") || message.includes("鍘嗗彶")) {
       return this.agentDecision("call_tool", locale === "zh-CN" ? "我来查看历史简历。" : "I'll open your resume history.", "list_resumes");
     }

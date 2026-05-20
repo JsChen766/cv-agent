@@ -64,6 +64,15 @@ export type CopilotWorkspace = {
   jds?: ProductJDSummary[];
   resumes?: ProductResumeSummary[];
   activeResume?: ProductResumeDetail;
+  activeExportId?: string;
+  exportRecords?: Array<{
+    id: string;
+    resumeId: string;
+    format: string;
+    status: string;
+    jobId?: string;
+    createdAt?: string;
+  }>;
   importCandidates?: ProductImportCandidateSummary[];
   selectedEvidenceChainId?: string | null;
   status:
@@ -205,6 +214,7 @@ export type ProductTimelineItem = {
   status: "pending" | "running" | "completed" | "failed";
   createdAt: string;
   relatedVariantId?: string;
+  relatedExportId?: string;
 };
 
 export type CopilotChatRequest = {
@@ -224,12 +234,7 @@ export type CopilotChatResponse = {
   workspace: CopilotWorkspace;
   nextActions: ProductAction[];
   suggestedPrompts?: SuggestedPrompt[];
-  raw: {
-    artifactIds: string[];
-    evidenceChainIds: string[];
-    critiqueItemIds: string[];
-    decisionIds: string[];
-  };
+  raw: CopilotRawSection;
 };
 
 export type CopilotActionRequest = {
@@ -257,4 +262,9 @@ export type CopilotRawSection = {
   evidenceChainIds: string[];
   critiqueItemIds: string[];
   decisionIds: string[];
+  metadata?: Record<string, unknown>;
+  exportId?: string;
+  jobId?: string;
+  resumeId?: string;
+  format?: string;
 };

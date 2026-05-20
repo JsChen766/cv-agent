@@ -43,15 +43,20 @@ export function createProductActionTools(kernel: ApiKernel): AgentToolDefinition
           };
         }
 
-        const suggestion = buildResumeItemSuggestion(sourceText, args.instruction);
+        const rewrite = await rewriteText(kernel, {
+          kind: "resume_item",
+          sourceText,
+          instruction: normalizeInstruction(args.instruction, "make_more_quantified"),
+        });
         return {
           status: "success",
-          assistantMessage: `Suggested resume item revision${title ? ` for ${title}` : ""}:\n\n${suggestion}`,
+          assistantMessage: `已生成简历条目优化建议${title ? `：${title}` : ""}。\n\n${rewrite.text}`,
           workspacePatch: resumeId ? { activePanel: "resume_editor", resumeId } : undefined,
           timelineItems: [{
             id: `tl-${context.turnId}-resume-item-optimization`,
             type: "revision_completed",
             title: "Resume item optimization prepared",
+            description: rewrite.usedModel ? "Generated with the action rewrite model." : "Generated with the local fallback rewriter.",
             status: "completed",
             createdAt: new Date().toISOString(),
           }],
@@ -96,15 +101,20 @@ export function createProductActionTools(kernel: ApiKernel): AgentToolDefinition
           };
         }
 
-        const suggestion = buildExperienceSuggestion(sourceText, args.instruction);
+        const rewrite = await rewriteText(kernel, {
+          kind: "experience",
+          sourceText,
+          instruction: normalizeInstruction(args.instruction, "rewrite_experience"),
+        });
         return {
           status: "success",
-          assistantMessage: `Suggested experience rewrite${title ? ` for ${title}` : ""}:\n\n${suggestion}`,
+          assistantMessage: `已生成经历改写建议${title ? `：${title}` : ""}。\n\n${rewrite.text}`,
           workspacePatch: { activePanel: "experience_library" },
           timelineItems: [{
             id: `tl-${context.turnId}-experience-rewrite`,
             type: "revision_completed",
             title: "Experience rewrite prepared",
+            description: rewrite.usedModel ? "Generated with the action rewrite model." : "Generated with the local fallback rewriter.",
             status: "completed",
             createdAt: new Date().toISOString(),
           }],
@@ -136,23 +146,52 @@ export function createProductActionTools(kernel: ApiKernel): AgentToolDefinition
         }
 
         try {
+          const format = (args.format ?? "html") as ResumeExportFormat;
           const result = await kernel.exportService.createExport(context.ctx.user.id, {
             resumeId,
-            format: (args.format ?? "html") as ResumeExportFormat,
+            format,
             templateId: nonEmpty(args.templateId),
           });
+          const exportRecord = {
+            id: result.exportRecord.id,
+            resumeId: result.exportRecord.resumeId,
+            format: result.exportRecord.format,
+            status: result.exportRecord.status,
+            jobId: result.exportRecord.jobId,
+            createdAt: result.exportRecord.createdAt,
+          };
           return {
             status: "success",
-            assistantMessage: `Export job created for this resume. Export ID: ${result.exportRecord.id}.`,
-            workspacePatch: { activePanel: "resume_editor", resumeId },
+            assistantMessage: `已创建 ${format.toUpperCase()} 导出任务，稍后可以在导出记录中下载。`,
+            workspacePatch: {
+              activePanel: "resume_editor",
+              resumeId,
+              activeExportId: result.exportRecord.id,
+              exportRecords: [exportRecord],
+            },
             timelineItems: [{
               id: `tl-${context.turnId}-resume-export`,
               type: "decision_recorded",
               title: "Resume export created",
+              description: `${format.toUpperCase()} export ${result.exportRecord.status}`,
               status: "completed",
               createdAt: new Date().toISOString(),
+              relatedExportId: result.exportRecord.id,
             }],
             rawIds: { decisionIds: [result.exportRecord.id, result.job.id] },
+            raw: {
+              exportId: result.exportRecord.id,
+              jobId: result.job.id,
+              resumeId,
+              format,
+              metadata: {
+                exportId: result.exportRecord.id,
+                jobId: result.job.id,
+                resumeId,
+                format,
+                exportStatus: result.exportRecord.status,
+              },
+            },
           };
         } catch {
           return {
@@ -183,20 +222,79 @@ function latestRevision(revisions: ProductExperienceRevision[]): ProductExperien
   return [...revisions].sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt))[0];
 }
 
+async function rewriteText(
+  kernel: Pick<ApiKernel, "frontDeskModelClient">,
+  input: { kind: "resume_item" | "experience"; sourceText: string; instruction: string },
+): Promise<{ text: string; usedModel: boolean }> {
+  const modelClient = kernel.frontDeskModelClient;
+  if (modelClient) {
+    try {
+      const response = await modelClient.chat({
+        responseFormat: "text",
+        temperature: 0.2,
+        maxTokens: 260,
+        metadata: { agentName: "copilot_action_rewriter", actionKind: input.kind },
+        messages: [
+          {
+            role: "system",
+            content: [
+              "Rewrite career content into one concise resume-ready item.",
+              "Use only facts present in the source text.",
+              "Do not invent metrics, employers, dates, technologies, or outcomes.",
+              "Return only the rewritten text, no analysis and no markdown.",
+            ].join(" "),
+          },
+          {
+            role: "user",
+            content: [
+              `Content type: ${input.kind}`,
+              `Instruction: ${input.instruction}`,
+              "Source text:",
+              input.sourceText,
+            ].join("\n"),
+          },
+        ],
+      });
+      const text = cleanRewrite(response.content);
+      if (text) return { text, usedModel: true };
+    } catch {
+      // Fall through to the deterministic fallback; do not expose provider errors to users.
+    }
+  }
+  return {
+    text: input.kind === "resume_item"
+      ? buildResumeItemSuggestion(input.sourceText, input.instruction)
+      : buildExperienceSuggestion(input.sourceText, input.instruction),
+    usedModel: false,
+  };
+}
+
+function cleanRewrite(value: string): string | undefined {
+  const text = value.trim().replace(/^```(?:text)?/i, "").replace(/```$/i, "").trim();
+  return text.length > 0 ? text.slice(0, 2_000) : undefined;
+}
+
+function normalizeInstruction(value: string | undefined, fallback: string): string {
+  return nonEmpty(value) ?? fallback;
+}
+
 function buildResumeItemSuggestion(sourceText: string, instruction: string | undefined): string {
   const trimmed = sourceText.trim();
   if (instruction === "make_more_conservative") {
-    return `${trimmed}\n\nVerification note: keep only metrics and claims that are supported by your source material.`;
+    return `${trimmed}\n\n建议：保留已可验证的指标和事实，删除无法支撑的夸张表达。`;
   }
-  return `${trimmed}\n\nQuantification note: add verified scope, metric, and business outcome where available.`;
+  if (instruction === "custom") {
+    return `${trimmed}\n\n建议：按自定义要求调整措辞，但不要新增未经验证的事实。`;
+  }
+  return `${trimmed}\n\n建议：如有已验证数据，可补充范围、指标和业务结果；不要新增未确认指标。`;
 }
 
 function buildExperienceSuggestion(sourceText: string, instruction: string | undefined): string {
   const trimmed = sourceText.trim();
   if (instruction === "make_more_quantified") {
-    return `${trimmed}\n\nRewrite direction: emphasize measurable scope, impact, and tools, using only verified facts.`;
+    return `${trimmed}\n\n建议：突出已验证的规模、影响和技术栈；不要新增未经确认的数据。`;
   }
-  return `${trimmed}\n\nRewrite direction: make the experience concise, role-aligned, and evidence-backed.`;
+  return `${trimmed}\n\n建议：压缩为简历表达，突出职责、动作和结果，并保持事实可追溯。`;
 }
 
 function nonEmpty(value: unknown): string | undefined {

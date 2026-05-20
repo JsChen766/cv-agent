@@ -37,8 +37,10 @@ export function mergeWorkspace(
 export function activityTypeForDecision(decision: AgentDecision, results: AgentToolResult[]): CopilotActivityType {
   const toolNames = new Set(decision.toolCalls?.map((call) => call.toolName) ?? []);
   if (toolNames.has("generate_resume_variants")) return "generation";
-  if (toolNames.has("revise_variant")) return "revision";
+  if (toolNames.has("revise_variant") || toolNames.has("optimize_resume_item") || toolNames.has("rewrite_experience")) return "revision";
   if (toolNames.has("save_variant_to_resume")) return "save_resume";
+  // CopilotActivityType is constrained in Postgres; keep export actions as decisions until a migration adds "export".
+  if (toolNames.has("export_resume")) return "decision";
   if (toolNames.has("record_variant_decision")) return "decision";
   if (toolNames.has("import_resume_text")) return "import";
   if (toolNames.has("create_experience")) return "save_experience";

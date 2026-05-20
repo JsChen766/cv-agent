@@ -102,11 +102,13 @@ function mergeSuggestedPrompts(decision: AgentDecision, results: AgentToolResult
 }
 
 function mergeRawIds(results: AgentToolResult[]): CopilotChatResponse["raw"] {
+  const rawFields = results.reduce<Record<string, unknown>>((merged, result) => ({ ...merged, ...(result.raw ?? {}) }), {});
   return {
     artifactIds: unique(results.flatMap((result) => result.rawIds?.artifactIds ?? [])),
     evidenceChainIds: unique(results.flatMap((result) => result.rawIds?.evidenceChainIds ?? [])),
     critiqueItemIds: unique(results.flatMap((result) => result.rawIds?.critiqueItemIds ?? [])),
     decisionIds: unique(results.flatMap((result) => result.rawIds?.decisionIds ?? [])),
+    ...rawFields,
   };
 }
 

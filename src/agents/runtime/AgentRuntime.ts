@@ -185,7 +185,7 @@ export class AgentRuntime {
         confidence: 1,
       };
       const response = this.present(session.id, turnId, decision, workspace, [toolResult]);
-      await this.recorder.persistResponse(ctx.user.id, response, request.action.type === "accept" ? "save_resume" : request.action.type.startsWith("revise") ? "revision" : "decision");
+      await this.recorder.persistResponse(ctx.user.id, response, activityTypeForDecision(decision, [toolResult]));
       await this.runLogger.completeRun(run.id, { turnId, decisionMode: decision.mode, startedAt });
       return response;
     } catch (error) {

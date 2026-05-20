@@ -86,6 +86,7 @@ export type ProductTimelineItem = {
   status: "pending" | "running" | "completed" | "failed";
   createdAt: string;
   relatedVariantId?: string;
+  relatedExportId?: string;
 };
 
 export type ProductVariant = {
@@ -148,6 +149,15 @@ export type CopilotWorkspace = {
   jds?: ProductJDSummary[];
   resumes?: ProductResumeSummary[];
   activeResume?: ProductResumeDetail;
+  activeExportId?: string;
+  exportRecords?: Array<{
+    id: string;
+    resumeId: string;
+    format: string;
+    status: string;
+    jobId?: string;
+    createdAt?: string;
+  }>;
   importCandidates?: ProductImportCandidateSummary[];
   status: "empty" | "ready" | "generating" | "awaiting_user_decision" | "accepted" | "revision_needed";
   summary?: string;
@@ -240,6 +250,11 @@ export type CopilotChatResponse = {
     evidenceChainIds: string[];
     critiqueItemIds: string[];
     decisionIds: string[];
+    metadata?: Record<string, unknown>;
+    exportId?: string;
+    jobId?: string;
+    resumeId?: string;
+    format?: string;
   };
 };
 

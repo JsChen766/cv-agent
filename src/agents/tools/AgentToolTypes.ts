@@ -22,6 +22,7 @@ export type AgentToolResult = {
     critiqueItemIds?: string[];
     decisionIds?: string[];
   };
+  raw?: Record<string, unknown>;
   nextActions?: ProductAction[];
   suggestedPrompts?: SuggestedPrompt[];
 };

@@ -172,4 +172,45 @@ describe("ActiveAssetContextBuilder", () => {
       workspace: null,
     })).resolves.toEqual({});
   });
+
+  it("returns activeVariant preview from workspace variants when activeVariantId is present", async () => {
+    const context = await builder.build({
+      userId: "user-1",
+      request: { message: "explain", clientState: { activeVariantId: "variant-1" } },
+      workspace: {
+        id: "ws-1",
+        sessionId: "session-1",
+        activeVariantId: "variant-1",
+        status: "ready",
+        updatedAt: new Date().toISOString(),
+        variants: [{
+          id: "variant-1",
+          artifactId: "artifact-1",
+          title: "React platform rewrite",
+          content: "Built React platform capabilities. ".repeat(80),
+          role: "recommended",
+          status: "ready",
+          score: {},
+          badges: [],
+          reason: "Best match.",
+          evidenceSummary: { coverageLabel: "No direct evidence linked", items: [] },
+          riskSummary: { level: "low", unsupportedClaims: [], missingEvidence: [], warnings: [] },
+          missingInfo: [],
+          sourceExperienceIds: [],
+          sourceEvidenceIds: [],
+          actions: [],
+          raw: {},
+          createdAt: new Date().toISOString(),
+        }],
+      },
+    });
+
+    expect(context.activeVariant).toMatchObject({
+      id: "variant-1",
+      title: "React platform rewrite",
+      role: "recommended",
+      status: "ready",
+    });
+    expect(context.activeVariant?.contentPreview?.length).toBeLessThanOrEqual(800);
+  });
 });
