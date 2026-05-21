@@ -2,6 +2,7 @@ import type { Agent } from "../agents/BaseAgent.js";
 import { getAgentDecisionMeta } from "../agents/BaseAgent.js";
 import type { ToolResult } from "../tools/ToolResult.js";
 import { CriticReviewSchema, type AgentName, type CriticReview, type PlanStep } from "../validation/AgentOutputSchemas.js";
+import { detectLocale } from "../../copilot/locale.js";
 import type { AgentMessageBus } from "./AgentMessageBus.js";
 import type { AgentContext } from "./AgentContext.js";
 import type { AgentTraceRecorder } from "./AgentTrace.js";
@@ -74,7 +75,7 @@ export class CriticGate {
       review = extractReview(decision);
     }
 
-    review ??= conservativePassReview(decision.assistantMessage);
+    review ??= conservativeNeedsUserConfirmationReview(input.context);
     this.deps.trace.add({
       agentName: "critic",
       type: "reason",
@@ -125,14 +126,17 @@ function readObject(value: unknown, key: string): unknown {
   return (value as Record<string, unknown>)[key];
 }
 
-function conservativePassReview(message: string): CriticReview {
+function conservativeNeedsUserConfirmationReview(context: AgentContext): CriticReview {
+  const locale = detectLocale(context.userMessage, context.clientState);
   return {
-    verdict: "pass",
-    riskLevel: "low",
+    verdict: "needs_user_confirmation",
+    riskLevel: "medium",
     unsupportedClaims: [],
-    missingEvidence: [],
+    missingEvidence: ["critic_review_parse_failed"],
     suggestedFixes: [],
-    userVisibleSummary: message || "Review completed without blocking issues.",
+    userVisibleSummary: locale === "zh-CN"
+      ? "无法可靠解析审查结果。请先确认关键事实、指标和依据后再继续。"
+      : "I could not reliably parse the critic review. Please confirm the key facts, metrics, and evidence before continuing.",
   };
 }
 

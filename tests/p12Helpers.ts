@@ -51,7 +51,7 @@ class P12TestProvider implements LLMProvider {
     if (agentName === "agent-core:frontdesk") return json(this.frontdesk(message));
     if (agentName === "agent-core:experience_receiver") return json(this.experience(message));
     if (agentName === "agent-core:architect") return json(this.architect(message, payload));
-    if (agentName === "agent-core:critic") return json(plan("critic", "show_evidence", { id: "current" }, "Show evidence."));
+    if (agentName === "agent-core:critic") return json(review("pass", "low", "Critic pass."));
     if (agentName === "agent-core:strategist") return json(plan("strategist", "list_experiences", {}, "List experiences."));
     return json({ agentName: "frontdesk", responseType: "ask_clarification", assistantMessage: "Please clarify.", plan: [], missingInputs: ["intent"], confidence: 0.5 });
   }
@@ -97,6 +97,25 @@ function plan(agentName: string, toolName: string, args: Record<string, unknown>
     plan: [{ id: "step-1", agentName, toolName, arguments: args, summary }],
     missingInputs: [],
     confidence: 0.9,
+  };
+}
+
+function review(verdict: string, riskLevel: string, summary: string): Record<string, unknown> {
+  return {
+    agentName: "critic",
+    responseType: "final",
+    assistantMessage: summary,
+    plan: [],
+    missingInputs: [],
+    confidence: 0.9,
+    criticReview: {
+      verdict,
+      riskLevel,
+      unsupportedClaims: [],
+      missingEvidence: [],
+      suggestedFixes: [],
+      userVisibleSummary: summary,
+    },
   };
 }
 

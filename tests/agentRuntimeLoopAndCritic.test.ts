@@ -87,6 +87,20 @@ describe("agent runtime loop and critic gate", () => {
     await kernel.close();
   });
 
+  it("requires user confirmation when critic review parsing fails", async () => {
+    const { kernel, orchestrator } = await setupRuntime("critic-parse-failed");
+    registerUnconfirmedGenerateTool(orchestrator);
+    const ctx = createTestKernelContext({ user: { id: "parse-user" }, request: { requestId: "req-parse", traceId: "trace-parse" } });
+
+    const response = await orchestrator.handleChat(ctx, { message: "resume critic parse failed" });
+    const metadata = response.raw.metadata as RuntimeMetadata;
+
+    expect(response.assistantMessage.content).toContain("could not reliably parse the critic review");
+    expect(metadata.criticReview?.verdict).toBe("needs_user_confirmation");
+    expect(response.raw.actionResults?.[0]?.status).toBe("needs_confirmation");
+    await kernel.close();
+  });
+
   it("reviews a confirmed high-risk pending action and applies the result when critic passes", async () => {
     const { kernel, orchestrator, provider } = await setupRuntime("confirm-pass");
     registerConfirmedGenerateTool(orchestrator);
@@ -238,6 +252,7 @@ type Scenario =
   | "critic-pass"
   | "critic-revision"
   | "critic-blocked"
+  | "critic-parse-failed"
   | "confirm-pass"
   | "confirm-blocked"
   | "confirm-revision"
@@ -286,6 +301,7 @@ class RuntimeTestProvider implements LLMProvider {
   private critic(_payload: Record<string, unknown>): Record<string, unknown> {
     if (this.scenario === "critic-revision" || this.scenario === "confirm-revision") return review("needs_revision", "medium", "Please make this more conservative.");
     if (this.scenario === "critic-blocked" || this.scenario === "confirm-blocked") return review("blocked", "high", "Cannot use this generated content because it includes unsupported claims.");
+    if (this.scenario === "critic-parse-failed") return final("critic", "Unstructured critic response.");
     return review("pass", "low", "Critic pass.");
   }
 }

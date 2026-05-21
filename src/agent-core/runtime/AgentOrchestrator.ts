@@ -10,6 +10,7 @@ import type {
   CopilotWorkspace,
   ProductTimelineItem,
 } from "../../copilot/types.js";
+import { detectLocale, type CopilotLocale } from "../../copilot/locale.js";
 import { createAgentTools } from "../../agent-tools/index.js";
 import type { PendingAction } from "../confirmation/PendingAction.js";
 import { PendingActionService } from "../confirmation/PendingActionService.js";
@@ -33,8 +34,6 @@ import { AgentMessageBus } from "./AgentMessageBus.js";
 import type { AgentObservation, AgentObservationStatus } from "./AgentObservation.js";
 import { AgentTraceRecorder } from "./AgentTrace.js";
 import { CriticGate, shouldReviewTool, type ToolExecutionRecord } from "./CriticGate.js";
-
-const PRODUCT_INTRO = "我是你的求职经历 Copilot，可以帮你整理经历、分析 JD、生成和修改简历。有什么我可以帮你的？";
 
 export type AgentOrchestratorDeps = {
   kernel: ApiKernel;
@@ -126,7 +125,7 @@ export class AgentOrchestrator {
 
       if (frontDeskDecision.responseType === "final") {
         return this.finishRun(ctx.user.id, run, {
-          assistantText: frontDeskDecision.assistantMessage || PRODUCT_INTRO,
+          assistantText: frontDeskDecision.assistantMessage || t(run, "productIntro"),
           toolResults: [],
           pendingActions: [],
           workspacePatch: {},
@@ -135,7 +134,7 @@ export class AgentOrchestrator {
 
       if (frontDeskDecision.responseType === "ask_clarification") {
         return this.finishRun(ctx.user.id, run, {
-          assistantText: frontDeskDecision.assistantMessage || "Please provide a little more detail so I can continue.",
+          assistantText: frontDeskDecision.assistantMessage || t(run, "clarify"),
           toolResults: [],
           pendingActions: [],
           workspacePatch: {},
@@ -144,7 +143,7 @@ export class AgentOrchestrator {
 
       if (!frontDeskDecision.routeTo) {
         return this.finishRun(ctx.user.id, run, {
-          assistantText: frontDeskDecision.assistantMessage || "I am not sure how to handle this request. Please describe it again.",
+          assistantText: t(run, "unknownRequest"),
           toolResults: [],
           pendingActions: [],
           workspacePatch: {},
@@ -183,9 +182,10 @@ export class AgentOrchestrator {
 
     const mapped = this.mapExplicitAction(request, run.workspace);
     if (!mapped) {
-      const result = failedActionResult(request.action.type, "Unsupported copilot action.");
+      const runLocale = localeFor(run);
+      const result = failedActionResult(request.action.type, text(runLocale, "unsupportedAction"));
       return this.finishRun(ctx.user.id, run, {
-        assistantText: result.message ?? "Unsupported action.",
+        assistantText: result.message ?? text(runLocale, "unsupportedAction"),
         toolResults: [result],
         pendingActions: [],
         workspacePatch: {},
@@ -195,7 +195,7 @@ export class AgentOrchestrator {
     try {
       const executed = await this.executePlan(run, [mapped]);
       return this.finishRun(ctx.user.id, run, {
-        assistantText: assistantFromResults(executed.toolResults, ""),
+        assistantText: assistantFromResults(executed.toolResults, t(run, "done")),
         toolResults: executed.toolResults,
         pendingActions: executed.pendingActions,
         workspacePatch: mergeWorkspacePatch(executed.toolResults),
@@ -255,7 +255,7 @@ export class AgentOrchestrator {
       }
 
       if (gateResult.status === "needs_user_confirmation") {
-        const message = criticReview?.userVisibleSummary || "Please confirm the specific facts and metrics before I continue.";
+        const message = criticReview?.userVisibleSummary || t(run, "confirmFacts");
         return this.finishRun(ctx.user.id, run, {
           assistantText: message,
           toolResults: [needsConfirmationResult(message)],
@@ -278,7 +278,7 @@ export class AgentOrchestrator {
         });
         run.loopController.stop("critic_needs_revision");
         this.syncLoopState(run);
-        const message = criticRevisionMessage(criticReview);
+        const message = criticRevisionMessage(criticReview, localeFor(run));
         return this.finishRun(ctx.user.id, run, {
           assistantText: message,
           toolResults: [result, ...gateResult.criticToolResults, needsRevisionResult(message)],
@@ -289,7 +289,7 @@ export class AgentOrchestrator {
       }
 
       return this.finishRun(ctx.user.id, run, {
-        assistantText: result.message ?? "Confirmed and executed.",
+        assistantText: result.message ?? t(run, "confirmedExecuted"),
         toolResults: [result, ...gateResult.criticToolResults],
         pendingActions: [],
         workspacePatch: mergeWorkspacePatch([result]),
@@ -298,7 +298,7 @@ export class AgentOrchestrator {
     }
 
     return this.finishRun(ctx.user.id, run, {
-      assistantText: result.message ?? "Confirmed and executed.",
+      assistantText: result.message ?? t(run, "confirmedExecuted"),
       toolResults: [result],
       pendingActions: [],
       workspacePatch: mergeWorkspacePatch([result]),
@@ -379,7 +379,7 @@ export class AgentOrchestrator {
         run.loopController.stop("final");
         this.syncLoopState(run);
         return {
-          assistantText: decision.assistantMessage || assistantFromResults(toolResults, "Done."),
+          assistantText: decision.assistantMessage || assistantFromResults(toolResults, t(run, "done")),
           toolResults,
           pendingActions,
           workspacePatch: mergeWorkspacePatch(toolResults),
@@ -391,7 +391,7 @@ export class AgentOrchestrator {
         run.loopController.stop("needs_input");
         this.syncLoopState(run);
         return {
-          assistantText: decision.assistantMessage || "Please provide a little more detail so I can continue.",
+          assistantText: decision.assistantMessage || t(run, "clarify"),
           toolResults,
           pendingActions,
           workspacePatch: mergeWorkspacePatch(toolResults),
@@ -403,7 +403,7 @@ export class AgentOrchestrator {
         run.loopController.stop("final");
         this.syncLoopState(run);
         return {
-          assistantText: decision.assistantMessage || "I understand the request, but need a more specific action before I can continue.",
+          assistantText: decision.assistantMessage || t(run, "needSpecificAction"),
           toolResults,
           pendingActions,
           workspacePatch: mergeWorkspacePatch(toolResults),
@@ -421,7 +421,7 @@ export class AgentOrchestrator {
         run.loopController.stop(stopStatus);
         this.syncLoopState(run);
         return {
-          assistantText: assistantFromResults(executed.toolResults, lastAssistantMessage),
+          assistantText: assistantFromResults(executed.toolResults, lastAssistantMessage || t(run, "done")),
           toolResults,
           pendingActions,
           workspacePatch: mergeWorkspacePatch(toolResults),
@@ -441,8 +441,8 @@ export class AgentOrchestrator {
         run.loopController.stop("critic_blocked");
         this.syncLoopState(run);
         return {
-          assistantText: gateResult.review?.userVisibleSummary ?? "The generated result needs review before it can be used.",
-          toolResults: [failedActionResult("critic_gate", gateResult.review?.userVisibleSummary ?? "Critic blocked the result.", "critic_blocked")],
+          assistantText: gateResult.review?.userVisibleSummary ?? t(run, "criticBlocked"),
+          toolResults: [failedActionResult("critic_gate", gateResult.review?.userVisibleSummary ?? t(run, "criticBlocked"), "critic_blocked")],
           pendingActions,
           workspacePatch: {},
           criticReview,
@@ -453,8 +453,8 @@ export class AgentOrchestrator {
         run.loopController.stop("needs_confirmation");
         this.syncLoopState(run);
         return {
-          assistantText: gateResult.review?.userVisibleSummary ?? "Please confirm before I continue with this higher-risk change.",
-          toolResults: [needsConfirmationResult(gateResult.review?.userVisibleSummary ?? "User confirmation required by critic.")],
+          assistantText: gateResult.review?.userVisibleSummary ?? t(run, "confirmHighRisk"),
+          toolResults: [needsConfirmationResult(gateResult.review?.userVisibleSummary ?? t(run, "confirmHighRisk"))],
           pendingActions,
           workspacePatch: {},
           criticReview,
@@ -474,7 +474,7 @@ export class AgentOrchestrator {
         });
         run.loopController.stop("critic_needs_revision");
         this.syncLoopState(run);
-        const message = criticRevisionMessage(gateResult.review);
+        const message = criticRevisionMessage(gateResult.review, localeFor(run));
         toolResults.push(needsRevisionResult(message));
         return {
           assistantText: message,
@@ -489,7 +489,7 @@ export class AgentOrchestrator {
     run.loopController.stop("max_steps");
     this.syncLoopState(run);
     return {
-      assistantText: `${assistantFromResults(toolResults, lastAssistantMessage)}\nI completed the available runtime steps. Tell me what you want to adjust next if we should continue.`,
+      assistantText: `${assistantFromResults(toolResults, lastAssistantMessage || t(run, "done"))}\n${t(run, "maxStepsSuffix")}`,
       toolResults,
       pendingActions,
       workspacePatch: mergeWorkspacePatch(toolResults),
@@ -540,15 +540,15 @@ export class AgentOrchestrator {
         result: {
           status: "needs_input",
           message: missingFields
-            ? `This action is missing required information: ${missingFields}.`
-            : "This action is missing required information.",
+            ? formatText(localeFor(run), "missingRequiredWithFields", { fields: missingFields })
+            : t(run, "missingRequired"),
           actionResult: {
             actionType: tool.name,
             status: "needs_input",
             reason: "missing_required_input",
             message: missingFields
-              ? `Missing: ${missingFields}`
-              : "Missing required input.",
+              ? formatText(localeFor(run), "missingFields", { fields: missingFields })
+              : t(run, "missingInput"),
           },
         },
       };
@@ -565,7 +565,7 @@ export class AgentOrchestrator {
       tool,
       toolArguments: args,
       title: step.summary,
-      summary: confirmationSummary(tool.name),
+      summary: confirmationSummary(tool.name, localeFor(run)),
       affectedResources: affectedResourcesFor(tool.name, args),
       preview: previewFor(tool.name, args),
     });
@@ -797,6 +797,76 @@ function explicitStep(agentName: AgentName, toolName: string, args: Record<strin
   };
 }
 
+type RuntimeTextKey =
+  | "productIntro"
+  | "clarify"
+  | "unknownRequest"
+  | "unsupportedAction"
+  | "confirmFacts"
+  | "confirmedExecuted"
+  | "done"
+  | "needSpecificAction"
+  | "criticBlocked"
+  | "confirmHighRisk"
+  | "maxStepsSuffix"
+  | "missingRequired"
+  | "missingInput"
+  | "missingRequiredWithFields"
+  | "missingFields";
+
+const RUNTIME_TEXT: Record<CopilotLocale, Record<RuntimeTextKey, string>> = {
+  "zh-CN": {
+    productIntro: "我是你的求职经历 Copilot，可以帮你整理经历、分析 JD、生成和修改简历。有什么我可以帮你的？",
+    clarify: "请再补充一点信息，我好继续处理。",
+    unknownRequest: "我还不确定该如何处理这个请求，请换一种说法再描述一次。",
+    unsupportedAction: "暂不支持这个 Copilot 操作。",
+    confirmFacts: "请先确认具体事实和指标后，我再继续处理。",
+    confirmedExecuted: "已确认并执行。",
+    done: "已完成。",
+    needSpecificAction: "我理解了你的请求，但还需要更具体的操作才能继续。",
+    criticBlocked: "生成结果需要先审查，暂时不能直接使用。",
+    confirmHighRisk: "这次变更风险较高，请先确认后再继续。",
+    maxStepsSuffix: "我已完成当前可用的运行步骤。如需继续，请告诉我下一步要调整什么。",
+    missingRequired: "这个操作缺少必填信息。",
+    missingInput: "缺少必填输入。",
+    missingRequiredWithFields: "这个操作缺少必填信息：{fields}。",
+    missingFields: "缺少：{fields}",
+  },
+  en: {
+    productIntro: "I am your resume Copilot. I can help organize experiences, analyze JDs, and generate or revise resumes. What would you like to do?",
+    clarify: "Please provide a little more detail so I can continue.",
+    unknownRequest: "I am not sure how to handle this request. Please describe it again.",
+    unsupportedAction: "Unsupported copilot action.",
+    confirmFacts: "Please confirm the specific facts and metrics before I continue.",
+    confirmedExecuted: "Confirmed and executed.",
+    done: "Done.",
+    needSpecificAction: "I understand the request, but need a more specific action before I can continue.",
+    criticBlocked: "The generated result needs review before it can be used.",
+    confirmHighRisk: "Please confirm before I continue with this higher-risk change.",
+    maxStepsSuffix: "I completed the available runtime steps. Tell me what you want to adjust next if we should continue.",
+    missingRequired: "This action is missing required information.",
+    missingInput: "Missing required input.",
+    missingRequiredWithFields: "This action is missing required information: {fields}.",
+    missingFields: "Missing: {fields}",
+  },
+};
+
+function localeFor(run: RunState): CopilotLocale {
+  return detectLocale(run.context.userMessage, run.context.clientState);
+}
+
+function t(run: RunState, key: RuntimeTextKey): string {
+  return text(localeFor(run), key);
+}
+
+function text(locale: CopilotLocale, key: RuntimeTextKey): string {
+  return RUNTIME_TEXT[locale][key];
+}
+
+function formatText(locale: CopilotLocale, key: RuntimeTextKey, values: Record<string, string>): string {
+  return Object.entries(values).reduce((message, [name, value]) => message.replace(`{${name}}`, value), text(locale, key));
+}
+
 function confirmedActionStep(action: PendingAction, agentName: AgentName): PlanStep {
   return {
     id: `confirm-${action.id}`,
@@ -839,11 +909,12 @@ function needsRevisionResult(message: string): ToolResult {
   };
 }
 
-function criticRevisionMessage(review?: CriticReview): string {
-  const summary = review?.userVisibleSummary || "The result needs revision before it can be used.";
+function criticRevisionMessage(review: CriticReview | undefined, locale: CopilotLocale): string {
+  const summary = review?.userVisibleSummary || (locale === "zh-CN" ? "结果需要修改后才能使用。" : "The result needs revision before it can be used.");
   const fixes = review?.suggestedFixes?.filter(Boolean) ?? [];
   if (fixes.length === 0) return summary;
-  return `${summary}\nSuggested fixes:\n${fixes.map((fix) => `- ${fix}`).join("\n")}`;
+  const label = locale === "zh-CN" ? "建议修改：" : "Suggested fixes:";
+  return `${summary}\n${label}\n${fixes.map((fix) => `- ${fix}`).join("\n")}`;
 }
 
 function observationStatus(result: ToolResult): AgentObservationStatus {
@@ -879,7 +950,7 @@ function mergeWorkspacePatch(results: ToolResult[]): Record<string, unknown> {
 function assistantFromResults(results: ToolResult[], fallback: string): string {
   const messages = results.map((result) => result.message).filter((item): item is string => Boolean(item));
   if (messages.length > 0) return messages.join("\n");
-  return fallback || "Done.";
+  return fallback;
 }
 
 function timelineFor(results: ToolResult[], now: string, turnId: string): ProductTimelineItem[] {
@@ -895,7 +966,14 @@ function timelineFor(results: ToolResult[], now: string, turnId: string): Produc
   }));
 }
 
-function confirmationSummary(toolName: string): string {
+function confirmationSummary(toolName: string, locale: CopilotLocale): string {
+  if (locale === "zh-CN") {
+    if (toolName === "save_experience_from_text") return "请确认是否将这段经历保存到经历库。";
+    if (toolName === "update_experience") return "请确认是否更新这段经历。";
+    if (toolName === "delete_experience") return "请确认是否删除这段经历。";
+    if (toolName === "export_resume") return "请确认是否创建这份简历导出。";
+    return `请确认是否执行 ${toolName}。`;
+  }
   if (toolName === "save_experience_from_text") return "Please confirm saving this experience to your library.";
   if (toolName === "update_experience") return "Please confirm updating this experience.";
   if (toolName === "delete_experience") return "Please confirm deleting this experience.";

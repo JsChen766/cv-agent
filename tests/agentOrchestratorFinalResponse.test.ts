@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { AgentOrchestrator } from "../src/agent-core/runtime/AgentOrchestrator.js";
+import { ModelClient } from "../src/agent-core/model/ModelClient.js";
+import type { LLMProvider } from "../src/agent-core/model/types.js";
 import { createTestKernelContext } from "../src/api/context.js";
 import { createP12Kernel } from "./p12Helpers.js";
 
@@ -97,4 +99,50 @@ describe("agentOrchestratorFinalResponse", () => {
     expect(hasFailed).toBeFalsy();
     await kernel.close();
   });
+
+  it("uses clientState.locale for backend fallback prompts", async () => {
+    const kernel = await createP12Kernel();
+    kernel.frontDeskModelClient = new ModelClient({
+      provider: routeWithoutTargetProvider(),
+      defaultModel: "locale-test",
+    });
+    const orchestrator = new AgentOrchestrator({ kernel });
+    const ctx = createTestKernelContext({
+      user: { id: "user-locale" },
+      request: { requestId: "req-locale", traceId: "trace-locale" },
+    });
+
+    const zh = await orchestrator.handleChat(ctx, {
+      message: "hello",
+      clientState: { locale: "zh-CN" },
+    });
+    expect(zh.assistantMessage.content).toContain("我还不确定该如何处理这个请求");
+    expect(zh.assistantMessage.content).not.toContain("I am not sure");
+
+    const en = await orchestrator.handleChat(ctx, {
+      message: "请帮我处理",
+      clientState: { locale: "en-US" },
+    });
+    expect(en.assistantMessage.content).toContain("I am not sure how to handle this request");
+    expect(en.assistantMessage.content).not.toContain("我还不确定");
+    await kernel.close();
+  });
 });
+
+function routeWithoutTargetProvider(): LLMProvider {
+  return {
+    name: "locale-test-provider",
+    async chat() {
+      return {
+        content: JSON.stringify({
+          agentName: "frontdesk",
+          responseType: "route",
+          assistantMessage: "",
+          plan: [],
+          missingInputs: [],
+          confidence: 0.9,
+        }),
+      };
+    },
+  };
+}
