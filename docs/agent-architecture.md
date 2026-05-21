@@ -5,6 +5,7 @@
 The only formal Copilot agent runtime is `src/agent-core`.
 
 - Runtime orchestration: `src/agent-core/runtime/AgentOrchestrator.ts`
+- Runtime loop, observations, message bus, and critic gate: `src/agent-core/runtime`
 - Agent contracts and five product agents: `src/agent-core/agents`
 - Planning contracts: `src/agent-core/planning`
 - Trace and error model: `src/agent-core/runtime/AgentTrace.ts`, `AgentError.ts`
@@ -59,9 +60,14 @@ Model invocation now lives under `src/agent-core/model`. Real provider adapters 
 3. `AgentOrchestrator.handleChat`
 4. build `AgentContext`
 5. `FrontDeskAgent` routes
-6. specialist agent plans
+6. specialist agent runs a bounded internal loop, seeing tool observations before deciding again
 7. `ToolExecutor` executes read tools or `PendingActionService` creates confirmation records
-8. response returns `raw.agentTrace`, `raw.toolResults`, `raw.actionResults`, and `raw.pendingActions`
+8. high-impact generation/modification results are reviewed by `CriticGate`
+9. response returns `raw.agentTrace`, `raw.toolResults`, `raw.actionResults`, `raw.pendingActions`, and additive `raw.metadata`
+
+The specialist loop defaults to 3 iterations and can be lowered or raised with `AGENT_LOOP_MAX_STEPS`, capped by the runtime. Tool results become `AgentObservation` entries in `AgentContext`, and run-local `AgentMessage` entries record review and revision requests without changing the public `/copilot/chat` envelope.
+
+`CriticGate` is triggered only for high-impact successful tool results such as `generate_resume_from_jd`, `revise_resume_item`, `save_experience_from_text`, and `update_experience`. A critic pass continues normally; `needs_revision` creates a revision request for the source agent when loop budget remains; `needs_user_confirmation` returns a confirmation-style response; `blocked` stops the run and does not expose the generated content as the final answer.
 
 `POST /copilot/actions`
 

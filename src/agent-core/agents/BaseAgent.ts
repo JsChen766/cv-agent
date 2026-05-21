@@ -25,6 +25,21 @@ export interface Agent {
   decide(input: AgentInput): Promise<AgentDecision>;
 }
 
+export type AgentDecisionMeta = {
+  decisionSource: "llm" | "repaired" | "fallback";
+  fallbackReason?: string;
+  modelUsed: boolean;
+  schemaValid: boolean;
+  repairApplied: boolean;
+  rawOutput?: unknown;
+};
+
+const decisionMeta = new WeakMap<object, AgentDecisionMeta>();
+
+export function getAgentDecisionMeta(decision: unknown): AgentDecisionMeta | undefined {
+  return typeof decision === "object" && decision !== null ? decisionMeta.get(decision) : undefined;
+}
+
 export abstract class BaseAgent implements Agent {
   public abstract readonly name: AgentName;
   public abstract readonly allowedTools: string[];
@@ -84,17 +99,35 @@ export abstract class BaseAgent implements Agent {
         const repaired = repairAgentDecision(parsed, this.name);
         if (repaired) {
           if (DEBUG) console.debug("[AgentDecision] parsed+repaired success");
-          return repaired;
+          return rememberDecisionMeta(repaired, {
+            decisionSource: sameJson(result.data, repaired) ? "llm" : "repaired",
+            modelUsed: true,
+            schemaValid: true,
+            repairApplied: !sameJson(result.data, repaired),
+            rawOutput: parsed,
+          });
         }
         if (DEBUG) console.debug("[AgentDecision] parsed success");
-        return result.data;
+        return rememberDecisionMeta(result.data, {
+          decisionSource: "llm",
+          modelUsed: true,
+          schemaValid: true,
+          repairApplied: false,
+          rawOutput: parsed,
+        });
       }
 
       // Try repair
       const repaired = repairAgentDecision(parsed, this.name);
       if (repaired) {
         if (DEBUG) console.debug("[AgentDecision] repaired success");
-        return repaired;
+        return rememberDecisionMeta(repaired, {
+          decisionSource: "repaired",
+          modelUsed: true,
+          schemaValid: false,
+          repairApplied: true,
+          rawOutput: parsed,
+        });
       }
 
       if (DEBUG) console.debug("[AgentDecision] schema validation failed, using fallback");
@@ -120,9 +153,16 @@ export abstract class BaseAgent implements Agent {
         fallbackUsed: true,
       });
     }
-    return fallbackAgentDecision(this.name, {
+    const fallback = fallbackAgentDecision(this.name, {
       userMessage: input.context.userMessage,
       clientState: input.context.clientState ?? {},
+    });
+    return rememberDecisionMeta(fallback, {
+      decisionSource: "fallback",
+      fallbackReason: reason,
+      modelUsed: false,
+      schemaValid: false,
+      repairApplied: false,
     });
   }
 
@@ -151,6 +191,40 @@ export abstract class BaseAgent implements Agent {
       clientState: input.context.clientState ?? {},
       activeAssetContext: input.context.activeAssetContext ?? {},
       productContext: input.context.productContext,
+      observations: (input.context.observations ?? []).slice(-8).map((observation) => ({
+        id: observation.id,
+        stepId: observation.stepId,
+        agentName: observation.agentName,
+        toolName: observation.toolName,
+        status: observation.status,
+        message: observation.message,
+        data: summarizeForAgent(observation.data, 1200),
+        createdAt: observation.createdAt,
+      })),
+      agentMessages: (input.context.agentMessages ?? [])
+        .filter((message) =>
+          message.to === this.name ||
+          message.from === this.name ||
+          (message.from === "orchestrator" && message.to === this.name)
+        )
+        .slice(-12)
+        .map((message) => ({
+          id: message.id,
+          from: message.from,
+          to: message.to,
+          type: message.type,
+          content: message.content,
+          payload: summarizeForAgent(message.payload, 1200),
+          createdAt: message.createdAt,
+        })),
+      loopState: input.context.loopState
+        ? {
+            stepCount: input.context.loopState.stepCount,
+            maxSteps: input.context.loopState.maxSteps,
+            stopReason: input.context.loopState.stopReason,
+            observationCount: input.context.loopState.observations.length,
+          }
+        : undefined,
       availableTools: input.context.availableTools
         .filter((tool) => this.allowedTools.includes(tool.name))
         .map((tool) => ({
@@ -165,7 +239,43 @@ export abstract class BaseAgent implements Agent {
         responseType: "route | plan | final | ask_clarification | error",
         routeTo: "frontdesk | experience_receiver | strategist | architect | critic",
         plan: [{ id: "step id", agentName: this.name, toolName: "allowed tool", arguments: {}, summary: "display summary" }],
+        criticReview: this.name === "critic"
+          ? {
+              verdict: "pass | needs_revision | blocked | needs_user_confirmation",
+              riskLevel: "low | medium | high",
+              unsupportedClaims: [],
+              missingEvidence: [],
+              suggestedFixes: [],
+              userVisibleSummary: "short user-facing summary",
+            }
+          : undefined,
       },
     };
+  }
+}
+
+function rememberDecisionMeta<T extends AgentDecision>(decision: T, meta: AgentDecisionMeta): T {
+  decisionMeta.set(decision, meta);
+  return decision;
+}
+
+function sameJson(a: unknown, b: unknown): boolean {
+  try {
+    return JSON.stringify(a) === JSON.stringify(b);
+  } catch {
+    return false;
+  }
+}
+
+function summarizeForAgent(value: unknown, maxLength: number): unknown {
+  if (value === undefined || value === null) return value;
+  if (typeof value === "string") return value.length > maxLength ? `${value.slice(0, maxLength)}...` : value;
+  if (typeof value === "number" || typeof value === "boolean") return value;
+  try {
+    const text = JSON.stringify(value);
+    if (text.length <= maxLength) return value;
+    return `${text.slice(0, maxLength)}...`;
+  } catch {
+    return "[unserializable]";
   }
 }

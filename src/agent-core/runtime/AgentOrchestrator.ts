@@ -14,7 +14,7 @@ import { createAgentTools } from "../../agent-tools/index.js";
 import type { PendingAction } from "../confirmation/PendingAction.js";
 import { PendingActionService } from "../confirmation/PendingActionService.js";
 import { ArchitectAgent } from "../agents/ArchitectAgent.js";
-import type { Agent } from "../agents/BaseAgent.js";
+import { getAgentDecisionMeta, type Agent } from "../agents/BaseAgent.js";
 import { CriticAgent } from "../agents/CriticAgent.js";
 import { ExperienceReceiverAgent } from "../agents/ExperienceReceiverAgent.js";
 import { FrontDeskAgent } from "../agents/FrontDeskAgent.js";
@@ -28,7 +28,11 @@ import type { AgentName, PlanStep } from "../validation/AgentOutputSchemas.js";
 import type { KernelRequestContext } from "../../api/context.js";
 import type { AgentContext } from "./AgentContext.js";
 import { AgentError } from "./AgentError.js";
+import { AgentLoopController } from "./AgentLoopController.js";
+import { AgentMessageBus } from "./AgentMessageBus.js";
+import type { AgentObservation, AgentObservationStatus } from "./AgentObservation.js";
 import { AgentTraceRecorder } from "./AgentTrace.js";
+import { CriticGate, type CriticReview, type ToolExecutionRecord } from "./CriticGate.js";
 
 const PRODUCT_INTRO = "我是你的求职经历 Copilot，可以帮你整理经历、分析 JD、生成和修改简历。有什么我可以帮你的？";
 
@@ -42,11 +46,22 @@ type RunState = {
   trace: AgentTraceRecorder;
   executor: ToolExecutor;
   workspace: CopilotWorkspace | null;
+  messageBus: AgentMessageBus;
+  loopController: AgentLoopController;
 };
 
 type ExecutedPlan = {
   toolResults: ToolResult[];
   pendingActions: PendingAction[];
+  executions: ToolExecutionRecord[];
+};
+
+type LoopRunResult = {
+  assistantText: string;
+  toolResults: ToolResult[];
+  pendingActions: PendingAction[];
+  workspacePatch: Record<string, unknown>;
+  criticReview?: CriticReview;
 };
 
 export class AgentOrchestrator {
@@ -106,9 +121,9 @@ export class AgentOrchestrator {
       run.trace.complete(frontDeskStep, "success", {
         routeTo: frontDeskDecision.routeTo,
         responseType: frontDeskDecision.responseType,
+        decision: decisionTraceMeta(frontDeskDecision),
       });
 
-      // responseType "final" — return assistantMessage directly, no specialist
       if (frontDeskDecision.responseType === "final") {
         return this.finishRun(ctx.user.id, run, {
           assistantText: frontDeskDecision.assistantMessage || PRODUCT_INTRO,
@@ -118,20 +133,18 @@ export class AgentOrchestrator {
         });
       }
 
-      // responseType "ask_clarification" — return clarification
       if (frontDeskDecision.responseType === "ask_clarification") {
         return this.finishRun(ctx.user.id, run, {
-          assistantText: frontDeskDecision.assistantMessage || "请补充更多信息，我好继续帮你。",
+          assistantText: frontDeskDecision.assistantMessage || "Please provide a little more detail so I can continue.",
           toolResults: [],
           pendingActions: [],
           workspacePatch: {},
         });
       }
 
-      // responseType "route" but routeTo missing — return clarification
       if (!frontDeskDecision.routeTo) {
         return this.finishRun(ctx.user.id, run, {
-          assistantText: frontDeskDecision.assistantMessage || "我不确定应该如何处理这个请求，请再描述一下。",
+          assistantText: frontDeskDecision.assistantMessage || "I am not sure how to handle this request. Please describe it again.",
           toolResults: [],
           pendingActions: [],
           workspacePatch: {},
@@ -139,66 +152,11 @@ export class AgentOrchestrator {
       }
 
       const specialist = this.agents[frontDeskDecision.routeTo];
-      const planStep = run.trace.add({
-        agentName: specialist.name,
-        type: "plan",
-        summary: `Planning with ${specialist.name}.`,
-        status: "running",
-      });
-      const specialistDecision = await specialist.decide({ context: run.context, routeHint: frontDeskDecision.routeTo });
-
-      // Specialist "final" — return assistantMessage directly
-      if (specialistDecision.responseType === "final") {
-        run.trace.complete(planStep, "success", { stepCount: 0 });
-        return this.finishRun(ctx.user.id, run, {
-          assistantText: specialistDecision.assistantMessage || "Done.",
-          toolResults: [],
-          pendingActions: [],
-          workspacePatch: {},
-        });
-      }
-
-      // Specialist "ask_clarification" — return clarification
-      if (specialistDecision.responseType === "ask_clarification") {
-        run.trace.complete(planStep, "success", { stepCount: 0 });
-        return this.finishRun(ctx.user.id, run, {
-          assistantText: specialistDecision.assistantMessage || "请补充更多信息。",
-          toolResults: [],
-          pendingActions: [],
-          workspacePatch: {},
-        });
-      }
-
-      // Specialist with empty plan but has assistantMessage — return the message
-      if (specialistDecision.plan.length === 0) {
-        run.trace.complete(planStep, "success", { stepCount: 0 });
-        if (specialistDecision.assistantMessage) {
-          return this.finishRun(ctx.user.id, run, {
-            assistantText: specialistDecision.assistantMessage,
-            toolResults: [],
-            pendingActions: [],
-            workspacePatch: {},
-          });
-        }
-        // Empty plan and no message — return clarification, not error
-        return this.finishRun(ctx.user.id, run, {
-          assistantText: "我理解了你的请求，但需要更具体的信息才能执行操作。请告诉我是要查看、保存、修改还是生成。",
-          toolResults: [],
-          pendingActions: [],
-          workspacePatch: {},
-        });
-      }
-
-      const plan = this.validatePlan(specialistDecision.plan, specialist);
-      run.trace.complete(planStep, "success", { stepCount: plan.length });
-
-      const executed = await this.executePlan(run, plan);
+      const executed = await this.runSpecialistLoop(run, specialist, frontDeskDecision.routeTo);
       return this.finishRun(ctx.user.id, run, {
-        assistantText: assistantFromResults(executed.toolResults, specialistDecision.assistantMessage),
-        toolResults: executed.toolResults,
-        pendingActions: executed.pendingActions,
-        workspacePatch: mergeWorkspacePatch(executed.toolResults),
+        ...executed,
       });
+
     } catch (error) {
       return this.finishError(ctx.user.id, run, error);
     }
@@ -296,6 +254,8 @@ export class AgentOrchestrator {
       this.deps.kernel.copilotServices.sessionService.getRecentMessages(ctx.user.id, input.sessionId, 8),
     ]);
     const trace = new AgentTraceRecorder();
+    const messageBus = new AgentMessageBus(trace.trace.runId, input.turnId);
+    const loopController = new AgentLoopController();
     const context: AgentContext = {
       kernel: this.deps.kernel,
       requestContext: ctx,
@@ -310,25 +270,180 @@ export class AgentOrchestrator {
       productContext: input.productContext,
       availableTools: this.tools.list(),
       trace: trace.trace,
+      observations: [],
+      agentMessages: [],
+      loopState: loopController.state,
     };
     return {
       context,
       trace,
       executor: new ToolExecutor(this.tools, trace),
       workspace,
+      messageBus,
+      loopController,
+    };
+  }
+
+  private async runSpecialistLoop(run: RunState, specialist: Agent, routeHint: AgentName): Promise<LoopRunResult> {
+    const toolResults: ToolResult[] = [];
+    const pendingActions: PendingAction[] = [];
+    let lastAssistantMessage = "";
+    let criticReview: CriticReview | undefined;
+
+    while (run.loopController.canContinue()) {
+      run.loopController.markStep();
+      this.syncLoopState(run);
+      const planStep = run.trace.add({
+        agentName: specialist.name,
+        type: "plan",
+        summary: `Planning with ${specialist.name}.`,
+        status: "running",
+        metadata: { loopStep: run.loopController.state.stepCount },
+      });
+      const decision = await specialist.decide({ context: run.context, routeHint });
+      lastAssistantMessage = decision.assistantMessage || lastAssistantMessage;
+      run.trace.complete(planStep, "success", {
+        responseType: decision.responseType,
+        stepCount: decision.plan.length,
+        loopStep: run.loopController.state.stepCount,
+        decision: decisionTraceMeta(decision),
+      });
+
+      if (decision.responseType === "final") {
+        run.loopController.stop("final");
+        this.syncLoopState(run);
+        return {
+          assistantText: decision.assistantMessage || assistantFromResults(toolResults, "Done."),
+          toolResults,
+          pendingActions,
+          workspacePatch: mergeWorkspacePatch(toolResults),
+          criticReview,
+        };
+      }
+
+      if (decision.responseType === "ask_clarification") {
+        run.loopController.stop("needs_input");
+        this.syncLoopState(run);
+        return {
+          assistantText: decision.assistantMessage || "Please provide a little more detail so I can continue.",
+          toolResults,
+          pendingActions,
+          workspacePatch: mergeWorkspacePatch(toolResults),
+          criticReview,
+        };
+      }
+
+      if (decision.plan.length === 0) {
+        run.loopController.stop("final");
+        this.syncLoopState(run);
+        return {
+          assistantText: decision.assistantMessage || "I understand the request, but need a more specific action before I can continue.",
+          toolResults,
+          pendingActions,
+          workspacePatch: mergeWorkspacePatch(toolResults),
+          criticReview,
+        };
+      }
+
+      const plan = this.validatePlan(decision.plan, specialist);
+      const executed = await this.executePlan(run, plan);
+      toolResults.push(...executed.toolResults);
+      pendingActions.push(...executed.pendingActions);
+
+      const stopStatus = firstStopStatus(executed.toolResults);
+      if (stopStatus) {
+        run.loopController.stop(stopStatus);
+        this.syncLoopState(run);
+        return {
+          assistantText: assistantFromResults(executed.toolResults, lastAssistantMessage),
+          toolResults,
+          pendingActions,
+          workspacePatch: mergeWorkspacePatch(toolResults),
+          criticReview,
+        };
+      }
+
+      const gate = new CriticGate({
+        critic: this.agents.critic,
+        messageBus: run.messageBus,
+        trace: run.trace,
+        executeCriticPlan: async (criticPlan) => {
+          const validPlan = this.validatePlan(criticPlan, this.agents.critic);
+          return (await this.executePlan(run, validPlan)).executions;
+        },
+      });
+      const gateResult = await gate.review({
+        context: run.context,
+        toolExecutions: executed.executions,
+        sourceAgent: specialist.name,
+      });
+      if (gateResult.criticToolResults.length > 0) toolResults.push(...gateResult.criticToolResults);
+      criticReview = gateResult.review ?? criticReview;
+
+      if (gateResult.status === "blocked") {
+        run.loopController.stop("critic_blocked");
+        this.syncLoopState(run);
+        return {
+          assistantText: gateResult.review?.userVisibleSummary ?? "The generated result needs review before it can be used.",
+          toolResults: [failedActionResult("critic_gate", gateResult.review?.userVisibleSummary ?? "Critic blocked the result.", "critic_blocked")],
+          pendingActions,
+          workspacePatch: {},
+          criticReview,
+        };
+      }
+
+      if (gateResult.status === "needs_user_confirmation") {
+        run.loopController.stop("needs_confirmation");
+        this.syncLoopState(run);
+        return {
+          assistantText: gateResult.review?.userVisibleSummary ?? "Please confirm before I continue with this higher-risk change.",
+          toolResults: [needsConfirmationResult(gateResult.review?.userVisibleSummary ?? "User confirmation required by critic.")],
+          pendingActions,
+          workspacePatch: mergeWorkspacePatch(toolResults),
+          criticReview,
+        };
+      }
+
+      if (gateResult.status === "needs_revision") {
+        const revision = run.messageBus.requestRevision("critic", specialist.name, { review: gateResult.review });
+        run.context.agentMessages = run.messageBus.list();
+        run.trace.add({
+          agentName: "AgentOrchestrator",
+          type: "reason",
+          summary: "Requested specialist revision from critic feedback.",
+          status: "success",
+          completedAt: new Date().toISOString(),
+          metadata: { messageId: revision.id },
+        });
+        if (!run.loopController.canContinue()) break;
+        continue;
+      }
+    }
+
+    run.loopController.stop("max_steps");
+    this.syncLoopState(run);
+    return {
+      assistantText: `${assistantFromResults(toolResults, lastAssistantMessage)}\nI completed the available runtime steps. Tell me what you want to adjust next if we should continue.`,
+      toolResults,
+      pendingActions,
+      workspacePatch: mergeWorkspacePatch(toolResults),
+      criticReview,
     };
   }
 
   private async executePlan(run: RunState, plan: PlanStep[]): Promise<ExecutedPlan> {
     const toolResults: ToolResult[] = [];
     const pendingActions: PendingAction[] = [];
+    const executions: ToolExecutionRecord[] = [];
     for (const step of plan) {
       if (!step.toolName) continue;
       const result = await this.executeToolOrCreatePendingAction(run, step);
       toolResults.push(result.result);
+      executions.push({ step, result: result.result });
+      this.addObservation(run, step, result.result);
       if (result.pendingAction) pendingActions.push(result.pendingAction);
     }
-    return { toolResults, pendingActions };
+    return { toolResults, pendingActions, executions };
   }
 
   private async executeToolOrCreatePendingAction(
@@ -347,8 +462,8 @@ export class AgentOrchestrator {
         result: {
           status: "needs_input",
           message: missingFields
-            ? `这个操作还缺少必要信息：${missingFields}。`
-            : "这个操作还缺少必要信息。",
+            ? `This action is missing required information: ${missingFields}.`
+            : "This action is missing required information.",
           actionResult: {
             actionType: tool.name,
             status: "needs_input",
@@ -412,6 +527,41 @@ export class AgentOrchestrator {
     });
   }
 
+  private addObservation(run: RunState, step: PlanStep, result: ToolResult): void {
+    const observation: AgentObservation = {
+      id: `obs-${randomUUID()}`,
+      stepId: step.id,
+      agentName: step.agentName,
+      toolName: step.toolName,
+      status: observationStatus(result),
+      message: result.message,
+      data: result.data,
+      createdAt: new Date().toISOString(),
+    };
+    run.context.observations = [...(run.context.observations ?? []), observation];
+    run.loopController.state.observations = run.context.observations;
+    run.context.loopState = run.loopController.state;
+    run.messageBus.add({
+      from: "orchestrator",
+      to: step.agentName,
+      type: "observation",
+      content: result.message ?? `${step.toolName ?? "tool"} completed with ${result.status}.`,
+      payload: {
+        observationId: observation.id,
+        stepId: step.id,
+        toolName: step.toolName,
+        status: observation.status,
+      },
+    });
+    run.context.agentMessages = run.messageBus.list();
+  }
+
+  private syncLoopState(run: RunState): void {
+    run.loopController.state.observations = run.context.observations ?? [];
+    run.context.loopState = run.loopController.state;
+    run.context.agentMessages = run.messageBus.list();
+  }
+
   private mapExplicitAction(request: CopilotActionRequest, workspace: CopilotWorkspace | null): PlanStep | undefined {
     const payload = request.action.payload ?? {};
     const clientState = request.clientState ?? {};
@@ -469,6 +619,7 @@ export class AgentOrchestrator {
       toolResults: ToolResult[];
       pendingActions: PendingAction[];
       workspacePatch: Record<string, unknown>;
+      criticReview?: CriticReview;
     },
   ): Promise<CopilotChatResponse> {
     run.trace.add({
@@ -503,6 +654,12 @@ export class AgentOrchestrator {
         agentTrace: run.trace.trace,
         toolResults: input.toolResults,
         pendingActions: input.pendingActions,
+        metadata: {
+          loop: run.context.loopState,
+          observations: run.context.observations ?? [],
+          agentMessages: run.context.agentMessages ?? [],
+          criticReview: input.criticReview,
+        },
         actionResults: input.toolResults
           .map((result) => result.actionResult)
           .filter((item): item is CopilotActionResult => item !== undefined && typeof item.status === "string"),
@@ -570,6 +727,40 @@ function failedActionResult(actionType: string, message: string, reason = "unsup
   };
 }
 
+function needsConfirmationResult(message: string): ToolResult {
+  return {
+    status: "needs_input",
+    message,
+    actionResult: { actionType: "critic_gate", status: "needs_confirmation", message, reason: "critic_needs_user_confirmation" },
+  };
+}
+
+function observationStatus(result: ToolResult): AgentObservationStatus {
+  if (result.actionResult?.status === "needs_confirmation") return "needs_confirmation";
+  if (result.status === "needs_input") return "needs_input";
+  return result.status;
+}
+
+function firstStopStatus(results: ToolResult[]): "needs_input" | "needs_confirmation" | "failed" | undefined {
+  for (const result of results) {
+    const status = observationStatus(result);
+    if (status === "needs_confirmation" || status === "needs_input" || status === "failed") return status;
+  }
+  return undefined;
+}
+
+function decisionTraceMeta(decision: unknown): Record<string, unknown> | undefined {
+  const meta = getAgentDecisionMeta(decision);
+  if (!meta) return undefined;
+  return {
+    decisionSource: meta.decisionSource,
+    fallbackReason: meta.fallbackReason,
+    modelUsed: meta.modelUsed,
+    schemaValid: meta.schemaValid,
+    repairApplied: meta.repairApplied,
+  };
+}
+
 function mergeWorkspacePatch(results: ToolResult[]): Record<string, unknown> {
   return results.reduce<Record<string, unknown>>((merged, result) => ({ ...merged, ...(result.workspacePatch ?? {}) }), {});
 }
@@ -620,3 +811,4 @@ function previewFor(toolName: string, args: Record<string, unknown>) {
 function stringValue(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
 }
+
