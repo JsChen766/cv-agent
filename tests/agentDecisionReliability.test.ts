@@ -136,7 +136,7 @@ describe("agentDecisionReliability", () => {
       await kernel.close();
     });
 
-    it("generates prepare_save_experience_from_text plan for saving experience", async () => {
+    it("generates save_experience_from_text plan for saving experience", async () => {
       const kernel = await createP12Kernel();
       const agent = new ExperienceReceiverAgent({ promptRegistry: prompts });
       const ctx = testContext(kernel, tools);
@@ -147,7 +147,7 @@ describe("agentDecisionReliability", () => {
       const result = await agent.decide({ context: ctxWithMsg });
       expect(result.agentName).toBe("experience_receiver");
       expect(result.plan.length).toBeGreaterThanOrEqual(1);
-      expect(result.plan[0].toolName).toBe("prepare_save_experience_from_text");
+      expect(result.plan[0].toolName).toBe("save_experience_from_text");
       await kernel.close();
     });
 

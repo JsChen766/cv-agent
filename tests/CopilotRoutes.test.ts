@@ -70,6 +70,11 @@ describe("Copilot routes on agent-core runtime", () => {
     const saveBody = save.json() as ApiSuccess<CopilotChatResponse>;
     const pending = saveBody.data.raw.pendingActions?.[0] as { id: string; toolName: string } | undefined;
     expect(pending).toMatchObject({ toolName: "save_experience_from_text" });
+    expect(saveBody.data.raw.actionResults?.[0]).toMatchObject({
+      status: "needs_confirmation",
+      actionType: "save_experience_from_text",
+      pendingActionId: pending?.id,
+    });
     expect(await kernel.productServices.experienceService.listExperiences("user-1")).toHaveLength(0);
 
     const listed = await server.inject({
@@ -87,6 +92,7 @@ describe("Copilot routes on agent-core runtime", () => {
     expect(confirmed.statusCode).toBe(200);
     const confirmBody = confirmed.json() as ApiSuccess<CopilotChatResponse>;
     expect(confirmBody.data.raw.actionResults?.[0]?.status).toBe("success");
+    expect(JSON.stringify(confirmBody.data.raw.actionResults)).not.toContain("\"needs_confirmation\"");
     expect(await kernel.productServices.experienceService.listExperiences("user-1")).toHaveLength(1);
   });
 

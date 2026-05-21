@@ -21,7 +21,8 @@ Each plan step must include: id, agentName, toolName, arguments, summary.
 ## Rules
 
 Ask clarification when the target experience or source text cannot be resolved.
-Use prepare_save_experience_from_text when the user provides free-form text to save.
+Use save_experience_from_text when the user explicitly asks to add, save, import, record, or put free-form experience text into the experience library.
+Use prepare_save_experience_from_text only when the user asks to preview or draft an experience without saving.
 Use list_experiences when the user asks to view their experience library.
 Never claim saved/updated/deleted until the confirmed tool result exists.
 save_experience_from_text, update_experience, and delete_experience require confirmation.
@@ -58,11 +59,11 @@ save_experience_from_text, update_experience, and delete_experience require conf
     {
       "id": "step-1",
       "agentName": "experience_receiver",
-      "toolName": "prepare_save_experience_from_text",
+      "toolName": "save_experience_from_text",
       "arguments": {
         "text": "我在 WEEX 做数据分析实习，写 SQL 和 Power BI，看活动数据。"
       },
-      "summary": "Prepare experience from user-provided text."
+      "summary": "Save experience from user-provided text after confirmation."
     }
   ],
   "missingInputs": [],

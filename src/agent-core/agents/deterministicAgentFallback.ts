@@ -97,7 +97,7 @@ function experienceReceiverFallback(rawMessage: string): AgentDecision {
       "我先整理一下这段经历，然后需要你确认保存。",
       {
         plan: [
-          step("step-1", "experience_receiver", "prepare_save_experience_from_text", { text: rawMessage }, "Prepare experience from user text."),
+          step("step-1", "experience_receiver", "save_experience_from_text", { text: rawMessage }, "Save experience from user text after confirmation."),
         ],
         confidence: 0.8,
       },

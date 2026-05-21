@@ -20,6 +20,13 @@ describe("P12 experience tools", () => {
     const initial = await executor.execute("list_experiences", {}, context);
     expect((initial.data as { count: number }).count).toBe(0);
 
+    const prepared = await executor.execute("prepare_save_experience_from_text", { text: "WEEX data analysis dashboard with SQL." }, context);
+    expect(prepared.status).toBe("success");
+    expect(prepared.actionResult?.status).toBe("success");
+    expect(prepared.actionResult?.actionType).toBe("prepare_save_experience_from_text");
+    expect(prepared.actionResult?.status).not.toBe("needs_confirmation");
+    expect((await kernel.productServices.experienceService.listExperiences("user-1")).length).toBe(0);
+
     const saved = await executor.execute("save_experience_from_text", { text: "WEEX data analysis dashboard with SQL." }, context);
     const experienceId = (saved.data as { experienceId: string }).experienceId;
     expect(experienceId).toMatch(/^pexp-/);

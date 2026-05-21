@@ -18,11 +18,13 @@ describe("P12 real AgentOrchestrator", () => {
       message: "Save this experience: WEEX data analysis dashboard with SQL.",
     });
     expect(save.raw.pendingActions?.length).toBe(1);
+    expect(save.raw.actionResults?.[0]?.pendingActionId).toBe((save.raw.pendingActions![0] as { id: string }).id);
     expect(await kernel.productServices.experienceService.listExperiences("user-1")).toHaveLength(0);
 
     const pendingId = (save.raw.pendingActions![0] as { id: string }).id;
     const confirmed = await orchestrator.confirmPendingAction(ctx, pendingId);
     expect(confirmed.raw.actionResults?.[0]?.status).toBe("success");
+    expect(JSON.stringify(confirmed.raw.actionResults)).not.toContain("\"needs_confirmation\"");
     expect(await kernel.productServices.experienceService.listExperiences("user-1")).toHaveLength(1);
 
     const notEmpty = await orchestrator.handleChat(ctx, { sessionId: list.sessionId, message: "Is my experience library still empty?" });

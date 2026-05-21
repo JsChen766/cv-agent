@@ -700,6 +700,17 @@ export class AgentOrchestrator {
       criticReview?: CriticReview;
     },
   ): Promise<CopilotChatResponse> {
+    const sanitized = sanitizeInvalidConfirmationResults(run, input.toolResults);
+    if (sanitized.invalidCount > 0) {
+      run.trace.add({
+        agentName: "AgentOrchestrator",
+        type: "reason",
+        summary: "invalid_needs_confirmation_without_pending_action_id",
+        status: "failed",
+        completedAt: new Date().toISOString(),
+        metadata: { invalidCount: sanitized.invalidCount },
+      });
+    }
     run.trace.add({
       agentName: "AgentOrchestrator",
       type: "final",
@@ -708,8 +719,10 @@ export class AgentOrchestrator {
       completedAt: new Date().toISOString(),
     });
     const now = new Date().toISOString();
-    const assistantMessage = await this.saveMessage(userId, run.context.sessionId, "assistant", input.assistantText, run.context.turnId, input.toolResults);
-    const workspace = await this.saveWorkspace(userId, run.context.sessionId, run.workspace, input.workspacePatch, now);
+    const assistantText = sanitized.invalidCount > 0 ? t(run, "invalidConfirmation") : input.assistantText;
+    const workspacePatch = sanitized.invalidCount > 0 ? {} : input.workspacePatch;
+    const assistantMessage = await this.saveMessage(userId, run.context.sessionId, "assistant", assistantText, run.context.turnId, sanitized.toolResults);
+    const workspace = await this.saveWorkspace(userId, run.context.sessionId, run.workspace, workspacePatch, now);
     await this.deps.kernel.copilotServices.sessionService.completeTurn(userId, run.context.turnId, assistantMessage.id);
     await this.deps.kernel.copilotServices.workspaceService.recordActivity(userId, {
       sessionId: run.context.sessionId,
@@ -721,7 +734,7 @@ export class AgentOrchestrator {
       sessionId: run.context.sessionId,
       turnId: run.context.turnId,
       assistantMessage,
-      timeline: timelineFor(input.toolResults, now, run.context.turnId),
+      timeline: timelineFor(sanitized.toolResults, now, run.context.turnId),
       workspace,
       nextActions: [],
       raw: {
@@ -730,7 +743,7 @@ export class AgentOrchestrator {
         critiqueItemIds: [],
         decisionIds: [],
         agentTrace: run.trace.trace,
-        toolResults: input.toolResults,
+        toolResults: sanitized.toolResults,
         pendingActions: input.pendingActions,
         metadata: {
           loop: run.context.loopState,
@@ -738,7 +751,7 @@ export class AgentOrchestrator {
           agentMessages: run.context.agentMessages ?? [],
           criticReview: input.criticReview,
         },
-        actionResults: input.toolResults
+        actionResults: sanitized.toolResults
           .map((result) => result.actionResult)
           .filter((item): item is CopilotActionResult => item !== undefined && typeof item.status === "string"),
       },
@@ -812,7 +825,8 @@ type RuntimeTextKey =
   | "missingRequired"
   | "missingInput"
   | "missingRequiredWithFields"
-  | "missingFields";
+  | "missingFields"
+  | "invalidConfirmation";
 
 const RUNTIME_TEXT: Record<CopilotLocale, Record<RuntimeTextKey, string>> = {
   "zh-CN": {
@@ -831,6 +845,7 @@ const RUNTIME_TEXT: Record<CopilotLocale, Record<RuntimeTextKey, string>> = {
     missingInput: "缺少必填输入。",
     missingRequiredWithFields: "这个操作缺少必填信息：{fields}。",
     missingFields: "缺少：{fields}",
+    invalidConfirmation: "确认操作缺少确认 ID，请重新发起或稍后重试。",
   },
   en: {
     productIntro: "I am your resume Copilot. I can help organize experiences, analyze JDs, and generate or revise resumes. What would you like to do?",
@@ -848,6 +863,7 @@ const RUNTIME_TEXT: Record<CopilotLocale, Record<RuntimeTextKey, string>> = {
     missingInput: "Missing required input.",
     missingRequiredWithFields: "This action is missing required information: {fields}.",
     missingFields: "Missing: {fields}",
+    invalidConfirmation: "The confirmation action is missing a confirmation ID. Please start it again or retry later.",
   },
 };
 
@@ -865,6 +881,36 @@ function text(locale: CopilotLocale, key: RuntimeTextKey): string {
 
 function formatText(locale: CopilotLocale, key: RuntimeTextKey, values: Record<string, string>): string {
   return Object.entries(values).reduce((message, [name, value]) => message.replace(`{${name}}`, value), text(locale, key));
+}
+
+function sanitizeInvalidConfirmationResults(run: RunState, results: ToolResult[]): { toolResults: ToolResult[]; invalidCount: number } {
+  let invalidCount = 0;
+  const toolResults = results.map((result) => {
+    if (result.actionResult?.status !== "needs_confirmation") return result;
+    const pendingActionId = stringValue(result.actionResult.pendingActionId) ?? stringValue(result.pendingActionId);
+    if (pendingActionId) {
+      return {
+        ...result,
+        pendingActionId,
+        actionResult: { ...result.actionResult, pendingActionId },
+      };
+    }
+    invalidCount += 1;
+    const message = t(run, "invalidConfirmation");
+    return {
+      ...result,
+      status: "needs_input" as const,
+      message,
+      pendingActionId: undefined,
+      actionResult: {
+        actionType: typeof result.actionResult.actionType === "string" ? result.actionResult.actionType : "unknown",
+        status: "needs_input",
+        reason: "invalid_needs_confirmation_without_pending_action_id",
+        message,
+      },
+    };
+  });
+  return { toolResults, invalidCount };
 }
 
 function confirmedActionStep(action: PendingAction, agentName: AgentName): PlanStep {
@@ -897,7 +943,7 @@ function needsConfirmationResult(message: string): ToolResult {
   return {
     status: "needs_input",
     message,
-    actionResult: { actionType: "critic_gate", status: "needs_confirmation", message, reason: "critic_needs_user_confirmation" },
+    actionResult: { actionType: "critic_gate", status: "needs_input", message, reason: "critic_needs_user_confirmation" },
   };
 }
 
@@ -968,7 +1014,7 @@ function timelineFor(results: ToolResult[], now: string, turnId: string): Produc
 
 function confirmationSummary(toolName: string, locale: CopilotLocale): string {
   if (locale === "zh-CN") {
-    if (toolName === "save_experience_from_text") return "请确认是否将这段经历保存到经历库。";
+    if (toolName === "save_experience_from_text") return "已准备好一条经历草稿，请确认后写入经历库。";
     if (toolName === "update_experience") return "请确认是否更新这段经历。";
     if (toolName === "delete_experience") return "请确认是否删除这段经历。";
     if (toolName === "export_resume") return "请确认是否创建这份简历导出。";

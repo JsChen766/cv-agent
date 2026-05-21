@@ -97,7 +97,8 @@ describe("agent runtime loop and critic gate", () => {
 
     expect(response.assistantMessage.content).toContain("could not reliably parse the critic review");
     expect(metadata.criticReview?.verdict).toBe("needs_user_confirmation");
-    expect(response.raw.actionResults?.[0]?.status).toBe("needs_confirmation");
+    expect(response.raw.actionResults?.[0]?.status).toBe("needs_input");
+    expect(response.raw.actionResults?.some((item) => item.status === "needs_confirmation")).not.toBe(true);
     await kernel.close();
   });
 
@@ -176,6 +177,24 @@ describe("agent runtime loop and critic gate", () => {
     expect((response.workspace as unknown as { exportReady?: boolean }).exportReady).toBe(true);
     await kernel.close();
   });
+
+  it("downgrades needs_confirmation action results without pendingActionId", async () => {
+    const { kernel, orchestrator } = await setupRuntime("invalid-confirmation");
+    registerInvalidConfirmationTool(orchestrator);
+    const ctx = createTestKernelContext({ user: { id: "invalid-confirm-user" }, request: { requestId: "req-invalid-confirm", traceId: "trace-invalid-confirm" } });
+
+    const response = await orchestrator.handleChat(ctx, { message: "resume invalid confirmation" });
+
+    expect(response.assistantMessage.content).toContain("confirmation action is missing a confirmation ID");
+    expect(response.raw.pendingActions).toHaveLength(0);
+    expect(response.raw.actionResults?.some((item) => item.status === "needs_confirmation")).not.toBe(true);
+    expect(response.raw.actionResults?.[0]).toMatchObject({
+      status: "needs_input",
+      reason: "invalid_needs_confirmation_without_pending_action_id",
+    });
+    expect(JSON.stringify(response.raw.agentTrace)).toContain("invalid_needs_confirmation_without_pending_action_id");
+    await kernel.close();
+  });
 });
 
 async function setupRuntime(scenario: Scenario): Promise<{ kernel: ApiKernel; orchestrator: AgentOrchestrator; provider: RuntimeTestProvider }> {
@@ -246,6 +265,24 @@ function registerConfirmedExportTool(orchestrator: AgentOrchestrator): void {
   });
 }
 
+function registerInvalidConfirmationTool(orchestrator: AgentOrchestrator): void {
+  orchestrator.tools.register({
+    name: "prepare_export_resume",
+    description: "Invalid confirmation result for runtime defense.",
+    ownerAgent: "architect",
+    inputSchema: z.object({ resumeId: z.string(), format: z.string() }).passthrough(),
+    outputSchema: ToolResultSchema,
+    mutability: "read",
+    requiresConfirmation: false,
+    riskLevel: "low",
+    execute: async () => ({
+      status: "success",
+      message: "Bad confirmation result.",
+      actionResult: { actionType: "export_resume", status: "needs_confirmation" },
+    }),
+  });
+}
+
 type Scenario =
   | "loop-final"
   | "max-steps"
@@ -256,7 +293,8 @@ type Scenario =
   | "confirm-pass"
   | "confirm-blocked"
   | "confirm-revision"
-  | "confirm-low-risk";
+  | "confirm-low-risk"
+  | "invalid-confirmation";
 
 class RuntimeTestProvider implements LLMProvider {
   public readonly name = "runtime-test";
@@ -281,6 +319,9 @@ class RuntimeTestProvider implements LLMProvider {
     const messages = Array.isArray(payload.agentMessages) ? payload.agentMessages as Array<{ type?: string }> : [];
     if (this.scenario === "confirm-low-risk") {
       return plan("architect", "export_resume", { resumeId: "resume-1", format: "html" }, "Export resume.");
+    }
+    if (this.scenario === "invalid-confirmation") {
+      return plan("architect", "prepare_export_resume", { resumeId: "resume-1", format: "html" }, "Prepare invalid confirmation.");
     }
     if (this.scenario.startsWith("confirm-")) {
       return plan("architect", "generate_resume_from_jd", { jdText: "JD", targetRole: "Engineer" }, "Generate resume.");

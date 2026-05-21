@@ -225,6 +225,7 @@ export type CopilotActionResult = {
   status: CopilotActionResultStatus;
   message?: string;
   reason?: string;
+  pendingActionId?: string;
   missingInputs?: string[];
   exportRecord?: {
     id: string;

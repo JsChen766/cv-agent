@@ -16,9 +16,13 @@ export function prepareSaveExperienceFromTextTool(): ToolDefinition {
       const draft = inferExperienceDraft(String(input.text));
       return {
         status: "success",
-        message: "Prepared an experience draft for confirmation.",
+        message: "已识别出一条经历草稿，你可以继续补充或要求我保存。",
         data: { draft },
-        actionResult: { status: "needs_confirmation", actionType: "save_experience_from_text", preview: { after: draft } },
+        actionResult: {
+          status: "success",
+          actionType: "prepare_save_experience_from_text",
+          message: "已识别出一条经历草稿。",
+        },
       };
     },
   };
