@@ -47,30 +47,17 @@ export class CopilotOrchestrator {
     body: CopilotChatRequest,
     emit: (event: CopilotStreamEvent["type"], data: unknown) => void,
   ) {
-    return this.runtime.handleChat(ctx, body)
-      .then((response) => {
-        emit("copilot.turn.started", { type: "copilot.turn.started", sessionId: response.sessionId, turnId: response.turnId });
-        emit("copilot.message.created", response.assistantMessage);
-        emit("copilot.workspace.updated", {
-          type: "copilot.workspace.updated",
-          sessionId: response.sessionId,
-          status: response.workspace.status,
-          variantCount: response.workspace.variants.length,
-        });
-        emit("copilot.action.required", { type: "copilot.action.required", actions: response.nextActions });
-        emit("copilot.completed", {
-          type: "copilot.completed",
-          sessionId: response.sessionId,
-          turnId: response.turnId,
-          workspaceStatus: response.workspace.status,
-        });
-      })
+    return this.runtime.handleChatStream(ctx, body, (event) => emit(event.type, event))
       .catch((error) => {
-        emit("copilot.failed", {
-          type: "copilot.failed",
+        emit("agent.failed", {
+          type: "agent.failed",
           sessionId: body.sessionId ?? "",
           turnId: "",
+          createdAt: new Date().toISOString(),
+          label: "处理失败",
+          status: "failed",
           message: error instanceof Error ? error.message : "Copilot failed",
+          payload: { message: error instanceof Error ? error.message : "Copilot failed" },
         });
       });
   }

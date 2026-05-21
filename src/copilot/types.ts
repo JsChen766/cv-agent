@@ -5,6 +5,7 @@ import type {
   ProductResumeDetail,
   ProductResumeSummary,
 } from "../product/types.js";
+import type { AgentStreamEvent } from "../agent-core/runtime/AgentStreamEvent.js";
 
 export type CopilotSession = {
   id: string;
@@ -278,14 +279,7 @@ export type CopilotActionRequest = {
   clientState?: CopilotClientState;
 };
 
-export type CopilotStreamEvent =
-  | { type: "copilot.turn.started"; sessionId: string; turnId: string }
-  | { type: "copilot.message.created"; message: CopilotMessage }
-  | { type: "copilot.timeline.updated"; item: ProductTimelineItem }
-  | { type: "copilot.workspace.updated"; sessionId: string; status: CopilotWorkspace["status"]; variantCount: number }
-  | { type: "copilot.action.required"; actions: ProductAction[] }
-  | { type: "copilot.completed"; sessionId: string; turnId: string; workspaceStatus: CopilotWorkspace["status"] }
-  | { type: "copilot.failed"; sessionId: string; turnId: string; message: string };
+export type CopilotStreamEvent = AgentStreamEvent;
 
 export type CopilotRawSection = {
   artifactIds: string[];

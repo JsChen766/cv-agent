@@ -33,6 +33,7 @@ import { AgentLoopController } from "./AgentLoopController.js";
 import { AgentMessageBus } from "./AgentMessageBus.js";
 import type { AgentObservation, AgentObservationStatus } from "./AgentObservation.js";
 import { AgentTraceRecorder } from "./AgentTrace.js";
+import type { AgentRuntimeEmitter, AgentStreamEventType } from "./AgentStreamEvent.js";
 import { CriticGate, shouldReviewTool, type ToolExecutionRecord } from "./CriticGate.js";
 
 export type AgentOrchestratorDeps = {
@@ -47,6 +48,7 @@ type RunState = {
   workspace: CopilotWorkspace | null;
   messageBus: AgentMessageBus;
   loopController: AgentLoopController;
+  streamEmitter?: AgentRuntimeEmitter;
 };
 
 type ExecutedPlan = {
@@ -89,7 +91,23 @@ export class AgentOrchestrator {
     return this.deps.kernel.copilotServices.sessionService.getSession(userId, sessionId);
   }
 
-  public async handleChat(ctx: KernelRequestContext, request: CopilotChatRequest): Promise<CopilotChatResponse> {
+  public handleChat(ctx: KernelRequestContext, request: CopilotChatRequest): Promise<CopilotChatResponse> {
+    return this.handleChatInternal(ctx, request);
+  }
+
+  public handleChatStream(
+    ctx: KernelRequestContext,
+    request: CopilotChatRequest,
+    emit: AgentRuntimeEmitter,
+  ): Promise<CopilotChatResponse> {
+    return this.handleChatInternal(ctx, request, emit);
+  }
+
+  private async handleChatInternal(
+    ctx: KernelRequestContext,
+    request: CopilotChatRequest,
+    streamEmitter?: AgentRuntimeEmitter,
+  ): Promise<CopilotChatResponse> {
     const session = await this.deps.kernel.copilotServices.sessionService.getOrCreateSession(ctx.user.id, {
       sessionId: request.sessionId,
       resumeText: request.resumeText,
@@ -107,9 +125,15 @@ export class AgentOrchestrator {
         targetRole: request.targetRole ?? session.targetRole,
         hasJDText: Boolean(request.jdText ?? session.jdText),
       },
+      streamEmitter,
+    });
+    this.emit(run, "agent.turn.started", "开始处理请求", {
+      status: "running",
     });
 
     try {
+      this.emit(run, "agent.thinking", "正在思考…", { agentName: "frontdesk", status: "running" });
+      this.emit(run, "agent.route.started", "正在判断任务类型…", { agentName: "frontdesk", status: "running" });
       const frontDeskStep = run.trace.add({
         agentName: "frontdesk",
         type: "reason",
@@ -121,6 +145,14 @@ export class AgentOrchestrator {
         routeTo: frontDeskDecision.routeTo,
         responseType: frontDeskDecision.responseType,
         decision: decisionTraceMeta(frontDeskDecision),
+      });
+      this.emit(run, "agent.route.completed", "任务类型判断完成", {
+        agentName: "frontdesk",
+        status: frontDeskDecision.responseType,
+        payload: {
+          routeTo: frontDeskDecision.routeTo,
+          responseType: frontDeskDecision.responseType,
+        },
       });
 
       if (frontDeskDecision.responseType === "final") {
@@ -157,6 +189,10 @@ export class AgentOrchestrator {
       });
 
     } catch (error) {
+      this.emit(run, "agent.failed", "处理失败", {
+        status: "failed",
+        payload: { message: error instanceof Error ? error.message : "Agent run failed." },
+      });
       return this.finishError(ctx.user.id, run, error);
     }
   }
@@ -236,10 +272,19 @@ export class AgentOrchestrator {
       completedAt: new Date().toISOString(),
     });
     if (result.status === "success" && shouldReviewTool(confirmedAction.toolName)) {
+      this.emit(run, "agent.critic.started", "正在审查结果…", {
+        agentName: "critic",
+        status: "running",
+      });
       const gateResult = await this.createCriticGate(run).review({
         context: run.context,
         toolExecutions: [execution],
         sourceAgent: step.agentName,
+      });
+      this.emit(run, "agent.critic.completed", labelForCriticStatus(gateResult.status), {
+        agentName: "critic",
+        status: gateResult.status,
+        payload: { verdict: gateResult.review?.verdict },
       });
       const criticReview = gateResult.review;
 
@@ -305,6 +350,28 @@ export class AgentOrchestrator {
     });
   }
 
+  private emit(
+    run: RunState,
+    type: AgentStreamEventType,
+    label: string,
+    extra: {
+      agentName?: AgentName | "AgentOrchestrator" | "ToolExecutor";
+      toolName?: string;
+      status?: string;
+      payload?: Record<string, unknown>;
+      response?: CopilotChatResponse;
+    } = {},
+  ): void {
+    run.streamEmitter?.({
+      type,
+      sessionId: run.context.sessionId,
+      turnId: run.context.turnId,
+      createdAt: new Date().toISOString(),
+      label,
+      ...extra,
+    });
+  }
+
   private async buildAgentContext(
     ctx: KernelRequestContext,
     input: {
@@ -313,6 +380,7 @@ export class AgentOrchestrator {
       userMessage: string;
       request: CopilotChatRequest;
       productContext: Record<string, unknown>;
+      streamEmitter?: AgentRuntimeEmitter;
     },
   ): Promise<RunState> {
     const [workspace, recentMessages] = await Promise.all([
@@ -347,6 +415,7 @@ export class AgentOrchestrator {
       workspace,
       messageBus,
       loopController,
+      streamEmitter: input.streamEmitter,
     };
   }
 
@@ -366,6 +435,11 @@ export class AgentOrchestrator {
         status: "running",
         metadata: { loopStep: run.loopController.state.stepCount },
       });
+      this.emit(run, "agent.agent.started", labelForAgentStarted(specialist.name), {
+        agentName: specialist.name,
+        status: "running",
+        payload: { loopStep: run.loopController.state.stepCount },
+      });
       const decision = await specialist.decide({ context: run.context, routeHint });
       lastAssistantMessage = decision.assistantMessage || lastAssistantMessage;
       run.trace.complete(planStep, "success", {
@@ -373,6 +447,11 @@ export class AgentOrchestrator {
         stepCount: decision.plan.length,
         loopStep: run.loopController.state.stepCount,
         decision: decisionTraceMeta(decision),
+      });
+      this.emit(run, "agent.agent.completed", "阶段处理完成", {
+        agentName: specialist.name,
+        status: decision.responseType,
+        payload: { responseType: decision.responseType, stepCount: decision.plan.length },
       });
 
       if (decision.responseType === "final") {
@@ -429,11 +508,25 @@ export class AgentOrchestrator {
         };
       }
 
+      const willReview = shouldEmitCriticReview(executed.executions);
+      if (willReview) {
+        this.emit(run, "agent.critic.started", "正在审查结果…", {
+          agentName: "critic",
+          status: "running",
+        });
+      }
       const gateResult = await this.createCriticGate(run).review({
         context: run.context,
         toolExecutions: executed.executions,
         sourceAgent: specialist.name,
       });
+      if (willReview) {
+        this.emit(run, "agent.critic.completed", labelForCriticStatus(gateResult.status), {
+          agentName: "critic",
+          status: gateResult.status,
+          payload: { verdict: gateResult.review?.verdict },
+        });
+      }
       if (gateResult.criticToolResults.length > 0) toolResults.push(...gateResult.criticToolResults);
       criticReview = gateResult.review ?? criticReview;
 
@@ -530,12 +623,23 @@ export class AgentOrchestrator {
   ): Promise<{ result: ToolResult; pendingAction?: PendingAction }> {
     const tool = this.tools.get(step.toolName ?? "");
     if (!tool) throw new AgentError("TOOL_NOT_FOUND", "Planned tool is not registered.", { statusCode: 404 });
+    this.emit(run, "agent.tool.started", labelForToolStarted(tool.name), {
+      agentName: step.agentName,
+      toolName: tool.name,
+      status: "running",
+    });
     const parsed = tool.inputSchema.safeParse(step.arguments);
     if (!parsed.success) {
       const missingFields = parsed.error.issues
         .map((issue) => issue.path.join("."))
         .filter(Boolean)
         .join(", ");
+      this.emit(run, "agent.tool.failed", `工具调用失败：${tool.name}`, {
+        agentName: step.agentName,
+        toolName: tool.name,
+        status: "needs_input",
+        payload: { reason: "missing_required_input" },
+      });
       return {
         result: {
           status: "needs_input",
@@ -555,7 +659,23 @@ export class AgentOrchestrator {
     }
     const args = parsed.data as Record<string, unknown>;
     if (!tool.requiresConfirmation) {
-      return { result: await run.executor.executeDefinition(tool, args, run.context) };
+      try {
+        const result = await run.executor.executeDefinition(tool, args, run.context);
+        this.emit(run, "agent.tool.completed", "工具调用完成", {
+          agentName: step.agentName,
+          toolName: tool.name,
+          status: result.status,
+        });
+        return { result };
+      } catch (error) {
+        this.emit(run, "agent.tool.failed", `工具调用失败：${tool.name}`, {
+          agentName: step.agentName,
+          toolName: tool.name,
+          status: "failed",
+          payload: { message: error instanceof Error ? error.message : "Tool execution failed." },
+        });
+        throw error;
+      }
     }
 
     const pending = await this.pendingActions.create({
@@ -577,6 +697,23 @@ export class AgentOrchestrator {
       status: "needs_input",
       completedAt: new Date().toISOString(),
       metadata: { pendingActionId: pending.id },
+    });
+    this.emit(run, "agent.pending_action.created", "已准备确认操作", {
+      agentName: step.agentName,
+      toolName: tool.name,
+      status: "needs_confirmation",
+      payload: {
+        pendingActionId: pending.id,
+        toolName: tool.name,
+        summary: pending.summary,
+        riskLevel: pending.riskLevel,
+      },
+    });
+    this.emit(run, "agent.tool.completed", "已准备确认操作", {
+      agentName: step.agentName,
+      toolName: tool.name,
+      status: "needs_confirmation",
+      payload: { pendingActionId: pending.id },
     });
     return {
       pendingAction: pending,
@@ -718,11 +855,29 @@ export class AgentOrchestrator {
       status: "success",
       completedAt: new Date().toISOString(),
     });
+    this.emit(run, "agent.thinking", "正在整理最终回复…", {
+      agentName: "AgentOrchestrator",
+      status: "running",
+    });
     const now = new Date().toISOString();
     const assistantText = sanitized.invalidCount > 0 ? t(run, "invalidConfirmation") : input.assistantText;
     const workspacePatch = sanitized.invalidCount > 0 ? {} : input.workspacePatch;
     const assistantMessage = await this.saveMessage(userId, run.context.sessionId, "assistant", assistantText, run.context.turnId, sanitized.toolResults);
+    this.emit(run, "agent.message.completed", "回复已生成", {
+      agentName: "AgentOrchestrator",
+      status: "success",
+      payload: { messageId: assistantMessage.id },
+    });
     const workspace = await this.saveWorkspace(userId, run.context.sessionId, run.workspace, workspacePatch, now);
+    this.emit(run, "agent.workspace.updated", "工作区已更新", {
+      agentName: "AgentOrchestrator",
+      status: "success",
+      payload: {
+        workspaceId: workspace.id,
+        status: workspace.status,
+        variantCount: workspace.variants.length,
+      },
+    });
     await this.deps.kernel.copilotServices.sessionService.completeTurn(userId, run.context.turnId, assistantMessage.id);
     await this.deps.kernel.copilotServices.workspaceService.recordActivity(userId, {
       sessionId: run.context.sessionId,
@@ -730,7 +885,7 @@ export class AgentOrchestrator {
       title: "Copilot replied",
       metadata: { traceRunId: run.trace.trace.runId },
     });
-    return {
+    const response: CopilotChatResponse = {
       sessionId: run.context.sessionId,
       turnId: run.context.turnId,
       assistantMessage,
@@ -756,6 +911,13 @@ export class AgentOrchestrator {
           .filter((item): item is CopilotActionResult => item !== undefined && typeof item.status === "string"),
       },
     };
+    this.emit(run, "agent.completed", "处理完成", {
+      agentName: "AgentOrchestrator",
+      status: "success",
+      response,
+      payload: { response },
+    });
+    return response;
   }
 
   private async saveMessage(
@@ -808,6 +970,29 @@ function explicitStep(agentName: AgentName, toolName: string, args: Record<strin
     arguments: args,
     summary,
   };
+}
+
+function labelForAgentStarted(agentName: AgentName): string {
+  if (agentName === "experience_receiver") return "正在整理经历…";
+  if (agentName === "strategist") return "正在分析岗位需求…";
+  if (agentName === "architect") return "正在处理简历…";
+  if (agentName === "critic") return "正在审查生成结果…";
+  return "正在思考…";
+}
+
+function labelForCriticStatus(status: string): string {
+  if (status === "pass" || status === "skipped") return "审查通过";
+  if (status === "needs_revision") return "需要修改后使用";
+  if (status === "needs_user_confirmation") return "需要用户确认";
+  if (status === "blocked") return "结果已拦截";
+  return "审查完成";
+}
+
+function labelForToolStarted(toolName: string): string {
+  if (toolName === "list_experiences" || toolName === "search_experiences" || toolName === "get_experience") {
+    return "正在查看经历库…";
+  }
+  return `正在调用工具：${toolName}`;
 }
 
 type RuntimeTextKey =
@@ -911,6 +1096,10 @@ function sanitizeInvalidConfirmationResults(run: RunState, results: ToolResult[]
     };
   });
   return { toolResults, invalidCount };
+}
+
+function shouldEmitCriticReview(executions: ToolExecutionRecord[]): boolean {
+  return executions.some((execution) => execution.result.status === "success" && Boolean(execution.step.toolName && shouldReviewTool(execution.step.toolName)));
 }
 
 function confirmedActionStep(action: PendingAction, agentName: AgentName): PlanStep {
