@@ -8,6 +8,7 @@ import { StrategistAgent } from "../src/agent-core/agents/StrategistAgent.js";
 import { createAgentTools } from "../src/agent-tools/index.js";
 import type { LLMChatResponse, LLMProvider } from "../src/agent-core/model/types.js";
 import { ModelClient } from "../src/agent-core/model/ModelClient.js";
+import { AgentDecisionSchema, repairAgentDecision } from "../src/agent-core/validation/AgentOutputSchemas.js";
 import { testContext } from "./p12Helpers.js";
 import { createP12Kernel } from "./p12Helpers.js";
 
@@ -205,6 +206,64 @@ describe("agentDecisionReliability", () => {
   });
 
   describe("repairAgentDecision edge cases", () => {
+    it("accepts optional criticReview in AgentDecisionSchema", () => {
+      const parsed = AgentDecisionSchema.safeParse({
+        agentName: "critic",
+        responseType: "final",
+        assistantMessage: "Review complete.",
+        plan: [],
+        missingInputs: [],
+        confidence: 0.9,
+        criticReview: {
+          verdict: "needs_revision",
+          riskLevel: "medium",
+          unsupportedClaims: ["unsupported metric"],
+          missingEvidence: ["source"],
+          suggestedFixes: ["Use conservative wording."],
+          userVisibleSummary: "Please revise unsupported claims.",
+        },
+      });
+
+      expect(parsed.success).toBe(true);
+      expect(parsed.success ? parsed.data.criticReview?.verdict : undefined).toBe("needs_revision");
+    });
+
+    it("preserves valid criticReview during repair", () => {
+      const repaired = repairAgentDecision({
+        agentName: "critic",
+        responseType: "final",
+        assistantMessage: "Review complete.",
+        plan: [],
+        missingInputs: [],
+        confidence: 0.9,
+        criticReview: {
+          verdict: "blocked",
+          riskLevel: "high",
+          unsupportedClaims: ["unsupported metric"],
+          missingEvidence: ["source"],
+          suggestedFixes: ["Remove unsupported metric."],
+          userVisibleSummary: "This needs evidence before use.",
+        },
+      }, "critic");
+
+      expect(repaired?.criticReview?.verdict).toBe("blocked");
+    });
+
+    it("ignores invalid criticReview during repair without breaking the decision", () => {
+      const repaired = repairAgentDecision({
+        agentName: "architect",
+        responseType: "final",
+        assistantMessage: "Done.",
+        plan: [],
+        missingInputs: [],
+        confidence: 0.9,
+        criticReview: { verdict: "not-a-verdict" },
+      }, "architect");
+
+      expect(repaired?.responseType).toBe("final");
+      expect(repaired?.criticReview).toBeUndefined();
+    });
+
     it("repairs plan steps with missing id", async () => {
       const kernel = await createP12Kernel();
       const badClient = provider(() => ({

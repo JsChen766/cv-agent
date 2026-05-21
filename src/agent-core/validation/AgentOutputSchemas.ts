@@ -18,6 +18,15 @@ export const PlanStepSchema = z.object({
   summary: z.string().min(1),
 });
 
+export const CriticReviewSchema = z.object({
+  verdict: z.enum(["pass", "needs_revision", "blocked", "needs_user_confirmation"]),
+  riskLevel: z.enum(["low", "medium", "high"]),
+  unsupportedClaims: z.array(z.string()),
+  missingEvidence: z.array(z.string()),
+  suggestedFixes: z.array(z.string()),
+  userVisibleSummary: z.string(),
+});
+
 export const AgentDecisionSchema = z.object({
   agentName: AgentNameSchema,
   responseType: z.enum(["route", "plan", "final", "ask_clarification", "error"]),
@@ -26,10 +35,12 @@ export const AgentDecisionSchema = z.object({
   plan: z.array(PlanStepSchema).default([]),
   missingInputs: z.array(z.string()).default([]),
   confidence: z.number().min(0).max(1).default(0.7),
+  criticReview: CriticReviewSchema.optional(),
 });
 
 export type AgentName = z.infer<typeof AgentNameSchema>;
 export type PlanStep = z.infer<typeof PlanStepSchema>;
+export type CriticReview = z.infer<typeof CriticReviewSchema>;
 export type AgentDecision = z.infer<typeof AgentDecisionSchema>;
 
 export function invalidAgentOutputDecision(agentName: AgentName): AgentDecision {
@@ -91,6 +102,8 @@ export function repairAgentDecision(raw: unknown, agentName: AgentName): AgentDe
     confidence: confidenceOk,
   };
   if (routeToOk) repaired.routeTo = routeToOk;
+  const criticReview = CriticReviewSchema.safeParse(obj.criticReview);
+  if (criticReview.success) repaired.criticReview = criticReview.data;
 
   const result = AgentDecisionSchema.safeParse(repaired);
   if (result.success) return result.data;

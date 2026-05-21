@@ -53,7 +53,7 @@ describe("agent runtime loop and critic gate", () => {
     await kernel.close();
   });
 
-  it("records revision_request and lets the source agent see critic feedback", async () => {
+  it("records revision_request and stops for manual revision guidance", async () => {
     const { kernel, orchestrator } = await setupRuntime("critic-revision");
     registerUnconfirmedGenerateTool(orchestrator);
     const ctx = createTestKernelContext({ user: { id: "revision-user" }, request: { requestId: "req-revision", traceId: "trace-revision" } });
@@ -61,7 +61,10 @@ describe("agent runtime loop and critic gate", () => {
     const response = await orchestrator.handleChat(ctx, { message: "resume critic revision" });
     const metadata = response.raw.metadata as RuntimeMetadata;
 
-    expect(response.assistantMessage.content).toContain("revised after critic");
+    expect(response.assistantMessage.content).toContain("Please make this more conservative.");
+    expect(response.assistantMessage.content).toContain("Use conservative wording.");
+    expect(response.assistantMessage.content).not.toContain("revised after critic");
+    expect(metadata.loop.stopReason).toBe("critic_needs_revision");
     expect(metadata.criticReview?.verdict).toBe("needs_revision");
     expect(metadata.agentMessages.some((message) => message.type === "review_request")).toBe(true);
     expect(metadata.agentMessages.some((message) => message.type === "revision_request")).toBe(true);
@@ -83,15 +86,92 @@ describe("agent runtime loop and critic gate", () => {
     expect(JSON.stringify(response.raw.toolResults)).not.toContain("Generated risky resume content");
     await kernel.close();
   });
+
+  it("reviews a confirmed high-risk pending action and applies the result when critic passes", async () => {
+    const { kernel, orchestrator, provider } = await setupRuntime("confirm-pass");
+    registerConfirmedGenerateTool(orchestrator);
+    const ctx = createTestKernelContext({ user: { id: "confirm-pass-user" }, request: { requestId: "req-confirm-pass", traceId: "trace-confirm-pass" } });
+
+    const pending = await orchestrator.handleChat(ctx, { message: "resume confirm pass" });
+    const pendingId = (pending.raw.pendingActions![0] as { id: string }).id;
+    expect(provider.criticCalls).toBe(0);
+
+    const response = await orchestrator.confirmPendingAction(ctx, pendingId);
+    const metadata = response.raw.metadata as RuntimeMetadata;
+
+    expect(provider.criticCalls).toBe(1);
+    expect(response.assistantMessage.content).toContain("Confirmed generated resume content.");
+    expect((response.workspace as unknown as { activePanel?: string }).activePanel).toBe("variants");
+    expect(metadata.criticReview?.verdict).toBe("pass");
+    expect(response.raw.actionResults?.[0]?.status).toBe("success");
+    await kernel.close();
+  });
+
+  it("blocks a confirmed high-risk pending action without applying its workspace patch", async () => {
+    const { kernel, orchestrator } = await setupRuntime("confirm-blocked");
+    registerConfirmedGenerateTool(orchestrator);
+    const ctx = createTestKernelContext({ user: { id: "confirm-blocked-user" }, request: { requestId: "req-confirm-blocked", traceId: "trace-confirm-blocked" } });
+
+    const pending = await orchestrator.handleChat(ctx, { message: "resume confirm blocked" });
+    const pendingId = (pending.raw.pendingActions![0] as { id: string }).id;
+
+    const response = await orchestrator.confirmPendingAction(ctx, pendingId);
+    const metadata = response.raw.metadata as RuntimeMetadata;
+
+    expect(response.assistantMessage.content).toContain("Cannot use this generated content");
+    expect(response.assistantMessage.content).not.toContain("Confirmed generated resume content.");
+    expect((response.workspace as unknown as { activePanel?: string }).activePanel).toBeUndefined();
+    expect(metadata.criticReview?.verdict).toBe("blocked");
+    expect(JSON.stringify(response.raw.toolResults)).not.toContain("Confirmed generated resume content.");
+    await kernel.close();
+  });
+
+  it("returns critic suggestions for confirmed high-risk pending action needs_revision", async () => {
+    const { kernel, orchestrator } = await setupRuntime("confirm-revision");
+    registerConfirmedGenerateTool(orchestrator);
+    const ctx = createTestKernelContext({ user: { id: "confirm-revision-user" }, request: { requestId: "req-confirm-revision", traceId: "trace-confirm-revision" } });
+
+    const pending = await orchestrator.handleChat(ctx, { message: "resume confirm revision" });
+    const pendingId = (pending.raw.pendingActions![0] as { id: string }).id;
+
+    const response = await orchestrator.confirmPendingAction(ctx, pendingId);
+    const metadata = response.raw.metadata as RuntimeMetadata;
+
+    expect(response.assistantMessage.content).toContain("Please make this more conservative.");
+    expect(response.assistantMessage.content).toContain("Use conservative wording.");
+    expect(response.assistantMessage.content).not.toContain("Confirmed generated resume content.");
+    expect(metadata.loop.stopReason).toBe("critic_needs_revision");
+    expect(metadata.criticReview?.verdict).toBe("needs_revision");
+    expect(metadata.agentMessages.some((message) => message.type === "revision_request")).toBe(true);
+    expect(JSON.stringify(response.raw.toolResults)).toContain("Confirmed generated resume content.");
+    await kernel.close();
+  });
+
+  it("does not review a confirmed low-risk pending action", async () => {
+    const { kernel, orchestrator, provider } = await setupRuntime("confirm-low-risk");
+    registerConfirmedExportTool(orchestrator);
+    const ctx = createTestKernelContext({ user: { id: "confirm-low-risk-user" }, request: { requestId: "req-confirm-low-risk", traceId: "trace-confirm-low-risk" } });
+
+    const pending = await orchestrator.handleChat(ctx, { message: "resume confirm low risk" });
+    const pendingId = (pending.raw.pendingActions![0] as { id: string }).id;
+
+    const response = await orchestrator.confirmPendingAction(ctx, pendingId);
+
+    expect(provider.criticCalls).toBe(0);
+    expect(response.assistantMessage.content).toContain("Exported resume.");
+    expect((response.workspace as unknown as { exportReady?: boolean }).exportReady).toBe(true);
+    await kernel.close();
+  });
 });
 
-async function setupRuntime(scenario: Scenario): Promise<{ kernel: ApiKernel; orchestrator: AgentOrchestrator }> {
+async function setupRuntime(scenario: Scenario): Promise<{ kernel: ApiKernel; orchestrator: AgentOrchestrator; provider: RuntimeTestProvider }> {
   const kernel = await createP12Kernel();
+  const provider = new RuntimeTestProvider(scenario);
   kernel.frontDeskModelClient = new ModelClient({
-    provider: new RuntimeTestProvider(scenario),
+    provider,
     defaultModel: "runtime-test",
   });
-  return { kernel, orchestrator: new AgentOrchestrator({ kernel }) };
+  return { kernel, orchestrator: new AgentOrchestrator({ kernel }), provider };
 }
 
 function registerUnconfirmedGenerateTool(orchestrator: AgentOrchestrator): void {
@@ -113,10 +193,59 @@ function registerUnconfirmedGenerateTool(orchestrator: AgentOrchestrator): void 
   });
 }
 
-type Scenario = "loop-final" | "max-steps" | "critic-pass" | "critic-revision" | "critic-blocked";
+function registerConfirmedGenerateTool(orchestrator: AgentOrchestrator): void {
+  orchestrator.tools.register({
+    name: "generate_resume_from_jd",
+    description: "Test confirmed resume generation.",
+    ownerAgent: "architect",
+    inputSchema: z.object({ jdText: z.string().optional(), targetRole: z.string().optional() }).passthrough(),
+    outputSchema: ToolResultSchema,
+    mutability: "write",
+    requiresConfirmation: true,
+    riskLevel: "high",
+    execute: async () => ({
+      status: "success",
+      message: "Confirmed generated resume content.",
+      data: { content: "Confirmed generated resume content." },
+      workspacePatch: { activePanel: "variants" },
+      actionResult: { actionType: "generate_resume_from_jd", status: "success", message: "Confirmed generated resume content." },
+    }),
+  });
+}
+
+function registerConfirmedExportTool(orchestrator: AgentOrchestrator): void {
+  orchestrator.tools.register({
+    name: "export_resume",
+    description: "Test confirmed export.",
+    ownerAgent: "architect",
+    inputSchema: z.object({ resumeId: z.string().optional(), format: z.string().optional() }).passthrough(),
+    outputSchema: ToolResultSchema,
+    mutability: "export",
+    requiresConfirmation: true,
+    riskLevel: "medium",
+    execute: async () => ({
+      status: "success",
+      message: "Exported resume.",
+      workspacePatch: { exportReady: true },
+      actionResult: { actionType: "export_resume", status: "success", message: "Exported resume." },
+    }),
+  });
+}
+
+type Scenario =
+  | "loop-final"
+  | "max-steps"
+  | "critic-pass"
+  | "critic-revision"
+  | "critic-blocked"
+  | "confirm-pass"
+  | "confirm-blocked"
+  | "confirm-revision"
+  | "confirm-low-risk";
 
 class RuntimeTestProvider implements LLMProvider {
   public readonly name = "runtime-test";
+  public criticCalls = 0;
 
   public constructor(private readonly scenario: Scenario) {}
 
@@ -125,13 +254,22 @@ class RuntimeTestProvider implements LLMProvider {
     const agentName = request.metadata?.agentName;
     if (agentName === "agent-core:frontdesk") return json(route("architect"));
     if (agentName === "agent-core:architect") return json(this.architect(payload));
-    if (agentName === "agent-core:critic") return json(this.critic(payload));
+    if (agentName === "agent-core:critic") {
+      this.criticCalls += 1;
+      return json(this.critic(payload));
+    }
     return json(final("strategist", "Done."));
   }
 
   private architect(payload: Record<string, unknown>): Record<string, unknown> {
     const observations = Array.isArray(payload.observations) ? payload.observations : [];
     const messages = Array.isArray(payload.agentMessages) ? payload.agentMessages as Array<{ type?: string }> : [];
+    if (this.scenario === "confirm-low-risk") {
+      return plan("architect", "export_resume", { resumeId: "resume-1", format: "html" }, "Export resume.");
+    }
+    if (this.scenario.startsWith("confirm-")) {
+      return plan("architect", "generate_resume_from_jd", { jdText: "JD", targetRole: "Engineer" }, "Generate resume.");
+    }
     if (this.scenario === "loop-final") {
       return observations.length > 0 ? final("architect", "saw observation and finished") : plan("architect", "list_resumes", {}, "List resumes first.");
     }
@@ -146,8 +284,8 @@ class RuntimeTestProvider implements LLMProvider {
   }
 
   private critic(_payload: Record<string, unknown>): Record<string, unknown> {
-    if (this.scenario === "critic-revision") return review("needs_revision", "medium", "Please make this more conservative.");
-    if (this.scenario === "critic-blocked") return review("blocked", "high", "Cannot use this generated content because it includes unsupported claims.");
+    if (this.scenario === "critic-revision" || this.scenario === "confirm-revision") return review("needs_revision", "medium", "Please make this more conservative.");
+    if (this.scenario === "critic-blocked" || this.scenario === "confirm-blocked") return review("blocked", "high", "Cannot use this generated content because it includes unsupported claims.");
     return review("pass", "low", "Critic pass.");
   }
 }

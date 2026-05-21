@@ -239,16 +239,18 @@ export abstract class BaseAgent implements Agent {
         responseType: "route | plan | final | ask_clarification | error",
         routeTo: "frontdesk | experience_receiver | strategist | architect | critic",
         plan: [{ id: "step id", agentName: this.name, toolName: "allowed tool", arguments: {}, summary: "display summary" }],
-        criticReview: this.name === "critic"
+        ...(this.name === "critic"
           ? {
-              verdict: "pass | needs_revision | blocked | needs_user_confirmation",
-              riskLevel: "low | medium | high",
-              unsupportedClaims: [],
-              missingEvidence: [],
-              suggestedFixes: [],
-              userVisibleSummary: "short user-facing summary",
+              criticReview: {
+                verdict: "pass | needs_revision | blocked | needs_user_confirmation",
+                riskLevel: "low | medium | high",
+                unsupportedClaims: [],
+                missingEvidence: [],
+                suggestedFixes: [],
+                userVisibleSummary: "short user-facing summary",
+              },
             }
-          : undefined,
+          : {}),
       },
     };
   }

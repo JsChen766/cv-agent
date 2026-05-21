@@ -1,8 +1,7 @@
-import { z } from "zod";
 import type { Agent } from "../agents/BaseAgent.js";
 import { getAgentDecisionMeta } from "../agents/BaseAgent.js";
 import type { ToolResult } from "../tools/ToolResult.js";
-import type { AgentName, PlanStep } from "../validation/AgentOutputSchemas.js";
+import { CriticReviewSchema, type AgentName, type CriticReview, type PlanStep } from "../validation/AgentOutputSchemas.js";
 import type { AgentMessageBus } from "./AgentMessageBus.js";
 import type { AgentContext } from "./AgentContext.js";
 import type { AgentTraceRecorder } from "./AgentTrace.js";
@@ -13,17 +12,6 @@ const CRITIC_TOOL_NAMES = new Set([
   "save_experience_from_text",
   "update_experience",
 ]);
-
-const CriticReviewSchema = z.object({
-  verdict: z.enum(["pass", "needs_revision", "blocked", "needs_user_confirmation"]),
-  riskLevel: z.enum(["low", "medium", "high"]),
-  unsupportedClaims: z.array(z.string()).default([]),
-  missingEvidence: z.array(z.string()).default([]),
-  suggestedFixes: z.array(z.string()).default([]),
-  userVisibleSummary: z.string().default("Review completed."),
-});
-
-export type CriticReview = z.infer<typeof CriticReviewSchema>;
 
 export type ToolExecutionRecord = {
   step: PlanStep;
@@ -100,13 +88,20 @@ export class CriticGate {
 }
 
 function shouldReview(execution: ToolExecutionRecord): boolean {
-  return execution.result.status === "success" && Boolean(execution.step.toolName && CRITIC_TOOL_NAMES.has(execution.step.toolName));
+  return execution.result.status === "success" && Boolean(execution.step.toolName && shouldReviewTool(execution.step.toolName));
+}
+
+export function shouldReviewTool(toolName: string): boolean {
+  return CRITIC_TOOL_NAMES.has(toolName);
 }
 
 function extractReview(decision: unknown): CriticReview | undefined {
   const meta = getAgentDecisionMeta(decision);
   const raw = meta?.rawOutput;
-  return parseReview(raw) ?? parseReview(readObject(raw, "criticReview")) ?? parseReview(readObject(decision, "criticReview")) ?? parseAssistantMessage(decision);
+  return parseReview(readObject(decision, "criticReview"))
+    ?? parseReview(readObject(raw, "criticReview"))
+    ?? parseAssistantMessage(decision)
+    ?? parseReview(raw);
 }
 
 function parseAssistantMessage(decision: unknown): CriticReview | undefined {

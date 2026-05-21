@@ -24,7 +24,7 @@ import type { ToolDefinition } from "../tools/Tool.js";
 import { ToolExecutor } from "../tools/ToolExecutor.js";
 import { ToolRegistry } from "../tools/ToolRegistry.js";
 import type { ToolResult } from "../tools/ToolResult.js";
-import type { AgentName, PlanStep } from "../validation/AgentOutputSchemas.js";
+import type { AgentName, CriticReview, PlanStep } from "../validation/AgentOutputSchemas.js";
 import type { KernelRequestContext } from "../../api/context.js";
 import type { AgentContext } from "./AgentContext.js";
 import { AgentError } from "./AgentError.js";
@@ -32,7 +32,7 @@ import { AgentLoopController } from "./AgentLoopController.js";
 import { AgentMessageBus } from "./AgentMessageBus.js";
 import type { AgentObservation, AgentObservationStatus } from "./AgentObservation.js";
 import { AgentTraceRecorder } from "./AgentTrace.js";
-import { CriticGate, type CriticReview, type ToolExecutionRecord } from "./CriticGate.js";
+import { CriticGate, shouldReviewTool, type ToolExecutionRecord } from "./CriticGate.js";
 
 const PRODUCT_INTRO = "我是你的求职经历 Copilot，可以帮你整理经历、分析 JD、生成和修改简历。有什么我可以帮你的？";
 
@@ -217,13 +217,17 @@ export class AgentOrchestrator {
       request: { sessionId: session.id, message: `[confirm] ${action.toolName}` },
       productContext: { pendingActionId: id },
     });
-    const { result } = await this.pendingActions.confirm({
+    const { action: confirmedAction, result } = await this.pendingActions.confirm({
       userId: ctx.user.id,
       id,
       registry: this.tools,
       executor: run.executor,
       context: run.context,
     });
+    const tool = this.tools.get(confirmedAction.toolName);
+    const step = confirmedActionStep(confirmedAction, tool?.ownerAgent ?? "frontdesk");
+    const execution: ToolExecutionRecord = { step, result };
+    this.addObservation(run, step, result);
     run.trace.add({
       agentName: "AgentOrchestrator",
       type: "final",
@@ -231,6 +235,68 @@ export class AgentOrchestrator {
       status: "success",
       completedAt: new Date().toISOString(),
     });
+    if (result.status === "success" && shouldReviewTool(confirmedAction.toolName)) {
+      const gateResult = await this.createCriticGate(run).review({
+        context: run.context,
+        toolExecutions: [execution],
+        sourceAgent: step.agentName,
+      });
+      const criticReview = gateResult.review;
+
+      if (gateResult.status === "blocked") {
+        const message = criticReview?.userVisibleSummary || "该结果存在较高风险，已暂时拦截，请补充真实依据后再继续。";
+        return this.finishRun(ctx.user.id, run, {
+          assistantText: message,
+          toolResults: [failedActionResult("critic_gate", message, "critic_blocked")],
+          pendingActions: [],
+          workspacePatch: {},
+          criticReview,
+        });
+      }
+
+      if (gateResult.status === "needs_user_confirmation") {
+        const message = criticReview?.userVisibleSummary || "Please confirm the specific facts and metrics before I continue.";
+        return this.finishRun(ctx.user.id, run, {
+          assistantText: message,
+          toolResults: [needsConfirmationResult(message)],
+          pendingActions: [],
+          workspacePatch: {},
+          criticReview,
+        });
+      }
+
+      if (gateResult.status === "needs_revision") {
+        const revision = run.messageBus.requestRevision("critic", step.agentName, { review: criticReview });
+        run.context.agentMessages = run.messageBus.list();
+        run.trace.add({
+          agentName: "AgentOrchestrator",
+          type: "reason",
+          summary: "Recorded critic revision request for confirmed action.",
+          status: "success",
+          completedAt: new Date().toISOString(),
+          metadata: { messageId: revision.id },
+        });
+        run.loopController.stop("critic_needs_revision");
+        this.syncLoopState(run);
+        const message = criticRevisionMessage(criticReview);
+        return this.finishRun(ctx.user.id, run, {
+          assistantText: message,
+          toolResults: [result, ...gateResult.criticToolResults, needsRevisionResult(message)],
+          pendingActions: [],
+          workspacePatch: {},
+          criticReview,
+        });
+      }
+
+      return this.finishRun(ctx.user.id, run, {
+        assistantText: result.message ?? "Confirmed and executed.",
+        toolResults: [result, ...gateResult.criticToolResults],
+        pendingActions: [],
+        workspacePatch: mergeWorkspacePatch([result]),
+        criticReview,
+      });
+    }
+
     return this.finishRun(ctx.user.id, run, {
       assistantText: result.message ?? "Confirmed and executed.",
       toolResults: [result],
@@ -363,16 +429,7 @@ export class AgentOrchestrator {
         };
       }
 
-      const gate = new CriticGate({
-        critic: this.agents.critic,
-        messageBus: run.messageBus,
-        trace: run.trace,
-        executeCriticPlan: async (criticPlan) => {
-          const validPlan = this.validatePlan(criticPlan, this.agents.critic);
-          return (await this.executePlan(run, validPlan)).executions;
-        },
-      });
-      const gateResult = await gate.review({
+      const gateResult = await this.createCriticGate(run).review({
         context: run.context,
         toolExecutions: executed.executions,
         sourceAgent: specialist.name,
@@ -399,7 +456,7 @@ export class AgentOrchestrator {
           assistantText: gateResult.review?.userVisibleSummary ?? "Please confirm before I continue with this higher-risk change.",
           toolResults: [needsConfirmationResult(gateResult.review?.userVisibleSummary ?? "User confirmation required by critic.")],
           pendingActions,
-          workspacePatch: mergeWorkspacePatch(toolResults),
+          workspacePatch: {},
           criticReview,
         };
       }
@@ -415,8 +472,17 @@ export class AgentOrchestrator {
           completedAt: new Date().toISOString(),
           metadata: { messageId: revision.id },
         });
-        if (!run.loopController.canContinue()) break;
-        continue;
+        run.loopController.stop("critic_needs_revision");
+        this.syncLoopState(run);
+        const message = criticRevisionMessage(gateResult.review);
+        toolResults.push(needsRevisionResult(message));
+        return {
+          assistantText: message,
+          toolResults,
+          pendingActions,
+          workspacePatch: {},
+          criticReview,
+        };
       }
     }
 
@@ -444,6 +510,18 @@ export class AgentOrchestrator {
       if (result.pendingAction) pendingActions.push(result.pendingAction);
     }
     return { toolResults, pendingActions, executions };
+  }
+
+  private createCriticGate(run: RunState): CriticGate {
+    return new CriticGate({
+      critic: this.agents.critic,
+      messageBus: run.messageBus,
+      trace: run.trace,
+      executeCriticPlan: async (criticPlan) => {
+        const validPlan = this.validatePlan(criticPlan, this.agents.critic);
+        return (await this.executePlan(run, validPlan)).executions;
+      },
+    });
   }
 
   private async executeToolOrCreatePendingAction(
@@ -719,6 +797,24 @@ function explicitStep(agentName: AgentName, toolName: string, args: Record<strin
   };
 }
 
+function confirmedActionStep(action: PendingAction, agentName: AgentName): PlanStep {
+  return {
+    id: `confirm-${action.id}`,
+    agentName,
+    toolName: action.toolName,
+    arguments: summarizePendingArguments(action.toolArguments),
+    summary: `Confirmed pending action ${action.toolName}`,
+  };
+}
+
+function summarizePendingArguments(args: Record<string, unknown>): Record<string, unknown> {
+  const keys = Object.keys(args);
+  return {
+    argumentKeys: keys.slice(0, 12),
+    argumentCount: keys.length,
+  };
+}
+
 function failedActionResult(actionType: string, message: string, reason = "unsupported_action"): ToolResult {
   return {
     status: "failed",
@@ -733,6 +829,21 @@ function needsConfirmationResult(message: string): ToolResult {
     message,
     actionResult: { actionType: "critic_gate", status: "needs_confirmation", message, reason: "critic_needs_user_confirmation" },
   };
+}
+
+function needsRevisionResult(message: string): ToolResult {
+  return {
+    status: "needs_input",
+    message,
+    actionResult: { actionType: "critic_gate", status: "needs_input", message, reason: "critic_needs_revision" },
+  };
+}
+
+function criticRevisionMessage(review?: CriticReview): string {
+  const summary = review?.userVisibleSummary || "The result needs revision before it can be used.";
+  const fixes = review?.suggestedFixes?.filter(Boolean) ?? [];
+  if (fixes.length === 0) return summary;
+  return `${summary}\nSuggested fixes:\n${fixes.map((fix) => `- ${fix}`).join("\n")}`;
 }
 
 function observationStatus(result: ToolResult): AgentObservationStatus {

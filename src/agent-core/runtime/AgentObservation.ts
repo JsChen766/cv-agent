@@ -17,7 +17,8 @@ export type AgentLoopStopReason =
   | "needs_confirmation"
   | "max_steps"
   | "failed"
-  | "critic_blocked";
+  | "critic_blocked"
+  | "critic_needs_revision";
 
 export type AgentLoopState = {
   observations: AgentObservation[];
