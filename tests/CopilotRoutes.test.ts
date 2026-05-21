@@ -202,6 +202,168 @@ describe("Copilot routes on agent-core runtime", () => {
     });
     expect(response.statusCode).toBe(400);
   });
+
+  it("agent.completed event contains complete response in both response and payload.response", async () => {
+    const response = await server.inject({
+      method: "POST",
+      url: "/copilot/chat/stream",
+      headers: { "x-user-id": "user-1" },
+      payload: { message: "Show my experience library" },
+    });
+
+    expect(response.statusCode).toBe(200);
+    const events = parseSse(response.payload);
+    const completed = events.find((e) => e.event === "agent.completed")?.data as Record<string, unknown> | undefined;
+    expect(completed).toBeDefined();
+    expect(completed!.type).toBe("agent.completed");
+    expect(completed!.sessionId).toEqual(expect.any(String));
+    expect(completed!.turnId).toEqual(expect.any(String));
+    expect(completed!.createdAt).toEqual(expect.any(String));
+    expect(completed!.label).toEqual(expect.any(String));
+
+    // response at top level
+    const topResponse = completed!.response as Record<string, unknown> | undefined;
+    expect(topResponse).toBeDefined();
+    expect(topResponse!.sessionId).toEqual(expect.any(String));
+    expect(topResponse!.assistantMessage).toBeDefined();
+
+    // payload.response also present for frontend compat
+    const payload = completed!.payload as Record<string, unknown> | undefined;
+    expect(payload).toBeDefined();
+    const payloadResponse = payload!.response as Record<string, unknown> | undefined;
+    expect(payloadResponse).toBeDefined();
+    expect(payloadResponse!.sessionId).toEqual(topResponse!.sessionId);
+  });
+
+  it("stream event names match data.type", async () => {
+    const response = await server.inject({
+      method: "POST",
+      url: "/copilot/chat/stream",
+      headers: { "x-user-id": "user-1" },
+      payload: { message: "Show my experience library" },
+    });
+
+    expect(response.statusCode).toBe(200);
+    const events = parseSse(response.payload);
+    for (const entry of events) {
+      if (!entry.event) continue;
+      const data = entry.data as Record<string, unknown> | undefined;
+      if (data && typeof data.type === "string") {
+        expect(entry.event).toBe(data.type);
+      }
+    }
+  });
+
+  it("GET /copilot/sessions/:id returns session detail", async () => {
+    const session = await kernel.copilotServices.sessionService.getOrCreateSession("user-1", {
+      targetRole: "Test Role",
+    });
+
+    const response = await server.inject({
+      method: "GET",
+      url: `/copilot/sessions/${session.id}`,
+      headers: { "x-user-id": "user-1" },
+    });
+
+    expect(response.statusCode).toBe(200);
+    const body = response.json() as ApiSuccess<Record<string, unknown>>;
+    const data = body.data;
+    expect(data.session).toBeDefined();
+    expect((data.session as Record<string, unknown>).id).toBe(session.id);
+    expect(Array.isArray(data.messages)).toBe(true);
+    expect(data.turns).toBeDefined();
+    expect(Array.isArray(data.turns)).toBe(true);
+  });
+
+  it("GET /copilot/sessions/:id returns 404 for missing session", async () => {
+    const response = await server.inject({
+      method: "GET",
+      url: "/copilot/sessions/nonexistent",
+      headers: { "x-user-id": "user-1" },
+    });
+
+    expect(response.statusCode).toBe(404);
+  });
+
+  it("GET /copilot/sessions/:id returns 200 with detailWarnings when messages fail", async () => {
+    const session = await kernel.copilotServices.sessionService.getOrCreateSession("user-1", {});
+
+    const original = kernel.copilotServices.sessionService.listMessages.bind(kernel.copilotServices.sessionService);
+    kernel.copilotServices.sessionService.listMessages = async () => {
+      throw new Error("messages load failed");
+    };
+
+    try {
+      const response = await server.inject({
+        method: "GET",
+        url: `/copilot/sessions/${session.id}`,
+        headers: { "x-user-id": "user-1" },
+      });
+
+      expect(response.statusCode).toBe(200);
+      const body = response.json() as ApiSuccess<Record<string, unknown>>;
+      expect(Array.isArray(body.data.messages)).toBe(true);
+      expect((body.data.messages as unknown[]).length).toBe(0);
+      const warnings = body.data.detailWarnings as Array<{ source: string }> | undefined;
+      expect(warnings).toBeDefined();
+      expect(warnings!.some((w) => w.source === "messages")).toBe(true);
+    } finally {
+      kernel.copilotServices.sessionService.listMessages = original;
+    }
+  });
+
+  it("GET /copilot/sessions/:id returns 200 with workspace null when workspace fails", async () => {
+    const session = await kernel.copilotServices.sessionService.getOrCreateSession("user-1", {});
+
+    const original = kernel.copilotServices.workspaceService.getWorkspace.bind(kernel.copilotServices.workspaceService);
+    kernel.copilotServices.workspaceService.getWorkspace = async () => {
+      throw new Error("workspace load failed");
+    };
+
+    try {
+      const response = await server.inject({
+        method: "GET",
+        url: `/copilot/sessions/${session.id}`,
+        headers: { "x-user-id": "user-1" },
+      });
+
+      expect(response.statusCode).toBe(200);
+      const body = response.json() as ApiSuccess<Record<string, unknown>>;
+      expect(body.data.workspace).toBeNull();
+      const warnings = body.data.detailWarnings as Array<{ source: string }> | undefined;
+      expect(warnings).toBeDefined();
+      expect(warnings!.some((w) => w.source === "workspace")).toBe(true);
+    } finally {
+      kernel.copilotServices.workspaceService.getWorkspace = original;
+    }
+  });
+
+  it("GET /copilot/sessions/:id returns 200 with empty turns when turns fail", async () => {
+    const session = await kernel.copilotServices.sessionService.getOrCreateSession("user-1", {});
+
+    const original = kernel.copilotServices.sessionService.listTurns.bind(kernel.copilotServices.sessionService);
+    kernel.copilotServices.sessionService.listTurns = async () => {
+      throw new Error("turns load failed");
+    };
+
+    try {
+      const response = await server.inject({
+        method: "GET",
+        url: `/copilot/sessions/${session.id}`,
+        headers: { "x-user-id": "user-1" },
+      });
+
+      expect(response.statusCode).toBe(200);
+      const body = response.json() as ApiSuccess<Record<string, unknown>>;
+      expect(Array.isArray(body.data.turns)).toBe(true);
+      expect((body.data.turns as unknown[]).length).toBe(0);
+      const warnings = body.data.detailWarnings as Array<{ source: string }> | undefined;
+      expect(warnings).toBeDefined();
+      expect(warnings!.some((w) => w.source === "turns")).toBe(true);
+    } finally {
+      kernel.copilotServices.sessionService.listTurns = original;
+    }
+  });
 });
 
 function parseSse(payload: string): Array<{ event: string; data: unknown }> {

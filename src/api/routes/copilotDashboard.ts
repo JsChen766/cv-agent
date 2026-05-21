@@ -6,6 +6,12 @@ import { withIdempotency } from "../idempotency.js";
 import { applyRateLimit } from "../rateLimit.js";
 import { success } from "../response.js";
 import type { ApiKernel } from "../types.js";
+import type { CopilotMessage, CopilotTurn, CopilotWorkspace } from "../../copilot/types.js";
+import {
+  normalizeCopilotMessage,
+  normalizeCopilotTurn,
+  normalizeCopilotWorkspace,
+} from "../../copilot/normalize.js";
 
 export async function registerCopilotDashboardRoutes(
   app: FastifyInstance,
@@ -32,12 +38,60 @@ export async function registerCopilotDashboardRoutes(
     const id = param(request, "id");
     const session = await kernel.copilotServices.sessionService.getSession(ctx.user.id, id);
     if (!session) throw new ApiError("NOT_FOUND", "Session not found.", 404);
-    const [messages, workspace, turns] = await Promise.all([
-      kernel.copilotServices.sessionService.listMessages(ctx.user.id, id),
-      kernel.copilotServices.workspaceService.getWorkspace(ctx.user.id, id),
-      kernel.copilotServices.sessionService.listTurns(ctx.user.id, id),
-    ]);
-    return routeSuccess({ session, messages, workspace, turns }, kernel, ctx);
+
+    const detailWarnings: Array<{ source: string; message: string }> = [];
+
+    let messages: CopilotMessage[] = [];
+    try {
+      const raw = await kernel.copilotServices.sessionService.listMessages(ctx.user.id, id);
+      messages = raw.map(normalizeCopilotMessage);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Failed to load messages.";
+      detailWarnings.push({ source: "messages", message });
+      console.error("[copilotDashboard] messages load failed", {
+        source: "messages",
+        sessionId: id,
+        userId: ctx.user.id,
+        error: message,
+      });
+    }
+
+    let workspace: CopilotWorkspace | null = null;
+    try {
+      const raw = await kernel.copilotServices.workspaceService.getWorkspace(ctx.user.id, id);
+      workspace = normalizeCopilotWorkspace(raw);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Failed to load workspace.";
+      detailWarnings.push({ source: "workspace", message });
+      console.error("[copilotDashboard] workspace load failed", {
+        source: "workspace",
+        sessionId: id,
+        userId: ctx.user.id,
+        error: message,
+      });
+    }
+
+    let turns: CopilotTurn[] = [];
+    try {
+      const raw = await kernel.copilotServices.sessionService.listTurns(ctx.user.id, id);
+      turns = raw.map(normalizeCopilotTurn);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Failed to load turns.";
+      detailWarnings.push({ source: "turns", message });
+      console.error("[copilotDashboard] turns load failed", {
+        source: "turns",
+        sessionId: id,
+        userId: ctx.user.id,
+        error: message,
+      });
+    }
+
+    const data: Record<string, unknown> = { session, messages, workspace, turns };
+    if (detailWarnings.length > 0) {
+      data.detailWarnings = detailWarnings;
+    }
+
+    return routeSuccess(data, kernel, ctx);
   });
 
   app.patch("/copilot/sessions/:id", async (request, reply) => {

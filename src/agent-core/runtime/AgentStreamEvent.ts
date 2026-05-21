@@ -28,6 +28,7 @@ export type AgentStreamEvent = {
   agentName?: AgentName | "AgentOrchestrator" | "ToolExecutor";
   toolName?: string;
   status?: string;
+  message?: string;
   payload?: Record<string, unknown>;
   response?: unknown;
 };

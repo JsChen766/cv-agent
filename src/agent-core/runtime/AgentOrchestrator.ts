@@ -189,11 +189,13 @@ export class AgentOrchestrator {
       });
 
     } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : "Agent run failed.";
       this.emit(run, "agent.failed", "处理失败", {
         status: "failed",
-        payload: { message: error instanceof Error ? error.message : "Agent run failed." },
+        message: errorMessage,
+        payload: { message: errorMessage },
       });
-      return this.finishError(ctx.user.id, run, error);
+      return this.finishError(ctx.user.id, run, error, { skipCompletedEmit: true });
     }
   }
 
@@ -358,6 +360,7 @@ export class AgentOrchestrator {
       agentName?: AgentName | "AgentOrchestrator" | "ToolExecutor";
       toolName?: string;
       status?: string;
+      message?: string;
       payload?: Record<string, unknown>;
       response?: CopilotChatResponse;
     } = {},
@@ -807,7 +810,12 @@ export class AgentOrchestrator {
     }
   }
 
-  private async finishError(userId: string, run: RunState, error: unknown): Promise<CopilotChatResponse> {
+  private async finishError(
+    userId: string,
+    run: RunState,
+    error: unknown,
+    options?: { skipCompletedEmit?: boolean },
+  ): Promise<CopilotChatResponse> {
     const agentError = error instanceof AgentError
       ? error
       : new AgentError("TOOL_EXECUTION_FAILED", "Agent run failed.", { cause: error });
@@ -823,7 +831,7 @@ export class AgentOrchestrator {
       toolResults: [failedActionResult("agent_run", agentError.toUserMessage(), agentError.code)],
       pendingActions: [],
       workspacePatch: {},
-    });
+    }, options);
   }
 
   private async finishRun(
@@ -836,6 +844,7 @@ export class AgentOrchestrator {
       workspacePatch: Record<string, unknown>;
       criticReview?: CriticReview;
     },
+    options?: { skipCompletedEmit?: boolean },
   ): Promise<CopilotChatResponse> {
     const sanitized = sanitizeInvalidConfirmationResults(run, input.toolResults);
     if (sanitized.invalidCount > 0) {
@@ -911,12 +920,14 @@ export class AgentOrchestrator {
           .filter((item): item is CopilotActionResult => item !== undefined && typeof item.status === "string"),
       },
     };
-    this.emit(run, "agent.completed", "处理完成", {
-      agentName: "AgentOrchestrator",
-      status: "success",
-      response,
-      payload: { response },
-    });
+    if (!options?.skipCompletedEmit) {
+      this.emit(run, "agent.completed", "处理完成", {
+        agentName: "AgentOrchestrator",
+        status: "success",
+        response,
+        payload: { response },
+      });
+    }
     return response;
   }
 

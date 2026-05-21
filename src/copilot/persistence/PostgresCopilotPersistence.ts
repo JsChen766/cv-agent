@@ -1,6 +1,7 @@
 import type { PostgresDatabase } from "../../persistence/postgres/PostgresDatabase.js";
 import { jsonValue, optionalText, text, timestamp, type PgRow } from "../../persistence/postgres/rowUtils.js";
 import type { CopilotMessage, CopilotSession, CopilotTurn, CopilotWorkspace } from "../types.js";
+import { normalizeCopilotMessage, normalizeCopilotWorkspace, normalizeCopilotTurn } from "../normalize.js";
 import type {
   CopilotActivity,
   CopilotPersistence,
@@ -236,40 +237,40 @@ function toSession(row: PgRow): CopilotSession {
 }
 
 function toMessage(row: PgRow): CopilotMessage {
-  return {
+  return normalizeCopilotMessage({
     id: text(row, "id"),
     sessionId: text(row, "session_id"),
     turnId: optionalText(row, "turn_id") ?? null,
-    role: text(row, "role") as CopilotMessage["role"],
-    kind: text(row, "kind") as CopilotMessage["kind"],
+    role: text(row, "role"),
+    kind: optionalText(row, "kind") ?? "plain_text",
     content: text(row, "content"),
     metadata: jsonValue<Record<string, unknown> | undefined>(row, "metadata_json", undefined),
     createdAt: timestamp(row, "created_at"),
-  };
+  });
 }
 
 function toTurn(row: PgRow): CopilotTurn {
-  return {
+  return normalizeCopilotTurn({
     id: text(row, "id"),
     sessionId: text(row, "session_id"),
     userMessageId: text(row, "user_message_id"),
     assistantMessageId: optionalText(row, "assistant_message_id") ?? null,
     intent: optionalText(row, "intent") ?? null,
-    status: text(row, "status") as CopilotTurn["status"],
+    status: optionalText(row, "status") ?? "completed",
     error: optionalText(row, "error") ?? null,
     createdAt: timestamp(row, "created_at"),
     completedAt: optionalText(row, "completed_at") ?? null,
-  };
+  });
 }
 
 function toWorkspace(row: PgRow): CopilotWorkspace {
-  return jsonValue<CopilotWorkspace>(row, "workspace_json", {
+  const raw = jsonValue<Record<string, unknown>>(row, "workspace_json", {});
+  return normalizeCopilotWorkspace({
     id: text(row, "id"),
     sessionId: text(row, "session_id"),
-    variants: [],
-    status: text(row, "status") as CopilotWorkspace["status"],
+    ...raw,
     updatedAt: timestamp(row, "updated_at"),
-  });
+  })!;
 }
 
 function toActivity(row: PgRow): CopilotActivity {

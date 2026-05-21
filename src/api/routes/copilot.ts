@@ -74,8 +74,9 @@ export async function registerCopilotRoutes(
     const corsOrigin = resolveDevCorsOrigin(request);
     const headers: Record<string, string> = {
       "content-type": "text/event-stream; charset=utf-8",
-      "cache-control": "no-cache",
+      "cache-control": "no-cache, no-transform",
       connection: "keep-alive",
+      "x-accel-buffering": "no",
     };
     if (corsOrigin !== null) {
       headers["access-control-allow-origin"] = corsOrigin;
@@ -84,14 +85,35 @@ export async function registerCopilotRoutes(
 
     reply.hijack();
     reply.raw.writeHead(200, headers);
+    const rawSocket = reply.raw as unknown as { flushHeaders?: () => void; flush?: () => void };
+    if (typeof rawSocket.flushHeaders === "function") {
+      rawSocket.flushHeaders();
+    }
 
     const sse = (event: string, data: unknown) => {
       reply.raw.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+      if (typeof rawSocket.flush === "function") {
+        rawSocket.flush();
+      }
     };
 
-    await orchestrator.handleStream(ctx, body, sse);
-
-    reply.raw.end();
+    try {
+      await orchestrator.handleStream(ctx, body, sse);
+    } catch (err) {
+      const errorMessage = err instanceof Error ? err.message : "Stream failed.";
+      sse("agent.failed", {
+        type: "agent.failed",
+        sessionId: body.sessionId ?? "",
+        turnId: "",
+        createdAt: new Date().toISOString(),
+        label: "处理失败",
+        status: "failed",
+        message: errorMessage,
+        payload: { message: errorMessage },
+      });
+    } finally {
+      reply.raw.end();
+    }
   });
 
   await registerPendingActionRoutes(app, kernel, authResolver, () => orchestrator);
