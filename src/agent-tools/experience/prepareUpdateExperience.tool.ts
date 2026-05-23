@@ -12,6 +12,22 @@ export function prepareUpdateExperienceTool(): ToolDefinition {
     requiresConfirmation: false,
     riskLevel: "low",
     execute: async (input, context) => {
+      const patch = (input.patch ?? {}) as Record<string, unknown>;
+      const hasContent = typeof input.content === "string" && input.content.trim().length > 0;
+      const hasPatch = Object.keys(patch).length > 0;
+      if (!hasContent && !hasPatch) {
+        return {
+          status: "needs_input",
+          message: "我还没有生成可预览的改写内容，请先生成改写版本。",
+          visibility: "error_user_visible",
+          actionResult: {
+            status: "needs_input",
+            actionType: "prepare_update_experience",
+            missingInputs: ["content"],
+            message: "我还没有生成可预览的改写内容，请先生成改写版本。",
+          },
+        };
+      }
       const id = String(input.experienceId);
       const before = await context.kernel.productServices.experienceService.getExperience(context.userId, id);
       if (!before) return { status: "failed", message: "Experience not found.", data: { id } };

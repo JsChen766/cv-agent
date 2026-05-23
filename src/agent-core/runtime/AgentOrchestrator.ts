@@ -18,7 +18,7 @@ import type {
 import { detectLocale, type CopilotLocale } from "../../copilot/locale.js";
 import { ResponseComposer } from "../../copilot/response/ResponseComposer.js";
 import { isBlockedToolLog } from "../../copilot/response/ProductReplyTemplates.js";
-import { isCanonicalExperienceId, isCanonicalJDId, isCanonicalResumeId } from "../../copilot/context/IdGuards.js";
+import { isCanonicalExperienceId, isCanonicalJDId, isCanonicalResumeId, isCanonicalVariantId } from "../../copilot/context/IdGuards.js";
 import { defaultToolResultVisibility } from "../../copilot/response/ToolResultVisibility.js";
 import { tasksFromHandoff } from "../../copilot/tasks/TaskStateReducer.js";
 import { createAgentTools } from "../../agent-tools/index.js";
@@ -772,6 +772,8 @@ export class AgentOrchestrator {
       completedAt: new Date().toISOString(),
       metadata: { argumentKeys: Object.keys(hydratedArgs) },
     });
+    const idGuardResult = guardToolIds(tool.name, hydratedArgs);
+    if (idGuardResult) return { result: idGuardResult };
     const parsed = tool.inputSchema.safeParse(hydratedArgs);
     if (!parsed.success) {
       const missingFields = parsed.error.issues
@@ -1545,6 +1547,96 @@ function confirmationSummary(toolName: string, locale: CopilotLocale): string {
   if (toolName === "export_resume") return "Please confirm creating this resume export.";
   if (toolName === "accept_generation_variant") return "Please confirm saving this variant to your resume.";
   return `Please confirm ${toolName}.`;
+}
+
+export function guardToolIds(toolName: string, args: Record<string, unknown>): ToolResult | undefined {
+  // Experience tools: args.id / args.experienceId must be canonical experience id
+  if (["get_experience", "update_experience", "prepare_update_experience", "delete_experience", "prepare_delete_experience"].includes(toolName)) {
+    const id = stringValue(args.id) ?? stringValue(args.experienceId);
+    if (id && !isCanonicalExperienceId(id)) {
+      return {
+        status: "needs_input",
+        message: "我需要先确认你指的是哪条经历，请从经历库中选择，或让我先搜索相关经历。",
+        visibility: "error_user_visible",
+        actionResult: {
+          actionType: toolName,
+          status: "needs_input",
+          missingInputs: ["experienceId"],
+          message: "我需要先确认你指的是哪条经历，请从经历库中选择，或让我先搜索相关经历。",
+        },
+      };
+    }
+  }
+
+  // JD tools: jdId must be canonical JD id
+  if (["get_jd"].includes(toolName)) {
+    const jdId = stringValue(args.jdId) ?? stringValue(args.id);
+    if (jdId && !isCanonicalJDId(jdId)) {
+      return {
+        status: "needs_input",
+        message: "我需要先确认你指的是哪份 JD，请从 JD 库中选择，或让我先搜索相关 JD。",
+        visibility: "error_user_visible",
+        actionResult: {
+          actionType: toolName,
+          status: "needs_input",
+          missingInputs: ["jdId"],
+          message: "我需要先确认你指的是哪份 JD，请从 JD 库中选择，或让我先搜索相关 JD。",
+        },
+      };
+    }
+  }
+
+  // Resume tools: resumeId must be canonical resume id
+  if (["get_resume", "export_resume"].includes(toolName)) {
+    const resumeId = stringValue(args.resumeId) ?? stringValue(args.id);
+    if (resumeId && !isCanonicalResumeId(resumeId)) {
+      return {
+        status: "needs_input",
+        message: "我需要先确认你指的是哪份简历，请从简历库中选择。",
+        visibility: "error_user_visible",
+        actionResult: {
+          actionType: toolName,
+          status: "needs_input",
+          missingInputs: ["resumeId"],
+          message: "我需要先确认你指的是哪份简历，请从简历库中选择。",
+        },
+      };
+    }
+  }
+
+  // accept_generation_variant: variantId must be canonical; resumeId (if present) must be canonical
+  if (toolName === "accept_generation_variant") {
+    const resumeId = stringValue(args.resumeId);
+    if (resumeId && !isCanonicalResumeId(resumeId)) {
+      return {
+        status: "needs_input",
+        message: "我需要先确认你指的是哪份简历，请从简历库中选择。",
+        visibility: "error_user_visible",
+        actionResult: {
+          actionType: toolName,
+          status: "needs_input",
+          missingInputs: ["resumeId"],
+          message: "我需要先确认你指的是哪份简历，请从简历库中选择。",
+        },
+      };
+    }
+    const variantId = stringValue(args.variantId);
+    if (variantId && !isCanonicalVariantId(variantId)) {
+      return {
+        status: "needs_input",
+        message: "我需要先确认你指的是哪个版本，请从版本列表中选择。",
+        visibility: "error_user_visible",
+        actionResult: {
+          actionType: toolName,
+          status: "needs_input",
+          missingInputs: ["variantId"],
+          message: "我需要先确认你指的是哪个版本，请从版本列表中选择。",
+        },
+      };
+    }
+  }
+
+  return undefined;
 }
 
 function affectedResourcesFor(toolName: string, args: Record<string, unknown>) {

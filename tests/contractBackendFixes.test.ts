@@ -303,7 +303,7 @@ describe("Contract: copilot explicit actions", () => {
 
     const result = await runtime.handleExplicitAction(ctx, {
       sessionId: session.id,
-      action: { type: "accept", variantId: "variant-1", payload: { generationId: "pgen-test" } },
+      action: { type: "accept", variantId: "pvar-00000000-0000-0000-0000-000000000001", payload: { generationId: "pgen-test" } },
     });
     // Must create a pending action for accept_generation_variant, NOT generate_resume_from_jd
     const pendingActions = result.raw.pendingActions ?? [];

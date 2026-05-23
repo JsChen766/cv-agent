@@ -4,6 +4,7 @@ import type { FrontDeskHandoff } from "../handoff/FrontDeskHandoff.js";
 import { activeExperienceText, activeJDText, activeResumeItemText } from "./ActiveAssetResolver.js";
 import { AssetMentionResolver } from "./AssetMentionResolver.js";
 import { mostRecentExperienceDraft, mostRecentJDDraft, mostRecentResumeDraft } from "./DraftContext.js";
+import { isCanonicalExperienceId, isCanonicalJDId, isCanonicalResumeId, isCanonicalVariantId } from "./IdGuards.js";
 import type { UserAssetContext } from "./UserAssetContext.js";
 
 export type ResolverRunContext = Pick<AgentContext, "clientState" | "activeAssetContext" | "productContext" | "userMessage" | "userAssetContext"> & {
@@ -25,8 +26,10 @@ export class ContextResolver {
     const handoff = currentHandoff(context);
     const draft = mostRecentJDDraft(workspace);
     const explicitText = stringValue(explicitArgs.jdText) ?? stringValue(explicitArgs.text);
-    const explicitId = stringValue(explicitArgs.jdId) ?? stringValue(explicitArgs.id);
-    const query = stringValue(explicitArgs.query);
+    const explicitRawId = stringValue(explicitArgs.jdId) ?? stringValue(explicitArgs.id);
+    const explicitId = isCanonicalJDId(explicitRawId) ? explicitRawId : undefined;
+    const queryFromExplicit = !explicitId && explicitRawId ? explicitRawId : undefined;
+    const query = stringValue(explicitArgs.query) ?? queryFromExplicit;
     const id =
       explicitId
       ?? context.clientState?.activeJDId
@@ -54,8 +57,10 @@ export class ContextResolver {
   public resolveExperience(context: ResolverRunContext, workspace: CopilotWorkspace | null, explicitArgs: Record<string, unknown> = {}): ResolvedAsset {
     const handoff = currentHandoff(context);
     const draft = mostRecentExperienceDraft(workspace);
-    const explicitId = stringValue(explicitArgs.experienceId) ?? stringValue(explicitArgs.id);
-    const query = stringValue(explicitArgs.query);
+    const explicitRawId = stringValue(explicitArgs.experienceId) ?? stringValue(explicitArgs.id);
+    const explicitId = isCanonicalExperienceId(explicitRawId) ? explicitRawId : undefined;
+    const queryFromExplicit = !explicitId && explicitRawId ? explicitRawId : undefined;
+    const query = stringValue(explicitArgs.query) ?? queryFromExplicit;
     const id =
       explicitId
       ?? context.clientState?.activeExperienceId
@@ -82,8 +87,10 @@ export class ContextResolver {
   public resolveResume(context: ResolverRunContext, workspace: CopilotWorkspace | null, explicitArgs: Record<string, unknown> = {}): ResolvedAsset {
     const handoff = currentHandoff(context);
     const draft = mostRecentResumeDraft(workspace);
-    const explicitId = stringValue(explicitArgs.resumeId) ?? stringValue(explicitArgs.id);
-    const query = stringValue(explicitArgs.query);
+    const explicitRawId = stringValue(explicitArgs.resumeId) ?? stringValue(explicitArgs.id);
+    const explicitId = isCanonicalResumeId(explicitRawId) ? explicitRawId : undefined;
+    const queryFromExplicit = !explicitId && explicitRawId ? explicitRawId : undefined;
+    const query = stringValue(explicitArgs.query) ?? queryFromExplicit;
     const id =
       explicitId
       ?? context.clientState?.activeResumeId
@@ -119,10 +126,13 @@ export class ContextResolver {
 
   public resolveVariant(context: ResolverRunContext, workspace: CopilotWorkspace | null, explicitArgs: Record<string, unknown> = {}): ResolvedAsset {
     const handoff = currentHandoff(context);
+    const explicitRawId = stringValue(explicitArgs.variantId) ?? stringValue(explicitArgs.id);
+    const explicitId = isCanonicalVariantId(explicitRawId) ? explicitRawId : undefined;
+    const explicitEvidenceRawId = stringValue(explicitArgs.evidenceId);
+    const explicitEvidenceId = isCanonicalVariantId(explicitEvidenceRawId) ? explicitEvidenceRawId : undefined;
     const id =
-      stringValue(explicitArgs.variantId)
-      ?? stringValue(explicitArgs.id)
-      ?? stringValue(explicitArgs.evidenceId)
+      explicitId
+      ?? explicitEvidenceId
       ?? context.clientState?.activeVariantId
       ?? stringValue(context.clientState?.selectedEvidenceChainId)
       ?? workspace?.active?.variantId
@@ -130,7 +140,7 @@ export class ContextResolver {
       ?? workspace?.activeVariantId
       ?? handoff?.extracted.variantId
       ?? context.activeAssetContext?.activeVariant?.id;
-    return { id, source: sourceFor({ explicit: stringValue(explicitArgs.variantId) ?? stringValue(explicitArgs.id), client: context.clientState?.activeVariantId, workspace: workspace?.active?.variantId ?? workspace?.activeVariantId, handoff: handoff?.extracted.variantId, active: context.activeAssetContext?.activeVariant?.id }) };
+    return { id, source: sourceFor({ explicit: explicitId, client: context.clientState?.activeVariantId, workspace: workspace?.active?.variantId ?? workspace?.activeVariantId, handoff: handoff?.extracted.variantId, active: context.activeAssetContext?.activeVariant?.id }) };
   }
 
   public resolveSelectedText(context: ResolverRunContext, _workspace: CopilotWorkspace | null, explicitArgs: Record<string, unknown> = {}): ResolvedAsset {

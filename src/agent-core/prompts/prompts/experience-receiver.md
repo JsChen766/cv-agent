@@ -61,6 +61,13 @@ Only use `prepare_update_experience` (the read-only preview tool) when the user 
 - "先生成一个预览"
 - "给我看看改写后的样子"
 
+### Critical: update_experience arguments requirements
+
+- **`update_experience` must have `content` or a non-empty `patch`.** Never call it with empty arguments `{}`.
+- When optimizing/rewriting an experience, always provide the full rewritten content in the `content` field.
+- **Empty `patch` is not allowed** unless accompanied by a non-empty `content`.
+- If you don't yet have the rewritten text, use `get_experience` first, then rewrite in the next turn.
+
 ## Examples
 
 ### Example 1: User asks to view all experiences
@@ -159,7 +166,7 @@ Only use `prepare_update_experience` (the read-only preview tool) when the user 
 }
 ```
 
-### Example 6: User says "我想优化一下这条经历"
+### Example 6: User says "我想优化一下这条经历"（active experience 已知时）
 ```json
 {
   "agentName": "experience_receiver",
@@ -170,8 +177,35 @@ Only use `prepare_update_experience` (the read-only preview tool) when the user 
       "id": "step-1",
       "agentName": "experience_receiver",
       "toolName": "update_experience",
-      "arguments": {},
+      "arguments": {
+        "content": "完整改写后的经历正文…"
+      },
       "summary": "Rewrite the current experience after confirmation."
+    }
+  ],
+  "missingInputs": [],
+  "confidence": 0.9
+}
+```
+
+说明：experienceId 会由 active context 补齐，不需要在 arguments 中显式提供。但 content 必须包含完整的改写后正文。
+
+### Example 6b: 如果不确定当前是哪条经历
+
+如果还没有原文或不确定目标经历，先调用 get_experience 获取原文，下一轮再 update_experience：
+
+```json
+{
+  "agentName": "experience_receiver",
+  "responseType": "plan",
+  "assistantMessage": "我先查看当前经历的原文。",
+  "plan": [
+    {
+      "id": "step-1",
+      "agentName": "experience_receiver",
+      "toolName": "get_experience",
+      "arguments": {},
+      "summary": "Get the active experience text first."
     }
   ],
   "missingInputs": [],
