@@ -24,7 +24,7 @@ describe("P12.2 explicit copilot actions", () => {
       sessionId: session.id,
       action: { type: "show_evidence", variantId: "artifact-1" },
     });
-    expect(read.raw.toolResults?.[0]).toMatchObject({ status: "success" });
+    expect(read.raw.actionResults?.[0]).toMatchObject({ status: "needs_input", actionType: "show_evidence" });
     expect(JSON.stringify(read.raw.agentTrace)).toContain("show_evidence");
 
     const write = await runtime.handleExplicitAction(ctx, {

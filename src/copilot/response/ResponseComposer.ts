@@ -111,6 +111,11 @@ function confirmationText(input: ResponseComposerInput, result: ToolResult): str
       ? "I am ready to generate resume variants from this JD. Please confirm to start."
       : "我已准备好基于这份 JD 生成简历版本，请确认后开始。";
   }
+  if (actionType === "accept_generation_variant") {
+    return en
+      ? "I will save this variant to your resume. Please confirm."
+      : "我将把这个版本保存到你的简历中，请确认。";
+  }
   if (actionType === "save_jd_from_text") {
     return en
       ? "I prepared this JD for saving. Please confirm before it is added to your JD library."

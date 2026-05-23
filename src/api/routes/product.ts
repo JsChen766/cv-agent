@@ -83,6 +83,7 @@ export async function registerProductRoutes(
       const revision = await kernel.productServices.experienceService.createRevision(ctx.user.id, param(request, "id"), {
         content: requiredString(body.content, "content"),
         source: readRevisionSource(body.source),
+        structured: body.structured,
       });
       return productSuccess(revision, kernel, ctx);
     });

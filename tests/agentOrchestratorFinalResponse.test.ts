@@ -100,6 +100,29 @@ describe("agentOrchestratorFinalResponse", () => {
     await kernel.close();
   });
 
+  it("assistantMessage does not leak internal tool messages", async () => {
+    const kernel = await createP12Kernel();
+    const orchestrator = new AgentOrchestrator({ kernel });
+    const ctx = createTestKernelContext({
+      user: { id: "user-block" },
+      request: { requestId: "req-block", traceId: "trace-block" },
+    });
+
+    const response = await orchestrator.handleChat(ctx, { message: "Show my experience library" });
+    const content = response.assistantMessage.content;
+    expect(content).toBeTruthy();
+    // Must not contain internal tool log messages
+    expect(content).not.toContain("Your experience library has");
+    expect(content).not.toContain("No obvious unsupported claims found");
+    expect(content).not.toContain("Loaded JD");
+    expect(content).not.toContain("Loaded experience");
+    expect(content).not.toContain("Loaded resume");
+    expect(content).not.toContain("Updated resume item");
+    expect(content).not.toContain("Updated experience");
+    expect(content).not.toContain("Evidence loaded");
+    await kernel.close();
+  });
+
   it("uses clientState.locale for backend fallback prompts", async () => {
     const kernel = await createP12Kernel();
     kernel.frontDeskModelClient = new ModelClient({

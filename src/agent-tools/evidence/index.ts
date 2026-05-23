@@ -57,14 +57,14 @@ export function createEvidenceAgentTools(): ToolDefinition[] {
         }
 
         if (variantId || generationId || evidenceId || variant) {
-          const message = "当前还没有可展示的证据链。请先补充经历素材，或重新生成带证据引用的版本。";
+          const message = "当前版本还没有可展示的证据链。请先生成带证据的版本，或选择其他生成结果。";
           return {
-            status: "success",
+            status: "needs_input",
             message,
             visibility: "error_user_visible",
-            data: { variantId: variant?.id ?? variantId, generationId, evidenceId, evidence: [], empty: true, reason: "not_implemented" },
+            data: { variantId: variant?.id ?? variantId, generationId, evidenceId, evidence: [], empty: true, reason: "evidence_chain_not_available" },
             actionResult: {
-              status: "success",
+              status: "needs_input",
               actionType: "show_evidence",
               message,
               reason: "evidence_chain_not_available",

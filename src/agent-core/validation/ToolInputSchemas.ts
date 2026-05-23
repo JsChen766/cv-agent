@@ -21,10 +21,15 @@ export const GenerateResumeInputSchema = z.object({
   jdId: z.string().optional(),
   jdText: z.string().optional(),
   targetRole: z.string().optional(),
-}).passthrough().refine((value) => Boolean(value.jdId?.trim() || value.jdText?.trim() || value.variantId || value.accept || value.action), {
+}).passthrough().refine((value) => Boolean(value.jdId?.trim() || value.jdText?.trim()), {
   message: "jdId or jdText is required",
   path: ["jdText"],
 });
+export const AcceptGenerationVariantInputSchema = z.object({
+  generationId: z.string().min(1),
+  variantId: z.string().min(1),
+  resumeId: z.string().optional(),
+}).passthrough();
 export const ReviseResumeItemInputSchema = z.object({
   resumeItemId: z.string().min(1),
   instruction: z.string().min(1),

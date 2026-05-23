@@ -16,6 +16,7 @@ import type {
 } from "../../copilot/types.js";
 import { detectLocale, type CopilotLocale } from "../../copilot/locale.js";
 import { ResponseComposer } from "../../copilot/response/ResponseComposer.js";
+import { isBlockedToolLog } from "../../copilot/response/ProductReplyTemplates.js";
 import { defaultToolResultVisibility } from "../../copilot/response/ToolResultVisibility.js";
 import { tasksFromHandoff } from "../../copilot/tasks/TaskStateReducer.js";
 import { createAgentTools } from "../../agent-tools/index.js";
@@ -904,7 +905,7 @@ export class AgentOrchestrator {
     // Resolve IDs using fallback chain: payload -> action.variantId -> clientState -> activeAssetContext -> workspace
     const resolve = {
       experienceId: () =>
-        stringValue(payload.experienceId) ?? clientState.activeExperienceId ?? ctx?.activeExperience?.id,
+        stringValue(payload.experienceId) ?? clientState.activeExperienceId ?? workspace?.active?.experienceId ?? ctx?.activeExperience?.id,
       resumeItemId: () =>
         stringValue(payload.resumeItemId) ?? clientState.activeResumeItemId ?? ctx?.activeResume?.selectedItem?.id,
       resumeId: () =>
@@ -1002,26 +1003,32 @@ export class AgentOrchestrator {
           return { kind: "needs_input", missingInputs: ["variantId"], message: "请先选择一个生成版本。" };
         }
         const generationId = resolve.generationId();
+        if (!generationId) {
+          return { kind: "needs_input", missingInputs: ["generationId"], message: "请先打开一次生成结果，或重新生成简历版本。" };
+        }
         const resumeId = resolve.resumeId();
-        return { kind: "step", step: explicitStep("architect", "generate_resume_from_jd", {
-          variantId,
+        return { kind: "step", step: explicitStep("architect", "accept_generation_variant", {
           generationId,
+          variantId,
           resumeId,
-          accept: true,
         }, "Accept variant after confirmation.") };
       }
 
-      case "reject":
+      case "reject": {
+        const variantId = resolve.variantId();
+        if (!variantId) {
+          return { kind: "needs_input", missingInputs: ["variantId"], message: "请先选择一个生成版本。" };
+        }
+        // Mark variant as rejected in workspace; no real write yet
+        return { kind: "needs_input", missingInputs: [], message: "已标记该版本为不采用。如需其他版本，请选择后点击接受。" };
+      }
+
       case "prefer": {
         const variantId = resolve.variantId();
         if (!variantId) {
           return { kind: "needs_input", missingInputs: ["variantId"], message: "请先选择一个生成版本。" };
         }
-        // For reject/prefer, update workspace status only
-        return { kind: "step", step: explicitStep("architect", "generate_resume_from_jd", {
-          variantId,
-          action: request.action.type,
-        }, `${request.action.type} variant.`) };
+        return { kind: "needs_input", missingInputs: [], message: "请说明你的偏好方向（例如：更量化、更保守、更简洁），我会据此调整。" };
       }
 
       case "confirm_metric":
@@ -1450,8 +1457,11 @@ function ensureToolResultVisibility(result: ToolResult, toolName?: string): Tool
 }
 
 function assistantFromResults(results: ToolResult[], fallback: string): string {
-  const messages = results.map((result) => result.message).filter((item): item is string => Boolean(item));
-  if (messages.length > 0) return messages.join("\n");
+  const visible = results
+    .filter((result) => result.visibility === "user_summary" || result.visibility === "action_required" || result.visibility === "error_user_visible")
+    .map((result) => result.message)
+    .filter((item): item is string => typeof item === "string" && item.trim().length > 0 && !isBlockedToolLog(item));
+  if (visible.length > 0) return visible.join("\n");
   return fallback;
 }
 
@@ -1474,12 +1484,14 @@ function confirmationSummary(toolName: string, locale: CopilotLocale): string {
     if (toolName === "update_experience") return "请确认是否更新这段经历。";
     if (toolName === "delete_experience") return "请确认是否删除这段经历。";
     if (toolName === "export_resume") return "请确认是否创建这份简历导出。";
+    if (toolName === "accept_generation_variant") return "请确认是否将此版本保存到简历库。";
     return `请确认是否执行 ${toolName}。`;
   }
   if (toolName === "save_experience_from_text") return "Please confirm saving this experience to your library.";
   if (toolName === "update_experience") return "Please confirm updating this experience.";
   if (toolName === "delete_experience") return "Please confirm deleting this experience.";
   if (toolName === "export_resume") return "Please confirm creating this resume export.";
+  if (toolName === "accept_generation_variant") return "Please confirm saving this variant to your resume.";
   return `Please confirm ${toolName}.`;
 }
 

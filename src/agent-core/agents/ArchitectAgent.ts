@@ -8,6 +8,7 @@ export class ArchitectAgent extends BaseAgent {
     "get_resume",
     "list_resumes",
     "generate_resume_from_jd",
+    "accept_generation_variant",
     "revise_resume_item",
     "prepare_export_resume",
     "export_resume",

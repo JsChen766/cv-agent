@@ -278,6 +278,91 @@ describe("Contract: copilot explicit actions", () => {
     await kernel.close();
   });
 
+  it("accept with variantId but no generationId returns needs_input", async () => {
+    const kernel = await createP12Kernel();
+    const runtime = new AgentOrchestrator({ kernel });
+    const ctx = createTestKernelContext({ user: { id: "user-1" }, request: { requestId: "req-1", traceId: "trace-1" } });
+    const session = await kernel.copilotServices.sessionService.getOrCreateSession("user-1", {});
+
+    const result = await runtime.handleExplicitAction(ctx, {
+      sessionId: session.id,
+      action: { type: "accept", variantId: "variant-1" },
+    });
+    expect(result.raw.actionResults?.[0]).toMatchObject({
+      status: "needs_input",
+      missingInputs: ["generationId"],
+    });
+    await kernel.close();
+  });
+
+  it("accept with variantId and generationId maps to accept_generation_variant, not generate_resume_from_jd", async () => {
+    const kernel = await createP12Kernel();
+    const runtime = new AgentOrchestrator({ kernel });
+    const ctx = createTestKernelContext({ user: { id: "user-1" }, request: { requestId: "req-1", traceId: "trace-1" } });
+    const session = await kernel.copilotServices.sessionService.getOrCreateSession("user-1", {});
+
+    const result = await runtime.handleExplicitAction(ctx, {
+      sessionId: session.id,
+      action: { type: "accept", variantId: "variant-1", payload: { generationId: "pgen-test" } },
+    });
+    // Must create a pending action for accept_generation_variant, NOT generate_resume_from_jd
+    const pendingActions = result.raw.pendingActions ?? [];
+    expect(pendingActions.length).toBeGreaterThan(0);
+    expect(pendingActions[0]).toMatchObject({ toolName: "accept_generation_variant" });
+    // Must NOT use generate_resume_from_jd
+    expect(pendingActions.some((p: any) => p.toolName === "generate_resume_from_jd")).toBe(false);
+    await kernel.close();
+  });
+
+  it("reject with variantId returns needs_input with product message, not a fake tool call", async () => {
+    const kernel = await createP12Kernel();
+    const runtime = new AgentOrchestrator({ kernel });
+    const ctx = createTestKernelContext({ user: { id: "user-1" }, request: { requestId: "req-1", traceId: "trace-1" } });
+    const session = await kernel.copilotServices.sessionService.getOrCreateSession("user-1", {});
+
+    const result = await runtime.handleExplicitAction(ctx, {
+      sessionId: session.id,
+      action: { type: "reject", variantId: "variant-1" },
+    });
+    expect(result.raw.actionResults?.[0]?.status).toBe("needs_input");
+    // Must NOT create pending action for generate_resume_from_jd
+    expect(result.raw.pendingActions ?? []).toHaveLength(0);
+    await kernel.close();
+  });
+
+  it("prefer with variantId returns needs_input with product message", async () => {
+    const kernel = await createP12Kernel();
+    const runtime = new AgentOrchestrator({ kernel });
+    const ctx = createTestKernelContext({ user: { id: "user-1" }, request: { requestId: "req-1", traceId: "trace-1" } });
+    const session = await kernel.copilotServices.sessionService.getOrCreateSession("user-1", {});
+
+    const result = await runtime.handleExplicitAction(ctx, {
+      sessionId: session.id,
+      action: { type: "prefer", variantId: "variant-1" },
+    });
+    expect(result.raw.actionResults?.[0]?.status).toBe("needs_input");
+    // Must NOT create pending action for generate_resume_from_jd
+    expect(result.raw.pendingActions ?? []).toHaveLength(0);
+    await kernel.close();
+  });
+
+  it("show_evidence with variantId but no real evidence returns needs_input", async () => {
+    const kernel = await createP12Kernel();
+    const runtime = new AgentOrchestrator({ kernel });
+    const ctx = createTestKernelContext({ user: { id: "user-1" }, request: { requestId: "req-1", traceId: "trace-1" } });
+    const session = await kernel.copilotServices.sessionService.getOrCreateSession("user-1", {});
+
+    const result = await runtime.handleExplicitAction(ctx, {
+      sessionId: session.id,
+      action: { type: "show_evidence", variantId: "non-existent-variant" },
+    });
+    // Should return needs_input, not success
+    const actionResult = result.raw.actionResults?.[0] as Record<string, unknown>;
+    expect(actionResult?.status).toBe("needs_input");
+    expect(actionResult?.actionType).toBe("show_evidence");
+    await kernel.close();
+  });
+
   it("unsupported action type returns failed", async () => {
     const kernel = await createP12Kernel();
     const runtime = new AgentOrchestrator({ kernel });

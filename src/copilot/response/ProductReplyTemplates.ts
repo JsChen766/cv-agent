@@ -6,6 +6,7 @@ export const BLOCKED_TOOL_LOGS = [
   "Loaded experience",
   "Loaded resume",
   "Updated resume item",
+  "Updated experience",
   "Evidence loaded",
 ];
 
