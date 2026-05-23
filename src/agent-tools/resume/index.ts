@@ -100,6 +100,13 @@ export function createResumeAgentTools(): ToolDefinition[] {
           variantId: String(input.variantId),
           resumeId: typeof input.resumeId === "string" ? input.resumeId : undefined,
         });
+        // Fetch full resume detail so frontend can render the editor immediately
+        let activeResume = null;
+        try {
+          activeResume = await context.kernel.productServices.resumeService.getResume(context.userId, result.resume.id);
+        } catch {
+          // Fallback: resumeId alone is enough for the frontend to fetch detail
+        }
         return {
           status: "success",
           message: "已将选中的版本保存到简历。",
@@ -111,9 +118,11 @@ export function createResumeAgentTools(): ToolDefinition[] {
           },
           workspacePatch: {
             activePanel: "resume_editor",
-            resumeId: result.resume?.id ?? undefined,
-            active: { resumeId: result.resume?.id ?? undefined, variantId: String(input.variantId) },
+            resumeId: result.resume.id,
+            activeResume: activeResume ?? result.resume,
+            active: { resumeId: result.resume.id, variantId: String(input.variantId) },
             status: "accepted",
+            summary: "已将选中的版本保存到简历。",
           },
           actionResult: {
             status: "success",
@@ -121,7 +130,7 @@ export function createResumeAgentTools(): ToolDefinition[] {
             variantId: String(input.variantId),
             metadata: {
               generationId: String(input.generationId),
-              resumeId: result.resume?.id,
+              resumeId: result.resume.id,
             },
           },
           visibility: "user_summary",
@@ -140,39 +149,21 @@ export function createResumeAgentTools(): ToolDefinition[] {
       execute: async (input, context) => {
         const itemId = String(input.resumeItemId);
         const instruction = String(input.instruction);
-        // Fetch the current item to get the original contentSnapshot
-        const resumeService = context.kernel.productServices.resumeService;
-        // We need to find the resume that contains this item. Search through the workspace.
-        const workspace = context.workspace;
-        const activeResume = workspace?.activeResume;
-        const currentItem = activeResume?.items?.find((item) => item.id === itemId);
-        const sourceText = currentItem?.contentSnapshot ?? instruction;
-        // Construct rewrittenText as a proper preview: combine original with instruction
-        const rewrittenText = `${sourceText}\n\n[基于指令优化: ${instruction}]`;
-
-        const updated = await resumeService.updateResumeItem(context.userId, itemId, {
-          contentSnapshot: rewrittenText,
-        });
-        return updated
-          ? {
-            status: "success",
-            message: "Updated resume item.",
-            data: { item: updated },
-            workspacePatch: { activePanel: "resume_editor" },
-            visibility: "user_summary",
-            actionResult: {
-              status: "success",
-              actionType: "optimize_resume_item",
-              revisionSuggestion: {
-                kind: "resume_item" as const,
-                sourceId: itemId,
-                sourceTextPreview: sourceText.slice(0, 200),
-                rewrittenText,
-                usedModel: false,
-              },
-            },
-          }
-          : { status: "failed", message: "Resume item not found.", data: { id: itemId }, visibility: "error_user_visible" };
+        // Option B: No LLM rewrite available yet — do not write fake text.
+        // Return needs_input so the user sees an honest message, not a false success.
+        const message = "当前简历条目的智能改写还未接入模型，请先通过对话描述你希望如何修改，或稍后使用经历改写功能。";
+        return {
+          status: "needs_input",
+          message,
+          data: { resumeItemId: itemId, instruction },
+          visibility: "error_user_visible",
+          actionResult: {
+            status: "needs_input",
+            actionType: "optimize_resume_item",
+            message,
+            reason: "model_not_connected",
+          },
+        };
       },
     },
   ];

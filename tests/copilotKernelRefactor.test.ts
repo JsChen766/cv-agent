@@ -121,6 +121,31 @@ describe("ContextHydrator and ResponseComposer", () => {
     expect(hydrator.hydrate("revise_resume_item", { resumeItemId: "item-1" }, context, workspace).instruction).toBe("make it stronger");
   });
 
+  it("hydrates accept_generation_variant from workspace.productGenerationId and activeVariantId", () => {
+    const hydrator = new ContextHydrator();
+    const workspace: CopilotWorkspace = {
+      id: "ws-accept",
+      sessionId: "cs-1",
+      variants: [],
+      status: "empty",
+      updatedAt: new Date().toISOString(),
+      productGenerationId: "pgen-1",
+      activeVariantId: "variant-2",
+      active: { variantId: "variant-3" },
+    };
+    const context = {
+      clientState: {},
+      activeAssetContext: undefined,
+      productContext: {},
+      userMessage: "接受这个版本",
+    } as any;
+
+    const hydrated = hydrator.hydrate("accept_generation_variant", {}, context, workspace);
+    expect(hydrated.generationId).toBe("pgen-1");
+    // active.variantId takes precedence over activeVariantId per the fallback chain
+    expect(hydrated.variantId).toBe("variant-3");
+  });
+
   it("does not leak internal tool logs into assistant text", () => {
     const composer = new ResponseComposer();
     const output = composer.compose({

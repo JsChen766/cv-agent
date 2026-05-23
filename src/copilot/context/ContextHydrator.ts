@@ -63,6 +63,23 @@ export class ContextHydrator {
       hydrated.variantId = stringValue(hydrated.variantId) ?? variant.id;
       hydrated.generationId = stringValue(hydrated.generationId) ?? workspace?.productGenerationId ?? undefined;
     }
+    if (toolName === "accept_generation_variant") {
+      hydrated.generationId = stringValue(hydrated.generationId) ?? workspace?.productGenerationId ?? undefined;
+      hydrated.variantId =
+        stringValue(hydrated.variantId)
+        ?? stringValue(hydrated.id)
+        ?? context.clientState?.activeVariantId
+        ?? workspace?.active?.variantId
+        ?? workspace?.activeVariantId
+        ?? undefined;
+      hydrated.resumeId =
+        stringValue(hydrated.resumeId)
+        ?? context.clientState?.activeResumeId
+        ?? workspace?.active?.resumeId
+        ?? workspace?.resumeId
+        ?? context.activeAssetContext?.activeResume?.id
+        ?? undefined;
+    }
     return hydrated;
   }
 }
@@ -89,6 +106,9 @@ export function toolNeedsInputMessage(toolName: string, locale: string | undefin
   }
   if (toolName === "show_evidence") {
     return en ? "Please select a generation version or evidence item first." : "请先选择一个生成版本或证据项。";
+  }
+  if (toolName === "accept_generation_variant") {
+    return en ? "Please open a generation result first, or regenerate resume versions." : "请先打开一次生成结果，或重新生成简历版本。";
   }
   return en ? "I need one more piece of information before continuing." : "还需要补充一项信息后我才能继续。";
 }
