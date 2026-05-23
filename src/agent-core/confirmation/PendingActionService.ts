@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { AgentContext } from "../runtime/AgentContext.js";
 import { AgentError } from "../runtime/AgentError.js";
+import { guardToolIds } from "../runtime/AgentOrchestrator.js";
 import type { ToolDefinition } from "../tools/Tool.js";
 import type { ToolExecutor } from "../tools/ToolExecutor.js";
 import type { ToolRegistry } from "../tools/ToolRegistry.js";
@@ -90,6 +91,8 @@ export class PendingActionService {
     }
     const tool = input.registry.get(action.toolName);
     if (!tool) throw new AgentError("TOOL_NOT_FOUND", "Pending action tool no longer exists.", { statusCode: 404 });
+    const idGuardResult = guardToolIds(action.toolName, action.toolArguments);
+    if (idGuardResult) throw new AgentError("TOOL_VALIDATION_FAILED", "Pending action contains non-canonical IDs.", { statusCode: 400 });
     const parsed = tool.inputSchema.safeParse(action.toolArguments);
     if (!parsed.success) throw new AgentError("TOOL_VALIDATION_FAILED", "Pending action input is invalid.", { statusCode: 400 });
 

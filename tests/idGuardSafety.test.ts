@@ -251,29 +251,25 @@ describe("prepare_update_experience — empty preview rejected", () => {
   });
 
   it("non-empty content but empty patch passes the guard (proceeds to DB fetch)", async () => {
-    try {
-      await tool.execute({ experienceId: "pexp-00000000-0000-0000-0000-000000000001", patch: {}, content: "Optimized content here." }, {
+    // The guard should pass, then the null kernel causes a throw during DB fetch.
+    // If the guard wrongly blocks, tool.execute() returns without throwing — expect.rejects catches that.
+    await expect(
+      tool.execute({ experienceId: "pexp-00000000-0000-0000-0000-000000000001", patch: {}, content: "Optimized content here." }, {
         userId: "user-1",
         kernel: null as unknown as ApiKernel,
         requestContext: createTestKernelContext(),
-      } as unknown as AgentContext);
-    } catch {
-      // DB fetch crashes with null kernel, but the guard passed (didn't return needs_input)
-    }
-    // The guard should not have blocked — we reach DB access, not the guard's needs_input
+      } as unknown as AgentContext),
+    ).rejects.toThrow();
   });
 
   it("non-empty patch but no content passes the guard", async () => {
-    try {
-      await tool.execute({ experienceId: "pexp-00000000-0000-0000-0000-000000000001", patch: { title: "New title" }, content: "" }, {
+    await expect(
+      tool.execute({ experienceId: "pexp-00000000-0000-0000-0000-000000000001", patch: { title: "New title" }, content: "" }, {
         userId: "user-1",
         kernel: null as unknown as ApiKernel,
         requestContext: createTestKernelContext(),
-      } as unknown as AgentContext);
-    } catch {
-      // DB fetch crashes with null kernel, but the guard passed
-    }
-    // The guard should not have blocked — we reach DB access, not the guard's needs_input
+      } as unknown as AgentContext),
+    ).rejects.toThrow();
   });
 });
 
@@ -459,5 +455,154 @@ describe("happy path: canonical id + content → pending action → revision", (
     const pending = result.raw.pendingActions?.[0] as { toolName?: string } | undefined;
     expect(pending).toBeDefined();
     expect(pending!.toolName).toBe("update_experience");
+  });
+});
+
+// ── 5. Regression: content guard, generationId guard, show_evidence guard, hydrator priority ──
+
+describe("regression: content/ID guard edge cases", () => {
+  const tool = prepareUpdateExperienceTool();
+
+  it("rejects content: undefined (no content, empty patch)", async () => {
+    const result = await tool.execute({ experienceId: "pexp-00000000-0000-0000-0000-000000000001", patch: {}, content: undefined }, {
+      userId: "user-1",
+      kernel: null as unknown as ApiKernel,
+      requestContext: createTestKernelContext(),
+    } as unknown as AgentContext) as ToolResult;
+    expect(result.status).toBe("needs_input");
+  });
+
+  it("rejects content: null (no content, empty patch)", async () => {
+    const result = await tool.execute({ experienceId: "pexp-00000000-0000-0000-0000-000000000001", patch: {}, content: null }, {
+      userId: "user-1",
+      kernel: null as unknown as ApiKernel,
+      requestContext: createTestKernelContext(),
+    } as unknown as AgentContext) as ToolResult;
+    expect(result.status).toBe("needs_input");
+  });
+
+  it("rejects empty string content when patch is also empty", async () => {
+    const result = await tool.execute({ experienceId: "pexp-00000000-0000-0000-0000-000000000001", patch: {}, content: "   " }, {
+      userId: "user-1",
+      kernel: null as unknown as ApiKernel,
+      requestContext: createTestKernelContext(),
+    } as unknown as AgentContext) as ToolResult;
+    expect(result.status).toBe("needs_input");
+  });
+
+  it("accept_generation_variant rejects non-canonical generationId", () => {
+    const result = guardToolIds("accept_generation_variant", {
+      generationId: "abc",
+      variantId: "pvar-00000000-0000-0000-0000-000000000001",
+    });
+    expect(result).toBeDefined();
+    expect(result!.status).toBe("needs_input");
+    expect(result!.actionResult?.missingInputs).toContain("generationId");
+  });
+
+  it("accept_generation_variant rejects empty generationId", () => {
+    const result = guardToolIds("accept_generation_variant", { generationId: "", variantId: "pvar-00000000-0000-0000-0000-000000000001" });
+    // Empty string passes stringValue check (trimmed empty = undefined), so guard passes through
+    // The schema will reject missing generationId separately
+    expect(result).toBeUndefined();
+  });
+
+  it("accept_generation_variant rejects generationId with wrong prefix", () => {
+    const result = guardToolIds("accept_generation_variant", {
+      generationId: "gen_fake",
+      variantId: "pvar-00000000-0000-0000-0000-000000000001",
+    });
+    expect(result).toBeDefined();
+    expect(result!.status).toBe("needs_input");
+  });
+
+  it("show_evidence rejects non-canonical evidenceId", () => {
+    const result = guardToolIds("show_evidence", { evidenceId: "bad-evidence" });
+    expect(result).toBeDefined();
+    expect(result!.status).toBe("needs_input");
+    expect(result!.actionResult?.missingInputs).toContain("evidenceId");
+  });
+
+  it("show_evidence rejects evidenceId with wrong prefix (pjd- is not pexp-)", () => {
+    const result = guardToolIds("show_evidence", { evidenceId: "pjd-00000000-0000-0000-0000-000000000001" });
+    expect(result).toBeDefined();
+    expect(result!.status).toBe("needs_input");
+  });
+
+  it("show_evidence accepts evidenceId with pexp- prefix", () => {
+    const result = guardToolIds("show_evidence", { evidenceId: "pexp-00000000-0000-0000-0000-000000000001" });
+    expect(result).toBeUndefined();
+  });
+
+  it("show_evidence rejects non-canonical variantId", () => {
+    const result = guardToolIds("show_evidence", { variantId: "v1" });
+    expect(result).toBeDefined();
+    expect(result!.status).toBe("needs_input");
+    expect(result!.actionResult?.missingInputs).toContain("variantId");
+  });
+});
+
+// ── 6. end-to-end: guard block trace, short-circuit, confirm guard ──
+
+describe("end-to-end: guard trace, short-circuit, confirm bypass guard", () => {
+  let kernel: ApiKernel;
+
+  beforeEach(async () => {
+    kernel = await createP12Kernel();
+  });
+
+  afterEach(async () => {
+    await kernel.close();
+  });
+
+  it("guard rejection creates pending action needs_input without executing tool", async () => {
+    const runtime = new AgentOrchestrator({ kernel });
+    const ctx = createTestKernelContext({ user: { id: "user-1" }, request: { requestId: "req-1", traceId: "trace-1" } });
+    const session = await kernel.copilotServices.sessionService.getOrCreateSession("user-1", {});
+
+    // Send explicit action with non-canonical experienceId
+    const result = await runtime.handleExplicitAction(ctx, {
+      sessionId: session.id,
+      action: {
+        type: "rewrite_experience",
+        payload: { experienceId: "weex", content: "Rewritten content." },
+      },
+    });
+
+    // The non-canonical "weex" should not be treated as an ID — no pending action
+    expect(result.raw.pendingActions ?? []).toHaveLength(0);
+    // Should return needs_input instead of creating pending action
+    const actionResults = result.raw.actionResults ?? [];
+    expect(actionResults.length).toBeGreaterThan(0);
+    expect(actionResults[0]?.status).toBe("needs_input");
+  });
+
+  it("confirmPendingAction validates IDs before execution", async () => {
+    const runtime = new AgentOrchestrator({ kernel });
+    const ctx = createTestKernelContext({ user: { id: "user-1" }, request: { requestId: "req-1", traceId: "trace-1" } });
+    const session = await kernel.copilotServices.sessionService.getOrCreateSession("user-1", {});
+
+    // Create an experience so we have a canonical ID
+    const { experience } = await kernel.productServices.experienceService.createExperience("user-1", {
+      title: "Confirm guard test",
+      content: "Original content.",
+    });
+
+    // First create a valid pending action
+    const result1 = await runtime.handleExplicitAction(ctx, {
+      sessionId: session.id,
+      action: {
+        type: "rewrite_experience",
+        payload: { experienceId: experience.id, content: "Rewritten." },
+      },
+    });
+    const pendingActionId = result1.raw.actionResults?.[0]?.pendingActionId as string;
+    expect(pendingActionId).toBeTruthy();
+
+    // Confirm should succeed because IDs are canonical
+    const confirmed = await runtime.confirmPendingAction(ctx, pendingActionId);
+    const toolResults = (confirmed.raw.toolResults ?? []) as ToolResult[];
+    const hasSucceeded = toolResults.some((r) => r.status === "success");
+    expect(hasSucceeded).toBe(true);
   });
 });

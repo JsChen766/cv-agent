@@ -18,7 +18,7 @@ import type {
 import { detectLocale, type CopilotLocale } from "../../copilot/locale.js";
 import { ResponseComposer } from "../../copilot/response/ResponseComposer.js";
 import { isBlockedToolLog } from "../../copilot/response/ProductReplyTemplates.js";
-import { isCanonicalExperienceId, isCanonicalJDId, isCanonicalResumeId, isCanonicalVariantId } from "../../copilot/context/IdGuards.js";
+import { isCanonicalExperienceId, isCanonicalGenerationId, isCanonicalJDId, isCanonicalResumeId, isCanonicalVariantId } from "../../copilot/context/IdGuards.js";
 import { defaultToolResultVisibility } from "../../copilot/response/ToolResultVisibility.js";
 import { tasksFromHandoff } from "../../copilot/tasks/TaskStateReducer.js";
 import { createAgentTools } from "../../agent-tools/index.js";
@@ -734,6 +734,7 @@ export class AgentOrchestrator {
       executions.push({ step, result: result.result });
       this.addObservation(run, step, result.result);
       if (result.pendingAction) pendingActions.push(result.pendingAction);
+      if (result.result.status === "needs_input" || result.result.status === "failed") break;
     }
     return { toolResults, pendingActions, executions };
   }
@@ -756,11 +757,6 @@ export class AgentOrchestrator {
   ): Promise<{ result: ToolResult; pendingAction?: PendingAction }> {
     const tool = this.tools.get(step.toolName ?? "");
     if (!tool) throw new AgentError("TOOL_NOT_FOUND", "Planned tool is not registered.", { statusCode: 404 });
-    this.emit(run, "agent.tool.started", labelForToolStarted(tool.name), {
-      agentName: step.agentName,
-      toolName: tool.name,
-      status: "running",
-    });
 
     const hydratedArgs = this.contextHydrator.hydrate(tool.name, (step.arguments ?? {}) as Record<string, unknown>, run.context, run.workspace);
     run.trace.add({
@@ -773,7 +769,35 @@ export class AgentOrchestrator {
       metadata: { argumentKeys: Object.keys(hydratedArgs) },
     });
     const idGuardResult = guardToolIds(tool.name, hydratedArgs);
-    if (idGuardResult) return { result: idGuardResult };
+    if (idGuardResult) {
+      run.trace.add({
+        agentName: step.agentName,
+        type: "reason",
+        summary: `Guard blocked tool ${tool.name}: non-canonical ID detected.`,
+        toolName: tool.name,
+        status: "needs_input",
+        completedAt: new Date().toISOString(),
+        metadata: {
+          stepId: step.id,
+          toolName: tool.name,
+          rejectedReason: idGuardResult.actionResult?.missingInputs,
+          sessionId: run.context.sessionId,
+          turnId: run.context.turnId,
+        },
+      });
+      this.emit(run, "agent.tool.failed", `工具调用被拦截：${tool.name}`, {
+        agentName: step.agentName,
+        toolName: tool.name,
+        status: "needs_input",
+        payload: { reason: "non_canonical_id", missingInputs: idGuardResult.actionResult?.missingInputs },
+      });
+      return { result: idGuardResult };
+    }
+    this.emit(run, "agent.tool.started", labelForToolStarted(tool.name), {
+      agentName: step.agentName,
+      toolName: tool.name,
+      status: "running",
+    });
     const parsed = tool.inputSchema.safeParse(hydratedArgs);
     if (!parsed.success) {
       const missingFields = parsed.error.issues
@@ -1043,9 +1067,15 @@ export class AgentOrchestrator {
         if (!variantId) {
           return { kind: "needs_input", missingInputs: ["variantId"], message: "请先选择一个生成版本。" };
         }
+        if (!isCanonicalVariantId(variantId)) {
+          return { kind: "needs_input", missingInputs: ["variantId"], message: "我需要先确认你指的是哪个版本，请从版本列表中选择。" };
+        }
         const generationId = resolve.generationId();
         if (!generationId) {
           return { kind: "needs_input", missingInputs: ["generationId"], message: "请先打开一次生成结果，或重新生成简历版本。" };
+        }
+        if (!isCanonicalGenerationId(generationId)) {
+          return { kind: "needs_input", missingInputs: ["generationId"], message: "我需要先确认你指的是哪次生成结果，请从生成历史中选择。" };
         }
         const resumeId = resolve.resumeId();
         return { kind: "step", step: explicitStep("architect", "accept_generation_variant", {
@@ -1060,7 +1090,9 @@ export class AgentOrchestrator {
         if (!variantId) {
           return { kind: "needs_input", missingInputs: ["variantId"], message: "请先选择一个生成版本。" };
         }
-        // Mark variant as rejected in workspace; no real write yet
+        if (!isCanonicalVariantId(variantId)) {
+          return { kind: "needs_input", missingInputs: ["variantId"], message: "我需要先确认你指的是哪个版本，请从版本列表中选择。" };
+        }
         return { kind: "needs_input", missingInputs: [], message: "已标记该版本为不采用。如需其他版本，请选择后点击接受。" };
       }
 
@@ -1068,6 +1100,9 @@ export class AgentOrchestrator {
         const variantId = resolve.variantId();
         if (!variantId) {
           return { kind: "needs_input", missingInputs: ["variantId"], message: "请先选择一个生成版本。" };
+        }
+        if (!isCanonicalVariantId(variantId)) {
+          return { kind: "needs_input", missingInputs: ["variantId"], message: "我需要先确认你指的是哪个版本，请从版本列表中选择。" };
         }
         return { kind: "needs_input", missingInputs: [], message: "请说明你的偏好方向（例如：更量化、更保守、更简洁），我会据此调整。" };
       }
@@ -1550,9 +1585,9 @@ function confirmationSummary(toolName: string, locale: CopilotLocale): string {
 }
 
 export function guardToolIds(toolName: string, args: Record<string, unknown>): ToolResult | undefined {
-  // Experience tools: args.id / args.experienceId must be canonical experience id
+  // Experience tools: args.experienceId / args.id must be canonical experience id
   if (["get_experience", "update_experience", "prepare_update_experience", "delete_experience", "prepare_delete_experience"].includes(toolName)) {
-    const id = stringValue(args.id) ?? stringValue(args.experienceId);
+    const id = stringValue(args.experienceId) ?? stringValue(args.id);
     if (id && !isCanonicalExperienceId(id)) {
       return {
         status: "needs_input",
@@ -1604,8 +1639,22 @@ export function guardToolIds(toolName: string, args: Record<string, unknown>): T
     }
   }
 
-  // accept_generation_variant: variantId must be canonical; resumeId (if present) must be canonical
+  // accept_generation_variant: generationId must be canonical; variantId must be canonical; resumeId (if present) must be canonical
   if (toolName === "accept_generation_variant") {
+    const generationId = stringValue(args.generationId);
+    if (generationId && !isCanonicalGenerationId(generationId)) {
+      return {
+        status: "needs_input",
+        message: "我需要先确认你指的是哪次生成结果，请从生成历史中选择。",
+        visibility: "error_user_visible",
+        actionResult: {
+          actionType: toolName,
+          status: "needs_input",
+          missingInputs: ["generationId"],
+          message: "我需要先确认你指的是哪次生成结果，请从生成历史中选择。",
+        },
+      };
+    }
     const resumeId = stringValue(args.resumeId);
     if (resumeId && !isCanonicalResumeId(resumeId)) {
       return {
@@ -1631,6 +1680,52 @@ export function guardToolIds(toolName: string, args: Record<string, unknown>): T
           status: "needs_input",
           missingInputs: ["variantId"],
           message: "我需要先确认你指的是哪个版本，请从版本列表中选择。",
+        },
+      };
+    }
+  }
+
+  // show_evidence: id/variantId/evidenceId must be canonical
+  if (toolName === "show_evidence") {
+    const id = stringValue(args.id);
+    if (id && !isCanonicalVariantId(id) && !isCanonicalExperienceId(id)) {
+      return {
+        status: "needs_input",
+        message: "我需要先确认你指的是哪个版本或证据项，请从版本列表中选择。",
+        visibility: "error_user_visible",
+        actionResult: {
+          actionType: toolName,
+          status: "needs_input",
+          missingInputs: ["id"],
+          message: "我需要先确认你指的是哪个版本或证据项，请从版本列表中选择。",
+        },
+      };
+    }
+    const variantId = stringValue(args.variantId);
+    if (variantId && !isCanonicalVariantId(variantId)) {
+      return {
+        status: "needs_input",
+        message: "我需要先确认你指的是哪个版本，请从版本列表中选择。",
+        visibility: "error_user_visible",
+        actionResult: {
+          actionType: toolName,
+          status: "needs_input",
+          missingInputs: ["variantId"],
+          message: "我需要先确认你指的是哪个版本，请从版本列表中选择。",
+        },
+      };
+    }
+    const evidenceId = stringValue(args.evidenceId);
+    if (evidenceId && !isCanonicalExperienceId(evidenceId)) {
+      return {
+        status: "needs_input",
+        message: "我需要先确认你指的是哪条证据，请从证据列表中选择。",
+        visibility: "error_user_visible",
+        actionResult: {
+          actionType: toolName,
+          status: "needs_input",
+          missingInputs: ["evidenceId"],
+          message: "我需要先确认你指的是哪条证据，请从证据列表中选择。",
         },
       };
     }

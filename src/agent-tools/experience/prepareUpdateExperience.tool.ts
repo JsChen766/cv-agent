@@ -12,7 +12,7 @@ export function prepareUpdateExperienceTool(): ToolDefinition {
     requiresConfirmation: false,
     riskLevel: "low",
     execute: async (input, context) => {
-      const patch = (input.patch ?? {}) as Record<string, unknown>;
+      const patch = typeof input.patch === "object" && input.patch !== null ? (input.patch as Record<string, unknown>) : {};
       const hasContent = typeof input.content === "string" && input.content.trim().length > 0;
       const hasPatch = Object.keys(patch).length > 0;
       if (!hasContent && !hasPatch) {
@@ -31,7 +31,7 @@ export function prepareUpdateExperienceTool(): ToolDefinition {
       const id = String(input.experienceId);
       const before = await context.kernel.productServices.experienceService.getExperience(context.userId, id);
       if (!before) return { status: "failed", message: "Experience not found.", data: { id } };
-      const after = { ...before, ...(input.patch as Record<string, unknown>), content: input.content };
+      const after = { ...before, ...patch, ...(hasContent ? { content: input.content as string } : {}) };
       return {
         status: "success",
         message: "已准备好经历改写预览。若要写入经历库，请继续执行 update_experience 并确认。",

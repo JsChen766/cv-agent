@@ -23,45 +23,45 @@ export class ContextHydrator {
 
     if (toolName === "get_experience") {
       const experience = this.resolver.resolveExperience(runContext, workspace, hydrated);
-      hydrated.id = stringValue(hydrated.id) ?? experience.id;
+      hydrated.id = experience.id ?? stringValue(hydrated.id);
     }
     if (toolName === "update_experience") {
       const experience = this.resolver.resolveExperience(runContext, workspace, hydrated);
-      hydrated.experienceId = stringValue(hydrated.experienceId) ?? experience.id;
-      hydrated.content = stringValue(hydrated.content) ?? stringValue(hydrated.instruction) ?? experience.text;
+      hydrated.experienceId = experience.id ?? stringValue(hydrated.experienceId);
+      hydrated.content = stringValue(hydrated.content) ?? experience.text;
     }
     if (toolName === "get_jd") {
       const jd = this.resolver.resolveJD(runContext, workspace, hydrated);
-      hydrated.id = stringValue(hydrated.id) ?? jd.id;
+      hydrated.id = jd.id ?? stringValue(hydrated.id);
     }
     if (toolName === "save_jd_from_text" || toolName === "prepare_save_jd_from_text") {
       const jd = this.resolver.resolveJD(runContext, workspace, hydrated);
-      hydrated.text = stringValue(hydrated.text) ?? jd.text;
-      hydrated.targetRole = stringValue(hydrated.targetRole) ?? jd.targetRole;
+      hydrated.text = jd.text ?? stringValue(hydrated.text);
+      hydrated.targetRole = jd.targetRole ?? stringValue(hydrated.targetRole);
     }
     if (toolName === "generate_resume_from_jd") {
       const jd = this.resolver.resolveJD(runContext, workspace, hydrated);
-      hydrated.jdId = stringValue(hydrated.jdId) ?? jd.id;
-      hydrated.jdText = stringValue(hydrated.jdText) ?? jd.text;
-      hydrated.targetRole = stringValue(hydrated.targetRole) ?? jd.targetRole;
+      hydrated.jdId = jd.id ?? stringValue(hydrated.jdId);
+      hydrated.jdText = jd.text ?? stringValue(hydrated.jdText);
+      hydrated.targetRole = jd.targetRole ?? stringValue(hydrated.targetRole);
     }
     if (toolName === "get_resume") {
       const resume = this.resolver.resolveResume(runContext, workspace, hydrated);
-      hydrated.id = stringValue(hydrated.id) ?? resume.id;
+      hydrated.id = resume.id ?? stringValue(hydrated.id);
     }
     if (toolName === "revise_resume_item") {
       const item = this.resolver.resolveResumeItem(runContext, workspace, hydrated);
-      hydrated.resumeItemId = stringValue(hydrated.resumeItemId) ?? item.id;
+      hydrated.resumeItemId = item.id ?? stringValue(hydrated.resumeItemId);
       hydrated.instruction = stringValue(hydrated.instruction) ?? item.text;
     }
     if (toolName === "export_resume" || toolName === "prepare_export_resume") {
       const resume = this.resolver.resolveResume(runContext, workspace, hydrated);
-      hydrated.resumeId = stringValue(hydrated.resumeId) ?? resume.id;
+      hydrated.resumeId = resume.id ?? stringValue(hydrated.resumeId);
     }
     if (toolName === "show_evidence") {
       const variant = this.resolver.resolveVariant(runContext, workspace, hydrated);
-      hydrated.id = stringValue(hydrated.id) ?? variant.id;
-      hydrated.variantId = stringValue(hydrated.variantId) ?? variant.id;
+      hydrated.id = variant.id ?? stringValue(hydrated.id);
+      hydrated.variantId = variant.id ?? stringValue(hydrated.variantId);
       hydrated.generationId = stringValue(hydrated.generationId) ?? workspace?.productGenerationId ?? undefined;
     }
     if (toolName === "accept_generation_variant") {

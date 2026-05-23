@@ -71,7 +71,6 @@ export class ContextResolver {
       ?? (query && context.userAssetContext ? this.mentionResolver.matchExperience(query, context.userAssetContext).match?.id : undefined);
     const text =
       stringValue(explicitArgs.content)
-      ?? stringValue(explicitArgs.instruction)
       ?? stringValue(context.clientState?.selectedText)
       ?? handoff?.extracted.experienceText
       ?? draft?.rawText
@@ -129,14 +128,18 @@ export class ContextResolver {
     const explicitRawId = stringValue(explicitArgs.variantId) ?? stringValue(explicitArgs.id);
     const explicitId = isCanonicalVariantId(explicitRawId) ? explicitRawId : undefined;
     const explicitEvidenceRawId = stringValue(explicitArgs.evidenceId);
-    const explicitEvidenceId = isCanonicalVariantId(explicitEvidenceRawId) ? explicitEvidenceRawId : undefined;
+    const explicitEvidenceId = isCanonicalExperienceId(explicitEvidenceRawId) ? explicitEvidenceRawId : undefined;
+    const selectedChainId = stringValue(context.clientState?.selectedEvidenceChainId);
+    const guardedChainId = selectedChainId && isCanonicalVariantId(selectedChainId) ? selectedChainId : undefined;
+    const workspaceChainId = workspace?.selectedEvidenceChainId;
+    const guardedWorkspaceChainId = typeof workspaceChainId === "string" && isCanonicalVariantId(workspaceChainId) ? workspaceChainId : undefined;
     const id =
       explicitId
       ?? explicitEvidenceId
       ?? context.clientState?.activeVariantId
-      ?? stringValue(context.clientState?.selectedEvidenceChainId)
+      ?? guardedChainId
       ?? workspace?.active?.variantId
-      ?? workspace?.selectedEvidenceChainId
+      ?? guardedWorkspaceChainId
       ?? workspace?.activeVariantId
       ?? handoff?.extracted.variantId
       ?? context.activeAssetContext?.activeVariant?.id;

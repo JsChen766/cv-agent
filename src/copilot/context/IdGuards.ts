@@ -34,6 +34,39 @@ export function isCanonicalGenerationId(value: unknown): value is string {
   return isCanonicalId(value, "pgen-");
 }
 
+/**
+ * Evidence IDs reference experience IDs that serve as source evidence for a variant.
+ * They use the pexp- prefix.
+ */
+export function isCanonicalEvidenceId(value: unknown): value is string {
+  return isCanonicalId(value, "pexp-");
+}
+
+/**
+ * Evidence chain IDs are selected from variant evidence summaries.
+ * They use the pvar- or pexpvar- prefix (same as variant IDs).
+ */
+export function isCanonicalEvidenceChainId(value: unknown): value is string {
+  return typeof value === "string" && (isCanonicalId(value, "pvar-") || isCanonicalId(value, "pexpvar-"));
+}
+
+/*
+ * ID taxonomy:
+ *   pexp-         experience
+ *   pjd-          JD
+ *   pres-         resume
+ *   presitem-     resume item
+ *   pvar-         variant
+ *   pexpvar-      experience variant
+ *   pgen-         generation
+ *   pexprev-      experience revision
+ *   pimp-         import
+ *   pimpcand-     import candidate
+ *
+ * Evidence items use pexp- (source experiences).
+ * Evidence chains use pvar-/pexpvar- (tied to variants).
+ */
+
 function isCanonicalId(value: unknown, prefix: string): value is string {
   return typeof value === "string" && value.startsWith(prefix) && UUID_RE.test(value.slice(prefix.length));
 }
