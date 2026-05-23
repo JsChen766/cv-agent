@@ -115,6 +115,7 @@ export function normalizeCopilotTurn(turn: unknown): CopilotTurn {
   }
   const status = turn.status;
   const validTurnStatuses = ["pending", "running", "completed", "failed"] as const;
+  const completedAt = normalizeOptionalDateString(turn.completedAt);
   return {
     id: typeof turn.id === "string" ? turn.id : "",
     sessionId: typeof turn.sessionId === "string" ? turn.sessionId : "",
@@ -131,11 +132,15 @@ export function normalizeCopilotTurn(turn: unknown): CopilotTurn {
         : "completed",
     createdAt:
       typeof turn.createdAt === "string" ? turn.createdAt : new Date().toISOString(),
-    completedAt:
-      turn.completedAt != null && typeof turn.completedAt === "string"
-        ? turn.completedAt
-        : null,
+    ...(completedAt ? { completedAt } : {}),
     error:
       turn.error != null && typeof turn.error === "string" ? turn.error : null,
   };
+}
+
+function normalizeOptionalDateString(value: unknown): string | undefined {
+  if (value === null || value === undefined) return undefined;
+  if (value instanceof Date) return value.toISOString();
+  if (typeof value === "string") return value;
+  return undefined;
 }

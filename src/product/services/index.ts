@@ -6,6 +6,7 @@ import type {
   ProductExperienceVariant,
   ProductGeneration,
   ProductGeneratedVariant,
+  ProductExperienceSummary,
   ProductImportCandidate,
   ProductImportJob,
   ProductJDRecord,
@@ -337,6 +338,7 @@ export class GenerationProductService {
     private readonly repository: ProductGenerationRepository,
     private readonly jdService: JDService,
     private readonly resumeService: ResumeService,
+    private readonly experienceService: ExperienceService,
   ) {}
 
   public async generateResumeFromJD(input: {
@@ -356,7 +358,8 @@ export class GenerationProductService {
           targetRole: input.targetRole,
         });
     if (!jd) throw new Error("JD not found.");
-    const variants = buildDraftVariants(input.userId, jd.rawText, input.targetRole ?? jd.targetRole);
+    const experiences = await this.experienceService.listExperiences(input.userId, { limit: 6, status: "active" });
+    const variants = buildDraftVariants(input.userId, jd.rawText, input.targetRole ?? jd.targetRole, experiences);
     const generation: ProductGeneration = {
       id: `pgen-${randomUUID()}`,
       userId: input.userId,
@@ -366,6 +369,7 @@ export class GenerationProductService {
       inputSnapshot: {
         jdId: jd.id,
         targetRole: input.targetRole ?? jd.targetRole,
+        sourceExperienceIds: experiences.map((item) => item.id),
       },
       outputSnapshot: {
         variants,
@@ -419,19 +423,57 @@ export class GenerationProductService {
   }
 }
 
-function buildDraftVariants(userId: string, jdText: string, targetRole?: string): ProductGeneratedVariant[] {
+function buildDraftVariants(
+  userId: string,
+  jdText: string,
+  targetRole?: string,
+  experiences: ProductExperienceSummary[] = [],
+): ProductGeneratedVariant[] {
   const now = new Date().toISOString();
-  const role = targetRole?.trim() || "Target Role";
-  const jdPreview = jdText.replace(/\s+/g, " ").trim().slice(0, 180);
+  const role = targetRole?.trim() || "目标岗位";
+  const jdPreview = jdText.replace(/\s+/g, " ").trim().slice(0, 260) || "暂未提供详细 JD。";
+  const selectedExperiences = experiences.slice(0, 4);
+  const experienceSection = selectedExperiences.length > 0
+    ? selectedExperiences
+        .map((item, index) => `${index + 1}. ${formatExperienceLine(item)}`)
+        .join("\n")
+    : "暂无经历库素材。建议先补充 2-3 段项目、工作或教育经历，后续可生成更贴合 JD 的版本。";
   return [{
     id: `pvar-${randomUUID()}`,
     userId,
-    content: `${role} resume draft based on JD: ${jdPreview}`,
-    sourceExperienceIds: [],
+    content: [
+      `目标岗位：${role}`,
+      "",
+      "匹配摘要：",
+      `这份草稿围绕 JD 中的核心要求整理，优先突出与「${role}」相关的项目成果、技术能力和业务影响。JD 摘要：${jdPreview}`,
+      "",
+      "推荐简历条目：",
+      experienceSection,
+      "",
+      "可优化方向：",
+      "- 补充可验证的业务指标，例如性能提升、交付周期、用户规模或成本节省。",
+      "- 将每段经历改写为「行动 + 方法 + 结果」结构，避免只罗列职责。",
+      "- 面试前确认所有指标和项目边界，确保表述真实可解释。",
+    ].join("\n"),
+    sourceExperienceIds: selectedExperiences.map((item) => item.id),
     sourceEvidenceIds: [],
-    scores: {},
+    scores: {
+      overall: selectedExperiences.length > 0 ? 0.72 : 0.58,
+      relevance: selectedExperiences.length > 0 ? 0.74 : 0.6,
+      evidenceStrength: selectedExperiences.length > 0 ? 0.62 : 0.35,
+    },
     createdAt: now,
   }];
+}
+
+function formatExperienceLine(item: ProductExperienceSummary): string {
+  const context = [item.role, item.organization].filter(Boolean).join(" / ");
+  const content = item.content?.replace(/\s+/g, " ").trim().slice(0, 180);
+  return [
+    item.title,
+    context ? `（${context}）` : "",
+    content ? `：${content}` : "：可作为候选素材，建议补充具体成果和指标。",
+  ].join("");
 }
 
 function optional(value: string | undefined): string | undefined {

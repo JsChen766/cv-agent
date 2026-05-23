@@ -83,6 +83,11 @@ describe("Product services", () => {
   });
 
   it("generateResumeFromJD creates a product_generation", async () => {
+    const { experience } = await kernel.productServices.experienceService.createExperience("user-1", {
+      title: "React performance",
+      category: "project",
+      content: "Reduced bundle size by 40% with React and TypeScript.",
+    });
     const result = await kernel.productServices.generationProductService.generateResumeFromJD({
       userId: "user-1",
       jdText: "React TypeScript performance optimization role.",
@@ -90,6 +95,9 @@ describe("Product services", () => {
     });
 
     expect(result.variants.length).toBeGreaterThan(0);
+    expect(result.variants[0]?.content).toContain("目标岗位：Frontend Engineer");
+    expect(result.variants[0]?.content).toContain("推荐简历条目");
+    expect(result.variants[0]?.sourceExperienceIds).toContain(experience.id);
     expect(await kernel.productServices.generationProductService.getGeneration("user-1", result.generation.id)).toMatchObject({ id: result.generation.id });
   });
 });

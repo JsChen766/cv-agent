@@ -275,6 +275,43 @@ describe("Copilot routes on agent-core runtime", () => {
     expect(Array.isArray(data.turns)).toBe(true);
   });
 
+  it("GET /copilot/sessions/:id normalizes turn Date completedAt without warnings", async () => {
+    const session = await kernel.copilotServices.sessionService.getOrCreateSession("user-1", {});
+
+    const original = kernel.copilotServices.sessionService.listTurns.bind(kernel.copilotServices.sessionService);
+    kernel.copilotServices.sessionService.listTurns = async () => [{
+      id: "ct-date",
+      sessionId: session.id,
+      userMessageId: "msg-user",
+      assistantMessageId: null,
+      status: "completed",
+      createdAt: "2024-01-01T00:00:00.000Z",
+      completedAt: new Date("2024-01-01T00:00:00.000Z"),
+      error: null,
+    } as unknown as Awaited<ReturnType<typeof original>>[number]];
+
+    try {
+      const response = await server.inject({
+        method: "GET",
+        url: `/copilot/sessions/${session.id}`,
+        headers: { "x-user-id": "user-1" },
+      });
+
+      expect(response.statusCode).toBe(200);
+      const body = response.json() as ApiSuccess<Record<string, unknown>>;
+      expect(body.data.detailWarnings).toBeUndefined();
+      expect(body.data.turns).toEqual([
+        expect.objectContaining({
+          id: "ct-date",
+          completedAt: "2024-01-01T00:00:00.000Z",
+          assistantMessageId: null,
+        }),
+      ]);
+    } finally {
+      kernel.copilotServices.sessionService.listTurns = original;
+    }
+  });
+
   it("GET /copilot/sessions/:id returns 404 for missing session", async () => {
     const response = await server.inject({
       method: "GET",
@@ -363,6 +400,56 @@ describe("Copilot routes on agent-core runtime", () => {
     } finally {
       kernel.copilotServices.sessionService.listTurns = original;
     }
+  });
+
+  it("confirming generate_resume_from_jd returns variants in workspace and raw tool results", async () => {
+    const session = await kernel.copilotServices.sessionService.getOrCreateSession("user-1", {});
+
+    const actionResponse = await server.inject({
+      method: "POST",
+      url: "/copilot/actions",
+      headers: { "x-user-id": "user-1" },
+      payload: {
+        sessionId: session.id,
+        action: { type: "generate_from_jd", payload: { jdText: "React TypeScript performance role.", targetRole: "Frontend Engineer" } },
+      },
+    });
+    expect(actionResponse.statusCode).toBe(200);
+    const actionBody = actionResponse.json() as ApiSuccess<CopilotChatResponse>;
+    const pending = actionBody.data.raw.pendingActions?.[0] as { id: string; toolName: string } | undefined;
+    expect(pending).toMatchObject({ toolName: "generate_resume_from_jd" });
+
+    const confirmed = await server.inject({
+      method: "POST",
+      url: `/copilot/pending-actions/${pending!.id}/confirm`,
+      headers: { "x-user-id": "user-1" },
+    });
+
+    expect(confirmed.statusCode).toBe(200);
+    const confirmBody = confirmed.json() as ApiSuccess<CopilotChatResponse>;
+    expect(confirmBody.data.workspace.variants.length).toBeGreaterThan(0);
+    expect(confirmBody.data.workspace.productGenerationId).toEqual(expect.any(String));
+    expect(confirmBody.data.workspace.jdId).toEqual(expect.any(String));
+    expect(confirmBody.data.assistantMessage.content).toContain("已基于 JD 生成");
+    expect(confirmBody.data.raw.toolResults?.[0]).toMatchObject({
+      status: "success",
+      data: {
+        generationId: expect.any(String),
+        variants: expect.any(Array),
+      },
+      workspacePatch: {
+        productGenerationId: expect.any(String),
+        variants: expect.any(Array),
+      },
+    });
+    expect(confirmBody.data.raw.actionResults?.[0]).toMatchObject({
+      status: "success",
+      actionType: "generate_resume_from_jd",
+      metadata: {
+        generationId: expect.any(String),
+        variantCount: expect.any(Number),
+      },
+    });
   });
 });
 

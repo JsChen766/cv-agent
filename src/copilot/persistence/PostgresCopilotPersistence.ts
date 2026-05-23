@@ -143,7 +143,20 @@ export class PostgresCopilotTurnRepository {
       "SELECT * FROM copilot_turn WHERE user_id = $1 AND session_id = $2 ORDER BY created_at ASC LIMIT $3",
       [userId, sessionId, options.limit ?? 200],
     );
-    return result.rows.map(toTurn);
+    const turns: CopilotTurn[] = [];
+    for (const row of result.rows) {
+      try {
+        turns.push(toTurn(row));
+      } catch (err) {
+        console.warn("[PostgresCopilotTurnRepository] skipped invalid turn row", {
+          sessionId,
+          userId,
+          turnId: typeof row.id === "string" ? row.id : undefined,
+          error: err instanceof Error ? err.message : "Invalid turn row.",
+        });
+      }
+    }
+    return turns;
   }
 }
 
@@ -249,7 +262,7 @@ function toMessage(row: PgRow): CopilotMessage {
   });
 }
 
-function toTurn(row: PgRow): CopilotTurn {
+export function parseCopilotTurnRow(row: PgRow): CopilotTurn {
   return normalizeCopilotTurn({
     id: text(row, "id"),
     sessionId: text(row, "session_id"),
@@ -259,8 +272,12 @@ function toTurn(row: PgRow): CopilotTurn {
     status: optionalText(row, "status") ?? "completed",
     error: optionalText(row, "error") ?? null,
     createdAt: timestamp(row, "created_at"),
-    completedAt: optionalText(row, "completed_at") ?? null,
+    completedAt: optionalTimestamp(row, "completed_at"),
   });
+}
+
+function toTurn(row: PgRow): CopilotTurn {
+  return parseCopilotTurnRow(row);
 }
 
 function toWorkspace(row: PgRow): CopilotWorkspace {
@@ -286,4 +303,29 @@ function toActivity(row: PgRow): CopilotActivity {
     metadata: jsonValue<Record<string, unknown> | undefined>(row, "metadata_json", undefined),
     createdAt: timestamp(row, "created_at"),
   };
+}
+
+function optionalTimestamp(row: PgRow, key: string): string | undefined {
+  const value = row[key];
+  if (value === null || value === undefined) {
+    return undefined;
+  }
+  if (value instanceof Date) {
+    return value.toISOString();
+  }
+  if (typeof value === "string") {
+    return value;
+  }
+  const maybeDate = value as { toISOString?: unknown };
+  if (typeof maybeDate.toISOString === "function") {
+    try {
+      return String(maybeDate.toISOString());
+    } catch {
+      return undefined;
+    }
+  }
+  console.warn(`[PostgresCopilotPersistence] Unexpected ${key} value type; treating as empty.`, {
+    type: typeof value,
+  });
+  return undefined;
 }

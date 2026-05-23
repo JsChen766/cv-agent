@@ -1,5 +1,7 @@
 import type { ToolDefinition } from "../../agent-core/tools/Tool.js";
 import { GenerateResumeInputSchema, IdInputSchema, ListInputSchema, ReviseResumeItemInputSchema, ToolResultSchema } from "../../agent-core/validation/ToolInputSchemas.js";
+import type { ProductVariant } from "../../copilot/types.js";
+import type { ProductGeneratedVariant, ProductJDRecord } from "../../product/types.js";
 
 export function createResumeAgentTools(): ToolDefinition[] {
   return [
@@ -50,11 +52,34 @@ export function createResumeAgentTools(): ToolDefinition[] {
           jdText: typeof input.jdText === "string" ? input.jdText : undefined,
           targetRole: typeof input.targetRole === "string" ? input.targetRole : undefined,
         });
+        const variants = result.variants.map((variant, index) => toWorkspaceVariant(variant, result.jd, result.generation.id, index));
         return {
           status: "success",
-          message: `Generated ${result.variants.length} resume variant(s).`,
-          data: result,
-          workspacePatch: { activePanel: "variants", productGenerationId: result.generation.id, jdId: result.jd.id },
+          message: `已基于 JD 生成 ${variants.length} 个简历版本，你可以查看并选择保存到简历库。`,
+          data: {
+            generationId: result.generation.id,
+            jd: result.jd,
+            variants,
+            generation: result.generation,
+          },
+          workspacePatch: {
+            activePanel: "variants",
+            productGenerationId: result.generation.id,
+            jdId: result.jd.id,
+            activeVariantId: variants[0]?.id ?? null,
+            variants,
+            status: "ready",
+            summary: `已生成 ${variants.length} 个 JD 简历版本。`,
+          },
+          actionResult: {
+            status: "success",
+            actionType: "generate_resume_from_jd",
+            variantId: variants[0]?.id,
+            metadata: {
+              generationId: result.generation.id,
+              variantCount: variants.length,
+            },
+          },
         };
       },
     },
@@ -77,4 +102,69 @@ export function createResumeAgentTools(): ToolDefinition[] {
       },
     },
   ];
+}
+
+function toWorkspaceVariant(
+  variant: ProductGeneratedVariant,
+  jd: ProductJDRecord,
+  generationId: string,
+  index: number,
+): ProductVariant & { scores?: Record<string, number> } {
+  const score = variant.scores ?? {};
+  const sourceExperienceIds = variant.sourceExperienceIds ?? [];
+  const sourceEvidenceIds = variant.sourceEvidenceIds ?? [];
+  return {
+    id: variant.id,
+    artifactId: null,
+    title: jd.targetRole ? `${jd.targetRole} 简历版本 ${index + 1}` : `JD 简历版本 ${index + 1}`,
+    content: variant.content,
+    role: index === 0 ? "recommended" : "alternative",
+    status: "ready",
+    score: {
+      overall: score.overall,
+      relevance: score.relevance,
+      clarity: score.clarity,
+      evidenceStrength: score.evidenceStrength,
+      quantifiedImpact: score.quantifiedImpact,
+    },
+    badges: [
+      { label: "JD 生成", tone: "positive" },
+      {
+        label: sourceExperienceIds.length > 0 ? "已引用经历" : "待补充经历",
+        tone: sourceExperienceIds.length > 0 ? "neutral" : "warning",
+      },
+    ],
+    reason: sourceExperienceIds.length > 0
+      ? "已结合 JD 与经历库素材生成，可继续核对事实和指标。"
+      : "当前主要基于 JD 生成，建议补充经历库后再做精修。",
+    evidenceSummary: {
+      coverageLabel: sourceExperienceIds.length > 0
+        ? `已引用 ${sourceExperienceIds.length} 条经历素材。`
+        : "尚未引用经历素材。",
+      items: sourceExperienceIds.map((id) => ({
+        id,
+        title: "经历素材",
+        explanation: "该经历被用于生成当前简历草稿。",
+        confidence: 0.6,
+      })),
+    },
+    riskSummary: {
+      level: sourceExperienceIds.length > 0 ? "medium" : "high",
+      unsupportedClaims: [],
+      missingEvidence: sourceExperienceIds.length > 0 ? [] : ["缺少经历库素材支撑。"],
+      warnings: ["保存前请确认草稿中的事实、指标和项目边界。"],
+    },
+    missingInfo: sourceExperienceIds.length > 0 ? ["请确认草稿中的指标是否真实可验证。"] : ["请补充工作或项目经历素材。"],
+    sourceExperienceIds,
+    sourceEvidenceIds,
+    actions: [],
+    raw: {
+      generationId,
+      jdId: jd.id,
+      scores: score,
+    },
+    createdAt: variant.createdAt,
+    after: variant.content,
+    scores: score,
+  };
 }

@@ -109,6 +109,7 @@ function buildKernel(input: BuildKernelInput): ApiKernel {
     input.productGenerationRepository,
     jdService,
     resumeService,
+    experienceService,
   );
   const productServices = {
     experienceService,
