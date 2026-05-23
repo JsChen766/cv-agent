@@ -29,7 +29,22 @@ export function updateExperienceTool(): ToolDefinition {
         message: `Updated experience "${updated.title}".`,
         data: { experience: updated, revision },
         workspacePatch: { activePanel: "experience_library", activeExperienceId: updated.id },
-        actionResult: { status: "success", actionType: "update_experience", experienceId: updated.id },
+        actionResult: {
+          status: "success",
+          actionType: "update_experience",
+          experienceId: updated.id,
+          revisionSuggestion: revision ? {
+            kind: "experience" as const,
+            sourceId: updated.id,
+            sourceTextPreview: typeof input.content === "string" ? input.content.slice(0, 200) : undefined,
+            rewrittenText: revision.content,
+            usedModel: false,
+          } : undefined,
+          metadata: {
+            experienceId: updated.id,
+            revisionId: revision?.id,
+          },
+        },
       };
     },
   };

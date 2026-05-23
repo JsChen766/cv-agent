@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { ApiKernel } from "../../api/types.js";
-import { ActiveAssetContextBuilder } from "../../copilot/ActiveAssetContextBuilder.js";
+import { ActiveAssetContextBuilder, type ActiveAssetContext } from "../../copilot/ActiveAssetContextBuilder.js";
 import type {
   CopilotActionRequest,
   CopilotActionResult,
@@ -218,8 +218,8 @@ export class AgentOrchestrator {
       productContext: { explicitAction: request.action.type },
     });
 
-    const mapped = this.mapExplicitAction(request, run.workspace);
-    if (!mapped) {
+    const mapped = this.mapExplicitAction(request, run.workspace, run.context.activeAssetContext);
+    if (mapped.kind === "unsupported") {
       const runLocale = localeFor(run);
       const result = failedActionResult(request.action.type, text(runLocale, "unsupportedAction"));
       return this.finishRun(ctx.user.id, run, {
@@ -230,8 +230,28 @@ export class AgentOrchestrator {
       });
     }
 
+    if (mapped.kind === "needs_input") {
+      const runLocale = localeFor(run);
+      const result: ToolResult = {
+        status: "needs_input",
+        message: mapped.message,
+        actionResult: {
+          actionType: request.action.type,
+          status: "needs_input",
+          missingInputs: mapped.missingInputs,
+          message: mapped.message,
+        },
+      };
+      return this.finishRun(ctx.user.id, run, {
+        assistantText: mapped.message,
+        toolResults: [result],
+        pendingActions: [],
+        workspacePatch: {},
+      });
+    }
+
     try {
-      const executed = await this.executePlan(run, [mapped]);
+      const executed = await this.executePlan(run, [mapped.step]);
       return this.finishRun(ctx.user.id, run, {
         assistantText: assistantFromResults(executed.toolResults, t(run, "done")),
         toolResults: executed.toolResults,
@@ -780,33 +800,146 @@ export class AgentOrchestrator {
     run.context.agentMessages = run.messageBus.list();
   }
 
-  private mapExplicitAction(request: CopilotActionRequest, workspace: CopilotWorkspace | null): PlanStep | undefined {
+  private mapExplicitAction(
+    request: CopilotActionRequest,
+    workspace: CopilotWorkspace | null,
+    activeAssetContext: ActiveAssetContext | undefined,
+  ): { kind: "step"; step: PlanStep } | { kind: "needs_input"; missingInputs: string[]; message: string } | { kind: "unsupported" } {
     const payload = request.action.payload ?? {};
     const clientState = request.clientState ?? {};
-    const id = request.action.variantId ?? stringValue(payload.id) ?? stringValue(payload.evidenceId) ?? clientState.activeVariantId;
+    const ctx = activeAssetContext;
+
+    // Resolve IDs using fallback chain: payload -> action.variantId -> clientState -> activeAssetContext -> workspace
+    const resolve = {
+      experienceId: () =>
+        stringValue(payload.experienceId) ?? clientState.activeExperienceId ?? ctx?.activeExperience?.id,
+      resumeItemId: () =>
+        stringValue(payload.resumeItemId) ?? clientState.activeResumeItemId ?? ctx?.activeResume?.selectedItem?.id,
+      resumeId: () =>
+        stringValue(payload.resumeId) ?? clientState.activeResumeId ?? workspace?.resumeId ?? workspace?.activeResume?.id ?? ctx?.activeResume?.id,
+      jdId: () =>
+        stringValue(payload.jdId) ?? clientState.activeJDId ?? workspace?.jdId ?? ctx?.activeJD?.id,
+      jdText: () =>
+        stringValue(payload.jdText) ?? ctx?.activeJD?.rawTextPreview ?? clientState.selectedText,
+      variantId: () =>
+        stringValue(payload.variantId) ?? request.action.variantId ?? clientState.activeVariantId ?? workspace?.activeVariantId ?? ctx?.activeVariant?.id,
+      generationId: () =>
+        stringValue(payload.generationId) ?? workspace?.productGenerationId,
+      evidenceId: () =>
+        stringValue(payload.evidenceId) ?? clientState.activeEvidenceId,
+      content: () =>
+        stringValue(payload.content) ?? stringValue(payload.instruction) ?? stringValue(payload.selectedText) ?? clientState.selectedText ?? ctx?.activeExperience?.contentPreview,
+      selectedText: () =>
+        stringValue(payload.selectedText) ?? stringValue(payload.instruction) ?? clientState.selectedText ?? ctx?.activeResume?.selectedItem?.contentPreview,
+    };
+
     switch (request.action.type) {
+      case "rewrite_experience": {
+        const experienceId = resolve.experienceId();
+        if (!experienceId) {
+          return { kind: "needs_input", missingInputs: ["experienceId"], message: "请先选择一条经历，或打开经历详情后再让我改写。" };
+        }
+        const content = resolve.content();
+        if (!content) {
+          return { kind: "needs_input", missingInputs: ["content"], message: "请说明你想如何改写这条经历，或先选中要改写的内容。" };
+        }
+        return { kind: "step", step: explicitStep("experience_receiver", "update_experience", {
+          experienceId,
+          patch: {},
+          content,
+        }, "Rewrite experience after confirmation.") };
+      }
+
+      case "optimize_resume_item": {
+        const resumeItemId = resolve.resumeItemId();
+        if (!resumeItemId) {
+          return { kind: "needs_input", missingInputs: ["resumeItemId"], message: "请先选择一条简历内容，再让我优化。" };
+        }
+        const instruction = resolve.selectedText() ?? "优化这段简历内容。";
+        return { kind: "step", step: explicitStep("architect", "revise_resume_item", {
+          resumeItemId,
+          instruction,
+        }, "Revise resume item after confirmation.") };
+      }
+
+      case "generate_from_jd": {
+        const jdId = resolve.jdId();
+        const jdText = resolve.jdText();
+        if (!jdId && !jdText) {
+          return { kind: "needs_input", missingInputs: ["jdId", "jdText"], message: "请先选择或粘贴一段 JD。" };
+        }
+        return { kind: "step", step: explicitStep("architect", "generate_resume_from_jd", {
+          jdId,
+          jdText,
+          targetRole: stringValue(payload.targetRole),
+        }, "Generate resume from JD after confirmation.") };
+      }
+
       case "show_evidence":
-      case "explain_choice":
-        return explicitStep("critic", "show_evidence", { id: id ?? "current" }, "Show evidence.");
-      case "export_resume":
-        return explicitStep("architect", "export_resume", {
-          resumeId: stringValue(payload.resumeId) ?? clientState.activeResumeId ?? workspace?.resumeId,
+      case "explain_choice": {
+        const evidenceId = resolve.evidenceId();
+        const variantId = resolve.variantId();
+        const generationId = resolve.generationId();
+        const id = evidenceId ?? variantId ?? generationId;
+        if (!id) {
+          return { kind: "needs_input", missingInputs: ["evidenceId", "variantId", "generationId"], message: "请先选择一个生成版本或证据项。" };
+        }
+        return { kind: "step", step: explicitStep("critic", "show_evidence", {
+          id,
+          variantId,
+          generationId,
+          evidenceId,
+        }, "Show evidence.") };
+      }
+
+      case "export_resume": {
+        const resumeId = resolve.resumeId();
+        if (!resumeId) {
+          return { kind: "needs_input", missingInputs: ["resumeId"], message: "请先打开一份简历，再进行导出。" };
+        }
+        return { kind: "step", step: explicitStep("architect", "export_resume", {
+          resumeId,
           format: payload.format ?? "html",
           templateId: stringValue(payload.templateId),
-        }, "Export resume after confirmation.");
-      case "generate_from_jd":
-        return explicitStep("architect", "generate_resume_from_jd", {
-          jdId: stringValue(payload.jdId) ?? clientState.activeJDId ?? workspace?.jdId,
-          jdText: stringValue(payload.jdText),
-          targetRole: stringValue(payload.targetRole),
-        }, "Generate resume from JD after confirmation.");
-      case "optimize_resume_item":
-        return explicitStep("architect", "revise_resume_item", {
-          resumeItemId: stringValue(payload.resumeItemId) ?? clientState.activeResumeItemId,
-          instruction: stringValue(payload.instruction) ?? stringValue(payload.selectedText) ?? clientState.selectedText ?? "Revise this resume item.",
-        }, "Revise resume item after confirmation.");
+        }, "Export resume after confirmation.") };
+      }
+
+      case "accept": {
+        const variantId = resolve.variantId();
+        if (!variantId) {
+          return { kind: "needs_input", missingInputs: ["variantId"], message: "请先选择一个生成版本。" };
+        }
+        const generationId = resolve.generationId();
+        const resumeId = resolve.resumeId();
+        return { kind: "step", step: explicitStep("architect", "generate_resume_from_jd", {
+          variantId,
+          generationId,
+          resumeId,
+          accept: true,
+        }, "Accept variant after confirmation.") };
+      }
+
+      case "reject":
+      case "prefer": {
+        const variantId = resolve.variantId();
+        if (!variantId) {
+          return { kind: "needs_input", missingInputs: ["variantId"], message: "请先选择一个生成版本。" };
+        }
+        // For reject/prefer, update workspace status only
+        return { kind: "step", step: explicitStep("architect", "generate_resume_from_jd", {
+          variantId,
+          action: request.action.type,
+        }, `${request.action.type} variant.`) };
+      }
+
+      case "confirm_metric":
+      case "revise_more_conservative":
+      case "revise_more_quantified":
+        // These are valid action types but not yet fully implemented. Return needs_input with a helpful message.
+        return { kind: "needs_input", missingInputs: [], message: "该操作暂未完整实现，请通过对话方式进行操作。" };
+
       default:
-        return undefined;
+        return { kind: "unsupported" };
     }
   }
 

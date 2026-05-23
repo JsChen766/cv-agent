@@ -143,6 +143,10 @@ export class ExperienceService {
   public listRevisions(userId: string, experienceId: string): Promise<ProductExperienceRevision[]> {
     return this.repository.listRevisionsByExperience(userId, experienceId);
   }
+
+  public listVariants(userId: string, experienceId: string): Promise<ProductExperienceVariant[]> {
+    return this.repository.listVariantsByExperience(userId, experienceId);
+  }
 }
 
 export class JDService {

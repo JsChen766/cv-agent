@@ -12,6 +12,7 @@ import type {
   ProductExperienceVariantType,
   ProductResumeItem,
 } from "../../product/types.js";
+import { toWorkspaceVariant } from "../../agent-tools/resume/index.js";
 
 export async function registerProductRoutes(
   app: FastifyInstance,
@@ -50,8 +51,11 @@ export async function registerProductRoutes(
     const ctx = await contextFor(request);
     const experience = await kernel.productServices.experienceService.getExperience(ctx.user.id, param(request, "id"));
     if (!experience) throw new ApiError(ErrorCodes.NOT_FOUND, "Experience not found.", 404);
-    const revisions = await kernel.productServices.experienceService.listRevisions(ctx.user.id, experience.id);
-    return productSuccess({ experience, revisions }, kernel, ctx);
+    const [revisions, variants] = await Promise.all([
+      kernel.productServices.experienceService.listRevisions(ctx.user.id, experience.id),
+      kernel.productServices.experienceService.listVariants(ctx.user.id, experience.id),
+    ]);
+    return productSuccess({ experience, revisions, variants }, kernel, ctx);
   });
 
   app.patch("/product/experiences/:id", async (request, reply) => {
@@ -188,7 +192,8 @@ export async function registerProductRoutes(
     const ctx = await contextFor(request);
     const body = requireRecord(request.body);
     return withIdempotency(request, reply, kernel, ctx.user.id, async () => {
-      const job = await kernel.productServices.importService.createTextImportJob(ctx.user.id, requiredString(body.rawText, "rawText"));
+      const rawText = body.rawText ?? body.text;
+      const job = await kernel.productServices.importService.createTextImportJob(ctx.user.id, requiredString(rawText, "rawText"));
       const candidates = await kernel.productServices.importService.createCandidatesFromText(ctx.user.id, job.id);
       return productSuccess({ job, candidates }, kernel, ctx);
     });
@@ -247,7 +252,8 @@ export async function registerProductRoutes(
     const ctx = await contextFor(request);
     const generation = await kernel.productServices.generationProductService.getGeneration(ctx.user.id, param(request, "id"));
     if (!generation) throw new ApiError(ErrorCodes.NOT_FOUND, "Generation not found.", 404);
-    return productSuccess(generation, kernel, ctx);
+    const variants = generation.outputSnapshot?.variants ?? [];
+    return productSuccess({ ...generation, variants }, kernel, ctx);
   });
 
   app.post("/product/generations/from-jd", async (request, reply) => {
@@ -266,7 +272,8 @@ export async function registerProductRoutes(
         jdText,
         targetRole: optionalString(body.targetRole),
       });
-      return productSuccess({ generationId: result.generation.id, jd: result.jd, variants: result.variants, generation: result.generation }, kernel, ctx);
+      const variants = result.variants.map((v, i) => toWorkspaceVariant(v, result.jd, result.generation.id, i));
+      return productSuccess({ generationId: result.generation.id, jd: result.jd, variants, generation: result.generation }, kernel, ctx);
     });
   });
 

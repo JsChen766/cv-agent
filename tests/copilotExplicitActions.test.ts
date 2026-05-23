@@ -42,9 +42,17 @@ describe("P12.2 explicit copilot actions", () => {
     });
     expect(exported.raw.pendingActions?.[0]).toMatchObject({ toolName: "export_resume" });
 
-    const unsupported = await runtime.handleExplicitAction(ctx, {
+    // needs_input for missing variantId on a supported action
+    const needsInput = await runtime.handleExplicitAction(ctx, {
       sessionId: session.id,
       action: { type: "accept" },
+    });
+    expect(needsInput.raw.actionResults?.[0]).toMatchObject({ status: "needs_input", missingInputs: ["variantId"] });
+
+    // truly unsupported action type
+    const unsupported = await runtime.handleExplicitAction(ctx, {
+      sessionId: session.id,
+      action: { type: "unknown_fake_action" as any },
     });
     expect(unsupported.raw.actionResults?.[0]).toMatchObject({ status: "failed", reason: "unsupported_action" });
     await kernel.close();

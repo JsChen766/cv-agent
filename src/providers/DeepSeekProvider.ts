@@ -85,7 +85,7 @@ export class DeepSeekProvider implements LLMProvider {
       ...(request.tools ? { tools: request.tools } : {}),
       ...(request.toolChoice ? { tool_choice: request.toolChoice } : {}),
       ...(request.responseFormat === "json" ? { response_format: { type: "json_object" } } : {}),
-      ...(request.thinking === undefined ? {} : { thinking: { type: request.thinking ? "enabled" : "disabled" } })
+      thinking: { type: request.thinking ? "enabled" : "disabled" }
     };
   }
 
@@ -105,9 +105,10 @@ export class DeepSeekProvider implements LLMProvider {
     const firstChoice = asRecord(choices[0]);
     const delta = asRecord(firstChoice.delta);
 
+    // Strip reasoning_content to prevent chain-of-thought leakage per contract
     return {
       contentDelta: asString(delta.content),
-      reasoningDelta: asString(delta.reasoning_content),
+      reasoningDelta: undefined,
       toolCallsDelta: delta.tool_calls,
       raw
     };

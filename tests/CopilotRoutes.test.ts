@@ -183,11 +183,22 @@ describe("Copilot routes on agent-core runtime", () => {
     expect(exportBody.data.raw.pendingActions?.[0]).toMatchObject({ toolName: "export_resume" });
     expect(JSON.stringify(exportBody.data.raw.agentTrace)).not.toContain("Classifying and routing");
 
-    const unsupported = await server.inject({
+    // needs_input for missing variantId on a supported action
+    const needsInput = await server.inject({
       method: "POST",
       url: "/copilot/actions",
       headers: { "x-user-id": "user-1" },
       payload: { sessionId: session.id, action: { type: "accept" } },
+    });
+    const needsInputBody = needsInput.json() as ApiSuccess<CopilotChatResponse>;
+    expect(needsInputBody.data.raw.actionResults?.[0]).toMatchObject({ status: "needs_input", missingInputs: ["variantId"] });
+
+    // truly unsupported action type
+    const unsupported = await server.inject({
+      method: "POST",
+      url: "/copilot/actions",
+      headers: { "x-user-id": "user-1" },
+      payload: { sessionId: session.id, action: { type: "unknown_fake_action" } as any },
     });
     const unsupportedBody = unsupported.json() as ApiSuccess<CopilotChatResponse>;
     expect(unsupportedBody.data.raw.actionResults?.[0]).toMatchObject({ status: "failed", reason: "unsupported_action" });

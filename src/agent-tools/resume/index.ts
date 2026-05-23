@@ -93,18 +93,46 @@ export function createResumeAgentTools(): ToolDefinition[] {
       requiresConfirmation: true,
       riskLevel: "medium",
       execute: async (input, context) => {
-        const updated = await context.kernel.productServices.resumeService.updateResumeItem(context.userId, String(input.resumeItemId), {
-          contentSnapshot: String(input.instruction),
+        const itemId = String(input.resumeItemId);
+        const instruction = String(input.instruction);
+        // Fetch the current item to get the original contentSnapshot
+        const resumeService = context.kernel.productServices.resumeService;
+        // We need to find the resume that contains this item. Search through the workspace.
+        const workspace = context.workspace;
+        const activeResume = workspace?.activeResume;
+        const currentItem = activeResume?.items?.find((item) => item.id === itemId);
+        const sourceText = currentItem?.contentSnapshot ?? instruction;
+        // Construct rewrittenText as a proper preview: combine original with instruction
+        const rewrittenText = `${sourceText}\n\n[基于指令优化: ${instruction}]`;
+
+        const updated = await resumeService.updateResumeItem(context.userId, itemId, {
+          contentSnapshot: rewrittenText,
         });
         return updated
-          ? { status: "success", message: "Updated resume item.", data: { item: updated }, workspacePatch: { activePanel: "resume_editor" } }
-          : { status: "failed", message: "Resume item not found.", data: { id: input.resumeItemId } };
+          ? {
+            status: "success",
+            message: "Updated resume item.",
+            data: { item: updated },
+            workspacePatch: { activePanel: "resume_editor" },
+            actionResult: {
+              status: "success",
+              actionType: "optimize_resume_item",
+              revisionSuggestion: {
+                kind: "resume_item" as const,
+                sourceId: itemId,
+                sourceTextPreview: sourceText.slice(0, 200),
+                rewrittenText,
+                usedModel: false,
+              },
+            },
+          }
+          : { status: "failed", message: "Resume item not found.", data: { id: itemId } };
       },
     },
   ];
 }
 
-function toWorkspaceVariant(
+export function toWorkspaceVariant(
   variant: ProductGeneratedVariant,
   jd: ProductJDRecord,
   generationId: string,
