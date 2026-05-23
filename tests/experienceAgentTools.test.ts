@@ -34,7 +34,32 @@ describe("P12 experience tools", () => {
 
     expect((await executor.execute("search_experiences", { query: "WEEX" }, context)).status).toBe("success");
     expect((await executor.execute("get_experience", { id: experienceId }, context)).status).toBe("success");
+
+    // prepare_update_experience is a read tool; it must NOT return needs_confirmation
+    const preparedUpdate = await executor.execute("prepare_update_experience", { experienceId, content: "Updated content" }, context);
+    expect(preparedUpdate.status).toBe("success");
+    expect(preparedUpdate.actionResult?.status).toBe("success");
+    expect(preparedUpdate.actionResult?.status).not.toBe("needs_confirmation");
+    expect(preparedUpdate.actionResult?.actionType).toBe("prepare_update_experience");
+    expect(preparedUpdate.pendingActionId).toBeUndefined();
+
     expect((await executor.execute("update_experience", { experienceId, patch: { title: "WEEX analytics" }, content: "Updated content" }, context)).status).toBe("success");
+
+    // Empty update guard: update_experience with no patch and no content returns needs_input
+    const emptyUpdate = await executor.execute("update_experience", { experienceId, patch: {} }, context);
+    expect(emptyUpdate.status).toBe("needs_input");
+    expect(emptyUpdate.actionResult?.status).toBe("needs_input");
+    expect(emptyUpdate.actionResult?.missingInputs).toContain("content");
+    // Verify no revision was created
+    const revisions = await kernel.productServices.experienceService.listRevisions("user-1", experienceId as string);
+    // Should still have the original revision created during save + update with content
+    expect(revisions.length).toBeGreaterThanOrEqual(1);
+
+    const updateWithContent = await executor.execute("update_experience", { experienceId, content: "Improved content with metrics" }, context);
+    expect(updateWithContent.status).toBe("success");
+    const metadata = (updateWithContent.actionResult as Record<string, unknown>)?.metadata as Record<string, unknown> | undefined;
+    expect(metadata?.revisionId).toBeTruthy();
+
     expect((await executor.execute("delete_experience", { experienceId }, context)).status).toBe("success");
     expect((await kernel.productServices.experienceService.listExperiences("user-1")).length).toBe(0);
     await kernel.close();

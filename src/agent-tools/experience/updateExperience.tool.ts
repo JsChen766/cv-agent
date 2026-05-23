@@ -14,13 +14,30 @@ export function updateExperienceTool(): ToolDefinition {
     riskLevel: "medium",
     execute: async (input, context) => {
       const id = String(input.experienceId);
-      const patch = input.patch as Partial<ProductExperience>;
+      const patch = (input.patch ?? {}) as Partial<ProductExperience>;
+      const content = typeof input.content === "string" ? input.content.trim() : "";
+      const hasPatch = typeof patch === "object" && patch !== null && Object.keys(patch).length > 0;
+
+      if (!hasPatch && !content) {
+        return {
+          status: "needs_input",
+          message: "我还没有生成可写入的改写内容，请先生成改写版本后再确认保存。",
+          visibility: "error_user_visible",
+          actionResult: {
+            status: "needs_input",
+            actionType: "update_experience",
+            missingInputs: ["content"],
+            message: "我还没有生成可写入的改写内容，请先生成改写版本后再确认保存。",
+          },
+        };
+      }
+
       const updated = await context.kernel.productServices.experienceService.updateExperience(context.userId, id, patch);
       if (!updated) return { status: "failed", message: "Experience not found.", data: { id }, visibility: "error_user_visible" };
       let revision;
-      if (typeof input.content === "string" && input.content.trim()) {
+      if (content) {
         revision = await context.kernel.productServices.experienceService.createRevision(context.userId, id, {
-          content: input.content,
+          content,
           source: "copilot",
         });
       }
@@ -37,7 +54,7 @@ export function updateExperienceTool(): ToolDefinition {
           revisionSuggestion: revision ? {
             kind: "experience" as const,
             sourceId: updated.id,
-            sourceTextPreview: typeof input.content === "string" ? input.content.slice(0, 200) : undefined,
+            sourceTextPreview: content ? content.slice(0, 200) : undefined,
             rewrittenText: revision.content,
             usedModel: false,
           } : undefined,

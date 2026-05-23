@@ -1,5 +1,6 @@
 import type { ApiKernel } from "../../api/types.js";
 import type { ActiveAssetContext } from "../../copilot/ActiveAssetContextBuilder.js";
+import type { UserAssetContext } from "../../copilot/context/UserAssetContext.js";
 import type { CopilotClientState, CopilotMessage, CopilotWorkspace } from "../../copilot/types.js";
 import type { KernelRequestContext } from "../../api/context.js";
 import type { ToolDefinition } from "../tools/Tool.js";
@@ -18,6 +19,7 @@ export type AgentContext = {
   workspace: CopilotWorkspace | null;
   clientState?: CopilotClientState;
   activeAssetContext?: ActiveAssetContext;
+  userAssetContext?: UserAssetContext;
   productContext: Record<string, unknown>;
   availableTools: ToolDefinition[];
   trace: AgentTrace;

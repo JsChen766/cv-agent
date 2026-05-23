@@ -2,9 +2,11 @@ import type { AgentContext } from "../../agent-core/runtime/AgentContext.js";
 import type { CopilotWorkspace } from "../types.js";
 import type { FrontDeskHandoff } from "../handoff/FrontDeskHandoff.js";
 import { activeExperienceText, activeJDText, activeResumeItemText } from "./ActiveAssetResolver.js";
+import { AssetMentionResolver } from "./AssetMentionResolver.js";
 import { mostRecentExperienceDraft, mostRecentJDDraft, mostRecentResumeDraft } from "./DraftContext.js";
+import type { UserAssetContext } from "./UserAssetContext.js";
 
-export type ResolverRunContext = Pick<AgentContext, "clientState" | "activeAssetContext" | "productContext" | "userMessage"> & {
+export type ResolverRunContext = Pick<AgentContext, "clientState" | "activeAssetContext" | "productContext" | "userMessage" | "userAssetContext"> & {
   requestJDText?: string;
 };
 
@@ -17,18 +19,23 @@ export type ResolvedAsset = {
 };
 
 export class ContextResolver {
+  private readonly mentionResolver = new AssetMentionResolver();
+
   public resolveJD(context: ResolverRunContext, workspace: CopilotWorkspace | null, explicitArgs: Record<string, unknown> = {}): ResolvedAsset {
     const handoff = currentHandoff(context);
     const draft = mostRecentJDDraft(workspace);
     const explicitText = stringValue(explicitArgs.jdText) ?? stringValue(explicitArgs.text);
+    const explicitId = stringValue(explicitArgs.jdId) ?? stringValue(explicitArgs.id);
+    const query = stringValue(explicitArgs.query);
     const id =
-      stringValue(explicitArgs.jdId)
-      ?? stringValue(explicitArgs.id)
+      explicitId
       ?? context.clientState?.activeJDId
       ?? workspace?.active?.jdId
       ?? workspace?.jdId
+      ?? context.userAssetContext?.active.jdId
       ?? handoff?.extracted.jdId
-      ?? context.activeAssetContext?.activeJD?.id;
+      ?? context.activeAssetContext?.activeJD?.id
+      ?? (query && context.userAssetContext ? this.mentionResolver.matchJD(query, context.userAssetContext).match?.id : undefined);
     const text =
       explicitText
       ?? context.requestJDText
@@ -40,20 +47,23 @@ export class ContextResolver {
       draftId: workspace?.active?.jdDraftId ?? draft?.id,
       text,
       targetRole: stringValue(explicitArgs.targetRole) ?? handoff?.extracted.targetRole ?? draft?.targetRole ?? context.activeAssetContext?.activeJD?.targetRole,
-      source: sourceFor({ explicit: stringValue(explicitArgs.jdId) ?? explicitText, client: context.clientState?.activeJDId, workspace: workspace?.active?.jdId ?? workspace?.jdId, handoff: handoff?.extracted.jdId ?? handoff?.extracted.jdText, draft: draft?.rawText, active: context.activeAssetContext?.activeJD?.id }),
+      source: sourceFor({ explicit: explicitId, client: context.clientState?.activeJDId, workspace: workspace?.active?.jdId ?? workspace?.jdId, userAsset: context.userAssetContext?.active.jdId, handoff: handoff?.extracted.jdId, manifestMatch: context.userAssetContext ? "manifest" : undefined, active: context.activeAssetContext?.activeJD?.id }),
     };
   }
 
   public resolveExperience(context: ResolverRunContext, workspace: CopilotWorkspace | null, explicitArgs: Record<string, unknown> = {}): ResolvedAsset {
     const handoff = currentHandoff(context);
     const draft = mostRecentExperienceDraft(workspace);
+    const explicitId = stringValue(explicitArgs.experienceId) ?? stringValue(explicitArgs.id);
+    const query = stringValue(explicitArgs.query);
     const id =
-      stringValue(explicitArgs.experienceId)
-      ?? stringValue(explicitArgs.id)
+      explicitId
       ?? context.clientState?.activeExperienceId
       ?? workspace?.active?.experienceId
+      ?? context.userAssetContext?.active.experienceId
       ?? handoff?.extracted.experienceId
-      ?? context.activeAssetContext?.activeExperience?.id;
+      ?? context.activeAssetContext?.activeExperience?.id
+      ?? (query && context.userAssetContext ? this.mentionResolver.matchExperience(query, context.userAssetContext).match?.id : undefined);
     const text =
       stringValue(explicitArgs.content)
       ?? stringValue(explicitArgs.instruction)
@@ -65,27 +75,30 @@ export class ContextResolver {
       id,
       draftId: workspace?.active?.experienceDraftId ?? draft?.id,
       text,
-      source: sourceFor({ explicit: stringValue(explicitArgs.experienceId) ?? stringValue(explicitArgs.id), client: context.clientState?.activeExperienceId, workspace: workspace?.active?.experienceId, handoff: handoff?.extracted.experienceId ?? handoff?.extracted.experienceText, draft: draft?.rawText, active: context.activeAssetContext?.activeExperience?.id }),
+      source: sourceFor({ explicit: explicitId, client: context.clientState?.activeExperienceId, workspace: workspace?.active?.experienceId, userAsset: context.userAssetContext?.active.experienceId, handoff: handoff?.extracted.experienceId, manifestMatch: context.userAssetContext ? "manifest" : undefined, active: context.activeAssetContext?.activeExperience?.id }),
     };
   }
 
   public resolveResume(context: ResolverRunContext, workspace: CopilotWorkspace | null, explicitArgs: Record<string, unknown> = {}): ResolvedAsset {
     const handoff = currentHandoff(context);
     const draft = mostRecentResumeDraft(workspace);
+    const explicitId = stringValue(explicitArgs.resumeId) ?? stringValue(explicitArgs.id);
+    const query = stringValue(explicitArgs.query);
     const id =
-      stringValue(explicitArgs.resumeId)
-      ?? stringValue(explicitArgs.id)
+      explicitId
       ?? context.clientState?.activeResumeId
       ?? workspace?.active?.resumeId
       ?? workspace?.resumeId
       ?? workspace?.activeResume?.id
+      ?? context.userAssetContext?.active.resumeId
       ?? handoff?.extracted.resumeId
-      ?? context.activeAssetContext?.activeResume?.id;
+      ?? context.activeAssetContext?.activeResume?.id
+      ?? (query && context.userAssetContext ? this.mentionResolver.matchResume(query, context.userAssetContext).match?.id : undefined);
     return {
       id,
       draftId: draft?.id,
       text: handoff?.extracted.resumeText ?? draft?.rawText,
-      source: sourceFor({ explicit: stringValue(explicitArgs.resumeId) ?? stringValue(explicitArgs.id), client: context.clientState?.activeResumeId, workspace: workspace?.active?.resumeId ?? workspace?.resumeId, handoff: handoff?.extracted.resumeId, draft: draft?.rawText, active: context.activeAssetContext?.activeResume?.id }),
+      source: sourceFor({ explicit: explicitId, client: context.clientState?.activeResumeId, workspace: workspace?.active?.resumeId ?? workspace?.resumeId, userAsset: context.userAssetContext?.active.resumeId, handoff: handoff?.extracted.resumeId, draft: draft?.rawText, active: context.activeAssetContext?.activeResume?.id }),
     };
   }
 

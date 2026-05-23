@@ -178,21 +178,23 @@ describe("agent runtime loop and critic gate", () => {
     await kernel.close();
   });
 
-  it("downgrades needs_confirmation action results without pendingActionId", async () => {
+  it("downgrades needs_confirmation action results without pendingActionId from read tools", async () => {
     const { kernel, orchestrator } = await setupRuntime("invalid-confirmation");
     registerInvalidConfirmationTool(orchestrator);
     const ctx = createTestKernelContext({ user: { id: "invalid-confirm-user" }, request: { requestId: "req-invalid-confirm", traceId: "trace-invalid-confirm" } });
 
     const response = await orchestrator.handleChat(ctx, { message: "resume invalid confirmation" });
 
-    expect(response.assistantMessage.content).toContain("confirmation action is missing a confirmation ID");
+    // The safety net downgrades needs_confirmation from read tools to success
+    // so the user does NOT see the invalidConfirmation error
+    expect(response.assistantMessage.content).not.toContain("confirmation action is missing a confirmation ID");
     expect(response.raw.pendingActions).toHaveLength(0);
     expect(response.raw.actionResults?.some((item) => item.status === "needs_confirmation")).not.toBe(true);
     expect(response.raw.actionResults?.[0]).toMatchObject({
-      status: "needs_input",
-      reason: "invalid_needs_confirmation_without_pending_action_id",
+      status: "success",
+      reason: "read_tool_cannot_request_confirmation",
     });
-    expect(JSON.stringify(response.raw.agentTrace)).toContain("invalid_needs_confirmation_without_pending_action_id");
+    expect(JSON.stringify(response.raw.agentTrace)).toContain("Downgraded unexpected needs_confirmation");
     await kernel.close();
   });
 });

@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { ApiKernel } from "../../api/types.js";
 import { ActiveAssetContextBuilder, type ActiveAssetContext } from "../../copilot/ActiveAssetContextBuilder.js";
+import { UserAssetContextBuilder } from "../../copilot/context/UserAssetContextBuilder.js";
 import { ContextHydrator, toolNeedsInputMessage, toolNeedsInputMessageForFields } from "../../copilot/context/ContextHydrator.js";
 import { applyHandoffToDrafts, mostRecentJDDraft } from "../../copilot/context/DraftContext.js";
 import { normalizeFrontDeskHandoff } from "../../copilot/handoff/HandoffNormalizer.js";
@@ -17,6 +18,7 @@ import type {
 import { detectLocale, type CopilotLocale } from "../../copilot/locale.js";
 import { ResponseComposer } from "../../copilot/response/ResponseComposer.js";
 import { isBlockedToolLog } from "../../copilot/response/ProductReplyTemplates.js";
+import { isCanonicalExperienceId, isCanonicalJDId, isCanonicalResumeId } from "../../copilot/context/IdGuards.js";
 import { defaultToolResultVisibility } from "../../copilot/response/ToolResultVisibility.js";
 import { tasksFromHandoff } from "../../copilot/tasks/TaskStateReducer.js";
 import { createAgentTools } from "../../agent-tools/index.js";
@@ -77,6 +79,7 @@ export class AgentOrchestrator {
   public readonly pendingActions: PendingActionService;
   public readonly tools: ToolRegistry;
   private readonly activeAssetContextBuilder: ActiveAssetContextBuilder;
+  private readonly userAssetContextBuilder: UserAssetContextBuilder;
   private readonly contextHydrator = new ContextHydrator();
   private readonly responseComposer = new ResponseComposer();
   private readonly agents: Record<AgentName, Agent>;
@@ -87,6 +90,7 @@ export class AgentOrchestrator {
     this.tools = new ToolRegistry();
     this.tools.registerMany(createAgentTools());
     this.activeAssetContextBuilder = new ActiveAssetContextBuilder(deps.kernel);
+    this.userAssetContextBuilder = new UserAssetContextBuilder(deps.kernel);
     const modelClient = deps.kernel.frontDeskModelClient;
     this.agents = {
       frontdesk: new FrontDeskAgent({ modelClient, promptRegistry }),
@@ -450,6 +454,15 @@ export class AgentOrchestrator {
     const trace = new AgentTraceRecorder();
     const messageBus = new AgentMessageBus(trace.trace.runId, input.turnId);
     const loopController = new AgentLoopController();
+    const activeAsset = await this.activeAssetContextBuilder.build({ userId: ctx.user.id, request: input.request, workspace });
+    const userAsset = await this.userAssetContextBuilder.build({
+      userId: ctx.user.id,
+      workspace,
+      clientState: input.request.clientState,
+      activeAssetContext: activeAsset,
+      productContext: input.productContext,
+      userMessage: input.userMessage,
+    });
     const context: AgentContext = {
       kernel: this.deps.kernel,
       requestContext: ctx,
@@ -460,7 +473,8 @@ export class AgentOrchestrator {
       recentMessages,
       workspace,
       clientState: input.request.clientState,
-      activeAssetContext: await this.activeAssetContextBuilder.build({ userId: ctx.user.id, request: input.request, workspace }),
+      activeAssetContext: activeAsset,
+      userAssetContext: userAsset,
       productContext: input.productContext,
       availableTools: this.tools.list(),
       trace: trace.trace,
@@ -468,6 +482,20 @@ export class AgentOrchestrator {
       agentMessages: [],
       loopState: loopController.state,
     };
+    trace.add({
+      agentName: "AgentOrchestrator",
+      type: "reason",
+      summary: "Built user asset manifest.",
+      status: "success",
+      completedAt: new Date().toISOString(),
+      metadata: {
+        counts: userAsset.counts,
+        active: userAsset.active,
+        experienceIds: userAsset.experiences.map((item) => item.id),
+        jdIds: userAsset.jds.map((item) => item.id),
+        resumeIds: userAsset.resumes.map((item) => item.id),
+      },
+    });
     return {
       context,
       trace,
@@ -774,7 +802,18 @@ export class AgentOrchestrator {
     const args = parsed.data as Record<string, unknown>;
     if (!tool.requiresConfirmation) {
       try {
-        const result = ensureToolResultVisibility(await run.executor.executeDefinition(tool, args, run.context), tool.name);
+        const rawResult = await run.executor.executeDefinition(tool, args, run.context);
+        const patched = sanitizeReadToolConfirmationResult(rawResult, tool.name);
+        if (patched !== rawResult) {
+          run.trace.add({
+            agentName: "AgentOrchestrator",
+            type: "reason",
+            summary: `Downgraded unexpected needs_confirmation from read tool ${tool.name} to success.`,
+            status: "success",
+            completedAt: new Date().toISOString(),
+          });
+        }
+        const result = ensureToolResultVisibility(patched, tool.name);
         this.emit(run, "agent.tool.completed", "工具调用完成", {
           agentName: step.agentName,
           toolName: tool.name,
@@ -1456,6 +1495,19 @@ function ensureToolResultVisibility(result: ToolResult, toolName?: string): Tool
   };
 }
 
+export function sanitizeReadToolConfirmationResult(result: ToolResult, toolName: string): ToolResult {
+  if (result.actionResult?.status !== "needs_confirmation") return result;
+  return {
+    ...result,
+    visibility: result.visibility ?? "user_summary",
+    actionResult: {
+      ...(result.actionResult as Record<string, unknown>),
+      status: "success",
+      reason: "read_tool_cannot_request_confirmation",
+    },
+  };
+}
+
 function assistantFromResults(results: ToolResult[], fallback: string): string {
   const visible = results
     .filter((result) => result.visibility === "user_summary" || result.visibility === "action_required" || result.visibility === "error_user_visible")
@@ -1496,16 +1548,28 @@ function confirmationSummary(toolName: string, locale: CopilotLocale): string {
 }
 
 function affectedResourcesFor(toolName: string, args: Record<string, unknown>) {
-  if (toolName.includes("experience")) return [{ type: "experience" as const, id: stringValue(args.experienceId) }];
-  if (toolName.includes("jd")) return [{ type: "jd" as const, id: stringValue(args.jdId) }];
-  if (toolName.includes("resume")) return [{ type: "resume" as const, id: stringValue(args.resumeId) }];
+  if (toolName.includes("experience")) {
+    const rawId = stringValue(args.experienceId) ?? stringValue(args.id);
+    const id = isCanonicalExperienceId(rawId) ? rawId : undefined;
+    return id ? [{ type: "experience" as const, id }] : [];
+  }
+  if (toolName.includes("jd")) {
+    const rawId = stringValue(args.jdId) ?? stringValue(args.id);
+    const id = isCanonicalJDId(rawId) ? rawId : undefined;
+    return id ? [{ type: "jd" as const, id }] : [];
+  }
+  if (toolName.includes("resume")) {
+    const rawId = stringValue(args.resumeId) ?? stringValue(args.id);
+    const id = isCanonicalResumeId(rawId) ? rawId : undefined;
+    return id ? [{ type: "resume" as const, id }] : [];
+  }
   if (toolName.includes("export")) return [{ type: "export" as const }];
   return [];
 }
 
 function previewFor(toolName: string, args: Record<string, unknown>) {
   if (toolName === "save_experience_from_text") return { after: { text: args.text } };
-  if (toolName === "update_experience") return { after: args };
+  if (toolName === "update_experience") return { after: { experienceId: args.experienceId, contentPreview: typeof args.content === "string" ? args.content.slice(0, 200) : undefined, patchKeys: Object.keys((args.patch as Record<string, unknown>) ?? {}).slice(0, 10) } };
   if (toolName === "delete_experience") return { before: args };
   if (toolName === "export_resume") return { after: args };
   return undefined;

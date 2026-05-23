@@ -190,6 +190,23 @@ export abstract class BaseAgent implements Agent {
       })),
       clientState: input.context.clientState ?? {},
       activeAssetContext: input.context.activeAssetContext ?? {},
+      userAssetContext: input.context.userAssetContext
+        ? {
+            experiences: input.context.userAssetContext.experiences.map(compactManifestItem),
+            jds: input.context.userAssetContext.jds.map(compactManifestItem),
+            resumes: input.context.userAssetContext.resumes.map(compactManifestItem),
+            drafts: input.context.userAssetContext.drafts.map((draft) => ({
+              id: draft.id,
+              type: draft.type,
+              title: draft.title,
+              summary: draft.summary,
+              targetRole: draft.targetRole,
+              company: draft.company,
+            })),
+            active: input.context.userAssetContext.active,
+            counts: input.context.userAssetContext.counts,
+          }
+        : {},
       productContext: input.context.productContext,
       observations: (input.context.observations ?? []).slice(-8).map((observation) => ({
         id: observation.id,
@@ -288,6 +305,21 @@ function sameJson(a: unknown, b: unknown): boolean {
   } catch {
     return false;
   }
+}
+
+function compactManifestItem(item: { id: string; title: string; organization?: string; role?: string; company?: string; targetRole?: string; tags?: string[]; summary?: string }): Record<string, unknown> {
+  return Object.fromEntries(
+    Object.entries({
+      id: item.id,
+      title: item.title,
+      organization: item.organization,
+      role: item.role,
+      company: item.company,
+      targetRole: item.targetRole,
+      tags: item.tags,
+      summary: item.summary,
+    }).filter(([, value]) => value !== undefined && value !== null),
+  );
 }
 
 function summarizeForAgent(value: unknown, maxLength: number): unknown {

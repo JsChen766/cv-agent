@@ -15,6 +15,7 @@ export class ContextHydrator {
     const runContext = {
       clientState: context.clientState,
       activeAssetContext: context.activeAssetContext,
+      userAssetContext: context.userAssetContext,
       productContext: context.productContext,
       userMessage: context.userMessage,
       requestJDText: typeof context.productContext.requestJDText === "string" ? context.productContext.requestJDText : undefined,

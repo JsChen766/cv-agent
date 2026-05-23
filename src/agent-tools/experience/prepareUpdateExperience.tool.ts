@@ -18,9 +18,18 @@ export function prepareUpdateExperienceTool(): ToolDefinition {
       const after = { ...before, ...(input.patch as Record<string, unknown>), content: input.content };
       return {
         status: "success",
-        message: "Prepared an experience update for confirmation.",
+        message: "已准备好经历改写预览。若要写入经历库，请继续执行 update_experience 并确认。",
         data: { before, after },
-        actionResult: { status: "needs_confirmation", actionType: "update_experience", preview: { before, after } },
+        visibility: "user_summary",
+        actionResult: {
+          status: "success",
+          actionType: "prepare_update_experience",
+          preview: { before, after },
+          metadata: {
+            nextAction: "update_experience",
+            requiresConfirmation: true,
+          },
+        },
       };
     },
   };
