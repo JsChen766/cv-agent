@@ -962,7 +962,7 @@ export class AgentOrchestrator {
       evidenceId: () =>
         stringValue(payload.evidenceId) ?? clientState.activeEvidenceId,
       content: () =>
-        stringValue(payload.content) ?? stringValue(payload.instruction) ?? stringValue(payload.selectedText) ?? clientState.selectedText ?? ctx?.activeExperience?.contentPreview,
+        stringValue(payload.content) ?? stringValue(payload.rewrittenText) ?? stringValue(payload.after),
       selectedText: () =>
         stringValue(payload.selectedText) ?? stringValue(payload.instruction) ?? clientState.selectedText ?? ctx?.activeResume?.selectedItem?.contentPreview,
     };
@@ -975,7 +975,7 @@ export class AgentOrchestrator {
         }
         const content = resolve.content();
         if (!content) {
-          return { kind: "needs_input", missingInputs: ["content"], message: "请说明你想如何改写这条经历，或先选中要改写的内容。" };
+          return { kind: "needs_input", missingInputs: ["content"], message: "我已找到这条经历，但还没有生成改写后的正文。请先让我生成改写版本。" };
         }
         return { kind: "step", step: explicitStep("experience_receiver", "update_experience", {
           experienceId,

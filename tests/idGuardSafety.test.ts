@@ -362,4 +362,102 @@ describe("happy path: canonical id + content → pending action → revision", (
     expect(pending).toBeDefined();
     expect(pending!.toolName).toBe("update_experience");
   });
+
+  it("rewrite_experience without rewritten content returns needs_input (no pending action)", async () => {
+    const { experience } = await kernel.productServices.experienceService.createExperience("user-1", {
+      title: "No rewrite content test",
+      content: "Original content.",
+    });
+
+    const runtime = new AgentOrchestrator({ kernel });
+    const ctx = createTestKernelContext({ user: { id: "user-1" }, request: { requestId: "req-1", traceId: "trace-1" } });
+    const session = await kernel.copilotServices.sessionService.getOrCreateSession("user-1", {});
+
+    const result = await runtime.handleExplicitAction(ctx, {
+      sessionId: session.id,
+      action: {
+        type: "rewrite_experience",
+        payload: { experienceId: experience.id },
+      },
+    });
+
+    // Should return needs_input, not create a pending action
+    expect(result.raw.pendingActions ?? []).toHaveLength(0);
+    const actionResults = result.raw.actionResults ?? [];
+    expect(actionResults.length).toBeGreaterThan(0);
+    expect(actionResults[0]?.status).toBe("needs_input");
+    expect(actionResults[0]?.message).toContain("改写");
+  });
+
+  it("rewrite_experience with only instruction (no rewritten content) returns needs_input", async () => {
+    const { experience } = await kernel.productServices.experienceService.createExperience("user-1", {
+      title: "Instruction only test",
+      content: "Original content.",
+    });
+
+    const runtime = new AgentOrchestrator({ kernel });
+    const ctx = createTestKernelContext({ user: { id: "user-1" }, request: { requestId: "req-1", traceId: "trace-1" } });
+    const session = await kernel.copilotServices.sessionService.getOrCreateSession("user-1", {});
+
+    const result = await runtime.handleExplicitAction(ctx, {
+      sessionId: session.id,
+      action: {
+        type: "rewrite_experience",
+        payload: { experienceId: experience.id, instruction: "make it more concise" },
+      },
+    });
+
+    // instruction is not rewritten content, should return needs_input
+    expect(result.raw.pendingActions ?? []).toHaveLength(0);
+    const actionResults = result.raw.actionResults ?? [];
+    expect(actionResults.length).toBeGreaterThan(0);
+    expect(actionResults[0]?.status).toBe("needs_input");
+    expect(actionResults[0]?.message).toContain("改写");
+  });
+
+  it("rewrite_experience with rewrittenText passes and creates pending action", async () => {
+    const { experience } = await kernel.productServices.experienceService.createExperience("user-1", {
+      title: "Rewritten text test",
+      content: "Original content.",
+    });
+
+    const runtime = new AgentOrchestrator({ kernel });
+    const ctx = createTestKernelContext({ user: { id: "user-1" }, request: { requestId: "req-1", traceId: "trace-1" } });
+    const session = await kernel.copilotServices.sessionService.getOrCreateSession("user-1", {});
+
+    const result = await runtime.handleExplicitAction(ctx, {
+      sessionId: session.id,
+      action: {
+        type: "rewrite_experience",
+        payload: { experienceId: experience.id, rewrittenText: "Rewritten via rewrittenText field." },
+      },
+    });
+
+    const pending = result.raw.pendingActions?.[0] as { toolName?: string } | undefined;
+    expect(pending).toBeDefined();
+    expect(pending!.toolName).toBe("update_experience");
+  });
+
+  it("rewrite_experience with after field passes and creates pending action", async () => {
+    const { experience } = await kernel.productServices.experienceService.createExperience("user-1", {
+      title: "After field test",
+      content: "Original content.",
+    });
+
+    const runtime = new AgentOrchestrator({ kernel });
+    const ctx = createTestKernelContext({ user: { id: "user-1" }, request: { requestId: "req-1", traceId: "trace-1" } });
+    const session = await kernel.copilotServices.sessionService.getOrCreateSession("user-1", {});
+
+    const result = await runtime.handleExplicitAction(ctx, {
+      sessionId: session.id,
+      action: {
+        type: "rewrite_experience",
+        payload: { experienceId: experience.id, after: "Rewritten via after field." },
+      },
+    });
+
+    const pending = result.raw.pendingActions?.[0] as { toolName?: string } | undefined;
+    expect(pending).toBeDefined();
+    expect(pending!.toolName).toBe("update_experience");
+  });
 });
