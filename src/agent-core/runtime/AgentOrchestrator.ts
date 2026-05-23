@@ -651,7 +651,9 @@ export class AgentOrchestrator {
       toolName: tool.name,
       status: "running",
     });
-    const parsed = tool.inputSchema.safeParse(step.arguments);
+
+    const hydratedArgs = this.hydrateToolArguments(tool.name, (step.arguments ?? {}) as Record<string, unknown>, run);
+    const parsed = tool.inputSchema.safeParse(hydratedArgs);
     if (!parsed.success) {
       const missingFields = parsed.error.issues
         .map((issue) => issue.path.join("."))
@@ -666,16 +668,13 @@ export class AgentOrchestrator {
       return {
         result: {
           status: "needs_input",
-          message: missingFields
-            ? formatText(localeFor(run), "missingRequiredWithFields", { fields: missingFields })
-            : t(run, "missingRequired"),
+          message: hydrateNeedsInputMessage(tool.name, localeFor(run)),
           actionResult: {
             actionType: tool.name,
             status: "needs_input",
             reason: "missing_required_input",
-            message: missingFields
-              ? formatText(localeFor(run), "missingFields", { fields: missingFields })
-              : t(run, "missingInput"),
+            missingInputs: parsed.error.issues.map((i) => i.path.join(".")).filter(Boolean),
+            message: hydrateNeedsInputMessage(tool.name, localeFor(run)),
           },
         },
       };
@@ -751,6 +750,88 @@ export class AgentOrchestrator {
         },
       },
     };
+  }
+
+  private hydrateToolArguments(
+    toolName: string,
+    args: Record<string, unknown>,
+    run: RunState,
+  ): Record<string, unknown> {
+    const clientState = run.context.clientState ?? {};
+    const ctx = run.context.activeAssetContext;
+    const ws = run.workspace;
+
+    const hydrated = { ...args };
+
+    // Fill missing IDs from context, respecting explicit arguments first
+    switch (toolName) {
+      case "get_experience": {
+        if (!isString(hydrated.id)) {
+          hydrated.id = clientState.activeExperienceId ?? ctx?.activeExperience?.id;
+        }
+        break;
+      }
+      case "update_experience": {
+        if (!isString(hydrated.experienceId)) {
+          hydrated.experienceId = clientState.activeExperienceId ?? ctx?.activeExperience?.id;
+        }
+        if (!isString(hydrated.content)) {
+          hydrated.content = clientState.selectedText ?? ctx?.activeExperience?.contentPreview;
+        }
+        break;
+      }
+      case "get_jd": {
+        if (!isString(hydrated.id)) {
+          hydrated.id = clientState.activeJDId ?? ctx?.activeJD?.id ?? ws?.jdId;
+        }
+        break;
+      }
+      case "generate_resume_from_jd": {
+        if (!isString(hydrated.jdId)) {
+          hydrated.jdId = clientState.activeJDId ?? ctx?.activeJD?.id ?? ws?.jdId;
+        }
+        if (!isString(hydrated.jdText)) {
+          hydrated.jdText = ctx?.activeJD?.rawTextPreview;
+        }
+        break;
+      }
+      case "get_resume": {
+        if (!isString(hydrated.id)) {
+          hydrated.id = clientState.activeResumeId ?? ctx?.activeResume?.id ?? ws?.resumeId;
+        }
+        break;
+      }
+      case "revise_resume_item": {
+        if (!isString(hydrated.resumeItemId)) {
+          hydrated.resumeItemId = clientState.activeResumeItemId ?? ctx?.activeResume?.selectedItem?.id;
+        }
+        if (!isString(hydrated.instruction)) {
+          hydrated.instruction = clientState.selectedText ?? ctx?.activeResume?.selectedItem?.contentPreview;
+        }
+        break;
+      }
+      case "export_resume":
+      case "prepare_export_resume": {
+        if (!isString(hydrated.resumeId)) {
+          hydrated.resumeId = clientState.activeResumeId ?? ws?.resumeId ?? ctx?.activeResume?.id;
+        }
+        break;
+      }
+      case "show_evidence": {
+        if (!isString(hydrated.id)) {
+          hydrated.id = clientState.activeEvidenceId ?? clientState.activeVariantId ?? ws?.activeVariantId ?? ctx?.activeVariant?.id;
+        }
+        if (!isString(hydrated.variantId)) {
+          hydrated.variantId = clientState.activeVariantId ?? ws?.activeVariantId ?? ctx?.activeVariant?.id;
+        }
+        if (!isString(hydrated.generationId)) {
+          hydrated.generationId = ws?.productGenerationId;
+        }
+        break;
+      }
+    }
+
+    return hydrated;
   }
 
   private validatePlan(plan: PlanStep[], agent: Agent): PlanStep[] {
@@ -1374,6 +1455,59 @@ function previewFor(toolName: string, args: Record<string, unknown>) {
   if (toolName === "delete_experience") return { before: args };
   if (toolName === "export_resume") return { after: args };
   return undefined;
+}
+
+function isString(value: unknown): value is string {
+  return typeof value === "string" && value.trim().length > 0;
+}
+
+function hydrateNeedsInputMessage(toolName: string, locale: CopilotLocale): string {
+  if (locale === "zh-CN") {
+    if (toolName === "get_experience" || toolName === "update_experience") {
+      return "请先选择一条经历，或打开经历详情后再让我优化。";
+    }
+    if (toolName === "revise_resume_item") {
+      return "请先选择一条简历内容，再让我优化。";
+    }
+    if (toolName === "generate_resume_from_jd") {
+      return "请先选择或粘贴一段 JD。";
+    }
+    if (toolName === "export_resume" || toolName === "prepare_export_resume") {
+      return "请先选择一份简历。";
+    }
+    if (toolName === "get_jd") {
+      return "请先选择或保存一份 JD。";
+    }
+    if (toolName === "get_resume") {
+      return "请先选择或创建一份简历。";
+    }
+    if (toolName === "show_evidence") {
+      return "请先选择一个生成版本或证据项。";
+    }
+  }
+  // English fallback
+  if (toolName === "get_experience" || toolName === "update_experience") {
+    return "Please select an experience first, or open the experience detail page.";
+  }
+  if (toolName === "revise_resume_item") {
+    return "Please select a resume item first.";
+  }
+  if (toolName === "generate_resume_from_jd") {
+    return "Please select or paste a JD first.";
+  }
+  if (toolName === "export_resume" || toolName === "prepare_export_resume") {
+    return "Please select a resume first.";
+  }
+  if (toolName === "get_jd") {
+    return "Please select or save a JD first.";
+  }
+  if (toolName === "get_resume") {
+    return "Please select or create a resume first.";
+  }
+  if (toolName === "show_evidence") {
+    return "Please select a generation version or evidence item first.";
+  }
+  return locale === "zh-CN" ? "缺少必填信息，请先选择相关资产。" : "Missing required information. Please select the relevant asset first.";
 }
 
 function stringValue(value: unknown): string | undefined {

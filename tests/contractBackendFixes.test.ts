@@ -7,6 +7,8 @@ import { AgentOrchestrator } from "../src/agent-core/runtime/AgentOrchestrator.j
 import { CopilotOrchestrator } from "../src/copilot/CopilotOrchestrator.js";
 import { createP12Kernel } from "./p12Helpers.js";
 import { createTestKernelContext } from "../src/api/context.js";
+import { ModelClient } from "../src/agent-core/model/ModelClient.js";
+import type { LLMChatRequest, LLMChatResponse, LLMProvider } from "../src/agent-core/model/types.js";
 
 function setupEnv() {
   process.env.AUTH_MODE = "dev_header";
@@ -290,6 +292,143 @@ describe("Contract: copilot explicit actions", () => {
       status: "failed",
       reason: "unsupported_action",
     });
+    await kernel.close();
+  });
+});
+
+describe("Contract: natural language chat argument hydration", () => {
+  it("hydrates get_experience id from activeExperienceId in clientState", async () => {
+    const kernel = await createP12Kernel();
+    const { experience } = await kernel.productServices.experienceService.createExperience("user-1", {
+      title: "React systems design",
+      content: "Designed and built React component library used by 40 engineers.",
+    });
+
+    class HydrationTestProvider implements LLMProvider {
+      public readonly name = "hydration-test";
+      public async chat(request: LLMChatRequest): Promise<LLMChatResponse> {
+        const agentName = request.metadata?.agentName;
+        // Frontdesk: route to experience_receiver
+        if (agentName === "agent-core:frontdesk") {
+          return { content: JSON.stringify({ agentName: "frontdesk", responseType: "route", routeTo: "experience_receiver", assistantMessage: "", plan: [], missingInputs: [], confidence: 0.9 }) };
+        }
+        // Specialist: plan get_experience without id — hydration must fill it
+        return { content: JSON.stringify({ agentName: "experience_receiver", responseType: "plan", assistantMessage: "", plan: [{ id: "step-1", agentName: "experience_receiver", toolName: "get_experience", arguments: {}, summary: "Get experience." }], missingInputs: [], confidence: 0.9 }) };
+      }
+    }
+
+    kernel.frontDeskModelClient = new ModelClient({
+      provider: new HydrationTestProvider(),
+      defaultModel: "hydration-test",
+    });
+
+    const runtime = new AgentOrchestrator({ kernel });
+    const ctx = createTestKernelContext({ user: { id: "user-1" }, request: { requestId: "req-1", traceId: "trace-1" } });
+
+    const result = await runtime.handleChat(ctx, {
+      message: "优化这份经历",
+      clientState: { activeExperienceId: experience.id },
+    });
+
+    // Must NOT return generic schema error about missing id
+    const fullText = JSON.stringify(result);
+    expect(fullText).not.toContain("缺少必填信息：id");
+    expect(fullText).not.toContain("missingRequiredWithFields");
+    expect(fullText).not.toContain("id is required");
+
+    // Should have tool results, not a raw schema error
+    expect(result.raw.toolResults).toBeTruthy();
+    expect(Array.isArray(result.raw.toolResults)).toBe(true);
+
+    await kernel.close();
+  });
+
+  it("hydrates update_experience experienceId from activeExperienceId", async () => {
+    const kernel = await createP12Kernel();
+    const { experience } = await kernel.productServices.experienceService.createExperience("user-1", {
+      title: "Full-stack platform",
+      content: "Built a full-stack platform for internal tools.",
+    });
+
+    class UpdateHydrationProvider implements LLMProvider {
+      public readonly name = "update-hydration-test";
+      public async chat(request: LLMChatRequest): Promise<LLMChatResponse> {
+        const agentName = request.metadata?.agentName;
+        if (agentName === "agent-core:frontdesk") {
+          return { content: JSON.stringify({ agentName: "frontdesk", responseType: "route", routeTo: "experience_receiver", assistantMessage: "", plan: [], missingInputs: [], confidence: 0.9 }) };
+        }
+        return { content: JSON.stringify({ agentName: "experience_receiver", responseType: "plan", assistantMessage: "", plan: [{ id: "step-1", agentName: "experience_receiver", toolName: "update_experience", arguments: { content: "优化后的内容" }, summary: "Update experience." }], missingInputs: [], confidence: 0.9 }) };
+      }
+    }
+
+    kernel.frontDeskModelClient = new ModelClient({
+      provider: new UpdateHydrationProvider(),
+      defaultModel: "update-hydration-test",
+    });
+
+    const runtime = new AgentOrchestrator({ kernel });
+    const ctx = createTestKernelContext({ user: { id: "user-1" }, request: { requestId: "req-1", traceId: "trace-1" } });
+
+    const result = await runtime.handleChat(ctx, {
+      message: "优化这份经历",
+      clientState: { activeExperienceId: experience.id },
+    });
+
+    // Must NOT return generic schema error
+    const fullText = JSON.stringify(result);
+    expect(fullText).not.toContain("缺少必填信息：id");
+    expect(fullText).not.toContain("id is required");
+
+    // update_experience requiresConfirmation → should create a pending action
+    const hasPending = result.raw.pendingActions?.some(
+      (p: any) => p.toolName === "update_experience"
+    );
+    const isNeedsConfirmation = result.raw.actionResults?.some(
+      (a: any) => a.status === "needs_confirmation"
+    );
+    expect(hasPending || isNeedsConfirmation).toBe(true);
+
+    await kernel.close();
+  });
+
+  it("returns product-semantic needs_input when hydration cannot fill id", async () => {
+    const kernel = await createP12Kernel();
+
+    class MissingIdProvider implements LLMProvider {
+      public readonly name = "missing-id-test";
+      public async chat(request: LLMChatRequest): Promise<LLMChatResponse> {
+        const agentName = request.metadata?.agentName;
+        if (agentName === "agent-core:frontdesk") {
+          return { content: JSON.stringify({ agentName: "frontdesk", responseType: "route", routeTo: "experience_receiver", assistantMessage: "", plan: [], missingInputs: [], confidence: 0.9 }) };
+        }
+        return { content: JSON.stringify({ agentName: "experience_receiver", responseType: "plan", assistantMessage: "", plan: [{ id: "step-1", agentName: "experience_receiver", toolName: "get_experience", arguments: {}, summary: "Get experience." }], missingInputs: [], confidence: 0.9 }) };
+      }
+    }
+
+    kernel.frontDeskModelClient = new ModelClient({
+      provider: new MissingIdProvider(),
+      defaultModel: "missing-id-test",
+    });
+
+    const runtime = new AgentOrchestrator({ kernel });
+    const ctx = createTestKernelContext({ user: { id: "user-1" }, request: { requestId: "req-1", traceId: "trace-1" } });
+
+    const result = await runtime.handleChat(ctx, {
+      message: "优化这份经历",
+      // No activeExperienceId — hydration can't help
+    });
+
+    // Must have a needs_input action result, not a raw schema error
+    const actionResults = result.raw.actionResults ?? [];
+    expect(actionResults.length).toBeGreaterThan(0);
+    const firstResult = actionResults[0] as Record<string, unknown>;
+    expect(firstResult.status).toBe("needs_input");
+
+    // The message should be product-semantic, not generic "id is required"
+    const messageText = JSON.stringify(result);
+    expect(messageText).not.toContain("id is required");
+    expect(messageText).toContain("经历");
+
     await kernel.close();
   });
 });
