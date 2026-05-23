@@ -149,21 +149,117 @@ export function createResumeAgentTools(): ToolDefinition[] {
       execute: async (input, context) => {
         const itemId = String(input.resumeItemId);
         const instruction = String(input.instruction);
-        // Option B: No LLM rewrite available yet — do not write fake text.
-        // Return needs_input so the user sees an honest message, not a false success.
-        const message = "当前简历条目的智能改写还未接入模型，请先通过对话描述你希望如何修改，或稍后使用经历改写功能。";
-        return {
-          status: "needs_input",
-          message,
-          data: { resumeItemId: itemId, instruction },
-          visibility: "error_user_visible",
-          actionResult: {
+        const modelClient = context.kernel.frontDeskModelClient;
+
+        if (!modelClient) {
+          return {
             status: "needs_input",
-            actionType: "optimize_resume_item",
-            message,
-            reason: "model_not_connected",
-          },
-        };
+            message: "当前模型服务不可用，暂时无法智能改写该简历条目。",
+            data: { resumeItemId: itemId, instruction },
+            visibility: "error_user_visible",
+            actionResult: {
+              status: "needs_input",
+              actionType: "optimize_resume_item",
+              message: "当前模型服务不可用，暂时无法智能改写该简历条目。",
+              reason: "model_not_available",
+            },
+          };
+        }
+
+        // Resolve source text from workspace activeResume
+        const workspace = context.workspace;
+        const activeResume = workspace?.activeResume;
+        const currentItem = activeResume?.items?.find((item) => item.id === itemId);
+        const sourceText = currentItem?.contentSnapshot;
+        if (!sourceText) {
+          return {
+            status: "needs_input",
+            message: "找不到该简历条目的原文，请重新打开简历后再试。",
+            data: { resumeItemId: itemId, instruction },
+            visibility: "error_user_visible",
+            actionResult: {
+              status: "needs_input",
+              actionType: "optimize_resume_item",
+              reason: "source_text_not_found",
+            },
+          };
+        }
+
+        // Construct a safe rewrite prompt
+        const systemPrompt = [
+          "You are a professional resume editor. Your task is to rewrite a single resume bullet point based on the user's instruction.",
+          "Rules:",
+          "- Only rewrite the content provided below.",
+          "- Preserve all factual claims, metrics, and numbers from the original.",
+          "- Do NOT invent new metrics, numbers, company names, or project names.",
+          "- If the instruction asks for quantification but the original has no metrics, use conservative phrasing like \"contributed to\" or \"helped improve\" instead of making up numbers.",
+          "- Output ONLY the rewritten text. No markdown, no explanation, no prefix.",
+        ].join("\n");
+
+        const userPrompt = [
+          `Original resume item:`,
+          sourceText,
+          "",
+          `Rewrite instruction: ${instruction}`,
+          "",
+          "Rewritten:",
+        ].join("\n");
+
+        try {
+          const response = await modelClient.chat({
+            messages: [
+              { role: "system", content: systemPrompt },
+              { role: "user", content: userPrompt },
+            ],
+            temperature: 0.3,
+            maxTokens: 800,
+            responseFormat: "text",
+          });
+
+          let rewrittenText = (response.content ?? "").trim();
+          if (!rewrittenText || rewrittenText === instruction) {
+            rewrittenText = sourceText;
+          }
+
+          const resumeService = context.kernel.productServices.resumeService;
+          const updated = await resumeService.updateResumeItem(context.userId, itemId, {
+            contentSnapshot: rewrittenText,
+          });
+
+          return updated
+            ? {
+              status: "success",
+              message: "已根据你的指令优化该简历条目。",
+              data: { item: updated, rewrittenText },
+              workspacePatch: { activePanel: "resume_editor" },
+              visibility: "user_summary",
+              actionResult: {
+                status: "success",
+                actionType: "optimize_resume_item",
+                revisionSuggestion: {
+                  kind: "resume_item" as const,
+                  sourceId: itemId,
+                  sourceTextPreview: sourceText.slice(0, 200),
+                  rewrittenText,
+                  usedModel: true,
+                },
+              },
+            }
+            : { status: "failed", message: "Resume item not found.", data: { id: itemId }, visibility: "error_user_visible" };
+        } catch (error) {
+          return {
+            status: "needs_input",
+            message: "当前模型服务不可用，暂时无法智能改写该简历条目。",
+            data: { resumeItemId: itemId, instruction },
+            visibility: "error_user_visible",
+            actionResult: {
+              status: "needs_input",
+              actionType: "optimize_resume_item",
+              message: "当前模型服务不可用，暂时无法智能改写该简历条目。",
+              reason: "model_call_failed",
+            },
+          };
+        }
       },
     },
   ];

@@ -113,6 +113,30 @@ export function toolNeedsInputMessage(toolName: string, locale: string | undefin
   return en ? "I need one more piece of information before continuing." : "还需要补充一项信息后我才能继续。";
 }
 
+export function toolNeedsInputMessageForFields(toolName: string, missingFields: string[], locale: string | undefined): string {
+  const en = locale === "en";
+  if (toolName === "accept_generation_variant") {
+    const missingGen = missingFields.includes("generationId");
+    const missingVar = missingFields.includes("variantId");
+    if (missingGen && missingVar) {
+      return en
+        ? "Please open a generation result and select a variant first."
+        : "请先打开生成结果，并选择一个要保存的版本。";
+    }
+    if (missingGen) {
+      return en
+        ? "Please open a generation result first, or regenerate resume versions."
+        : "请先打开一次生成结果，或重新生成简历版本。";
+    }
+    if (missingVar) {
+      return en
+        ? "Please select a generated variant first."
+        : "请先选择一个生成版本。";
+    }
+  }
+  return toolNeedsInputMessage(toolName, locale);
+}
+
 function stringValue(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
 }

@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { ApiKernel } from "../../api/types.js";
 import { ActiveAssetContextBuilder, type ActiveAssetContext } from "../../copilot/ActiveAssetContextBuilder.js";
-import { ContextHydrator, toolNeedsInputMessage } from "../../copilot/context/ContextHydrator.js";
+import { ContextHydrator, toolNeedsInputMessage, toolNeedsInputMessageForFields } from "../../copilot/context/ContextHydrator.js";
 import { applyHandoffToDrafts, mostRecentJDDraft } from "../../copilot/context/DraftContext.js";
 import { normalizeFrontDeskHandoff } from "../../copilot/handoff/HandoffNormalizer.js";
 import type { FrontDeskHandoff } from "../../copilot/handoff/FrontDeskHandoff.js";
@@ -748,25 +748,25 @@ export class AgentOrchestrator {
     if (!parsed.success) {
       const missingFields = parsed.error.issues
         .map((issue) => issue.path.join("."))
-        .filter(Boolean)
-        .join(", ");
+        .filter(Boolean);
       this.emit(run, "agent.tool.failed", `工具调用失败：${tool.name}`, {
         agentName: step.agentName,
         toolName: tool.name,
         status: "needs_input",
         payload: { reason: "missing_required_input" },
       });
+      const message = toolNeedsInputMessageForFields(tool.name, missingFields, localeFor(run));
       return {
         result: {
           status: "needs_input",
-          message: toolNeedsInputMessage(tool.name, localeFor(run)),
+          message,
           visibility: "error_user_visible",
           actionResult: {
             actionType: tool.name,
             status: "needs_input",
             reason: "missing_required_input",
-            missingInputs: parsed.error.issues.map((i) => i.path.join(".")).filter(Boolean),
-            message: toolNeedsInputMessage(tool.name, localeFor(run)),
+            missingInputs: missingFields,
+            message,
           },
         },
       };

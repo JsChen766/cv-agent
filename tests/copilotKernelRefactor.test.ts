@@ -5,7 +5,7 @@ import { AgentOrchestrator } from "../src/agent-core/runtime/AgentOrchestrator.j
 import { FrontDeskHandoffSchema } from "../src/copilot/handoff/FrontDeskHandoffSchema.js";
 import { normalizeFrontDeskHandoff } from "../src/copilot/handoff/HandoffNormalizer.js";
 import { applyHandoffToDrafts } from "../src/copilot/context/DraftContext.js";
-import { ContextHydrator } from "../src/copilot/context/ContextHydrator.js";
+import { ContextHydrator, toolNeedsInputMessageForFields } from "../src/copilot/context/ContextHydrator.js";
 import { ResponseComposer } from "../src/copilot/response/ResponseComposer.js";
 import type { CopilotWorkspace } from "../src/copilot/types.js";
 import { createTestKernelContext } from "../src/api/context.js";
@@ -144,6 +144,30 @@ describe("ContextHydrator and ResponseComposer", () => {
     expect(hydrated.generationId).toBe("pgen-1");
     // active.variantId takes precedence over activeVariantId per the fallback chain
     expect(hydrated.variantId).toBe("variant-3");
+  });
+
+  it("accept_generation_variant returns field-specific missing-input messages", () => {
+    // Both missing
+    expect(toolNeedsInputMessageForFields("accept_generation_variant", ["generationId", "variantId"], undefined))
+      .toContain("请先打开生成结果，并选择一个要保存的版本。");
+    expect(toolNeedsInputMessageForFields("accept_generation_variant", ["generationId", "variantId"], "en"))
+      .toContain("Please open a generation result and select a variant first.");
+
+    // Only generationId missing
+    expect(toolNeedsInputMessageForFields("accept_generation_variant", ["generationId"], undefined))
+      .toContain("请先打开一次生成结果，或重新生成简历版本。");
+    expect(toolNeedsInputMessageForFields("accept_generation_variant", ["generationId"], "en"))
+      .toContain("Please open a generation result first, or regenerate resume versions.");
+
+    // Only variantId missing
+    expect(toolNeedsInputMessageForFields("accept_generation_variant", ["variantId"], undefined))
+      .toContain("请先选择一个生成版本。");
+    expect(toolNeedsInputMessageForFields("accept_generation_variant", ["variantId"], "en"))
+      .toContain("Please select a generated variant first.");
+
+    // Other tools unaffected
+    expect(toolNeedsInputMessageForFields("get_experience", ["id"], undefined))
+      .toContain("请先选择一条经历");
   });
 
   it("does not leak internal tool logs into assistant text", () => {
