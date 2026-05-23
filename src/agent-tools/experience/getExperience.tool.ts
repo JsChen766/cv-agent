@@ -14,14 +14,15 @@ export function getExperienceTool(): ToolDefinition {
     execute: async (input, context) => {
       const id = String(input.id);
       const experience = await context.kernel.productServices.experienceService.getExperience(context.userId, id);
-      if (!experience) return { status: "failed", message: "Experience not found.", data: { id } };
+      if (!experience) return { status: "failed", message: "Experience not found.", data: { id }, visibility: "error_user_visible" };
       const revisions = await context.kernel.productServices.experienceService.listRevisions(context.userId, id);
       const current = revisions.find((revision) => revision.id === experience.currentRevisionId) ?? revisions.at(-1);
       return {
         status: "success",
         message: `Loaded experience: ${experience.title}.`,
         data: { experience, currentRevision: current, revisions },
-        workspacePatch: { activePanel: "experience_library", activeExperienceId: experience.id },
+        workspacePatch: { activePanel: "experience_library", active: { experienceId: experience.id } },
+        visibility: "internal",
       };
     },
   };

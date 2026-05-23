@@ -24,81 +24,66 @@ export function createEvidenceAgentTools(): ToolDefinition[] {
         const variantId = typeof input.variantId === "string" ? input.variantId : undefined;
         const generationId = typeof input.generationId === "string" ? input.generationId : undefined;
         const evidenceId = typeof input.evidenceId === "string" ? input.evidenceId : undefined;
-
-        // Try to find a variant from workspace
         const workspace = context.workspace;
         const variant = variantId
-          ? workspace?.variants?.find((v) => v.id === variantId)
+          ? workspace?.variants?.find((item) => item.id === variantId)
           : workspace?.variants?.[0];
 
-        if (variant) {
-          const hasEvidence = (variant.sourceExperienceIds?.length ?? 0) > 0
-            || (variant.sourceEvidenceIds?.length ?? 0) > 0
-            || (variant.evidenceSummary?.items?.length ?? 0) > 0;
-
-          if (hasEvidence) {
-            return {
+        if (variant && hasEvidence(variant)) {
+          return {
+            status: "success",
+            message: "Evidence loaded.",
+            visibility: "internal",
+            data: {
+              variantId: variant.id,
+              evidence: variant.evidenceSummary?.items ?? [],
+              sourceExperienceIds: variant.sourceExperienceIds ?? [],
+              sourceEvidenceIds: variant.sourceEvidenceIds ?? [],
+              riskSummary: variant.riskSummary ?? { level: "unknown", unsupportedClaims: [], missingEvidence: [], warnings: [] },
+              evidenceSummary: variant.evidenceSummary,
+            },
+            actionResult: {
               status: "success",
-              message: `证据信息已加载（${variant.evidenceSummary?.coverageLabel ?? "已找到相关证据"}）。`,
-              data: {
-                variantId: variant.id,
+              actionType: "show_evidence",
+              variantId: variant.id,
+              metadata: {
                 evidence: variant.evidenceSummary?.items ?? [],
                 sourceExperienceIds: variant.sourceExperienceIds ?? [],
                 sourceEvidenceIds: variant.sourceEvidenceIds ?? [],
-                riskSummary: variant.riskSummary ?? { level: "unknown", unsupportedClaims: [], missingEvidence: [], warnings: [] },
-                evidenceSummary: variant.evidenceSummary,
+                riskSummary: variant.riskSummary ?? {},
               },
-              actionResult: {
-                status: "success",
-                actionType: "show_evidence",
-                variantId: variant.id,
-                metadata: {
-                  evidence: variant.evidenceSummary?.items ?? [],
-                  sourceExperienceIds: variant.sourceExperienceIds ?? [],
-                  sourceEvidenceIds: variant.sourceEvidenceIds ?? [],
-                  riskSummary: variant.riskSummary ?? {},
-                },
-              },
-            };
-          }
-
-          return {
-            status: "success",
-            message: "当前版本暂无可展示证据，请先补充经历素材或重新生成。",
-            data: { variantId: variant.id, evidence: [], empty: true },
-            actionResult: {
-              status: "success",
-              actionType: "show_evidence",
-              message: "当前版本暂无可展示证据，请先补充经历素材或重新生成。",
-              metadata: { empty: true },
             },
           };
         }
 
-        // If we have variantId/generationId but couldn't find the variant, still return success with a message
-        if (variantId || generationId || evidenceId) {
+        if (variantId || generationId || evidenceId || variant) {
+          const message = "当前还没有可展示的证据链。请先补充经历素材，或重新生成带证据引用的版本。";
           return {
             status: "success",
-            message: "当前版本暂无可展示证据，请先补充经历素材或重新生成。",
-            data: { variantId, generationId, evidenceId, evidence: [], empty: true },
+            message,
+            visibility: "error_user_visible",
+            data: { variantId: variant?.id ?? variantId, generationId, evidenceId, evidence: [], empty: true, reason: "not_implemented" },
             actionResult: {
               status: "success",
               actionType: "show_evidence",
-              message: "当前版本暂无可展示证据，请先补充经历素材或重新生成。",
-              metadata: { empty: true },
+              message,
+              reason: "evidence_chain_not_available",
+              metadata: { empty: true, notImplemented: true },
             },
           };
         }
 
+        const message = "请先选择一个生成版本或证据项。";
         return {
           status: "needs_input",
-          message: "请先选择一个生成版本或证据项。",
+          message,
+          visibility: "error_user_visible",
           data: { evidence: [] },
           actionResult: {
             status: "needs_input",
             actionType: "show_evidence",
             missingInputs: ["variantId", "generationId"],
-            message: "请先选择一个生成版本或证据项。",
+            message,
           },
         };
       },
@@ -115,8 +100,19 @@ export function createEvidenceAgentTools(): ToolDefinition[] {
       execute: async (input) => {
         const text = typeof input.text === "string" ? input.text : "";
         const warnings = /\b(best|only|guaranteed|100%|top)\b/i.test(text) ? ["Potentially exaggerated claim detected."] : [];
-        return { status: "success", message: warnings.length ? "Found unsupported-claim risks." : "No obvious unsupported claims found.", data: { warnings } };
+        return {
+          status: "success",
+          message: warnings.length ? "Found unsupported-claim risks." : "No obvious unsupported claims found.",
+          visibility: "internal",
+          data: { warnings },
+        };
       },
     },
   ];
+}
+
+function hasEvidence(variant: { sourceExperienceIds?: unknown[]; sourceEvidenceIds?: unknown[]; evidenceSummary?: { items?: unknown[] } }): boolean {
+  return (variant.sourceExperienceIds?.length ?? 0) > 0
+    || (variant.sourceEvidenceIds?.length ?? 0) > 0
+    || (variant.evidenceSummary?.items?.length ?? 0) > 0;
 }

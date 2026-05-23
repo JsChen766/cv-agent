@@ -1,6 +1,10 @@
 import { randomUUID } from "node:crypto";
 import type { ApiKernel } from "../../api/types.js";
 import { ActiveAssetContextBuilder, type ActiveAssetContext } from "../../copilot/ActiveAssetContextBuilder.js";
+import { ContextHydrator, toolNeedsInputMessage } from "../../copilot/context/ContextHydrator.js";
+import { applyHandoffToDrafts, mostRecentJDDraft } from "../../copilot/context/DraftContext.js";
+import { normalizeFrontDeskHandoff } from "../../copilot/handoff/HandoffNormalizer.js";
+import type { FrontDeskHandoff } from "../../copilot/handoff/FrontDeskHandoff.js";
 import type {
   CopilotActionRequest,
   CopilotActionResult,
@@ -11,6 +15,9 @@ import type {
   ProductTimelineItem,
 } from "../../copilot/types.js";
 import { detectLocale, type CopilotLocale } from "../../copilot/locale.js";
+import { ResponseComposer } from "../../copilot/response/ResponseComposer.js";
+import { defaultToolResultVisibility } from "../../copilot/response/ToolResultVisibility.js";
+import { tasksFromHandoff } from "../../copilot/tasks/TaskStateReducer.js";
 import { createAgentTools } from "../../agent-tools/index.js";
 import type { PendingAction } from "../confirmation/PendingAction.js";
 import { PendingActionService } from "../confirmation/PendingActionService.js";
@@ -69,6 +76,8 @@ export class AgentOrchestrator {
   public readonly pendingActions: PendingActionService;
   public readonly tools: ToolRegistry;
   private readonly activeAssetContextBuilder: ActiveAssetContextBuilder;
+  private readonly contextHydrator = new ContextHydrator();
+  private readonly responseComposer = new ResponseComposer();
   private readonly agents: Record<AgentName, Agent>;
 
   public constructor(private readonly deps: AgentOrchestratorDeps) {
@@ -124,6 +133,7 @@ export class AgentOrchestrator {
       productContext: {
         targetRole: request.targetRole ?? session.targetRole,
         hasJDText: Boolean(request.jdText ?? session.jdText),
+        requestJDText: request.jdText ?? session.jdText ?? undefined,
       },
       streamEmitter,
     });
@@ -141,9 +151,23 @@ export class AgentOrchestrator {
         status: "running",
       });
       const frontDeskDecision = await this.agents.frontdesk.decide({ context: run.context });
+      const normalizedHandoff = normalizeFrontDeskHandoff({
+        raw: frontDeskDecision.handoff,
+        sessionId: run.context.sessionId,
+        turnId: run.context.turnId,
+        userMessage: request.message,
+        routeTo: frontDeskDecision.routeTo,
+        responseType: frontDeskDecision.responseType,
+        confidence: frontDeskDecision.confidence,
+        missingInputs: frontDeskDecision.missingInputs,
+        clientState: request.clientState,
+        workspace: run.workspace,
+      });
+      this.applyHandoff(run, normalizedHandoff.handoff, normalizedHandoff.repaired ? normalizedHandoff.reason : undefined);
       run.trace.complete(frontDeskStep, "success", {
         routeTo: frontDeskDecision.routeTo,
         responseType: frontDeskDecision.responseType,
+        handoff: normalizedHandoff.handoff,
         decision: decisionTraceMeta(frontDeskDecision),
       });
       this.emit(run, "agent.route.completed", "任务类型判断完成", {
@@ -154,6 +178,15 @@ export class AgentOrchestrator {
           responseType: frontDeskDecision.responseType,
         },
       });
+
+      if (normalizedHandoff.handoff.intent === "jd.intake" && normalizedHandoff.handoff.next === "handoff") {
+        return this.finishRun(ctx.user.id, run, {
+          assistantText: frontDeskDecision.assistantMessage,
+          toolResults: [],
+          pendingActions: [],
+          workspacePatch: {},
+        });
+      }
 
       if (frontDeskDecision.responseType === "final") {
         return this.finishRun(ctx.user.id, run, {
@@ -218,7 +251,7 @@ export class AgentOrchestrator {
       productContext: { explicitAction: request.action.type },
     });
 
-    const mapped = this.mapExplicitAction(request, run.workspace, run.context.activeAssetContext);
+    const mapped = this.mapExplicitAction(request, run);
     if (mapped.kind === "unsupported") {
       const runLocale = localeFor(run);
       const result = failedActionResult(request.action.type, text(runLocale, "unsupportedAction"));
@@ -235,6 +268,7 @@ export class AgentOrchestrator {
       const result: ToolResult = {
         status: "needs_input",
         message: mapped.message,
+        visibility: "error_user_visible",
         actionResult: {
           actionType: request.action.type,
           status: "needs_input",
@@ -275,13 +309,15 @@ export class AgentOrchestrator {
       request: { sessionId: session.id, message: `[confirm] ${action.toolName}` },
       productContext: { pendingActionId: id },
     });
-    const { action: confirmedAction, result } = await this.pendingActions.confirm({
+    const confirmed = await this.pendingActions.confirm({
       userId: ctx.user.id,
       id,
       registry: this.tools,
       executor: run.executor,
       context: run.context,
     });
+    const confirmedAction = confirmed.action;
+    const result = ensureToolResultVisibility(confirmed.result, confirmedAction.toolName);
     const tool = this.tools.get(confirmedAction.toolName);
     const step = confirmedActionStep(confirmedAction, tool?.ownerAgent ?? "frontdesk");
     const execution: ToolExecutionRecord = { step, result };
@@ -440,6 +476,51 @@ export class AgentOrchestrator {
       loopController,
       streamEmitter: input.streamEmitter,
     };
+  }
+
+  private applyHandoff(
+    run: RunState,
+    handoff: NonNullable<CopilotWorkspace["handoffs"]>[number],
+    repairReason?: string,
+  ): void {
+    const now = new Date().toISOString();
+    const base = run.workspace ?? {
+      id: `ws-${run.context.sessionId}`,
+      sessionId: run.context.sessionId,
+      variants: [],
+      status: "empty" as const,
+      updatedAt: now,
+    };
+    const draftPatch = applyHandoffToDrafts(base, handoff, now);
+    const withDrafts = { ...base, ...draftPatch };
+    const taskPatch = tasksFromHandoff(withDrafts, handoff, now);
+    const handoffs = [...(base.handoffs ?? []), handoff].slice(-8);
+    run.workspace = {
+      ...withDrafts,
+      ...taskPatch,
+      handoffs,
+      updatedAt: now,
+    };
+    run.context.workspace = run.workspace;
+    run.context.productContext = {
+      ...run.context.productContext,
+      frontDeskHandoff: handoff,
+      requestJDText: handoff.extracted.jdText ?? run.context.productContext.requestJDText,
+    };
+    run.trace.add({
+      agentName: "AgentOrchestrator",
+      type: "reason",
+      summary: "Stored frontdesk handoff and draft context.",
+      status: "success",
+      completedAt: now,
+      metadata: {
+        handoffId: handoff.id,
+        intent: handoff.intent,
+        routeTo: handoff.routeTo,
+        repairReason,
+        active: run.workspace.active,
+      },
+    });
   }
 
   private async runSpecialistLoop(run: RunState, specialist: Agent, routeHint: AgentName): Promise<LoopRunResult> {
@@ -652,7 +733,16 @@ export class AgentOrchestrator {
       status: "running",
     });
 
-    const hydratedArgs = this.hydrateToolArguments(tool.name, (step.arguments ?? {}) as Record<string, unknown>, run);
+    const hydratedArgs = this.contextHydrator.hydrate(tool.name, (step.arguments ?? {}) as Record<string, unknown>, run.context, run.workspace);
+    run.trace.add({
+      agentName: step.agentName,
+      type: "reason",
+      summary: `Hydrated arguments for ${tool.name}.`,
+      toolName: tool.name,
+      status: "success",
+      completedAt: new Date().toISOString(),
+      metadata: { argumentKeys: Object.keys(hydratedArgs) },
+    });
     const parsed = tool.inputSchema.safeParse(hydratedArgs);
     if (!parsed.success) {
       const missingFields = parsed.error.issues
@@ -668,13 +758,14 @@ export class AgentOrchestrator {
       return {
         result: {
           status: "needs_input",
-          message: hydrateNeedsInputMessage(tool.name, localeFor(run)),
+          message: toolNeedsInputMessage(tool.name, localeFor(run)),
+          visibility: "error_user_visible",
           actionResult: {
             actionType: tool.name,
             status: "needs_input",
             reason: "missing_required_input",
             missingInputs: parsed.error.issues.map((i) => i.path.join(".")).filter(Boolean),
-            message: hydrateNeedsInputMessage(tool.name, localeFor(run)),
+            message: toolNeedsInputMessage(tool.name, localeFor(run)),
           },
         },
       };
@@ -682,7 +773,7 @@ export class AgentOrchestrator {
     const args = parsed.data as Record<string, unknown>;
     if (!tool.requiresConfirmation) {
       try {
-        const result = await run.executor.executeDefinition(tool, args, run.context);
+        const result = ensureToolResultVisibility(await run.executor.executeDefinition(tool, args, run.context), tool.name);
         this.emit(run, "agent.tool.completed", "工具调用完成", {
           agentName: step.agentName,
           toolName: tool.name,
@@ -743,6 +834,7 @@ export class AgentOrchestrator {
         status: "needs_input",
         message: pending.summary,
         pendingActionId: pending.id,
+        visibility: "action_required",
         actionResult: {
           status: "needs_confirmation",
           actionType: tool.name,
@@ -750,88 +842,6 @@ export class AgentOrchestrator {
         },
       },
     };
-  }
-
-  private hydrateToolArguments(
-    toolName: string,
-    args: Record<string, unknown>,
-    run: RunState,
-  ): Record<string, unknown> {
-    const clientState = run.context.clientState ?? {};
-    const ctx = run.context.activeAssetContext;
-    const ws = run.workspace;
-
-    const hydrated = { ...args };
-
-    // Fill missing IDs from context, respecting explicit arguments first
-    switch (toolName) {
-      case "get_experience": {
-        if (!isString(hydrated.id)) {
-          hydrated.id = clientState.activeExperienceId ?? ctx?.activeExperience?.id;
-        }
-        break;
-      }
-      case "update_experience": {
-        if (!isString(hydrated.experienceId)) {
-          hydrated.experienceId = clientState.activeExperienceId ?? ctx?.activeExperience?.id;
-        }
-        if (!isString(hydrated.content)) {
-          hydrated.content = clientState.selectedText ?? ctx?.activeExperience?.contentPreview;
-        }
-        break;
-      }
-      case "get_jd": {
-        if (!isString(hydrated.id)) {
-          hydrated.id = clientState.activeJDId ?? ctx?.activeJD?.id ?? ws?.jdId;
-        }
-        break;
-      }
-      case "generate_resume_from_jd": {
-        if (!isString(hydrated.jdId)) {
-          hydrated.jdId = clientState.activeJDId ?? ctx?.activeJD?.id ?? ws?.jdId;
-        }
-        if (!isString(hydrated.jdText)) {
-          hydrated.jdText = ctx?.activeJD?.rawTextPreview;
-        }
-        break;
-      }
-      case "get_resume": {
-        if (!isString(hydrated.id)) {
-          hydrated.id = clientState.activeResumeId ?? ctx?.activeResume?.id ?? ws?.resumeId;
-        }
-        break;
-      }
-      case "revise_resume_item": {
-        if (!isString(hydrated.resumeItemId)) {
-          hydrated.resumeItemId = clientState.activeResumeItemId ?? ctx?.activeResume?.selectedItem?.id;
-        }
-        if (!isString(hydrated.instruction)) {
-          hydrated.instruction = clientState.selectedText ?? ctx?.activeResume?.selectedItem?.contentPreview;
-        }
-        break;
-      }
-      case "export_resume":
-      case "prepare_export_resume": {
-        if (!isString(hydrated.resumeId)) {
-          hydrated.resumeId = clientState.activeResumeId ?? ws?.resumeId ?? ctx?.activeResume?.id;
-        }
-        break;
-      }
-      case "show_evidence": {
-        if (!isString(hydrated.id)) {
-          hydrated.id = clientState.activeEvidenceId ?? clientState.activeVariantId ?? ws?.activeVariantId ?? ctx?.activeVariant?.id;
-        }
-        if (!isString(hydrated.variantId)) {
-          hydrated.variantId = clientState.activeVariantId ?? ws?.activeVariantId ?? ctx?.activeVariant?.id;
-        }
-        if (!isString(hydrated.generationId)) {
-          hydrated.generationId = ws?.productGenerationId;
-        }
-        break;
-      }
-    }
-
-    return hydrated;
   }
 
   private validatePlan(plan: PlanStep[], agent: Agent): PlanStep[] {
@@ -883,12 +893,13 @@ export class AgentOrchestrator {
 
   private mapExplicitAction(
     request: CopilotActionRequest,
-    workspace: CopilotWorkspace | null,
-    activeAssetContext: ActiveAssetContext | undefined,
+    run: RunState,
   ): { kind: "step"; step: PlanStep } | { kind: "needs_input"; missingInputs: string[]; message: string } | { kind: "unsupported" } {
     const payload = request.action.payload ?? {};
     const clientState = request.clientState ?? {};
-    const ctx = activeAssetContext;
+    const workspace = run.workspace;
+    const ctx = run.context.activeAssetContext;
+    const jdDraft = mostRecentJDDraft(workspace);
 
     // Resolve IDs using fallback chain: payload -> action.variantId -> clientState -> activeAssetContext -> workspace
     const resolve = {
@@ -899,9 +910,9 @@ export class AgentOrchestrator {
       resumeId: () =>
         stringValue(payload.resumeId) ?? clientState.activeResumeId ?? workspace?.resumeId ?? workspace?.activeResume?.id ?? ctx?.activeResume?.id,
       jdId: () =>
-        stringValue(payload.jdId) ?? clientState.activeJDId ?? workspace?.jdId ?? ctx?.activeJD?.id,
+        stringValue(payload.jdId) ?? clientState.activeJDId ?? workspace?.active?.jdId ?? workspace?.jdId ?? ctx?.activeJD?.id,
       jdText: () =>
-        stringValue(payload.jdText) ?? ctx?.activeJD?.rawTextPreview ?? clientState.selectedText,
+        stringValue(payload.jdText) ?? stringValue(payload.text) ?? jdDraft?.rawText ?? ctx?.activeJD?.rawTextPreview ?? clientState.selectedText,
       variantId: () =>
         stringValue(payload.variantId) ?? request.action.variantId ?? clientState.activeVariantId ?? workspace?.activeVariantId ?? ctx?.activeVariant?.id,
       generationId: () =>
@@ -1083,7 +1094,20 @@ export class AgentOrchestrator {
       status: "running",
     });
     const now = new Date().toISOString();
-    const assistantText = sanitized.invalidCount > 0 ? t(run, "invalidConfirmation") : input.assistantText;
+    const composed = this.responseComposer.compose({
+      locale: localeFor(run),
+      userMessage: run.context.userMessage,
+      frontDeskHandoff: run.context.productContext.frontDeskHandoff as FrontDeskHandoff | undefined,
+      workspace: run.workspace,
+      toolResults: sanitized.toolResults,
+      pendingActions: input.pendingActions,
+      criticReview: input.criticReview,
+      currentTask: run.workspace?.currentTask,
+      suggestedTasks: run.workspace?.suggestedTasks,
+      context: run.context,
+      fallbackText: input.assistantText,
+    });
+    const assistantText = sanitized.invalidCount > 0 ? t(run, "invalidConfirmation") : composed.assistantText;
     const workspacePatch = sanitized.invalidCount > 0 ? {} : input.workspacePatch;
     const assistantMessage = await this.saveMessage(userId, run.context.sessionId, "assistant", assistantText, run.context.turnId, sanitized.toolResults);
     this.emit(run, "agent.message.completed", "回复已生成", {
@@ -1114,7 +1138,7 @@ export class AgentOrchestrator {
       assistantMessage,
       timeline: timelineFor(sanitized.toolResults, now, run.context.turnId),
       workspace,
-      nextActions: [],
+      nextActions: composed.nextActions ?? [],
       raw: {
         artifactIds: [],
         evidenceChainIds: [],
@@ -1128,6 +1152,10 @@ export class AgentOrchestrator {
           observations: run.context.observations ?? [],
           agentMessages: run.context.agentMessages ?? [],
           criticReview: input.criticReview,
+          responseComposer: {
+            used: true,
+            systemNotices: composed.systemNotices,
+          },
         },
         actionResults: sanitized.toolResults
           .map((result) => result.actionResult)
@@ -1182,6 +1210,10 @@ export class AgentOrchestrator {
       updatedAt: now,
       ...existing,
       ...patch,
+      active: {
+        ...(existing?.active ?? {}),
+        ...(isRecord(patch.active) ? patch.active : {}),
+      },
     } as CopilotWorkspace;
     return this.deps.kernel.copilotServices.workspaceService.saveWorkspace(userId, workspace);
   }
@@ -1349,6 +1381,7 @@ function failedActionResult(actionType: string, message: string, reason = "unsup
   return {
     status: "failed",
     message,
+    visibility: "error_user_visible",
     actionResult: { actionType, status: "failed", message, reason },
   };
 }
@@ -1357,6 +1390,7 @@ function needsConfirmationResult(message: string): ToolResult {
   return {
     status: "needs_input",
     message,
+    visibility: "action_required",
     actionResult: { actionType: "critic_gate", status: "needs_input", message, reason: "critic_needs_user_confirmation" },
   };
 }
@@ -1365,6 +1399,7 @@ function needsRevisionResult(message: string): ToolResult {
   return {
     status: "needs_input",
     message,
+    visibility: "action_required",
     actionResult: { actionType: "critic_gate", status: "needs_input", message, reason: "critic_needs_revision" },
   };
 }
@@ -1405,6 +1440,13 @@ function decisionTraceMeta(decision: unknown): Record<string, unknown> | undefin
 
 function mergeWorkspacePatch(results: ToolResult[]): Record<string, unknown> {
   return results.reduce<Record<string, unknown>>((merged, result) => ({ ...merged, ...(result.workspacePatch ?? {}) }), {});
+}
+
+function ensureToolResultVisibility(result: ToolResult, toolName?: string): ToolResult {
+  return {
+    ...result,
+    visibility: result.visibility ?? defaultToolResultVisibility(toolName, result.status),
+  };
 }
 
 function assistantFromResults(results: ToolResult[], fallback: string): string {
@@ -1459,6 +1501,10 @@ function previewFor(toolName: string, args: Record<string, unknown>) {
 
 function isString(value: unknown): value is string {
   return typeof value === "string" && value.trim().length > 0;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function hydrateNeedsInputMessage(toolName: string, locale: CopilotLocale): string {

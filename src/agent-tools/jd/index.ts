@@ -14,7 +14,7 @@ export function createJDAgentTools(): ToolDefinition[] {
       riskLevel: "low",
       execute: async (input, context) => {
         const items = await context.kernel.productServices.jdService.listJDs(context.userId, typeof input.limit === "number" ? input.limit : 50);
-        return { status: "success", message: `Found ${items.length} JD(s).`, data: { count: items.length, items }, workspacePatch: { activePanel: "jd_library", jds: items } };
+        return { status: "success", message: `Found ${items.length} JD(s).`, data: { count: items.length, items }, workspacePatch: { activePanel: "jd_library", jds: items }, visibility: "internal" };
       },
     },
     {
@@ -29,8 +29,8 @@ export function createJDAgentTools(): ToolDefinition[] {
       execute: async (input, context) => {
         const jd = await context.kernel.productServices.jdService.getJD(context.userId, String(input.id));
         return jd
-          ? { status: "success", message: `Loaded JD "${jd.title}".`, data: { jd }, workspacePatch: { activePanel: "jd_library", jdId: jd.id } }
-          : { status: "failed", message: "JD not found.", data: { id: input.id } };
+          ? { status: "success", message: `Loaded JD "${jd.title}".`, data: { jd }, workspacePatch: { activePanel: "jd_library", jdId: jd.id, active: { jdId: jd.id } }, visibility: "internal" }
+          : { status: "failed", message: "JD not found.", data: { id: input.id }, visibility: "error_user_visible" };
       },
     },
     {
@@ -42,7 +42,7 @@ export function createJDAgentTools(): ToolDefinition[] {
       mutability: "read",
       requiresConfirmation: false,
       riskLevel: "low",
-      execute: async (input) => ({ status: "success", message: "Prepared JD save for confirmation.", data: { preview: { rawText: input.text } } }),
+      execute: async (input) => ({ status: "success", message: "Prepared JD save for confirmation.", data: { preview: { rawText: input.text } }, visibility: "internal" }),
     },
     {
       name: "save_jd_from_text",
@@ -60,7 +60,7 @@ export function createJDAgentTools(): ToolDefinition[] {
           company: typeof input.company === "string" ? input.company : undefined,
           targetRole: typeof input.targetRole === "string" ? input.targetRole : undefined,
         });
-        return { status: "success", message: `Saved JD "${jd.title}".`, data: { jd }, workspacePatch: { activePanel: "jd_library", jdId: jd.id } };
+        return { status: "success", message: `Saved JD "${jd.title}".`, data: { jd }, workspacePatch: { activePanel: "jd_library", jdId: jd.id, active: { jdId: jd.id } }, visibility: "user_summary" };
       },
     },
   ];

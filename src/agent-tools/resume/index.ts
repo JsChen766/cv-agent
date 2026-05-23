@@ -16,7 +16,7 @@ export function createResumeAgentTools(): ToolDefinition[] {
       riskLevel: "low",
       execute: async (input, context) => {
         const items = await context.kernel.productServices.resumeService.listResumes(context.userId, typeof input.limit === "number" ? input.limit : 50);
-        return { status: "success", message: `Found ${items.length} resume(s).`, data: { count: items.length, items }, workspacePatch: { activePanel: "resume_history", resumes: items } };
+        return { status: "success", message: `Found ${items.length} resume(s).`, data: { count: items.length, items }, workspacePatch: { activePanel: "resume_history", resumes: items }, visibility: "internal" };
       },
     },
     {
@@ -31,8 +31,8 @@ export function createResumeAgentTools(): ToolDefinition[] {
       execute: async (input, context) => {
         const resume = await context.kernel.productServices.resumeService.getResume(context.userId, String(input.id));
         return resume
-          ? { status: "success", message: `Loaded resume "${resume.title}".`, data: { resume }, workspacePatch: { activePanel: "resume_editor", resumeId: resume.id, activeResume: resume } }
-          : { status: "failed", message: "Resume not found.", data: { id: input.id } };
+          ? { status: "success", message: `Loaded resume "${resume.title}".`, data: { resume }, workspacePatch: { activePanel: "resume_editor", resumeId: resume.id, activeResume: resume, active: { resumeId: resume.id } }, visibility: "internal" }
+          : { status: "failed", message: "Resume not found.", data: { id: input.id }, visibility: "error_user_visible" };
       },
     },
     {
@@ -66,6 +66,7 @@ export function createResumeAgentTools(): ToolDefinition[] {
             activePanel: "variants",
             productGenerationId: result.generation.id,
             jdId: result.jd.id,
+            active: { jdId: result.jd.id, variantId: variants[0]?.id ?? undefined },
             activeVariantId: variants[0]?.id ?? null,
             variants,
             status: "ready",
@@ -80,6 +81,7 @@ export function createResumeAgentTools(): ToolDefinition[] {
               variantCount: variants.length,
             },
           },
+          visibility: "user_summary",
         };
       },
     },
@@ -114,6 +116,7 @@ export function createResumeAgentTools(): ToolDefinition[] {
             message: "Updated resume item.",
             data: { item: updated },
             workspacePatch: { activePanel: "resume_editor" },
+            visibility: "user_summary",
             actionResult: {
               status: "success",
               actionType: "optimize_resume_item",
@@ -126,7 +129,7 @@ export function createResumeAgentTools(): ToolDefinition[] {
               },
             },
           }
-          : { status: "failed", message: "Resume item not found.", data: { id: itemId } };
+          : { status: "failed", message: "Resume item not found.", data: { id: itemId }, visibility: "error_user_visible" };
       },
     },
   ];

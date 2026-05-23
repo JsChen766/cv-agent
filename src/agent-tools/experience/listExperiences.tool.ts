@@ -20,6 +20,7 @@ export function listExperiencesTool(): ToolDefinition {
         message: items.length === 0 ? "Your experience library is empty." : `Your experience library has ${items.length} item(s).`,
         data: { count: items.length, items },
         workspacePatch: { activePanel: "experience_library", experiences: items },
+        visibility: "internal",
       };
     },
   };

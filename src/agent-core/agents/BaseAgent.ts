@@ -239,6 +239,27 @@ export abstract class BaseAgent implements Agent {
         responseType: "route | plan | final | ask_clarification | error",
         routeTo: "frontdesk | experience_receiver | strategist | architect | critic",
         plan: [{ id: "step id", agentName: this.name, toolName: "allowed tool", arguments: {}, summary: "display summary" }],
+        ...(this.name === "frontdesk"
+          ? {
+              handoff: {
+                intent: "jd.intake | resume.generate_from_jd | experience.rewrite | general.chat | clarify",
+                confidence: 0.8,
+                routeTo: "frontdesk | strategist | experience_receiver | architect | critic",
+                userGoal: "short semantic goal",
+                extracted: {
+                  jdText: "full JD text if the user pasted a JD",
+                  experienceText: "full experience text if the user pasted an experience",
+                  jdId: "known JD id when available",
+                  experienceId: "known experience id when available",
+                  targetRole: "role inferred from JD when available",
+                  company: "company inferred from JD when available",
+                },
+                missingInputs: [],
+                suggestedActions: ["save_jd", "analyze_jd", "generate_resume"],
+                next: "answer_directly | handoff | ask_clarification | prepare_confirmation | execute_task",
+              },
+            }
+          : {}),
         ...(this.name === "critic"
           ? {
               criticReview: {

@@ -6,6 +6,10 @@ import type {
   ProductResumeSummary,
 } from "../product/types.js";
 import type { AgentStreamEvent } from "../agent-core/runtime/AgentStreamEvent.js";
+import type { DraftContext } from "./context/DraftContext.js";
+import type { FrontDeskHandoff } from "./handoff/FrontDeskHandoff.js";
+import type { JDProfile } from "./profile/JDProfile.js";
+import type { CopilotTask } from "./tasks/CopilotTask.js";
 
 export type CopilotSession = {
   id: string;
@@ -76,6 +80,21 @@ export type CopilotWorkspace = {
   }>;
   importCandidates?: ProductImportCandidateSummary[];
   selectedEvidenceChainId?: string | null;
+  drafts?: DraftContext;
+  handoffs?: FrontDeskHandoff[];
+  currentTask?: CopilotTask;
+  suggestedTasks?: CopilotTask[];
+  jdProfile?: JDProfile;
+  workingSets?: Record<string, unknown>;
+  active?: {
+    jdId?: string;
+    jdDraftId?: string;
+    experienceId?: string;
+    experienceDraftId?: string;
+    resumeId?: string;
+    resumeItemId?: string;
+    variantId?: string;
+  };
   status:
     | "empty"
     | "ready"

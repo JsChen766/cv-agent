@@ -21,7 +21,10 @@ export const GenerateResumeInputSchema = z.object({
   jdId: z.string().optional(),
   jdText: z.string().optional(),
   targetRole: z.string().optional(),
-}).passthrough();
+}).passthrough().refine((value) => Boolean(value.jdId?.trim() || value.jdText?.trim() || value.variantId || value.accept || value.action), {
+  message: "jdId or jdText is required",
+  path: ["jdText"],
+});
 export const ReviseResumeItemInputSchema = z.object({
   resumeItemId: z.string().min(1),
   instruction: z.string().min(1),
@@ -39,4 +42,5 @@ export const ToolResultSchema = z.object({
   workspacePatch: z.record(z.string(), z.unknown()).optional(),
   actionResult: z.record(z.string(), z.unknown()).optional(),
   pendingActionId: z.string().optional(),
+  visibility: z.enum(["internal", "user_summary", "action_required", "error_user_visible"]).optional(),
 });

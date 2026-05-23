@@ -9,7 +9,8 @@ export class StrategistAgent extends BaseAgent {
     "search_experiences",
     "get_jd",
     "list_jds",
-    "check_unsupported_claims",
+    "prepare_save_jd_from_text",
+    "save_jd_from_text",
   ];
 
   public constructor(deps: { modelClient?: ModelClient; promptRegistry: PromptRegistry }) {

@@ -16,7 +16,7 @@ export function updateExperienceTool(): ToolDefinition {
       const id = String(input.experienceId);
       const patch = input.patch as Partial<ProductExperience>;
       const updated = await context.kernel.productServices.experienceService.updateExperience(context.userId, id, patch);
-      if (!updated) return { status: "failed", message: "Experience not found.", data: { id } };
+      if (!updated) return { status: "failed", message: "Experience not found.", data: { id }, visibility: "error_user_visible" };
       let revision;
       if (typeof input.content === "string" && input.content.trim()) {
         revision = await context.kernel.productServices.experienceService.createRevision(context.userId, id, {
@@ -28,7 +28,8 @@ export function updateExperienceTool(): ToolDefinition {
         status: "success",
         message: `Updated experience "${updated.title}".`,
         data: { experience: updated, revision },
-        workspacePatch: { activePanel: "experience_library", activeExperienceId: updated.id },
+        workspacePatch: { activePanel: "experience_library", active: { experienceId: updated.id } },
+        visibility: "user_summary",
         actionResult: {
           status: "success",
           actionType: "update_experience",

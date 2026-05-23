@@ -193,7 +193,10 @@ export async function registerProductRoutes(
     const body = requireRecord(request.body);
     return withIdempotency(request, reply, kernel, ctx.user.id, async () => {
       const rawText = body.rawText ?? body.text;
-      const job = await kernel.productServices.importService.createTextImportJob(ctx.user.id, requiredString(rawText, "rawText"));
+      if (typeof rawText !== "string" || !rawText.trim()) {
+        throw new ApiError(ErrorCodes.INVALID_BODY, "Please provide import text in rawText or text.", 400);
+      }
+      const job = await kernel.productServices.importService.createTextImportJob(ctx.user.id, rawText);
       const candidates = await kernel.productServices.importService.createCandidatesFromText(ctx.user.id, job.id);
       return productSuccess({ job, candidates }, kernel, ctx);
     });
@@ -260,7 +263,7 @@ export async function registerProductRoutes(
     const ctx = await contextFor(request);
     const body = requireRecord(request.body);
     const jdId = optionalString(body.jdId);
-    const jdText = optionalString(body.jdText);
+    const jdText = optionalString(body.jdText ?? body.rawText ?? body.text);
     if (!jdId && !jdText) {
       throw new ApiError(ErrorCodes.INVALID_BODY, "jdText or jdId is required.", 400);
     }

@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { FrontDeskHandoffSchema } from "../../copilot/handoff/FrontDeskHandoffSchema.js";
 
 export const AgentNameSchema = z.enum([
   "frontdesk",
@@ -36,6 +37,7 @@ export const AgentDecisionSchema = z.object({
   missingInputs: z.array(z.string()).default([]),
   confidence: z.number().min(0).max(1).default(0.7),
   criticReview: CriticReviewSchema.optional(),
+  handoff: FrontDeskHandoffSchema.partial().passthrough().optional(),
 });
 
 export type AgentName = z.infer<typeof AgentNameSchema>;
@@ -104,6 +106,7 @@ export function repairAgentDecision(raw: unknown, agentName: AgentName): AgentDe
   if (routeToOk) repaired.routeTo = routeToOk;
   const criticReview = CriticReviewSchema.safeParse(obj.criticReview);
   if (criticReview.success) repaired.criticReview = criticReview.data;
+  if (obj.handoff !== undefined) repaired.handoff = obj.handoff as AgentDecision["handoff"];
 
   const result = AgentDecisionSchema.safeParse(repaired);
   if (result.success) return result.data;

@@ -1,4 +1,5 @@
 import type { CopilotMessage, CopilotTurn, CopilotWorkspace } from "./types.js";
+import { normalizeDraftContext } from "./context/DraftContext.js";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -96,6 +97,25 @@ export function normalizeCopilotWorkspace(ws: unknown): CopilotWorkspace | null 
       typeof ws.selectedEvidenceChainId === "string"
         ? ws.selectedEvidenceChainId
         : null,
+    drafts: normalizeDraftContext(ws.drafts),
+    handoffs: Array.isArray(ws.handoffs)
+      ? (ws.handoffs as NonNullable<CopilotWorkspace["handoffs"]>).slice(-8)
+      : undefined,
+    currentTask: isRecord(ws.currentTask)
+      ? (ws.currentTask as CopilotWorkspace["currentTask"])
+      : undefined,
+    suggestedTasks: Array.isArray(ws.suggestedTasks)
+      ? (ws.suggestedTasks as CopilotWorkspace["suggestedTasks"])
+      : undefined,
+    jdProfile: isRecord(ws.jdProfile)
+      ? (ws.jdProfile as CopilotWorkspace["jdProfile"])
+      : undefined,
+    workingSets: isRecord(ws.workingSets)
+      ? (ws.workingSets as Record<string, unknown>)
+      : undefined,
+    active: isRecord(ws.active)
+      ? (ws.active as CopilotWorkspace["active"])
+      : undefined,
     status,
     summary: typeof ws.summary === "string" ? ws.summary : undefined,
     updatedAt:
