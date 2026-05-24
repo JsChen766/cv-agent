@@ -81,10 +81,20 @@ export class ContextHydrator {
       applyResolverConflicts(toolName, hydrated, resume);
     }
     if (toolName === "show_evidence") {
-      const variant = this.resolver.resolveVariant(runContext, workspace, hydrated);
-      Object.assign(hydrated, normalizeShowEvidenceArgs(hydrated));
-      hydrated.variantId = stringValue(hydrated.variantId) ?? variant.id;
-      applyResolverConflicts(toolName, hydrated, variant);
+      const normalized = normalizeShowEvidenceArgs(hydrated);
+      Object.assign(hydrated, normalized);
+      const hasExplicitEvidenceTarget = Boolean(
+        normalized.variantId
+        || normalized.evidenceId
+        || normalized.evidenceChainId
+        || normalized.generationId
+        || normalized.__invalidShowEvidenceId,
+      );
+      if (!hasExplicitEvidenceTarget) {
+        const variant = this.resolver.resolveVariant(runContext, workspace, hydrated);
+        if (variant.id) hydrated.variantId = variant.id;
+        applyResolverConflicts(toolName, hydrated, variant);
+      }
       applyGenerationConflict(toolName, hydrated, workspace);
     }
     if (toolName === "accept_generation_variant") {

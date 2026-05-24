@@ -82,6 +82,22 @@ export async function guardToolScope(
     }
   }
 
+  if (toolName === "revise_resume_item") {
+    const resumeItemId = stringValue(args.resumeItemId);
+    if (!resumeItemId) return undefined;
+    const activeResume = workspace?.activeResume;
+    if (!activeResume) return needsInput(toolName, "resumeItemId", "Please reopen the resume before revising an item.");
+    if (activeResume.userId && activeResume.userId !== context.userId) {
+      return needsInput(toolName, "resumeItemId", "This resume item is not available in the current workspace.");
+    }
+    // TODO(P1): add repository-level resume item ownership validation when the resume service exposes a getResumeItem API.
+    const item = activeResume.items?.find((resumeItem) => resumeItem.id === resumeItemId);
+    if (!item) return needsInput(toolName, "resumeItemId", "Resume item not found in the current resume.");
+    if (item.userId && item.userId !== context.userId) {
+      return needsInput(toolName, "resumeItemId", "This resume item is not available for the current user.");
+    }
+  }
+
   if (toolName === "show_evidence") {
     const normalized = normalizeShowEvidenceArgs(args);
     const variantId = stringValue(normalized.variantId);

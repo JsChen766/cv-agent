@@ -26,6 +26,10 @@ export function isCanonicalResumeId(value: unknown): value is string {
   return isCanonicalId(value, "pres-");
 }
 
+export function isCanonicalResumeItemId(value: unknown): value is string {
+  return isCanonicalId(value, "presitem-");
+}
+
 export function isCanonicalVariantId(value: unknown): value is string {
   return typeof value === "string" && (isCanonicalId(value, "pvar-") || isCanonicalId(value, "pexpvar-"));
 }

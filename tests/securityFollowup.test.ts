@@ -2,6 +2,9 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { z } from "zod";
 import { PendingActionService } from "../src/agent-core/confirmation/PendingActionService.js";
 import { AgentOrchestrator } from "../src/agent-core/runtime/AgentOrchestrator.js";
+import { guardToolIds } from "../src/agent-core/security/ToolIdGuard.js";
+import { guardToolScope } from "../src/agent-core/security/ToolScopeGuard.js";
+import { sanitizeExperiencePatch } from "../src/agent-core/security/ToolPatchSanitizer.js";
 import type { AgentContext } from "../src/agent-core/runtime/AgentContext.js";
 import type { ToolDefinition } from "../src/agent-core/tools/Tool.js";
 import { ToolResultSchema } from "../src/agent-core/validation/ToolInputSchemas.js";
@@ -11,6 +14,7 @@ import { updateExperienceTool } from "../src/agent-tools/experience/updateExperi
 import type { ApiKernel } from "../src/api/types.js";
 import { ContextHydrator } from "../src/copilot/context/ContextHydrator.js";
 import type { CopilotWorkspace, ProductVariant } from "../src/copilot/types.js";
+import type { ProductResumeDetail } from "../src/product/types.js";
 import { createP12Kernel, testContext } from "./p12Helpers.js";
 
 const PEXP_A = "pexp-00000000-0000-0000-0000-000000000001";
@@ -18,6 +22,8 @@ const PEXP_B = "pexp-00000000-0000-0000-0000-000000000002";
 const PVAR_A = "pvar-00000000-0000-0000-0000-000000000001";
 const PVAR_B = "pvar-00000000-0000-0000-0000-000000000002";
 const PGEN_A = "pgen-00000000-0000-0000-0000-000000000001";
+const PITEM_A = "presitem-00000000-0000-0000-0000-000000000001";
+const PITEM_B = "presitem-00000000-0000-0000-0000-000000000002";
 
 describe("P0.1 security follow-up regressions", () => {
   let kernel: ApiKernel;
@@ -106,6 +112,48 @@ describe("P0.1 security follow-up regressions", () => {
     expect(byEvidence.status).toBe("success");
     expect(byGeneration.status).toBe("needs_input");
     expect(byGeneration.actionResult?.reason).toBe("generation_evidence_lookup_not_supported");
+  });
+
+  it("does not hydrate show_evidence generation-only targets with active variant fallback", () => {
+    const hydrator = new ContextHydrator();
+    const context = { ...testContext(kernel), clientState: { activeVariantId: PVAR_A } } as AgentContext;
+    const workspace = baseWorkspace({ activeVariantId: PVAR_A, active: { variantId: PVAR_A }, variants: [variantWithEvidence(PVAR_A, PEXP_A)] });
+
+    const byId = hydrator.hydrate("show_evidence", { id: PGEN_A }, context, workspace);
+    const byGeneration = hydrator.hydrate("show_evidence", { generationId: PGEN_A }, context, workspace);
+
+    expect(byId.generationId).toBe(PGEN_A);
+    expect(byId.variantId).toBeUndefined();
+    expect(byGeneration.generationId).toBe(PGEN_A);
+    expect(byGeneration.variantId).toBeUndefined();
+  });
+
+  it("hydrates show_evidence from active variant only when no evidence target is explicit", async () => {
+    const hydrator = new ContextHydrator();
+    const tool = createEvidenceAgentTools().find((item) => item.name === "show_evidence")!;
+    const workspace = baseWorkspace({ activeVariantId: PVAR_A, active: { variantId: PVAR_A }, variants: [variantWithEvidence(PVAR_A, PEXP_A)] });
+    const context = { ...testContext(kernel), workspace } as AgentContext;
+
+    const hydrated = hydrator.hydrate("show_evidence", {}, context, workspace);
+    const result = await tool.execute(hydrated, context);
+
+    expect(hydrated.variantId).toBe(PVAR_A);
+    expect(result.status).toBe("success");
+  });
+
+  it("keeps explicit show_evidence variant targets and rejects invalid ids", async () => {
+    const hydrator = new ContextHydrator();
+    const tool = createEvidenceAgentTools().find((item) => item.name === "show_evidence")!;
+    const workspace = baseWorkspace({ activeVariantId: PVAR_B, variants: [variantWithEvidence(PVAR_A, PEXP_A), variantWithEvidence(PVAR_B, PEXP_B)] });
+    const context = { ...testContext(kernel), workspace } as AgentContext;
+
+    const hydrated = hydrator.hydrate("show_evidence", { variantId: PVAR_A }, context, workspace);
+    const result = await tool.execute(hydrated, context);
+    const invalid = guardToolIds("show_evidence", { id: "not-a-real-id" });
+
+    expect(hydrated.variantId).toBe(PVAR_A);
+    expect(result.status).toBe("success");
+    expect(invalid).toMatchObject({ status: "needs_input", actionResult: { missingInputs: ["id"] } });
   });
 
   it("rejects write conflicts between explicit IDs and active workspace IDs", async () => {
@@ -219,6 +267,113 @@ describe("P0.1 security follow-up regressions", () => {
     expect(result.raw.pendingActions ?? []).toHaveLength(0);
     expect(result.raw.actionResults?.[0]).toMatchObject({ status: "needs_input" });
   });
+
+  it("guards revise_resume_item resumeItemId format", () => {
+    expect(guardToolIds("revise_resume_item", { resumeItemId: "abc", instruction: "rewrite" })).toMatchObject({
+      status: "needs_input",
+      actionResult: { missingInputs: ["resumeItemId"] },
+    });
+    expect(guardToolIds("revise_resume_item", { resumeItemId: PITEM_A, instruction: "rewrite" })).toBeUndefined();
+  });
+
+  it("guards revise_resume_item workspace scope", async () => {
+    const context = testContext(kernel);
+    const missingResume = await guardToolScope("revise_resume_item", { resumeItemId: PITEM_A, instruction: "rewrite" }, context, null);
+    const wrongItem = await guardToolScope("revise_resume_item", { resumeItemId: PITEM_B, instruction: "rewrite" }, context, baseWorkspace({ activeResume: activeResumeWithItem(PITEM_A) }));
+    const valid = await guardToolScope("revise_resume_item", { resumeItemId: PITEM_A, instruction: "rewrite" }, context, baseWorkspace({ activeResume: activeResumeWithItem(PITEM_A) }));
+
+    expect(missingResume).toMatchObject({ status: "needs_input", actionResult: { missingInputs: ["resumeItemId"] } });
+    expect(wrongItem).toMatchObject({ status: "needs_input", actionResult: { missingInputs: ["resumeItemId"] } });
+    expect(valid).toBeUndefined();
+  });
+
+  it("does not create a revise_resume_item pending action for illegal resumeItemId", async () => {
+    const runtime = new AgentOrchestrator({ kernel });
+    let executeCount = 0;
+    runtime.tools.register({
+      ...countingTool("revise_resume_item", () => { executeCount += 1; }),
+      inputSchema: z.object({ resumeItemId: z.string(), instruction: z.string() }).passthrough(),
+    });
+    const session = await kernel.copilotServices.sessionService.getOrCreateSession("user-1", {});
+
+    const result = await runtime.handleExplicitAction(testContext(kernel).requestContext, {
+      sessionId: session.id,
+      action: { type: "optimize_resume_item", payload: { resumeItemId: "abc", instruction: "rewrite" } },
+    });
+
+    expect(executeCount).toBe(0);
+    expect(result.raw.pendingActions ?? []).toHaveLength(0);
+    expect(result.raw.actionResults?.[0]).toMatchObject({ status: "needs_input" });
+  });
+
+  it("sanitizes experience patch keys and values conservatively", () => {
+    expect(sanitizeExperiencePatch({ description: "x" })).toEqual({});
+    expect(sanitizeExperiencePatch({ summary: "x" })).toEqual({});
+    expect(sanitizeExperiencePatch({ location: "x" })).toEqual({});
+    expect(sanitizeExperiencePatch({ userId: "other" })).toEqual({});
+    expect(sanitizeExperiencePatch({ currentRevisionId: "xxx" })).toEqual({});
+    expect(sanitizeExperiencePatch({ title: "  New Title  " })).toEqual({ title: "New Title" });
+    expect(sanitizeExperiencePatch({ category: "bad" })).toEqual({});
+    expect(sanitizeExperiencePatch({ tags: ["sql", "", "sql", " data "] })).toEqual({ tags: ["sql", "data"] });
+  });
+
+  it("returns needs_input when experience patch only has illegal fields", async () => {
+    const { experience } = await kernel.productServices.experienceService.createExperience("user-1", { title: "Illegal patch", content: "Original" });
+    const context = testContext(kernel);
+
+    expect((await prepareUpdateExperienceTool().execute({ experienceId: experience.id, patch: { description: "x" } }, context)).status).toBe("needs_input");
+    expect((await updateExperienceTool().execute({ experienceId: experience.id, patch: { summary: "x" } }, context)).status).toBe("needs_input");
+  });
+
+  it("marks confirm schema blocks as blocked in trace and response", async () => {
+    const pendingActions = new PendingActionService();
+    const runtime = new AgentOrchestrator({ kernel, pendingActions });
+    let executeCount = 0;
+    const tool: ToolDefinition = {
+      ...countingTool("update_experience", () => { executeCount += 1; }),
+      inputSchema: z.object({ experienceId: z.string(), content: z.string() }).passthrough(),
+    };
+    runtime.tools.register(tool);
+    const session = await kernel.copilotServices.sessionService.getOrCreateSession("user-1", {});
+    const action = await pendingActions.create({
+      userId: "user-1",
+      sessionId: session.id,
+      tool,
+      toolArguments: { content: "rewrite" },
+    });
+
+    const response = await runtime.confirmPendingAction(testContext(kernel).requestContext, action.id);
+    const trace = JSON.stringify(response.raw.agentTrace);
+
+    expect(executeCount).toBe(0);
+    expect(trace).toContain(`Blocked pending action ${action.id}.`);
+    expect(trace).not.toContain(`Executed pending action ${action.id}.`);
+    expect(response.raw.actionResults?.[0]).toMatchObject({ status: "needs_input", reason: "confirm_schema_blocked" });
+    expect(response.assistantMessage.content).toBe("Pending action input is invalid. Please start the action again.");
+    expect((response.workspace as Record<string, unknown>).activePanel).toBeUndefined();
+    expect(trace).not.toContain("Critic pass.");
+  });
+
+  it("marks confirm guard blocks as blocked in trace", async () => {
+    const pendingActions = new PendingActionService();
+    const runtime = new AgentOrchestrator({ kernel, pendingActions });
+    const tool = countingTool("update_experience", () => {});
+    runtime.tools.register(tool);
+    const session = await kernel.copilotServices.sessionService.getOrCreateSession("user-1", {});
+    const action = await pendingActions.create({
+      userId: "user-1",
+      sessionId: session.id,
+      tool,
+      toolArguments: { experienceId: "abc", content: "rewrite" },
+    });
+
+    const response = await runtime.confirmPendingAction(testContext(kernel).requestContext, action.id);
+    const trace = JSON.stringify(response.raw.agentTrace);
+
+    expect(trace).toContain(`Blocked pending action ${action.id}.`);
+    expect(trace).not.toContain(`Executed pending action ${action.id}.`);
+    expect(response.raw.actionResults?.[0]).toMatchObject({ status: "needs_input", reason: "confirm_guard_blocked" });
+  });
 });
 
 function countingTool(name: string, onExecute: () => void): ToolDefinition {
@@ -271,5 +426,31 @@ function variantWithEvidence(id: string, evidenceId: string): ProductVariant {
     actions: [],
     raw: {},
     createdAt: new Date().toISOString(),
+  };
+}
+
+function activeResumeWithItem(itemId: string): ProductResumeDetail {
+  const now = new Date().toISOString();
+  return {
+    id: "pres-00000000-0000-0000-0000-000000000001",
+    userId: "user-1",
+    title: "Resume",
+    status: "draft",
+    createdAt: now,
+    updatedAt: now,
+    items: [{
+      id: itemId,
+      resumeId: "pres-00000000-0000-0000-0000-000000000001",
+      userId: "user-1",
+      sectionType: "experience",
+      title: "Item",
+      contentSnapshot: "Built data pipelines.",
+      orderIndex: 0,
+      hidden: false,
+      pinned: false,
+      metadata: {},
+      createdAt: now,
+      updatedAt: now,
+    }],
   };
 }

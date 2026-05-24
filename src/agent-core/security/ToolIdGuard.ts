@@ -6,6 +6,7 @@ import {
   isCanonicalGenerationId,
   isCanonicalJDId,
   isCanonicalResumeId,
+  isCanonicalResumeItemId,
   isCanonicalVariantId,
 } from "../../copilot/context/IdGuards.js";
 
@@ -62,6 +63,11 @@ export function guardToolIds(toolName: string, args: Record<string, unknown>): T
     if (resumeId && !isCanonicalResumeId(resumeId)) return needsInput(toolName, "resumeId", "Please select a valid resume from your resume library.");
     const variantId = stringValue(args.variantId);
     if (variantId && !isCanonicalVariantId(variantId)) return needsInput(toolName, "variantId", "Please select a valid generated variant.");
+  }
+
+  if (toolName === "revise_resume_item") {
+    const resumeItemId = stringValue(args.resumeItemId);
+    if (resumeItemId && !isCanonicalResumeItemId(resumeItemId)) return needsInput(toolName, "resumeItemId", "Please select a valid resume item.");
   }
 
   if (toolName === "show_evidence") {

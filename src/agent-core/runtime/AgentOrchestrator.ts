@@ -333,16 +333,30 @@ export class AgentOrchestrator {
     const tool = this.tools.get(confirmedAction.toolName);
     const step = confirmedActionStep(confirmedAction, tool?.ownerAgent ?? "frontdesk");
     const execution: ToolExecutionRecord = { step, result };
+    const confirmSucceeded = result.status === "success";
     this.addObservation(run, step, result);
     run.trace.add({
       agentName: "AgentOrchestrator",
       type: "final",
-      summary: result.actionResult?.reason === "confirm_guard_blocked" ? `Blocked pending action ${id}.` : `Executed pending action ${id}.`,
-      status: result.actionResult?.reason === "confirm_guard_blocked" ? "needs_input" : "success",
+      summary: confirmSucceeded ? `Executed pending action ${id}.` : `Blocked pending action ${id}.`,
+      status: confirmSucceeded ? "success" : result.status,
       completedAt: new Date().toISOString(),
-      metadata: result.actionResult?.reason === "confirm_guard_blocked" ? { reason: "confirm_guard_blocked" } : undefined,
+      metadata: {
+        pendingActionId: id,
+        toolName: confirmedAction.toolName,
+        resultStatus: result.status,
+        reason: result.actionResult?.reason,
+      },
     });
-    if (result.status === "success" && shouldReviewTool(confirmedAction.toolName)) {
+    if (!confirmSucceeded) {
+      return this.finishRun(ctx.user.id, run, {
+        assistantText: result.message ?? "This pending action is no longer valid. Please start it again.",
+        toolResults: [result],
+        pendingActions: [],
+        workspacePatch: {},
+      });
+    }
+    if (shouldReviewTool(confirmedAction.toolName)) {
       this.emit(run, "agent.critic.started", "正在审查结果…", {
         agentName: "critic",
         status: "running",
