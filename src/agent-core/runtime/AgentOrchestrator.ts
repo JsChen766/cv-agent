@@ -20,6 +20,10 @@ import { ResponseComposer } from "../../copilot/response/ResponseComposer.js";
 import { isBlockedToolLog } from "../../copilot/response/ProductReplyTemplates.js";
 import { isCanonicalExperienceId, isCanonicalGenerationId, isCanonicalJDId, isCanonicalResumeId, isCanonicalVariantId } from "../../copilot/context/IdGuards.js";
 import { defaultToolResultVisibility } from "../../copilot/response/ToolResultVisibility.js";
+import { affectedResourcesFor } from "../security/ToolAffectedResources.js";
+import { guardToolIds, stripInternalToolArgs } from "../security/ToolIdGuard.js";
+import { sanitizeExperiencePatch } from "../security/ToolPatchSanitizer.js";
+import { guardToolScope } from "../security/ToolScopeGuard.js";
 import { tasksFromHandoff } from "../../copilot/tasks/TaskStateReducer.js";
 import { createAgentTools } from "../../agent-tools/index.js";
 import type { PendingAction } from "../confirmation/PendingAction.js";
@@ -45,6 +49,8 @@ import type { AgentObservation, AgentObservationStatus } from "./AgentObservatio
 import { AgentTraceRecorder } from "./AgentTrace.js";
 import type { AgentRuntimeEmitter, AgentStreamEventType } from "./AgentStreamEvent.js";
 import { CriticGate, shouldReviewTool, type ToolExecutionRecord } from "./CriticGate.js";
+
+export { guardToolIds } from "../security/ToolIdGuard.js";
 
 export type AgentOrchestratorDeps = {
   kernel: ApiKernel;
@@ -320,6 +326,7 @@ export class AgentOrchestrator {
       registry: this.tools,
       executor: run.executor,
       context: run.context,
+      workspace: run.workspace,
     });
     const confirmedAction = confirmed.action;
     const result = ensureToolResultVisibility(confirmed.result, confirmedAction.toolName);
@@ -330,9 +337,10 @@ export class AgentOrchestrator {
     run.trace.add({
       agentName: "AgentOrchestrator",
       type: "final",
-      summary: `Executed pending action ${id}.`,
-      status: "success",
+      summary: result.actionResult?.reason === "confirm_guard_blocked" ? `Blocked pending action ${id}.` : `Executed pending action ${id}.`,
+      status: result.actionResult?.reason === "confirm_guard_blocked" ? "needs_input" : "success",
       completedAt: new Date().toISOString(),
+      metadata: result.actionResult?.reason === "confirm_guard_blocked" ? { reason: "confirm_guard_blocked" } : undefined,
     });
     if (result.status === "success" && shouldReviewTool(confirmedAction.toolName)) {
       this.emit(run, "agent.critic.started", "正在审查结果…", {
@@ -768,6 +776,20 @@ export class AgentOrchestrator {
       completedAt: new Date().toISOString(),
       metadata: { argumentKeys: Object.keys(hydratedArgs) },
     });
+    if (Array.isArray(hydratedArgs.__resolverConflicts) && hydratedArgs.__resolverConflicts.length > 0) {
+      run.trace.add({
+        agentName: step.agentName,
+        type: "reason",
+        summary: `Resolver detected conflicting IDs for ${tool.name}.`,
+        toolName: tool.name,
+        status: "needs_input",
+        completedAt: new Date().toISOString(),
+        metadata: {
+          toolName: tool.name,
+          conflicts: hydratedArgs.__resolverConflicts,
+        },
+      });
+    }
     const idGuardResult = guardToolIds(tool.name, hydratedArgs);
     if (idGuardResult) {
       run.trace.add({
@@ -793,12 +815,7 @@ export class AgentOrchestrator {
       });
       return { result: idGuardResult };
     }
-    this.emit(run, "agent.tool.started", labelForToolStarted(tool.name), {
-      agentName: step.agentName,
-      toolName: tool.name,
-      status: "running",
-    });
-    const parsed = tool.inputSchema.safeParse(hydratedArgs);
+    const parsed = tool.inputSchema.safeParse(stripInternalToolArgs(hydratedArgs));
     if (!parsed.success) {
       const missingFields = parsed.error.issues
         .map((issue) => issue.path.join("."))
@@ -826,6 +843,40 @@ export class AgentOrchestrator {
       };
     }
     const args = parsed.data as Record<string, unknown>;
+    const scopedArgs = {
+      ...args,
+      ...(Array.isArray(hydratedArgs.__resolverConflicts) ? { __resolverConflicts: hydratedArgs.__resolverConflicts } : {}),
+    };
+    const scopeGuardResult = await guardToolScope(tool.name, scopedArgs, run.context, run.workspace);
+    if (scopeGuardResult) {
+      run.trace.add({
+        agentName: step.agentName,
+        type: "reason",
+        summary: `Guard blocked tool ${tool.name}: scope validation failed.`,
+        toolName: tool.name,
+        status: "needs_input",
+        completedAt: new Date().toISOString(),
+        metadata: {
+          stepId: step.id,
+          toolName: tool.name,
+          reason: scopeGuardResult.actionResult?.missingInputs,
+          sessionId: run.context.sessionId,
+          turnId: run.context.turnId,
+        },
+      });
+      this.emit(run, "agent.tool.failed", `工具调用被拦截：${tool.name}`, {
+        agentName: step.agentName,
+        toolName: tool.name,
+        status: "needs_input",
+        payload: { reason: "scope_guard", missingInputs: scopeGuardResult.actionResult?.missingInputs },
+      });
+      return { result: scopeGuardResult };
+    }
+    this.emit(run, "agent.tool.started", labelForToolStarted(tool.name), {
+      agentName: step.agentName,
+      toolName: tool.name,
+      status: "running",
+    });
     if (!tool.requiresConfirmation) {
       try {
         const rawResult = await run.executor.executeDefinition(tool, args, run.context);
@@ -1522,7 +1573,9 @@ function decisionTraceMeta(decision: unknown): Record<string, unknown> | undefin
 }
 
 function mergeWorkspacePatch(results: ToolResult[]): Record<string, unknown> {
-  return results.reduce<Record<string, unknown>>((merged, result) => ({ ...merged, ...(result.workspacePatch ?? {}) }), {});
+  return results
+    .filter((result) => result.status === "success")
+    .reduce<Record<string, unknown>>((merged, result) => ({ ...merged, ...(result.workspacePatch ?? {}) }), {});
 }
 
 function ensureToolResultVisibility(result: ToolResult, toolName?: string): ToolResult {
@@ -1584,7 +1637,7 @@ function confirmationSummary(toolName: string, locale: CopilotLocale): string {
   return `Please confirm ${toolName}.`;
 }
 
-export function guardToolIds(toolName: string, args: Record<string, unknown>): ToolResult | undefined {
+function legacyGuardToolIds(toolName: string, args: Record<string, unknown>): ToolResult | undefined {
   // Experience tools: args.experienceId / args.id must be canonical experience id
   if (["get_experience", "update_experience", "prepare_update_experience", "delete_experience", "prepare_delete_experience"].includes(toolName)) {
     const id = stringValue(args.experienceId) ?? stringValue(args.id);
@@ -1734,7 +1787,7 @@ export function guardToolIds(toolName: string, args: Record<string, unknown>): T
   return undefined;
 }
 
-function affectedResourcesFor(toolName: string, args: Record<string, unknown>) {
+function legacyAffectedResourcesFor(toolName: string, args: Record<string, unknown>) {
   if (toolName.includes("experience")) {
     const rawId = stringValue(args.experienceId) ?? stringValue(args.id);
     const id = isCanonicalExperienceId(rawId) ? rawId : undefined;
@@ -1756,7 +1809,10 @@ function affectedResourcesFor(toolName: string, args: Record<string, unknown>) {
 
 function previewFor(toolName: string, args: Record<string, unknown>) {
   if (toolName === "save_experience_from_text") return { after: { text: args.text } };
-  if (toolName === "update_experience") return { after: { experienceId: args.experienceId, contentPreview: typeof args.content === "string" ? args.content.slice(0, 200) : undefined, patchKeys: Object.keys((args.patch as Record<string, unknown>) ?? {}).slice(0, 10) } };
+  if (toolName === "update_experience") {
+    const patch = sanitizeExperiencePatch(args.patch);
+    return { after: { experienceId: args.experienceId, contentPreview: typeof args.content === "string" ? args.content.slice(0, 200) : undefined, patchKeys: Object.keys(patch).slice(0, 10) } };
+  }
   if (toolName === "delete_experience") return { before: args };
   if (toolName === "export_resume") return { after: args };
   return undefined;

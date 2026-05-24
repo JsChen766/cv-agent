@@ -7,7 +7,7 @@ export const SearchInputSchema = z.object({ query: z.string().min(1), limit: z.n
 export const TextInputSchema = z.object({ text: z.string().min(1) }).passthrough();
 export const UpdateExperienceInputSchema = z.object({
   experienceId: z.string().min(1),
-  patch: z.record(z.string(), z.unknown()).default({}),
+  patch: z.unknown().optional().default({}),
   content: z.string().optional(),
 }).passthrough();
 export const DeleteExperienceInputSchema = z.object({ experienceId: z.string().min(1) }).passthrough();
@@ -38,6 +38,13 @@ export const ExportResumeInputSchema = z.object({
   resumeId: z.string().min(1),
   format: z.enum(["html", "pdf"]).default("html"),
   templateId: z.string().optional(),
+}).passthrough();
+export const ShowEvidenceInputSchema = z.object({
+  id: z.string().optional(),
+  variantId: z.string().optional(),
+  evidenceId: z.string().optional(),
+  evidenceChainId: z.string().optional(),
+  generationId: z.string().optional(),
 }).passthrough();
 
 export const ToolResultSchema = z.object({

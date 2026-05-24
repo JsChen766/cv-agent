@@ -1,6 +1,17 @@
 import type { AgentContext } from "../../agent-core/runtime/AgentContext.js";
 import type { CopilotWorkspace } from "../types.js";
-import { ContextResolver } from "./ContextResolver.js";
+import { normalizeShowEvidenceArgs } from "../../agent-core/security/ToolIdGuard.js";
+import { ContextResolver, type ResolvedAsset, type ResolverConflict } from "./ContextResolver.js";
+
+const CONFLICT_REJECT_TOOLS = new Set([
+  "update_experience",
+  "prepare_update_experience",
+  "delete_experience",
+  "prepare_delete_experience",
+  "accept_generation_variant",
+  "export_resume",
+  "prepare_export_resume",
+]);
 
 export class ContextHydrator {
   public constructor(private readonly resolver = new ContextResolver()) {}
@@ -24,11 +35,20 @@ export class ContextHydrator {
     if (toolName === "get_experience") {
       const experience = this.resolver.resolveExperience(runContext, workspace, hydrated);
       hydrated.id = experience.id ?? stringValue(hydrated.id);
+      applyResolverConflicts(toolName, hydrated, experience);
     }
-    if (toolName === "update_experience") {
+    if (toolName === "update_experience" || toolName === "prepare_update_experience") {
       const experience = this.resolver.resolveExperience(runContext, workspace, hydrated);
       hydrated.experienceId = experience.id ?? stringValue(hydrated.experienceId);
-      hydrated.content = stringValue(hydrated.content) ?? experience.text;
+      const content = explicitRewriteContent(hydrated);
+      if (content) hydrated.content = content;
+      else delete hydrated.content;
+      applyResolverConflicts(toolName, hydrated, experience);
+    }
+    if (toolName === "delete_experience" || toolName === "prepare_delete_experience") {
+      const experience = this.resolver.resolveExperience(runContext, workspace, hydrated);
+      hydrated.experienceId = experience.id ?? stringValue(hydrated.experienceId);
+      applyResolverConflicts(toolName, hydrated, experience);
     }
     if (toolName === "get_jd") {
       const jd = this.resolver.resolveJD(runContext, workspace, hydrated);
@@ -48,6 +68,7 @@ export class ContextHydrator {
     if (toolName === "get_resume") {
       const resume = this.resolver.resolveResume(runContext, workspace, hydrated);
       hydrated.id = resume.id ?? stringValue(hydrated.id);
+      applyResolverConflicts(toolName, hydrated, resume);
     }
     if (toolName === "revise_resume_item") {
       const item = this.resolver.resolveResumeItem(runContext, workspace, hydrated);
@@ -57,32 +78,38 @@ export class ContextHydrator {
     if (toolName === "export_resume" || toolName === "prepare_export_resume") {
       const resume = this.resolver.resolveResume(runContext, workspace, hydrated);
       hydrated.resumeId = resume.id ?? stringValue(hydrated.resumeId);
+      applyResolverConflicts(toolName, hydrated, resume);
     }
     if (toolName === "show_evidence") {
       const variant = this.resolver.resolveVariant(runContext, workspace, hydrated);
-      hydrated.id = variant.id ?? stringValue(hydrated.id);
-      hydrated.variantId = variant.id ?? stringValue(hydrated.variantId);
-      hydrated.generationId = stringValue(hydrated.generationId) ?? workspace?.productGenerationId ?? undefined;
+      Object.assign(hydrated, normalizeShowEvidenceArgs(hydrated));
+      hydrated.variantId = stringValue(hydrated.variantId) ?? variant.id;
+      applyResolverConflicts(toolName, hydrated, variant);
+      applyGenerationConflict(toolName, hydrated, workspace);
     }
     if (toolName === "accept_generation_variant") {
+      const variant = this.resolver.resolveVariant(runContext, workspace, hydrated);
+      const resume = this.resolver.resolveResume(runContext, workspace, hydrated);
       hydrated.generationId = stringValue(hydrated.generationId) ?? workspace?.productGenerationId ?? undefined;
       hydrated.variantId =
         stringValue(hydrated.variantId)
         ?? stringValue(hydrated.id)
-        ?? context.clientState?.activeVariantId
-        ?? workspace?.active?.variantId
-        ?? workspace?.activeVariantId
+        ?? variant.id
         ?? undefined;
       hydrated.resumeId =
         stringValue(hydrated.resumeId)
-        ?? context.clientState?.activeResumeId
-        ?? workspace?.active?.resumeId
-        ?? workspace?.resumeId
-        ?? context.activeAssetContext?.activeResume?.id
+        ?? resume.id
         ?? undefined;
+      applyResolverConflicts(toolName, hydrated, variant);
+      applyResolverConflicts(toolName, hydrated, resume);
+      applyGenerationConflict(toolName, hydrated, workspace);
     }
     return hydrated;
   }
+}
+
+export function explicitRewriteContent(args: Record<string, unknown>): string | undefined {
+  return stringValue(args.content) ?? stringValue(args.rewrittenText) ?? stringValue(args.after);
 }
 
 export function toolNeedsInputMessage(toolName: string, locale: string | undefined): string {
@@ -140,4 +167,30 @@ export function toolNeedsInputMessageForFields(toolName: string, missingFields: 
 
 function stringValue(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function applyResolverConflicts(toolName: string, hydrated: Record<string, unknown>, asset: ResolvedAsset): void {
+  if (!asset.conflicts?.length) return;
+  const conflicts = asset.conflicts.map((conflict) => ({
+    ...conflict,
+    decision: CONFLICT_REJECT_TOOLS.has(toolName) ? "rejected" : "explicit_preferred",
+  }));
+  hydrated.__resolverConflicts = [...internalConflicts(hydrated), ...conflicts];
+}
+
+function applyGenerationConflict(toolName: string, hydrated: Record<string, unknown>, workspace: CopilotWorkspace | null): void {
+  const explicitId = stringValue(hydrated.generationId);
+  const workspaceId = workspace?.productGenerationId;
+  if (!explicitId || !workspaceId || explicitId === workspaceId) return;
+  const conflict: ResolverConflict = {
+    field: "generationId",
+    explicitId,
+    workspaceId,
+    decision: CONFLICT_REJECT_TOOLS.has(toolName) ? "rejected" : "explicit_preferred",
+  };
+  hydrated.__resolverConflicts = [...internalConflicts(hydrated), conflict];
+}
+
+function internalConflicts(hydrated: Record<string, unknown>): ResolverConflict[] {
+  return Array.isArray(hydrated.__resolverConflicts) ? hydrated.__resolverConflicts as ResolverConflict[] : [];
 }

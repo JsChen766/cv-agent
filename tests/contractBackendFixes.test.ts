@@ -300,10 +300,17 @@ describe("Contract: copilot explicit actions", () => {
     const runtime = new AgentOrchestrator({ kernel });
     const ctx = createTestKernelContext({ user: { id: "user-1" }, request: { requestId: "req-1", traceId: "trace-1" } });
     const session = await kernel.copilotServices.sessionService.getOrCreateSession("user-1", {});
+    const generated = await kernel.productServices.generationProductService.generateResumeFromJD({
+      userId: "user-1",
+      sessionId: session.id,
+      jdText: "Frontend engineer JD",
+      targetRole: "Frontend Engineer",
+    });
+    const variantId = generated.variants[0]!.id;
 
     const result = await runtime.handleExplicitAction(ctx, {
       sessionId: session.id,
-      action: { type: "accept", variantId: "pvar-00000000-0000-0000-0000-000000000001", payload: { generationId: "pgen-00000000-0000-0000-0000-000000000001" } },
+      action: { type: "accept", variantId, payload: { generationId: generated.generation.id } },
     });
     // Must create a pending action for accept_generation_variant, NOT generate_resume_from_jd
     const pendingActions = result.raw.pendingActions ?? [];

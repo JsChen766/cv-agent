@@ -166,8 +166,9 @@ describe("agent runtime loop and critic gate", () => {
     const { kernel, orchestrator, provider } = await setupRuntime("confirm-low-risk");
     registerConfirmedExportTool(orchestrator);
     const ctx = createTestKernelContext({ user: { id: "confirm-low-risk-user" }, request: { requestId: "req-confirm-low-risk", traceId: "trace-confirm-low-risk" } });
+    const resume = await kernel.productServices.resumeService.createResume("confirm-low-risk-user", { title: "Scoped resume" });
 
-    const pending = await orchestrator.handleChat(ctx, { message: "resume confirm low risk" });
+    const pending = await orchestrator.handleChat(ctx, { message: "resume confirm low risk", clientState: { activeResumeId: resume.id } });
     const pendingId = (pending.raw.pendingActions![0] as { id: string }).id;
 
     const response = await orchestrator.confirmPendingAction(ctx, pendingId);
@@ -182,8 +183,9 @@ describe("agent runtime loop and critic gate", () => {
     const { kernel, orchestrator } = await setupRuntime("invalid-confirmation");
     registerInvalidConfirmationTool(orchestrator);
     const ctx = createTestKernelContext({ user: { id: "invalid-confirm-user" }, request: { requestId: "req-invalid-confirm", traceId: "trace-invalid-confirm" } });
+    const resume = await kernel.productServices.resumeService.createResume("invalid-confirm-user", { title: "Scoped resume" });
 
-    const response = await orchestrator.handleChat(ctx, { message: "resume invalid confirmation" });
+    const response = await orchestrator.handleChat(ctx, { message: "resume invalid confirmation", clientState: { activeResumeId: resume.id } });
 
     // The safety net downgrades needs_confirmation from read tools to success
     // so the user does NOT see the invalidConfirmation error
@@ -319,11 +321,13 @@ class RuntimeTestProvider implements LLMProvider {
   private architect(payload: Record<string, unknown>): Record<string, unknown> {
     const observations = Array.isArray(payload.observations) ? payload.observations : [];
     const messages = Array.isArray(payload.agentMessages) ? payload.agentMessages as Array<{ type?: string }> : [];
+    const clientState = typeof payload.clientState === "object" && payload.clientState !== null ? payload.clientState as Record<string, unknown> : {};
+    const resumeId = typeof clientState.activeResumeId === "string" ? clientState.activeResumeId : "resume-1";
     if (this.scenario === "confirm-low-risk") {
-      return plan("architect", "export_resume", { resumeId: "resume-1", format: "html" }, "Export resume.");
+      return plan("architect", "export_resume", { resumeId, format: "html" }, "Export resume.");
     }
     if (this.scenario === "invalid-confirmation") {
-      return plan("architect", "prepare_export_resume", { resumeId: "resume-1", format: "html" }, "Prepare invalid confirmation.");
+      return plan("architect", "prepare_export_resume", { resumeId, format: "html" }, "Prepare invalid confirmation.");
     }
     if (this.scenario.startsWith("confirm-")) {
       return plan("architect", "generate_resume_from_jd", { jdText: "JD", targetRole: "Engineer" }, "Generate resume.");

@@ -1,7 +1,9 @@
 import { randomUUID } from "node:crypto";
 import type { AgentContext } from "../runtime/AgentContext.js";
 import { AgentError } from "../runtime/AgentError.js";
-import { guardToolIds } from "../runtime/AgentOrchestrator.js";
+import type { CopilotWorkspace } from "../../copilot/types.js";
+import { guardToolIds, stripInternalToolArgs } from "../security/ToolIdGuard.js";
+import { guardToolScope } from "../security/ToolScopeGuard.js";
 import type { ToolDefinition } from "../tools/Tool.js";
 import type { ToolExecutor } from "../tools/ToolExecutor.js";
 import type { ToolRegistry } from "../tools/ToolRegistry.js";
@@ -81,6 +83,7 @@ export class PendingActionService {
     registry: ToolRegistry;
     executor: ToolExecutor;
     context: AgentContext;
+    workspace?: CopilotWorkspace | null;
   }): Promise<{ action: PendingAction; result: ToolResult }> {
     const action = await this.get(input.userId, input.id);
     if (!action) throw new AgentError("PERMISSION_DENIED", "Pending action not found.", { statusCode: 404 });
@@ -92,9 +95,20 @@ export class PendingActionService {
     const tool = input.registry.get(action.toolName);
     if (!tool) throw new AgentError("TOOL_NOT_FOUND", "Pending action tool no longer exists.", { statusCode: 404 });
     const idGuardResult = guardToolIds(action.toolName, action.toolArguments);
-    if (idGuardResult) throw new AgentError("TOOL_VALIDATION_FAILED", "Pending action contains non-canonical IDs.", { statusCode: 400 });
-    const parsed = tool.inputSchema.safeParse(action.toolArguments);
-    if (!parsed.success) throw new AgentError("TOOL_VALIDATION_FAILED", "Pending action input is invalid.", { statusCode: 400 });
+    if (idGuardResult) {
+      const updated = await this.repository.update({ ...action, status: "failed" });
+      return { action: updated, result: confirmBlockedResult(action.toolName, "confirm_guard_blocked", idGuardResult.message) };
+    }
+    const parsed = tool.inputSchema.safeParse(stripInternalToolArgs(action.toolArguments));
+    if (!parsed.success) {
+      const updated = await this.repository.update({ ...action, status: "failed" });
+      return { action: updated, result: confirmBlockedResult(action.toolName, "confirm_schema_blocked", "Pending action input is invalid. Please start the action again.") };
+    }
+    const scopeGuardResult = await guardToolScope(action.toolName, parsed.data as Record<string, unknown>, input.context, input.workspace ?? input.context.workspace ?? null);
+    if (scopeGuardResult) {
+      const updated = await this.repository.update({ ...action, status: "failed" });
+      return { action: updated, result: confirmBlockedResult(action.toolName, "confirm_guard_blocked", scopeGuardResult.message) };
+    }
 
     await this.repository.update({ ...action, status: "confirmed" });
     try {
@@ -114,4 +128,18 @@ function isExpired(action: PendingAction): boolean {
 
 function titleForTool(toolName: string): string {
   return toolName.replace(/_/g, " ");
+}
+
+function confirmBlockedResult(toolName: string, reason: string, message = "This pending action is no longer valid. Please start it again."): ToolResult {
+  return {
+    status: "needs_input",
+    message,
+    visibility: "error_user_visible",
+    actionResult: {
+      actionType: toolName,
+      status: "needs_input",
+      reason,
+      message,
+    },
+  };
 }

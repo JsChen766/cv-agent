@@ -17,6 +17,15 @@ export type ResolvedAsset = {
   text?: string;
   targetRole?: string;
   source?: string;
+  conflicts?: ResolverConflict[];
+};
+
+export type ResolverConflict = {
+  field: "experienceId" | "variantId" | "generationId" | "resumeId";
+  explicitId?: string;
+  activeId?: string;
+  workspaceId?: string;
+  decision: "explicit_preferred" | "rejected";
 };
 
 export class ContextResolver {
@@ -80,6 +89,7 @@ export class ContextResolver {
       draftId: workspace?.active?.experienceDraftId ?? draft?.id,
       text,
       source: sourceFor({ explicit: explicitId, client: context.clientState?.activeExperienceId, workspace: workspace?.active?.experienceId, userAsset: context.userAssetContext?.active.experienceId, handoff: handoff?.extracted.experienceId, manifestMatch: context.userAssetContext ? "manifest" : undefined, active: context.activeAssetContext?.activeExperience?.id }),
+      conflicts: conflictsFor("experienceId", explicitId, context.clientState?.activeExperienceId, workspace?.active?.experienceId),
     };
   }
 
@@ -105,6 +115,7 @@ export class ContextResolver {
       draftId: draft?.id,
       text: handoff?.extracted.resumeText ?? draft?.rawText,
       source: sourceFor({ explicit: explicitId, client: context.clientState?.activeResumeId, workspace: workspace?.active?.resumeId ?? workspace?.resumeId, userAsset: context.userAssetContext?.active.resumeId, handoff: handoff?.extracted.resumeId, draft: draft?.rawText, active: context.activeAssetContext?.activeResume?.id }),
+      conflicts: conflictsFor("resumeId", explicitId, context.clientState?.activeResumeId, workspace?.active?.resumeId ?? workspace?.resumeId),
     };
   }
 
@@ -143,7 +154,11 @@ export class ContextResolver {
       ?? workspace?.activeVariantId
       ?? handoff?.extracted.variantId
       ?? context.activeAssetContext?.activeVariant?.id;
-    return { id, source: sourceFor({ explicit: explicitId, client: context.clientState?.activeVariantId, workspace: workspace?.active?.variantId ?? workspace?.activeVariantId, handoff: handoff?.extracted.variantId, active: context.activeAssetContext?.activeVariant?.id }) };
+    return {
+      id,
+      source: sourceFor({ explicit: explicitId, client: context.clientState?.activeVariantId, workspace: workspace?.active?.variantId ?? workspace?.activeVariantId, handoff: handoff?.extracted.variantId, active: context.activeAssetContext?.activeVariant?.id }),
+      conflicts: conflictsFor("variantId", explicitId, context.clientState?.activeVariantId, workspace?.active?.variantId ?? workspace?.activeVariantId ?? undefined),
+    };
   }
 
   public resolveSelectedText(context: ResolverRunContext, _workspace: CopilotWorkspace | null, explicitArgs: Record<string, unknown> = {}): ResolvedAsset {
@@ -164,4 +179,21 @@ function sourceFor(values: Record<string, unknown>): string | undefined {
 
 function stringValue(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function conflictsFor(
+  field: ResolverConflict["field"],
+  explicitId: string | undefined,
+  activeId: string | undefined | null,
+  workspaceId: string | undefined | null,
+): ResolverConflict[] | undefined {
+  if (!explicitId) return undefined;
+  const conflicts: ResolverConflict[] = [];
+  if (activeId && activeId !== explicitId) {
+    conflicts.push({ field, explicitId, activeId, decision: "explicit_preferred" });
+  }
+  if (workspaceId && workspaceId !== explicitId) {
+    conflicts.push({ field, explicitId, workspaceId, decision: "explicit_preferred" });
+  }
+  return conflicts.length > 0 ? conflicts : undefined;
 }

@@ -1,5 +1,6 @@
 import type { ToolDefinition } from "../../agent-core/tools/Tool.js";
 import { ToolResultSchema, UpdateExperienceInputSchema } from "../../agent-core/validation/ToolInputSchemas.js";
+import { hasPatchFields, sanitizeExperiencePatch } from "../../agent-core/security/ToolPatchSanitizer.js";
 
 export function prepareUpdateExperienceTool(): ToolDefinition {
   return {
@@ -12,9 +13,9 @@ export function prepareUpdateExperienceTool(): ToolDefinition {
     requiresConfirmation: false,
     riskLevel: "low",
     execute: async (input, context) => {
-      const patch = typeof input.patch === "object" && input.patch !== null ? (input.patch as Record<string, unknown>) : {};
+      const patch = sanitizeExperiencePatch(input.patch);
       const hasContent = typeof input.content === "string" && input.content.trim().length > 0;
-      const hasPatch = Object.keys(patch).length > 0;
+      const hasPatch = hasPatchFields(patch);
       if (!hasContent && !hasPatch) {
         return {
           status: "needs_input",

@@ -1,6 +1,7 @@
 import type { ProductExperience } from "../../product/types.js";
 import type { ToolDefinition } from "../../agent-core/tools/Tool.js";
 import { ToolResultSchema, UpdateExperienceInputSchema } from "../../agent-core/validation/ToolInputSchemas.js";
+import { hasPatchFields, sanitizeExperiencePatch } from "../../agent-core/security/ToolPatchSanitizer.js";
 
 export function updateExperienceTool(): ToolDefinition {
   return {
@@ -14,9 +15,9 @@ export function updateExperienceTool(): ToolDefinition {
     riskLevel: "medium",
     execute: async (input, context) => {
       const id = String(input.experienceId);
-      const patch = (input.patch ?? {}) as Partial<ProductExperience>;
+      const patch = sanitizeExperiencePatch(input.patch) as Partial<ProductExperience>;
       const content = typeof input.content === "string" ? input.content.trim() : "";
-      const hasPatch = typeof patch === "object" && patch !== null && Object.keys(patch).length > 0;
+      const hasPatch = hasPatchFields(patch);
 
       if (!hasPatch && !content) {
         return {
