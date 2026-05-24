@@ -1,3 +1,4 @@
+import { AgentError } from "../../agent-core/runtime/AgentError.js";
 import { ApiError } from "./ApiError.js";
 import { ErrorCodes, normalizeErrorCode } from "./ErrorCode.js";
 
@@ -17,6 +18,15 @@ export function mapError(error: unknown): MappedApiError {
       message: error.message,
       ...(error.details !== undefined ? { details: error.details } : {}),
       ...(error.retryable !== undefined ? { retryable: error.retryable } : {}),
+    };
+  }
+  if (error instanceof AgentError) {
+    const statusCode = error.statusCode ?? 500;
+    return {
+      statusCode,
+      code: normalizeErrorCode(error.code),
+      message: error.message,
+      retryable: statusCode >= 500,
     };
   }
   if (isProviderTimeout(error)) {

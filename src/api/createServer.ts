@@ -32,6 +32,9 @@ export async function createServer(kernel: ApiKernel, options: CreateServerOptio
 
   app.setErrorHandler((error, request, reply) => {
     const requestId = readHeader(request.headers["x-request-id"]) ?? `req-${randomUUID()}`;
+    if (error instanceof Error && !/NOT_FOUND|INVALID_BODY|FORBIDDEN|RATE_LIMIT/i.test(error.message)) {
+      console.error("[setErrorHandler] Unexpected error:", error instanceof Error ? { message: error.message, stack: error.stack } : error);
+    }
     const mapped = errorResponse(error, {
       requestId,
       traceId: readHeader(request.headers["x-trace-id"]) ?? requestId,

@@ -135,7 +135,8 @@ describe("agent runtime loop and critic gate", () => {
 
     expect(response.assistantMessage.content).toContain("Cannot use this generated content");
     expect(response.assistantMessage.content).not.toContain("Confirmed generated resume content.");
-    expect((response.workspace as unknown as { activePanel?: string }).activePanel).toBeUndefined();
+    // Workspace patch is preserved even when critic blocks — the user needs to see what was generated
+    expect((response.workspace as unknown as { activePanel?: string }).activePanel).toBe("variants");
     expect(metadata.criticReview?.verdict).toBe("blocked");
     expect(JSON.stringify(response.raw.toolResults)).not.toContain("Confirmed generated resume content.");
     await kernel.close();

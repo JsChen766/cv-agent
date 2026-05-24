@@ -379,7 +379,7 @@ export class AgentOrchestrator {
           assistantText: message,
           toolResults: [failedActionResult("critic_gate", message, "critic_blocked")],
           pendingActions: [],
-          workspacePatch: {},
+          workspacePatch: mergeWorkspacePatch([result]),
           criticReview,
         });
       }
@@ -390,7 +390,7 @@ export class AgentOrchestrator {
           assistantText: message,
           toolResults: [needsConfirmationResult(message)],
           pendingActions: [],
-          workspacePatch: {},
+          workspacePatch: mergeWorkspacePatch([result]),
           criticReview,
         });
       }
@@ -413,7 +413,7 @@ export class AgentOrchestrator {
           assistantText: message,
           toolResults: [result, ...gateResult.criticToolResults, needsRevisionResult(message)],
           pendingActions: [],
-          workspacePatch: {},
+          workspacePatch: mergeWorkspacePatch([result]),
           criticReview,
         });
       }
