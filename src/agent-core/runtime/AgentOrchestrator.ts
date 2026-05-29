@@ -370,74 +370,82 @@ export class AgentOrchestrator {
       });
     }
     if (shouldReviewTool(confirmedAction.toolName)) {
-      this.emit(run, "agent.critic.started", "正在审查结果…", {
-        agentName: "critic",
-        status: "running",
-      });
-      const gateResult = await this.createCriticGate(run).review({
-        context: run.context,
-        toolExecutions: [execution],
-        sourceAgent: step.agentName,
-      });
-      this.emit(run, "agent.critic.completed", labelForCriticStatus(gateResult.status), {
-        agentName: "critic",
-        status: gateResult.status,
-        payload: { verdict: gateResult.review?.verdict },
-      });
-      const criticReview = gateResult.review;
+      // Skip critic gate review for save_experience_from_text confirmations.
+      // The critic already reviewed the draft during the planning phase (prepare_save_experience_from_text).
+      // Re-reviewing on confirmation would create a confusing UX loop where the experience is
+      // already saved but the user sees "needs revision" — which can trigger an infinite cycle of
+      // confirm → review → suggestions → rewrite → confirm → review → ...
+      const skipCriticForConfirm = confirmedAction.toolName === "save_experience_from_text";
+      if (!skipCriticForConfirm) {
+        this.emit(run, "agent.critic.started", "正在审查结果…", {
+          agentName: "critic",
+          status: "running",
+        });
+        const gateResult = await this.createCriticGate(run).review({
+          context: run.context,
+          toolExecutions: [execution],
+          sourceAgent: step.agentName,
+        });
+        this.emit(run, "agent.critic.completed", labelForCriticStatus(gateResult.status), {
+          agentName: "critic",
+          status: gateResult.status,
+          payload: { verdict: gateResult.review?.verdict },
+        });
+        const criticReview = gateResult.review;
 
-      if (gateResult.status === "blocked") {
-        const message = criticReview?.userVisibleSummary || "该结果存在较高风险，已暂时拦截，请补充真实依据后再继续。";
+        if (gateResult.status === "blocked") {
+          const message = criticReview?.userVisibleSummary || "该结果存在较高风险，已暂时拦截，请补充真实依据后再继续。";
+          return this.finishRun(ctx.user.id, run, {
+            assistantText: message,
+            toolResults: [failedActionResult("critic_gate", message, "critic_blocked")],
+            pendingActions: [],
+            workspacePatch: mergeWorkspacePatch([result]),
+            criticReview,
+          });
+        }
+
+        if (gateResult.status === "needs_user_confirmation") {
+          const message = criticReview?.userVisibleSummary || t(run, "confirmFacts");
+          return this.finishRun(ctx.user.id, run, {
+            assistantText: message,
+            toolResults: [needsConfirmationResult(message)],
+            pendingActions: [],
+            workspacePatch: mergeWorkspacePatch([result]),
+            criticReview,
+          });
+        }
+
+        if (gateResult.status === "needs_revision") {
+          const revision = run.messageBus.requestRevision("critic", step.agentName, { review: criticReview });
+          run.context.agentMessages = run.messageBus.list();
+          run.trace.add({
+            agentName: "AgentOrchestrator",
+            type: "reason",
+            summary: "Recorded critic revision request for confirmed action.",
+            status: "success",
+            completedAt: new Date().toISOString(),
+            metadata: { messageId: revision.id },
+          });
+          run.loopController.stop("critic_needs_revision");
+          this.syncLoopState(run);
+          const message = criticRevisionMessage(criticReview, localeFor(run));
+          return this.finishRun(ctx.user.id, run, {
+            assistantText: message,
+            toolResults: [result, ...gateResult.criticToolResults, needsRevisionResult(message)],
+            pendingActions: [],
+            workspacePatch: mergeWorkspacePatch([result]),
+            criticReview,
+          });
+        }
+
         return this.finishRun(ctx.user.id, run, {
-          assistantText: message,
-          toolResults: [failedActionResult("critic_gate", message, "critic_blocked")],
+          assistantText: result.message ?? t(run, "confirmedExecuted"),
+          toolResults: [result, ...gateResult.criticToolResults],
           pendingActions: [],
           workspacePatch: mergeWorkspacePatch([result]),
           criticReview,
         });
       }
-
-      if (gateResult.status === "needs_user_confirmation") {
-        const message = criticReview?.userVisibleSummary || t(run, "confirmFacts");
-        return this.finishRun(ctx.user.id, run, {
-          assistantText: message,
-          toolResults: [needsConfirmationResult(message)],
-          pendingActions: [],
-          workspacePatch: mergeWorkspacePatch([result]),
-          criticReview,
-        });
-      }
-
-      if (gateResult.status === "needs_revision") {
-        const revision = run.messageBus.requestRevision("critic", step.agentName, { review: criticReview });
-        run.context.agentMessages = run.messageBus.list();
-        run.trace.add({
-          agentName: "AgentOrchestrator",
-          type: "reason",
-          summary: "Recorded critic revision request for confirmed action.",
-          status: "success",
-          completedAt: new Date().toISOString(),
-          metadata: { messageId: revision.id },
-        });
-        run.loopController.stop("critic_needs_revision");
-        this.syncLoopState(run);
-        const message = criticRevisionMessage(criticReview, localeFor(run));
-        return this.finishRun(ctx.user.id, run, {
-          assistantText: message,
-          toolResults: [result, ...gateResult.criticToolResults, needsRevisionResult(message)],
-          pendingActions: [],
-          workspacePatch: mergeWorkspacePatch([result]),
-          criticReview,
-        });
-      }
-
-      return this.finishRun(ctx.user.id, run, {
-        assistantText: result.message ?? t(run, "confirmedExecuted"),
-        toolResults: [result, ...gateResult.criticToolResults],
-        pendingActions: [],
-        workspacePatch: mergeWorkspacePatch([result]),
-        criticReview,
-      });
     }
 
     return this.finishRun(ctx.user.id, run, {

@@ -2,6 +2,17 @@ import type { ToolDefinition } from "../../agent-core/tools/Tool.js";
 import { TextInputSchema, ToolResultSchema } from "../../agent-core/validation/ToolInputSchemas.js";
 import { extractExperienceDraftFromText } from "./helpers.js";
 import { buildNormalizedExperiencePreview } from "../../product/experiencePreview.js";
+import type { ProductExperienceCategory } from "../../product/types.js";
+
+function normalizeCategory(draft: ReturnType<typeof extractExperienceDraftFromText>): ProductExperienceCategory {
+  const raw = String(draft.category || "").toLowerCase();
+  if (raw.includes("intern")) return "internship";
+  const text = `${draft.title} ${draft.role ?? ""} ${draft.content ?? ""}`.toLowerCase();
+  if (raw === "work" && /intern|实习/i.test(text)) return "internship";
+  const validCategories: ProductExperienceCategory[] = ["work", "internship", "project", "education", "award", "skill", "other"];
+  if (validCategories.includes(raw as ProductExperienceCategory)) return raw as ProductExperienceCategory;
+  return "other";
+}
 
 export function saveExperienceFromTextTool(): ToolDefinition {
   return {
@@ -15,9 +26,10 @@ export function saveExperienceFromTextTool(): ToolDefinition {
     riskLevel: "medium",
     execute: async (input, context) => {
       const draft = extractExperienceDraftFromText(String(input.text));
+      const category = normalizeCategory(draft);
       const saved = await context.kernel.productServices.experienceService.createExperience(context.userId, {
         title: draft.title,
-        category: draft.category,
+        category,
         content: draft.content,
         organization: draft.organization,
         role: draft.role,

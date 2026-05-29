@@ -5,8 +5,9 @@ const RANGE_PATTERN = /(?<start>\d{4}(?:[./-]\d{1,2})?)(?:\s*)(?:-|–|—|~|to|
 const SINGLE_DATE_PATTERN = /(?<single>\d{4}(?:[./-]\d{1,2})?)/;
 
 const CATEGORY_KEYWORDS: Record<string, string[]> = {
-  work: ["实习", "intern", "工程师", "analyst", "公司", "有限公司", "technology", "exchange", "开发", "数据分析"],
-  project: ["项目", "project", "系统", "平台", "开发", "react", "node", "python", "sql", "dashboard"],
+  work: ["工程师", "analyst", "公司", "有限公司", "technology", "exchange", "开发", "数据分析", "任职", "担任"],
+  internship: ["实习", "intern", "internship", "实习生"],
+  project: ["项目", "project", "系统", "平台", "react", "node", "python", "sql", "dashboard"],
   education: ["大学", "学院", "university", "college", "bachelor", "master", "phd", "gpa", "专业", "学位"],
   award: ["奖", "award", "scholarship", "竞赛", "冠军", "获奖"],
   skill: ["技能", "熟悉", "掌握", "熟练", "languages", "frameworks", "tech stack"],
@@ -50,6 +51,14 @@ export function extractExperienceDraftFromText(text: string): ExperienceDraft {
     if (!structured.school) warnings.push("school_not_found");
     if (!structured.major && !structured.degree) warnings.push("major_or_degree_not_found");
     title = nonEmpty(title, [structured.school, structured.degree, structured.major].filter(Boolean).join(" - "), "Education experience");
+  } else if (category === "internship") {
+    structured.company = extractOrganization(content);
+    structured.department = extractLabeledField(content, ["department", "部门"]);
+    structured.employmentType = extractEmploymentType(content) ?? "internship";
+    organization = structured.company;
+    role = extractRole(content);
+    title = nonEmpty(title, role ? `${role}${organization ? ` - ${organization}` : ""}` : organization, "Internship experience");
+    if (!organization) warnings.push("organization_not_found");
   } else if (category === "project") {
     structured.projectName = extractProjectName(content) ?? title;
     structured.projectRole = extractProjectRole(content);
@@ -73,7 +82,7 @@ export function extractExperienceDraftFromText(text: string): ExperienceDraft {
     structured.evidence = highlights.slice(0, 3);
     title = nonEmpty(title, structured.skillCategory, "Skill");
     if (!structured.skillCategory) warnings.push("skill_category_not_found");
-  } else {
+  } else if (category === "work") {
     structured.company = extractOrganization(content);
     structured.department = extractLabeledField(content, ["department", "部门"]);
     structured.employmentType = extractEmploymentType(content);
@@ -82,6 +91,12 @@ export function extractExperienceDraftFromText(text: string): ExperienceDraft {
     title = nonEmpty(title, role ? `${role}${organization ? ` - ${organization}` : ""}` : organization, "Work experience");
     if (!organization) warnings.push("organization_not_found");
     if (!role) warnings.push("role_not_found");
+  } else {
+    // "other" or unknown category — extract whatever we can
+    structured.company = extractOrganization(content);
+    organization = structured.company;
+    role = extractRole(content);
+    title = nonEmpty(title, organization || role, "Experience");
   }
 
   if (!dateRange.startDate && !dateRange.endDate) {
