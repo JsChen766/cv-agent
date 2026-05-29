@@ -3,6 +3,10 @@ import type { AgentName } from "../validation/AgentOutputSchemas.js";
 export type AgentStreamEventType =
   | "agent.turn.started"
   | "agent.thinking"
+  | "agent.reasoning.delta"
+  | "agent.reasoning.snapshot"
+  | "agent.plan.snapshot"
+  | "agent.tool.summary"
   | "agent.route.started"
   | "agent.route.completed"
   | "agent.agent.started"

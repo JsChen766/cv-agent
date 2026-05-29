@@ -18,15 +18,23 @@ const DEFAULT_MAX_TOKENS = 2000;
 
 export function readAgentRuntimeConfig(env: NodeJS.ProcessEnv = process.env): AgentRuntimeConfig {
   const runtimeMode = readRuntimeMode(env.NODE_ENV);
-  const provider = readProvider(env.AGENT_MODEL_PROVIDER);
+  const provider = readProvider(readString(env.AGENT_MODEL_PROVIDER) ?? readString(env.AGENT_PROVIDER));
   const model = readString(env.AGENT_MODEL) ?? readString(env.DEEPSEEK_MODEL) ?? DEFAULT_MODEL;
-  const apiKey = readString(env.AGENT_MODEL_API_KEY) ?? readString(env.DEEPSEEK_API_KEY) ?? readString(env.OPENAI_API_KEY);
+  const apiKey =
+    readString(env.AGENT_MODEL_API_KEY) ??
+    readString(env.AGENT_API_KEY) ??
+    readString(env.DEEPSEEK_API_KEY) ??
+    readString(env.OPENAI_API_KEY);
   const warnings: string[] = [];
   if (!apiKey) warnings.push("Agent model API key is missing. Agent model calls are disabled.");
   return {
     provider,
     model,
-    baseURL: readString(env.AGENT_MODEL_BASE_URL) ?? readString(env.DEEPSEEK_BASE_URL) ?? readString(env.OPENAI_BASE_URL),
+    baseURL:
+      readString(env.AGENT_MODEL_BASE_URL) ??
+      readString(env.AGENT_BASE_URL) ??
+      readString(env.DEEPSEEK_BASE_URL) ??
+      readString(env.OPENAI_BASE_URL),
     temperature: readNumber(env.AGENT_TEMPERATURE, "AGENT_TEMPERATURE") ?? DEFAULT_TEMPERATURE,
     maxTokens: readNumber(env.AGENT_MAX_TOKENS, "AGENT_MAX_TOKENS") ?? DEFAULT_MAX_TOKENS,
     hasApiKey: Boolean(apiKey),
@@ -45,7 +53,7 @@ function readProvider(configured: string | undefined): AgentProviderName {
   const value = readString(configured);
   if (!value) return "deepseek";
   if (value === "deepseek" || value === "openai" || value === "compatible") return value;
-  throw new Error(`Unknown AGENT_MODEL_PROVIDER "${value}". Supported values are deepseek, openai, compatible.`);
+  throw new Error(`Unknown AGENT_MODEL_PROVIDER/AGENT_PROVIDER "${value}". Supported values are deepseek, openai, compatible.`);
 }
 
 function readString(value: string | undefined): string | undefined {

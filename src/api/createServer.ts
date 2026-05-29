@@ -7,7 +7,7 @@ import type { AuthResolver } from "./auth/index.js";
 import { createAuthResolver } from "./auth/index.js";
 import { isAllowedDevCorsOrigin, isDevCorsEnabled } from "./cors.js";
 import { readHeader } from "./routes/helpers.js";
-import { errorResponse } from "./errors/index.js";
+import { errorResponse, mapError } from "./errors/index.js";
 import { registerAuthRoutes } from "./routes/auth.js";
 import { registerAgentDebugRoutes } from "./routes/agentDebug.js";
 import { registerCopilotRoutes } from "./routes/copilot.js";
@@ -32,16 +32,17 @@ export async function createServer(kernel: ApiKernel, options: CreateServerOptio
 
   app.setErrorHandler((error, request, reply) => {
     const requestId = readHeader(request.headers["x-request-id"]) ?? `req-${randomUUID()}`;
-    if (error instanceof Error && !/NOT_FOUND|INVALID_BODY|FORBIDDEN|RATE_LIMIT/i.test(error.message)) {
+    const mapped = mapError(error);
+    if (mapped.statusCode >= 500) {
       console.error("[setErrorHandler] Unexpected error:", error instanceof Error ? { message: error.message, stack: error.stack } : error);
     }
-    const mapped = errorResponse(error, {
+    const response = errorResponse(error, {
       requestId,
       traceId: readHeader(request.headers["x-trace-id"]) ?? requestId,
       mode: kernel.mode,
       ...(kernel.warnings.length > 0 ? { warnings: kernel.warnings } : {}),
     });
-    reply.status(mapped.statusCode).send(mapped.body);
+    reply.status(response.statusCode).send(response.body);
   });
 
   await registerHealthRoutes(app, kernel);

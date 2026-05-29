@@ -6,6 +6,7 @@
   "description": "Extensible TypeScript multi-agent runtime foundation for Coolto.",
   "scripts": {
     "dev:api": "tsx src/api/server.ts",
+    "dev:api:watch": "tsx watch src/api/server.ts",
     "test": "vitest run",
     "typecheck": "tsc --noEmit"
   },

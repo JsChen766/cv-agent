@@ -1,6 +1,7 @@
 import type { ToolDefinition } from "../../agent-core/tools/Tool.js";
 import { TextInputSchema, ToolResultSchema } from "../../agent-core/validation/ToolInputSchemas.js";
 import { extractExperienceDraftFromText } from "./helpers.js";
+import { buildNormalizedExperiencePreview } from "../../product/experiencePreview.js";
 
 export function prepareSaveExperienceFromTextTool(): ToolDefinition {
   return {
@@ -19,6 +20,7 @@ export function prepareSaveExperienceFromTextTool(): ToolDefinition {
         message: "Prepared structured experience draft preview.",
         data: {
           draft,
+          experienceDraft: buildNormalizedExperiencePreview(draft, { missingFields: draft.warnings }),
           warnings: draft.warnings,
           confidence: draft.confidence,
         },
@@ -26,6 +28,9 @@ export function prepareSaveExperienceFromTextTool(): ToolDefinition {
           status: "success",
           actionType: "prepare_save_experience_from_text",
           message: "Prepared structured experience draft preview.",
+          metadata: {
+            experienceDraft: buildNormalizedExperiencePreview(draft, { missingFields: draft.warnings }),
+          },
         },
       };
     },

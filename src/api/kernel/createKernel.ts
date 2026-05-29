@@ -177,13 +177,19 @@ function createFileStorage(): FileStorage {
 }
 
 function createModelClient(): { client?: ModelClient; warnings: string[] } {
-  const provider = process.env.AGENT_MODEL_PROVIDER ?? "deepseek";
+  const provider = process.env.AGENT_MODEL_PROVIDER ?? process.env.AGENT_PROVIDER ?? "deepseek";
   const model = process.env.AGENT_MODEL ?? process.env.DEEPSEEK_MODEL ?? "deepseek-chat";
 
   if (provider === "openai" || provider === "compatible") {
-    const apiKey = process.env.OPENAI_API_KEY ?? process.env.AGENT_MODEL_API_KEY;
-    const baseURL = process.env.OPENAI_BASE_URL ?? process.env.AGENT_MODEL_BASE_URL ?? "https://api.openai.com/v1";
-    if (!apiKey) return { warnings: ["OPENAI_API_KEY or AGENT_MODEL_API_KEY is not set. Agent model calls are disabled."] };
+    const apiKey = process.env.OPENAI_API_KEY ?? process.env.AGENT_MODEL_API_KEY ?? process.env.AGENT_API_KEY;
+    const baseURL =
+      process.env.OPENAI_BASE_URL ??
+      process.env.AGENT_MODEL_BASE_URL ??
+      process.env.AGENT_BASE_URL ??
+      "https://api.openai.com/v1";
+    if (!apiKey) {
+      return { warnings: ["OPENAI_API_KEY, AGENT_MODEL_API_KEY, or AGENT_API_KEY is not set. Agent model calls are disabled."] };
+    }
     return {
       client: new ModelClient({
         provider: new OpenAICompatibleProvider({ name: provider, apiKey, baseURL }),
@@ -193,11 +199,16 @@ function createModelClient(): { client?: ModelClient; warnings: string[] } {
     };
   }
 
-  const apiKey = process.env.DEEPSEEK_API_KEY ?? process.env.AGENT_MODEL_API_KEY;
-  if (!apiKey) return { warnings: ["DEEPSEEK_API_KEY or AGENT_MODEL_API_KEY is not set. Agent model calls are disabled."] };
+  const apiKey = process.env.DEEPSEEK_API_KEY ?? process.env.AGENT_MODEL_API_KEY ?? process.env.AGENT_API_KEY;
+  if (!apiKey) {
+    return { warnings: ["DEEPSEEK_API_KEY, AGENT_MODEL_API_KEY, or AGENT_API_KEY is not set. Agent model calls are disabled."] };
+  }
   return {
     client: new ModelClient({
-      provider: new DeepSeekProvider({ apiKey, baseURL: process.env.DEEPSEEK_BASE_URL }),
+      provider: new DeepSeekProvider({
+        apiKey,
+        baseURL: process.env.DEEPSEEK_BASE_URL ?? process.env.AGENT_MODEL_BASE_URL ?? process.env.AGENT_BASE_URL,
+      }),
       defaultModel: model,
     }),
     warnings: [],

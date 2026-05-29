@@ -5,6 +5,8 @@ import { UserAssetContextBuilder } from "../../copilot/context/UserAssetContextB
 import { ContextHydrator, toolNeedsInputMessage, toolNeedsInputMessageForFields } from "../../copilot/context/ContextHydrator.js";
 import { applyHandoffToDrafts, mostRecentJDDraft } from "../../copilot/context/DraftContext.js";
 import { normalizeFrontDeskHandoff } from "../../copilot/handoff/HandoffNormalizer.js";
+import { extractExperienceDraftFromText } from "../../product/experienceDraft.js";
+import { buildNormalizedExperiencePreview } from "../../product/experiencePreview.js";
 import type { FrontDeskHandoff } from "../../copilot/handoff/FrontDeskHandoff.js";
 import type {
   CopilotActionRequest,
@@ -187,6 +189,15 @@ export class AgentOrchestrator {
         agentName: "frontdesk",
         status: frontDeskDecision.responseType,
         payload: {
+          routeTo: frontDeskDecision.routeTo,
+          responseType: frontDeskDecision.responseType,
+        },
+      });
+      this.emit(run, "agent.reasoning.snapshot", "已完成任务意图判断", {
+        agentName: "frontdesk",
+        status: "completed",
+        payload: {
+          summary: "任务分类与路由已完成",
           routeTo: frontDeskDecision.routeTo,
           responseType: frontDeskDecision.responseType,
         },
@@ -599,6 +610,15 @@ export class AgentOrchestrator {
       });
       const decision = await specialist.decide({ context: run.context, routeHint });
       lastAssistantMessage = decision.assistantMessage || lastAssistantMessage;
+      this.emit(run, "agent.plan.snapshot", "已生成执行计划", {
+        agentName: specialist.name,
+        status: "completed",
+        payload: {
+          summary: `规划 ${decision.plan.length} 个执行步骤`,
+          planSize: decision.plan.length,
+          tools: decision.plan.map((item) => item.toolName).filter(Boolean).slice(0, 8),
+        },
+      });
       run.trace.complete(planStep, "success", {
         responseType: decision.responseType,
         stepCount: decision.plan.length,
@@ -911,6 +931,15 @@ export class AgentOrchestrator {
           agentName: step.agentName,
           toolName: tool.name,
           status: result.status,
+        });
+        this.emit(run, "agent.tool.summary", "工具结果已整理", {
+          agentName: step.agentName,
+          toolName: tool.name,
+          status: result.status,
+          payload: {
+            summary: result.message || "工具执行完成",
+            status: result.status,
+          },
         });
         return { result };
       } catch (error) {
@@ -1720,32 +1749,36 @@ function sanitizeActionResultForMetadata(result: CopilotActionResult | undefined
 }
 
 function buildProductBlocks(toolResults: ToolResult[]): ProductBlock[] {
-  const blocks: ProductBlock[] = [];
+  let experienceList: ProductBlock | null = null;
+  let experienceCard: ProductBlock | null = null;
+  let detailBlock: ProductBlock | null = null;
+  let actionBlock: ProductBlock | null = null;
+
   for (const result of toolResults) {
     if (!result.data || typeof result.data !== "object") continue;
     const data = result.data as Record<string, unknown>;
     if (Array.isArray(data.items) && typeof data.count === "number") {
-      blocks.push({
+      experienceList = {
         type: "experience_list",
         title: "Experience library",
         data: {
           count: data.count,
-          items: (data.items as Array<Record<string, unknown>>).slice(0, 20).map(sanitizeExperienceItem),
+          items: (data.items as Array<Record<string, unknown>>).slice(0, 3).map(sanitizeExperienceItem),
         },
-      });
+      };
       continue;
     }
     if (isRecord(data.experience)) {
-      blocks.push({
+      experienceCard = {
         type: "experience_card",
         title: String((data.experience as Record<string, unknown>).title ?? "Experience"),
         data: sanitizeExperienceItem(data.experience as Record<string, unknown>),
-      });
+      };
       continue;
     }
     if (isRecord(data.currentRevision) || Array.isArray(data.revisions)) {
       const experience = isRecord(data.experience) ? sanitizeExperienceItem(data.experience as Record<string, unknown>) : undefined;
-      blocks.push({
+      detailBlock = {
         type: "experience_detail",
         title: typeof experience?.title === "string" ? experience.title : "Experience detail",
         data: sanitizeMetadataObject({
@@ -1753,18 +1786,22 @@ function buildProductBlocks(toolResults: ToolResult[]): ProductBlock[] {
           currentRevision: isRecord(data.currentRevision) ? sanitizeRevision(data.currentRevision as Record<string, unknown>) : undefined,
           revisionCount: Array.isArray(data.revisions) ? data.revisions.length : undefined,
         }) ?? {},
-      });
+      };
       continue;
     }
     if (isRecord(result.actionResult)) {
-      blocks.push({
+      actionBlock = {
         type: "action_result",
         title: String((result.actionResult as Record<string, unknown>).actionType ?? "Action result"),
         data: sanitizeMetadataObject(result.actionResult as Record<string, unknown>) ?? {},
-      });
+      };
     }
   }
-  return blocks.slice(0, 8);
+  if (experienceCard) return [experienceCard];
+  if (detailBlock) return [detailBlock];
+  if (experienceList) return [experienceList];
+  if (actionBlock) return [actionBlock];
+  return [];
 }
 
 function sanitizeExperienceItem(item: Record<string, unknown>): Record<string, unknown> {
@@ -2136,7 +2173,15 @@ function legacyAffectedResourcesFor(toolName: string, args: Record<string, unkno
 }
 
 function previewFor(toolName: string, args: Record<string, unknown>) {
-  if (toolName === "save_experience_from_text") return { after: { text: args.text } };
+  if (toolName === "save_experience_from_text") {
+    const text = typeof args.text === "string" ? args.text : "";
+    const draft = extractExperienceDraftFromText(text);
+    return {
+      after: {
+        experienceDraft: buildNormalizedExperiencePreview(draft, { missingFields: draft.warnings }),
+      },
+    };
+  }
   if (toolName === "update_experience") {
     const patch = sanitizeExperiencePatch(args.patch);
     return { after: { experienceId: args.experienceId, contentPreview: typeof args.content === "string" ? args.content.slice(0, 200) : undefined, patchKeys: Object.keys(patch).slice(0, 10) } };

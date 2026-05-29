@@ -1,4 +1,5 @@
 import type { ToolRiskLevel } from "../tools/ToolPermissions.js";
+import type { ToolResult } from "../tools/ToolResult.js";
 
 export type PendingActionStatus = "pending" | "confirmed" | "cancelled" | "executed" | "expired" | "failed";
 
@@ -22,6 +23,7 @@ export type PendingAction = {
     before?: unknown;
     after?: unknown;
   };
+  lastResult?: ToolResult;
   createdAt: string;
   expiresAt: string;
 };

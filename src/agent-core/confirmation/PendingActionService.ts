@@ -72,8 +72,11 @@ export class PendingActionService {
 
   public async cancel(userId: string, id: string): Promise<PendingAction> {
     const action = await this.get(userId, id);
-    if (!action) throw new AgentError("PERMISSION_DENIED", "Pending action not found.", { statusCode: 404 });
-    if (action.status !== "pending") throw new AgentError("CONFIRMATION_EXPIRED", "Pending action is not pending.", { statusCode: 409 });
+    if (!action) throw new AgentError("PERMISSION_DENIED", "该操作不存在或已被清理。", { statusCode: 404 });
+    if (action.status === "cancelled") return action;
+    if (action.status !== "pending") {
+      throw new AgentError("CONFIRMATION_EXPIRED", "该操作已处理，无法重复取消。", { statusCode: 409 });
+    }
     return this.repository.update({ ...action, status: "cancelled" });
   }
 
@@ -86,34 +89,69 @@ export class PendingActionService {
     workspace?: CopilotWorkspace | null;
   }): Promise<{ action: PendingAction; result: ToolResult }> {
     const action = await this.get(input.userId, input.id);
-    if (!action) throw new AgentError("PERMISSION_DENIED", "Pending action not found.", { statusCode: 404 });
-    if (action.status !== "pending") throw new AgentError("CONFIRMATION_EXPIRED", "Pending action is not pending.", { statusCode: 409 });
+    if (!action) throw new AgentError("PERMISSION_DENIED", "该操作不存在或已被清理。", { statusCode: 404 });
+    if (action.status === "executed" && action.lastResult) {
+      return {
+        action,
+        result: {
+          ...action.lastResult,
+          message: action.lastResult.message || "该操作已确认，无需重复提交。",
+        },
+      };
+    }
+    if (action.status !== "pending") {
+      if (action.status === "confirmed" || action.status === "executed") {
+        return { action, result: nonPendingResult(action) };
+      }
+      throw new AgentError("CONFIRMATION_EXPIRED", nonPendingResult(action).message || "该操作已失效，请重新发起。", { statusCode: 409 });
+    }
     if (isExpired(action)) {
       await this.repository.update({ ...action, status: "expired" });
-      throw new AgentError("CONFIRMATION_EXPIRED", "Pending action expired.", { statusCode: 409 });
+      throw new AgentError("CONFIRMATION_EXPIRED", "该操作已失效，请重新发起。", { statusCode: 409 });
     }
     const tool = input.registry.get(action.toolName);
-    if (!tool) throw new AgentError("TOOL_NOT_FOUND", "Pending action tool no longer exists.", { statusCode: 404 });
+    if (!tool) {
+      const failed = await this.repository.update({ ...action, status: "failed" });
+      return {
+        action: failed,
+        result: {
+          status: "needs_input",
+          message: "该操作对应的执行器已不可用，请重新发起。",
+          visibility: "error_user_visible",
+          actionResult: {
+            actionType: action.toolName,
+            status: "needs_input",
+            reason: "tool_not_found",
+            message: "该操作对应的执行器已不可用，请重新发起。",
+          },
+        },
+      };
+    }
     const idGuardResult = guardToolIds(action.toolName, action.toolArguments);
     if (idGuardResult) {
-      const updated = await this.repository.update({ ...action, status: "failed" });
+      const updated = await this.repository.update({ ...action, status: "failed", lastResult: idGuardResult });
       return { action: updated, result: confirmBlockedResult(action.toolName, "confirm_guard_blocked", idGuardResult.message) };
     }
     const parsed = tool.inputSchema.safeParse(stripInternalToolArgs(action.toolArguments));
     if (!parsed.success) {
-      const updated = await this.repository.update({ ...action, status: "failed" });
-      return { action: updated, result: confirmBlockedResult(action.toolName, "confirm_schema_blocked", "Pending action input is invalid. Please start the action again.") };
+      const blocked = confirmBlockedResult(action.toolName, "confirm_schema_blocked", "Pending action input is invalid. Please start the action again.");
+      const updated = await this.repository.update({ ...action, status: "failed", lastResult: blocked });
+      return { action: updated, result: blocked };
     }
     const scopeGuardResult = await guardToolScope(action.toolName, parsed.data as Record<string, unknown>, input.context, input.workspace ?? input.context.workspace ?? null);
     if (scopeGuardResult) {
-      const updated = await this.repository.update({ ...action, status: "failed" });
+      const updated = await this.repository.update({ ...action, status: "failed", lastResult: scopeGuardResult });
       return { action: updated, result: confirmBlockedResult(action.toolName, "confirm_guard_blocked", scopeGuardResult.message) };
     }
 
     await this.repository.update({ ...action, status: "confirmed" });
     try {
       const result = await input.executor.executeDefinition(tool, parsed.data as Record<string, unknown>, input.context);
-      const updated = await this.repository.update({ ...action, status: result.status === "success" ? "executed" : "failed" });
+      const updated = await this.repository.update({
+        ...action,
+        status: result.status === "success" ? "executed" : "failed",
+        lastResult: result,
+      });
       return { action: updated, result };
     } catch (error) {
       await this.repository.update({ ...action, status: "failed" });
@@ -130,7 +168,7 @@ function titleForTool(toolName: string): string {
   return toolName.replace(/_/g, " ");
 }
 
-function confirmBlockedResult(toolName: string, reason: string, message = "This pending action is no longer valid. Please start it again."): ToolResult {
+function confirmBlockedResult(toolName: string, reason: string, message = "该操作已失效，请重新发起。"): ToolResult {
   return {
     status: "needs_input",
     message,
@@ -139,6 +177,26 @@ function confirmBlockedResult(toolName: string, reason: string, message = "This 
       actionType: toolName,
       status: "needs_input",
       reason,
+      message,
+    },
+  };
+}
+
+function nonPendingResult(action: PendingAction): ToolResult {
+  const message = action.status === "executed" || action.status === "confirmed"
+    ? "该操作已确认，无需重复提交。"
+    : action.status === "expired" || action.status === "cancelled"
+      ? "该操作已失效，请重新发起。"
+      : "该操作当前不可执行，请重新发起。";
+  return {
+    ...(action.lastResult || {}),
+    status: "needs_input",
+    message,
+    visibility: "error_user_visible",
+    actionResult: {
+      actionType: action.toolName,
+      status: "needs_input",
+      reason: "pending_action_not_pending",
       message,
     },
   };

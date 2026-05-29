@@ -1,4 +1,4 @@
-export type ProductExperienceCategory = "work" | "project" | "education" | "award" | "skill" | "other";
+export type ProductExperienceCategory = "work" | "internship" | "project" | "education" | "award" | "skill" | "other";
 export type ProductExperienceStatus = "active" | "archived" | "deleted";
 export type ProductExperienceRevisionSource = "manual" | "import" | "copilot" | "resume_upload";
 export type ProductExperienceVariantType = "full" | "medium" | "short" | "jd_tailored" | "custom";
@@ -200,4 +200,21 @@ export type ExperienceDraft = {
   };
   confidence: number;
   warnings: string[];
+};
+
+export type NormalizedExperiencePreview = {
+  id?: string;
+  category: ProductExperienceCategory;
+  title: string;
+  organization?: string;
+  role?: string;
+  startDate?: string;
+  endDate?: string;
+  location?: string;
+  description?: string;
+  highlights: string[];
+  skills: string[];
+  rawText?: string;
+  confidence?: number;
+  missingFields?: string[];
 };

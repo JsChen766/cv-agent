@@ -4,7 +4,7 @@ const DATE_SEPARATORS = /[./-]/;
 const RANGE_PATTERN = /(?<start>\d{4}(?:[./-]\d{1,2})?)(?:\s*)(?:-|–|—|~|to|至|到)(?:\s*)(?<end>\d{4}(?:[./-]\d{1,2})?|present|current|now|至今|现在)/i;
 const SINGLE_DATE_PATTERN = /(?<single>\d{4}(?:[./-]\d{1,2})?)/;
 
-const CATEGORY_KEYWORDS: Record<ProductExperienceCategory, string[]> = {
+const CATEGORY_KEYWORDS: Record<string, string[]> = {
   work: ["实习", "intern", "工程师", "analyst", "公司", "有限公司", "technology", "exchange", "开发", "数据分析"],
   project: ["项目", "project", "系统", "平台", "开发", "react", "node", "python", "sql", "dashboard"],
   education: ["大学", "学院", "university", "college", "bachelor", "master", "phd", "gpa", "专业", "学位"],

@@ -1,6 +1,7 @@
 import type { ToolDefinition } from "../../agent-core/tools/Tool.js";
 import { TextInputSchema, ToolResultSchema } from "../../agent-core/validation/ToolInputSchemas.js";
 import { extractExperienceDraftFromText } from "./helpers.js";
+import { buildNormalizedExperiencePreview } from "../../product/experiencePreview.js";
 
 export function saveExperienceFromTextTool(): ToolDefinition {
   return {
@@ -31,6 +32,10 @@ export function saveExperienceFromTextTool(): ToolDefinition {
         message: `Saved experience "${saved.experience.title}".`,
         data: {
           draft,
+          experienceDraft: buildNormalizedExperiencePreview(draft, {
+            id: saved.experience.id,
+            missingFields: draft.warnings,
+          }),
           experienceId: saved.experience.id,
           title: saved.experience.title,
           summary: draft.structured.summary,
@@ -41,7 +46,17 @@ export function saveExperienceFromTextTool(): ToolDefinition {
           revision: saved.revision,
         },
         workspacePatch: { activePanel: "experience_library", activeExperienceId: saved.experience.id, active: { experienceId: saved.experience.id } },
-        actionResult: { status: "success", actionType: "save_experience_from_text", experienceId: saved.experience.id },
+        actionResult: {
+          status: "success",
+          actionType: "save_experience_from_text",
+          experienceId: saved.experience.id,
+          metadata: {
+            experienceDraft: buildNormalizedExperiencePreview(draft, {
+              id: saved.experience.id,
+              missingFields: draft.warnings,
+            }),
+          },
+        },
       };
     },
   };
