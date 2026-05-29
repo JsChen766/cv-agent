@@ -15,6 +15,9 @@ import type {
   ProductResumeItem,
 } from "../types.js";
 import { extractExperienceDraftFromText } from "../experienceDraft.js";
+import type { LLMExperienceExtractor } from "../LLMExperienceExtractor.js";
+import { extractedCandidateToDraft } from "../LLMExperienceExtractor.js";
+import type { LLMGenerationService } from "../LLMGenerationService.js";
 import type {
   ProductExperienceRepository,
   ProductGenerationRepository,
@@ -280,6 +283,7 @@ export class ImportService {
   public constructor(
     private readonly repository: ProductImportRepository,
     private readonly experienceService: ExperienceService,
+    private readonly llmExtractor?: LLMExperienceExtractor,
   ) {}
 
   public createTextImportJob(userId: string, rawText: string): Promise<ProductImportJob> {
@@ -299,8 +303,45 @@ export class ImportService {
     const job = await this.repository.getImportJob(userId, jobId);
     if (!job) throw new Error("Import job not found.");
     await this.repository.updateImportJobStatus(userId, jobId, { status: "extracting" });
-    const chunks = splitExperienceText(job.rawText ?? "");
+
+    const rawText = job.rawText ?? "";
     const candidates: ProductImportCandidate[] = [];
+
+    // Primary path: LLM extraction
+    if (this.llmExtractor) {
+      try {
+        const extracted = await this.llmExtractor.extractCandidates(rawText);
+        if (extracted.length > 0) {
+          for (const candidate of extracted) {
+            const draft = extractedCandidateToDraft(candidate);
+            const now = new Date().toISOString();
+            candidates.push(await this.repository.createImportCandidate({
+              id: `pimpcand-${randomUUID()}`,
+              jobId,
+              userId,
+              title: draft.title,
+              category: draft.category,
+              organization: draft.organization,
+              role: draft.role,
+              startDate: draft.startDate,
+              endDate: draft.endDate,
+              content: draft.content,
+              structured: draft.structured,
+              status: "pending",
+              createdAt: now,
+              updatedAt: now,
+            }));
+          }
+          await this.repository.updateImportJobStatus(userId, jobId, { status: "candidates_ready" });
+          return candidates;
+        }
+      } catch {
+        // LLM extraction failed, fall through to rule-based fallback
+      }
+    }
+
+    // Deterministic fallback: rule-based chunking and extraction
+    const chunks = splitExperienceText(rawText);
     for (const [index, content] of chunks.entries()) {
       const draft = extractExperienceDraftFromText(content);
       const now = new Date().toISOString();
@@ -365,6 +406,7 @@ export class GenerationProductService {
     private readonly jdService: JDService,
     private readonly resumeService: ResumeService,
     private readonly experienceService: ExperienceService,
+    private readonly llmGenerationService?: LLMGenerationService,
   ) {}
 
   public async generateResumeFromJD(input: {
@@ -384,8 +426,30 @@ export class GenerationProductService {
           targetRole: input.targetRole,
         });
     if (!jd) throw new Error("JD not found.");
-    const experiences = await this.experienceService.listExperiences(input.userId, { limit: 6, status: "active" });
-    const variants = buildDraftVariants(input.userId, jd.rawText, input.targetRole ?? jd.targetRole, experiences);
+    const experiences = await this.experienceService.listExperiences(input.userId, { limit: 10, status: "active" });
+
+    let variants: ProductGeneratedVariant[];
+    if (this.llmGenerationService) {
+      try {
+        variants = await this.llmGenerationService.generateVariants(
+          input.userId,
+          jd.rawText,
+          input.targetRole ?? jd.targetRole,
+          experiences,
+        );
+        if (variants.length === 0) {
+          // LLM returned empty, fall back to template
+          variants = buildDraftVariants(input.userId, jd.rawText, input.targetRole ?? jd.targetRole, experiences);
+        }
+      } catch {
+        // LLM generation failed, fall back to template
+        variants = buildDraftVariants(input.userId, jd.rawText, input.targetRole ?? jd.targetRole, experiences);
+      }
+    } else {
+      // No LLM service available, use template fallback
+      variants = buildDraftVariants(input.userId, jd.rawText, input.targetRole ?? jd.targetRole, experiences);
+    }
+
     const generation: ProductGeneration = {
       id: `pgen-${randomUUID()}`,
       userId: input.userId,

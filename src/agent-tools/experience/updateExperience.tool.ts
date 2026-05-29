@@ -1,4 +1,4 @@
-import type { ProductExperience } from "../../product/types.js";
+import type { ProductExperience, ProductExperienceRevision } from "../../product/types.js";
 import type { ToolDefinition } from "../../agent-core/tools/Tool.js";
 import { ToolResultSchema, UpdateExperienceInputSchema } from "../../agent-core/validation/ToolInputSchemas.js";
 import { hasPatchFields, sanitizeExperiencePatch } from "../../agent-core/security/ToolPatchSanitizer.js";
@@ -39,39 +39,57 @@ export function updateExperienceTool(): ToolDefinition {
       const updated = await context.kernel.productServices.experienceService.updateExperience(context.userId, id, patch);
       if (!updated) return { status: "failed", message: "Experience not found.", data: { id }, visibility: "error_user_visible" };
 
-      let revision;
+      let revision: ProductExperienceRevision | undefined;
+
       if (content || structured) {
         const revisions = await context.kernel.productServices.experienceService.listRevisions(context.userId, id);
         const current = updated.currentRevisionId
           ? revisions.find((item) => item.id === updated.currentRevisionId)
           : revisions.at(0);
+        const originalContent = current?.content ?? "";
+
         revision = await context.kernel.productServices.experienceService.createRevision(context.userId, id, {
           content: content || current?.content || "",
           structured,
           source: "copilot",
         });
+
+        return {
+          status: "success",
+          message: `Updated experience "${updated.title}".`,
+          data: { experience: updated, revision },
+          workspacePatch: { activePanel: "experience_library", activeExperienceId: updated.id, active: { experienceId: updated.id } },
+          visibility: "user_summary",
+          actionResult: {
+            status: "success",
+            actionType: "update_experience",
+            experienceId: updated.id,
+            revisionSuggestion: {
+              kind: "experience" as const,
+              sourceId: updated.id,
+              sourceTextPreview: originalContent.slice(0, 200),
+              rewrittenText: revision.content,
+              usedModel: true,
+            },
+            metadata: {
+              experienceId: updated.id,
+              revisionId: revision.id,
+            },
+          },
+        };
       }
+
       return {
         status: "success",
         message: `Updated experience "${updated.title}".`,
-        data: { experience: updated, revision },
+        data: { experience: updated },
         workspacePatch: { activePanel: "experience_library", activeExperienceId: updated.id, active: { experienceId: updated.id } },
         visibility: "user_summary",
         actionResult: {
           status: "success",
           actionType: "update_experience",
           experienceId: updated.id,
-          revisionSuggestion: revision ? {
-            kind: "experience" as const,
-            sourceId: updated.id,
-            sourceTextPreview: (content || revision.content).slice(0, 200),
-            rewrittenText: revision.content,
-            usedModel: false,
-          } : undefined,
-          metadata: {
-            experienceId: updated.id,
-            revisionId: revision?.id,
-          },
+          metadata: { experienceId: updated.id },
         },
       };
     },

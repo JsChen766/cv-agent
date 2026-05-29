@@ -52,7 +52,7 @@ export class FileService {
     try {
       await this.repository.updateFile(userId, id, { parserStatus: "running" });
       const buffer = await this.storage.read(file.storageKey);
-      const extracted = extractText(file.originalName, file.mimeType, buffer);
+      const extracted = await extractText(file.originalName, file.mimeType, buffer);
       const maxChars = readPlatformConfig().fileMaxParsedTextChars;
       const text = extracted.text.length > maxChars ? extracted.text.slice(0, maxChars) : extracted.text;
       const document = await this.repository.createParsedDocument({
@@ -81,7 +81,14 @@ export class FileService {
   }
 }
 
-function extractText(fileName: string, mimeType: string, buffer: Buffer): { text: string; metadata: Record<string, unknown> } {
+async function extractText(fileName: string, mimeType: string, buffer: Buffer): Promise<{ text: string; metadata: Record<string, unknown> }> {
+  if (mimeType === "application/pdf") {
+    return extractPdfText(buffer, fileName);
+  }
+  if (mimeType === "application/vnd.openxmlformats-officedocument.wordprocessingml.document") {
+    return extractDocxText(buffer, fileName);
+  }
+  // Plain text and fallback
   return {
     text: buffer.toString("utf8"),
     metadata: {
@@ -90,6 +97,68 @@ function extractText(fileName: string, mimeType: string, buffer: Buffer): { text
       mimeType,
     },
   };
+}
+
+async function extractPdfText(buffer: Buffer, fileName: string): Promise<{ text: string; metadata: Record<string, unknown> }> {
+  try {
+    const pdfjsLib = await import("pdfjs-dist/legacy/build/pdf.js");
+    const data = new Uint8Array(buffer);
+    const doc = await pdfjsLib.getDocument({ data, disableAutoFetch: true, disableStream: true }).promise;
+    const pages: string[] = [];
+    for (let i = 1; i <= Math.min(doc.numPages, 50); i += 1) {
+      const page = await doc.getPage(i);
+      const content = await page.getTextContent();
+      const pageText = content.items
+        .map((item) => ("str" in item ? (item as { str: string }).str : ""))
+        .join(" ");
+      pages.push(pageText);
+    }
+    return {
+      text: pages.join("\n"),
+      metadata: {
+        parser: "PdfJsParser",
+        fileName,
+        mimeType: "application/pdf",
+        pageCount: doc.numPages,
+      },
+    };
+  } catch (error) {
+    return {
+      text: `PDF parsing failed: ${error instanceof Error ? error.message : "Unknown error"}. Please try a text-based file.`,
+      metadata: {
+        parser: "PdfJsParser",
+        fileName,
+        mimeType: "application/pdf",
+        error: error instanceof Error ? error.message : "Unknown error",
+      },
+    };
+  }
+}
+
+async function extractDocxText(buffer: Buffer, fileName: string): Promise<{ text: string; metadata: Record<string, unknown> }> {
+  try {
+    const mammoth = await import("mammoth");
+    const result = await mammoth.extractRawText({ buffer });
+    return {
+      text: result.value,
+      metadata: {
+        parser: "MammothParser",
+        fileName,
+        mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        warnings: result.messages,
+      },
+    };
+  } catch (error) {
+    return {
+      text: `DOCX parsing failed: ${error instanceof Error ? error.message : "Unknown error"}. Please try a text-based file.`,
+      metadata: {
+        parser: "MammothParser",
+        fileName,
+        mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        error: error instanceof Error ? error.message : "Unknown error",
+      },
+    };
+  }
 }
 
 function sanitizeName(name: string): string {

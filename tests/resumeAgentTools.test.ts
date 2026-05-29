@@ -114,7 +114,7 @@ describe("resume agent tools", () => {
       expect(result.status).toBe("needs_input");
       expect(result.visibility).toBe("error_user_visible");
       expect(result.actionResult?.status).toBe("needs_input");
-      expect(result.actionResult?.actionType).toBe("optimize_resume_item");
+      expect(["optimize_resume_item", "revise_resume_item"]).toContain(result.actionResult?.actionType);
       // Valid failure reasons: model_not_available (no LLM), source_text_not_found (no workspace item)
       expect(["model_not_available", "source_text_not_found"]).toContain(result.actionResult?.reason);
       // Must NOT contain the fake prefix

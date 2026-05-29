@@ -67,6 +67,13 @@ export class ContextHydrator {
       hydrated.text = jd.text ?? stringValue(hydrated.text);
       hydrated.targetRole = jd.targetRole ?? stringValue(hydrated.targetRole);
     }
+    if (toolName === "save_experience_from_text" || toolName === "prepare_save_experience_from_text") {
+      // Fill text from the user's original message if the model didn't provide it.
+      // TextInputSchema requires a non-empty `text` field.
+      if (!stringValue(hydrated.text)) {
+        hydrated.text = context.userMessage || "";
+      }
+    }
     if (toolName === "generate_resume_from_jd") {
       const jd = this.resolver.resolveJD(runContext, workspace, hydrated);
       hydrated.jdId = jd.id ?? stringValue(hydrated.jdId);

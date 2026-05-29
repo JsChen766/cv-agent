@@ -53,6 +53,9 @@ import { PostgresDatabase } from "../../persistence/postgres/PostgresDatabase.js
 import { ModelClient } from "../../agent-core/model/ModelClient.js";
 import { DeepSeekProvider } from "../../providers/DeepSeekProvider.js";
 import { OpenAICompatibleProvider } from "../../providers/OpenAICompatibleProvider.js";
+import { LLMExperienceExtractor } from "../../product/LLMExperienceExtractor.js";
+import { LLMGenerationService } from "../../product/LLMGenerationService.js";
+import { LLMRewriteService } from "../../product/LLMRewriteService.js";
 
 export async function createKernel(): Promise<ApiKernel> {
   const databaseUrl = process.env.DATABASE_URL;
@@ -104,12 +107,20 @@ function buildKernel(input: BuildKernelInput): ApiKernel {
   const experienceService = new ExperienceService(input.productExperienceRepository);
   const jdService = new JDService(input.productJDRepository);
   const resumeService = new ResumeService(input.productResumeRepository);
-  const importService = new ImportService(input.productImportRepository, experienceService);
+
+  // LLM services
+  const model = createModelClient();
+  const llmExperienceExtractor = model.client ? new LLMExperienceExtractor(model.client) : undefined;
+  const llmGenerationService = model.client ? new LLMGenerationService(model.client) : undefined;
+  const llmRewriteService = model.client ? new LLMRewriteService(model.client) : undefined;
+
+  const importService = new ImportService(input.productImportRepository, experienceService, llmExperienceExtractor);
   const generationProductService = new GenerationProductService(
     input.productGenerationRepository,
     jdService,
     resumeService,
     experienceService,
+    llmGenerationService,
   );
   const productServices = {
     experienceService,
@@ -136,7 +147,6 @@ function buildKernel(input: BuildKernelInput): ApiKernel {
     fileService,
     input.platformServices,
   );
-  const model = createModelClient();
   const warnings = [...(input.warnings ?? []), ...model.warnings];
 
   return {
@@ -150,6 +160,9 @@ function buildKernel(input: BuildKernelInput): ApiKernel {
     exportService,
     jobRunner,
     frontDeskModelClient: model.client,
+    llmExperienceExtractor,
+    llmGenerationService,
+    llmRewriteService,
     close: input.close,
   };
 }

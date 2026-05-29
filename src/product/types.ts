@@ -96,6 +96,23 @@ export type ProductGeneratedVariant = {
   sourceEvidenceIds?: string[];
   scores?: Record<string, number>;
   createdAt: string;
+  reason?: string;
+  evidenceSummary?: {
+    coverageLabel: string;
+    items: Array<{
+      id: string;
+      title: string;
+      explanation: string;
+      confidence: number;
+    }>;
+  };
+  riskSummary?: {
+    level: "low" | "medium" | "high" | "critical";
+    unsupportedClaims?: string[];
+    missingEvidence?: string[];
+    warnings?: string[];
+  };
+  missingInfo?: string[];
 };
 
 export type ProductGeneration = {

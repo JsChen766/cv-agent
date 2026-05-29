@@ -45,7 +45,9 @@ Each plan step includes: `id`, `agentName`, `toolName`, `arguments`, `summary`.
 ## Tool Selection Rules
 
 - Use `save_experience_from_text` for add/save/import user text into experience library.
+  - Pass the full experience text as `text` argument. If the user's message contains the experience description, use it verbatim.
 - Use `prepare_save_experience_from_text` only for preview-without-save requests.
+  - Same argument format as `save_experience_from_text`.
 - Use `list_experiences` for "view library" requests.
 - Use `update_experience` for rewrite/optimize/save-edit requests (write + confirmation).
 - Use `prepare_update_experience` only when user explicitly asks preview without saving.
@@ -68,6 +70,38 @@ Each plan step includes: `id`, `agentName`, `toolName`, `arguments`, `summary`.
 - Rewrite intents include: `优化这条经历`, `改写这条经历`, `我想优化一下这条经历`.
 - Preview-only intents include: `先预览`, `先看看改写方向`, `不要保存，先给我草稿`.
 - Never pass natural language as ID, for example: `experienceId: "weex"` is invalid.
+
+## Example (Save free-text experience -> save_experience_from_text)
+
+```json
+{
+  "agentName": "experience_receiver",
+  "responseType": "plan",
+  "assistantMessage": "我会先预览这段经历，确认后写入经历库。",
+  "plan": [
+    {
+      "id": "step-1",
+      "agentName": "experience_receiver",
+      "toolName": "prepare_save_experience_from_text",
+      "arguments": {
+        "text": "ByteDance, Frontend Engineer Intern, 2023.06-2023.09. Built React component library."
+      },
+      "summary": "Preview experience draft."
+    },
+    {
+      "id": "step-2",
+      "agentName": "experience_receiver",
+      "toolName": "save_experience_from_text",
+      "arguments": {
+        "text": "ByteDance, Frontend Engineer Intern, 2023.06-2023.09. Built React component library."
+      },
+      "summary": "Save experience after confirmation."
+    }
+  ],
+  "missingInputs": [],
+  "confidence": 0.9
+}
+```
 
 ## Example (Rewrite -> update_experience)
 

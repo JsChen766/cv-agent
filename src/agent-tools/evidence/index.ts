@@ -34,6 +34,30 @@ export function createEvidenceAgentTools(): ToolDefinition[] {
           const evidence = evidenceId
             ? (variant.evidenceSummary?.items ?? []).filter((item) => item.id === evidenceId)
             : variant.evidenceSummary?.items ?? [];
+
+          // Try LLM claim check if available
+          let claimCheck = null;
+          if (context.kernel.llmRewriteService && generationId) {
+            try {
+              const experiences = await context.kernel.productServices.experienceService.listExperiences(
+                context.userId, { limit: 10, status: "active" },
+              );
+              const expForCheck = experiences.map((e) => ({
+                id: e.id,
+                title: e.title,
+                content: e.content ?? "",
+                organization: e.organization,
+                role: e.role,
+              }));
+              claimCheck = await context.kernel.llmRewriteService.checkClaims(
+                variant.content,
+                expForCheck,
+              );
+            } catch {
+              // LLM claim check failed, continue without it
+            }
+          }
+
           return {
             status: "success",
             message: "Evidence loaded.",
@@ -43,8 +67,20 @@ export function createEvidenceAgentTools(): ToolDefinition[] {
               evidence,
               sourceExperienceIds: variant.sourceExperienceIds ?? [],
               sourceEvidenceIds: variant.sourceEvidenceIds ?? [],
-              riskSummary: variant.riskSummary ?? { level: "unknown", unsupportedClaims: [], missingEvidence: [], warnings: [] },
+              riskSummary: claimCheck?.summary ? {
+                level: claimCheck.summary.riskLevel,
+                unsupportedClaims: claimCheck.claims
+                  .filter((c) => !c.supported)
+                  .map((c) => c.text),
+                missingEvidence: claimCheck.claims
+                  .filter((c) => !c.supported && !c.sourceExperienceId)
+                  .map((c) => c.text),
+                warnings: claimCheck.summary.unsupportedClaims > 0
+                  ? [`${claimCheck.summary.unsupportedClaims} unsupported claims found.`]
+                  : [],
+              } : variant.riskSummary ?? { level: "unknown", unsupportedClaims: [], missingEvidence: [], warnings: [] },
               evidenceSummary: variant.evidenceSummary,
+              ...(claimCheck ? { claimCheck } : {}),
             },
             actionResult: {
               status: "success",
@@ -57,6 +93,7 @@ export function createEvidenceAgentTools(): ToolDefinition[] {
                 sourceExperienceIds: variant.sourceExperienceIds ?? [],
                 sourceEvidenceIds: variant.sourceEvidenceIds ?? [],
                 riskSummary: variant.riskSummary ?? {},
+                ...(claimCheck ? { claimCheck } : {}),
               },
             },
           };
@@ -112,16 +149,54 @@ export function createEvidenceAgentTools(): ToolDefinition[] {
     },
     {
       name: "check_unsupported_claims",
-      description: "Check text for unsupported or risky claims.",
+      description: "Check text for unsupported or risky claims using LLM analysis.",
       ownerAgent: "critic",
       inputSchema: z.object({ text: z.string().optional(), resumeId: z.string().optional(), experienceId: z.string().optional() }).passthrough(),
       outputSchema: ToolResultSchema,
       mutability: "read",
       requiresConfirmation: false,
       riskLevel: "low",
-      execute: async (input) => {
+      execute: async (input, context) => {
         const text = typeof input.text === "string" ? input.text : "";
-        const warnings = /\b(best|only|guaranteed|100%|top)\b/i.test(text) ? ["Potentially exaggerated claim detected."] : [];
+
+        // Primary: LLM-based claim checking
+        const llmRewrite = context.kernel.llmRewriteService;
+        if (llmRewrite && text) {
+          try {
+            const experiences = await context.kernel.productServices.experienceService.listExperiences(
+              context.userId, { limit: 10, status: "active" },
+            );
+            const expForCheck = experiences.map((e) => ({
+              id: e.id,
+              title: e.title,
+              content: e.content ?? "",
+              organization: e.organization,
+              role: e.role,
+            }));
+            const result = await llmRewrite.checkClaims(text, expForCheck);
+            if (result) {
+              return {
+                status: "success",
+                message: result.summary.unsupportedClaims > 0
+                  ? `Found ${result.summary.unsupportedClaims} unsupported claims.`
+                  : "All claims appear supported by the experience library.",
+                visibility: "internal",
+                data: {
+                  claims: result.claims,
+                  summary: result.summary,
+                  riskLevel: result.summary.riskLevel,
+                },
+              };
+            }
+          } catch {
+            // LLM failed, fall through to regex
+          }
+        }
+
+        // Deterministic fallback: basic regex patterns
+        const warnings = /\b(best|only|guaranteed|100%|top|#1|number one)\b/i.test(text)
+          ? ["Potentially exaggerated claim detected."]
+          : [];
         return {
           status: "success",
           message: warnings.length ? "Found unsupported-claim risks." : "No obvious unsupported claims found.",
