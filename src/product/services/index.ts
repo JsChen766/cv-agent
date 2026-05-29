@@ -18,6 +18,7 @@ import { extractExperienceDraftFromText } from "../experienceDraft.js";
 import type { LLMExperienceExtractor } from "../LLMExperienceExtractor.js";
 import { extractedCandidateToDraft } from "../LLMExperienceExtractor.js";
 import type { LLMGenerationService } from "../LLMGenerationService.js";
+import { isDeterministicFallbackAllowed } from "../deterministicFallbackGuard.js";
 import type {
   ProductExperienceRepository,
   ProductGenerationRepository,
@@ -309,38 +310,42 @@ export class ImportService {
 
     // Primary path: LLM extraction
     if (this.llmExtractor) {
-      try {
-        const extracted = await this.llmExtractor.extractCandidates(rawText);
-        if (extracted.length > 0) {
-          for (const candidate of extracted) {
-            const draft = extractedCandidateToDraft(candidate);
-            const now = new Date().toISOString();
-            candidates.push(await this.repository.createImportCandidate({
-              id: `pimpcand-${randomUUID()}`,
-              jobId,
-              userId,
-              title: draft.title,
-              category: draft.category,
-              organization: draft.organization,
-              role: draft.role,
-              startDate: draft.startDate,
-              endDate: draft.endDate,
-              content: draft.content,
-              structured: draft.structured,
-              status: "pending",
-              createdAt: now,
-              updatedAt: now,
-            }));
-          }
-          await this.repository.updateImportJobStatus(userId, jobId, { status: "candidates_ready" });
-          return candidates;
+      const extracted = await this.llmExtractor.extractCandidates(rawText);
+      if (extracted.length > 0) {
+        for (const candidate of extracted) {
+          const draft = extractedCandidateToDraft(candidate);
+          const now = new Date().toISOString();
+          candidates.push(await this.repository.createImportCandidate({
+            id: `pimpcand-${randomUUID()}`,
+            jobId,
+            userId,
+            title: draft.title,
+            category: draft.category,
+            organization: draft.organization,
+            role: draft.role,
+            startDate: draft.startDate,
+            endDate: draft.endDate,
+            content: draft.content,
+            structured: draft.structured,
+            status: "pending",
+            createdAt: now,
+            updatedAt: now,
+          }));
         }
-      } catch {
-        // LLM extraction failed, fall through to rule-based fallback
+        await this.repository.updateImportJobStatus(userId, jobId, { status: "candidates_ready" });
+        return candidates;
       }
+      // LLM returned no candidates — only fall back in test mode
+      if (!isDeterministicFallbackAllowed()) {
+        await this.repository.updateImportJobStatus(userId, jobId, { status: "failed", errorMessage: "LLM extraction returned no candidates." });
+        throw new Error("LLM_PROVIDER_NOT_CONFIGURED: The AI model could not extract any experiences from the provided text. Please try with more structured content.");
+      }
+    } else if (!isDeterministicFallbackAllowed()) {
+      await this.repository.updateImportJobStatus(userId, jobId, { status: "failed", errorMessage: "No LLM provider configured for experience extraction." });
+      throw new Error("LLM_PROVIDER_NOT_CONFIGURED: No AI model provider is configured. Set DEEPSEEK_API_KEY or AGENT_API_KEY to enable intelligent experience extraction.");
     }
 
-    // Deterministic fallback: rule-based chunking and extraction
+    // Deterministic fallback: rule-based chunking and extraction (test mode only)
     const chunks = splitExperienceText(rawText);
     for (const [index, content] of chunks.entries()) {
       const draft = extractExperienceDraftFromText(content);
@@ -430,23 +435,23 @@ export class GenerationProductService {
 
     let variants: ProductGeneratedVariant[];
     if (this.llmGenerationService) {
-      try {
-        variants = await this.llmGenerationService.generateVariants(
-          input.userId,
-          jd.rawText,
-          input.targetRole ?? jd.targetRole,
-          experiences,
-        );
-        if (variants.length === 0) {
-          // LLM returned empty, fall back to template
-          variants = buildDraftVariants(input.userId, jd.rawText, input.targetRole ?? jd.targetRole, experiences);
+      variants = await this.llmGenerationService.generateVariants(
+        input.userId,
+        jd.rawText,
+        input.targetRole ?? jd.targetRole,
+        experiences,
+      );
+      if (variants.length === 0) {
+        // LLM returned empty — only fall back in test mode
+        if (!isDeterministicFallbackAllowed()) {
+          throw new Error("LLM_PROVIDER_NOT_CONFIGURED: The AI model could not generate any resume variants. Please check your API key configuration.");
         }
-      } catch {
-        // LLM generation failed, fall back to template
         variants = buildDraftVariants(input.userId, jd.rawText, input.targetRole ?? jd.targetRole, experiences);
       }
+    } else if (!isDeterministicFallbackAllowed()) {
+      throw new Error("LLM_PROVIDER_NOT_CONFIGURED: No AI model provider is configured. Set DEEPSEEK_API_KEY or AGENT_API_KEY to enable intelligent resume generation.");
     } else {
-      // No LLM service available, use template fallback
+      // No LLM service available, use template fallback (test mode only)
       variants = buildDraftVariants(input.userId, jd.rawText, input.targetRole ?? jd.targetRole, experiences);
     }
 

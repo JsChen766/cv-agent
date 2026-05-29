@@ -3,6 +3,7 @@ import type { ToolDefinition } from "../../agent-core/tools/Tool.js";
 import { normalizeShowEvidenceArgs } from "../../agent-core/security/ToolIdGuard.js";
 import { ShowEvidenceInputSchema, ToolResultSchema } from "../../agent-core/validation/ToolInputSchemas.js";
 import type { ProductVariant } from "../../copilot/types.js";
+import { isDeterministicFallbackAllowed, llmNotAvailableResult } from "../../product/deterministicFallbackGuard.js";
 
 export function createEvidenceAgentTools(): ToolDefinition[] {
   return [
@@ -161,47 +162,74 @@ export function createEvidenceAgentTools(): ToolDefinition[] {
 
         // Primary: LLM-based claim checking
         const llmRewrite = context.kernel.llmRewriteService;
-        if (llmRewrite && text) {
-          try {
-            const experiences = await context.kernel.productServices.experienceService.listExperiences(
-              context.userId, { limit: 10, status: "active" },
-            );
-            const expForCheck = experiences.map((e) => ({
-              id: e.id,
-              title: e.title,
-              content: e.content ?? "",
-              organization: e.organization,
-              role: e.role,
-            }));
-            const result = await llmRewrite.checkClaims(text, expForCheck);
-            if (result) {
-              return {
-                status: "success",
-                message: result.summary.unsupportedClaims > 0
-                  ? `Found ${result.summary.unsupportedClaims} unsupported claims.`
-                  : "All claims appear supported by the experience library.",
-                visibility: "internal",
-                data: {
-                  claims: result.claims,
-                  summary: result.summary,
-                  riskLevel: result.summary.riskLevel,
-                },
-              };
-            }
-          } catch {
-            // LLM failed, fall through to regex
+        if (!llmRewrite) {
+          if (!isDeterministicFallbackAllowed()) {
+            return llmNotAvailableResult("check_unsupported_claims");
           }
+          // Test mode only: basic regex fallback
+          const warnings = /\b(best|only|guaranteed|100%|top|#1|number one)\b/i.test(text)
+            ? ["Potentially exaggerated claim detected."]
+            : [];
+          return {
+            status: "success",
+            message: warnings.length ? "Found unsupported-claim risks." : "No obvious unsupported claims found.",
+            visibility: "internal",
+            data: { warnings },
+          };
         }
 
-        // Deterministic fallback: basic regex patterns
-        const warnings = /\b(best|only|guaranteed|100%|top|#1|number one)\b/i.test(text)
-          ? ["Potentially exaggerated claim detected."]
-          : [];
+        if (!text) {
+          return {
+            status: "needs_input",
+            message: "Please provide text to check for unsupported claims.",
+            visibility: "error_user_visible",
+            data: { warnings: [] },
+            actionResult: {
+              status: "needs_input",
+              actionType: "check_unsupported_claims",
+              reason: "missing_text",
+              message: "Please provide text to check.",
+            },
+          };
+        }
+
+        const experiences = await context.kernel.productServices.experienceService.listExperiences(
+          context.userId, { limit: 10, status: "active" },
+        );
+        const expForCheck = experiences.map((e) => ({
+          id: e.id,
+          title: e.title,
+          content: e.content ?? "",
+          organization: e.organization,
+          role: e.role,
+        }));
+        const result = await llmRewrite.checkClaims(text, expForCheck);
+        if (result) {
+          return {
+            status: "success",
+            message: result.summary.unsupportedClaims > 0
+              ? `Found ${result.summary.unsupportedClaims} unsupported claims.`
+              : "All claims appear supported by the experience library.",
+            visibility: "internal",
+            data: {
+              claims: result.claims,
+              summary: result.summary,
+              riskLevel: result.summary.riskLevel,
+            },
+          };
+        }
+
         return {
-          status: "success",
-          message: warnings.length ? "Found unsupported-claim risks." : "No obvious unsupported claims found.",
-          visibility: "internal",
-          data: { warnings },
+          status: "needs_input",
+          message: "Unable to verify claims at this time. The AI model returned no results.",
+          visibility: "error_user_visible",
+          data: { warnings: [] },
+          actionResult: {
+            status: "needs_input",
+            actionType: "check_unsupported_claims",
+            reason: "llm_not_available",
+            message: "Unable to verify claims at this time.",
+          },
         };
       },
     },
