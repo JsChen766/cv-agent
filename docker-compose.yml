@@ -1,0 +1,57 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: coolto-postgres
+    environment:
+      POSTGRES_DB: coolto_agent
+      POSTGRES_USER: coolto
+      POSTGRES_PASSWORD: coolto_dev_password
+    ports:
+      - "5432:5432"
+    volumes:
+      - coolto_pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 5s
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+    container_name: coolto-agent-api
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "3000:3000"
+    env_file:
+      - .env.docker
+    environment:
+      HOST: 0.0.0.0
+      PORT: "3000"
+      DATABASE_URL: postgres://coolto:coolto_dev_password@postgres:5432/coolto_agent
+    volumes:
+      - .:/app
+      - /app/node_modules
+      - coolto_api_data:/app/.data
+    command: npm run dev:api
+    restart: unless-stopped
+
+  pgadmin:
+    image: dpage/pgadmin4
+    container_name: coolto-pgadmin
+    profiles: ["tools"]
+    ports:
+      - "5050:80"
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@coolto.local
+      PGADMIN_DEFAULT_PASSWORD: admin
+    depends_on:
+      - postgres
+
+volumes:
+  coolto_pg_data:
+  coolto_api_data:

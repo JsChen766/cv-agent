@@ -5,6 +5,8 @@ dist/
 coverage/
 *.log
 .*
+!.dockerignore
+!.env.docker.example
 
 # Local productized API playground
 local-playground/

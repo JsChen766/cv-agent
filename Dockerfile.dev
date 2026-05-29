@@ -1,0 +1,13 @@
+FROM node:20-alpine
+
+WORKDIR /app
+
+# Copy package manifest(s) first for better layer caching.
+COPY package*.json ./
+
+# Prefer reproducible install when lockfile exists, fallback when it does not.
+RUN if [ -f package-lock.json ]; then npm ci; else npm install; fi
+
+EXPOSE 3000
+
+CMD ["npm", "run", "dev:api"]

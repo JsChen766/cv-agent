@@ -78,6 +78,10 @@ Local start:
 npm run dev:api
 ```
 
+Docker local dev:
+
+- See [docs/docker-local-dev.md](docs/docker-local-dev.md)
+
 Tests:
 
 ```bash
