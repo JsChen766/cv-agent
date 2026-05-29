@@ -37,6 +37,14 @@ export class ContextHydrator {
       hydrated.id = experience.id ?? stringValue(hydrated.id);
       applyResolverConflicts(toolName, hydrated, experience);
     }
+    if (toolName === "match_experience") {
+      const experience = this.resolver.resolveExperience(runContext, workspace, hydrated);
+      const jd = this.resolver.resolveJD(runContext, workspace, hydrated);
+      hydrated.experienceId = experience.id ?? stringValue(hydrated.experienceId);
+      hydrated.jdId = jd.id ?? stringValue(hydrated.jdId);
+      hydrated.jdText = jd.text ?? stringValue(hydrated.jdText);
+      applyResolverConflicts(toolName, hydrated, experience);
+    }
     if (toolName === "update_experience" || toolName === "prepare_update_experience") {
       const experience = this.resolver.resolveExperience(runContext, workspace, hydrated);
       hydrated.experienceId = experience.id ?? stringValue(hydrated.experienceId);

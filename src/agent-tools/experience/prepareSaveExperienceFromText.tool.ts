@@ -1,6 +1,6 @@
 import type { ToolDefinition } from "../../agent-core/tools/Tool.js";
 import { TextInputSchema, ToolResultSchema } from "../../agent-core/validation/ToolInputSchemas.js";
-import { inferExperienceDraft } from "./helpers.js";
+import { extractExperienceDraftFromText } from "./helpers.js";
 
 export function prepareSaveExperienceFromTextTool(): ToolDefinition {
   return {
@@ -13,15 +13,19 @@ export function prepareSaveExperienceFromTextTool(): ToolDefinition {
     requiresConfirmation: false,
     riskLevel: "low",
     execute: async (input) => {
-      const draft = inferExperienceDraft(String(input.text));
+      const draft = extractExperienceDraftFromText(String(input.text));
       return {
         status: "success",
-        message: "已识别出一条经历草稿，你可以继续补充或要求我保存。",
-        data: { draft },
+        message: "Prepared structured experience draft preview.",
+        data: {
+          draft,
+          warnings: draft.warnings,
+          confidence: draft.confidence,
+        },
         actionResult: {
           status: "success",
           actionType: "prepare_save_experience_from_text",
-          message: "已识别出一条经历草稿。",
+          message: "Prepared structured experience draft preview.",
         },
       };
     },

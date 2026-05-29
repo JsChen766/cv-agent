@@ -286,6 +286,38 @@ describe("Copilot routes on agent-core runtime", () => {
     expect(Array.isArray(data.turns)).toBe(true);
   });
 
+  it("persists assistant metadata.productBlocks and keeps metadata safe for session history restore", async () => {
+    const chat = await server.inject({
+      method: "POST",
+      url: "/copilot/chat",
+      headers: { "x-user-id": "user-1" },
+      payload: { message: "Show my experience library" },
+    });
+    expect(chat.statusCode).toBe(200);
+    const chatBody = chat.json() as ApiSuccess<CopilotChatResponse>;
+    const assistantMetadata = chatBody.data.assistantMessage.metadata as Record<string, unknown> | undefined;
+    const blocks = assistantMetadata?.productBlocks as Array<{ type: string }> | undefined;
+    expect(Array.isArray(blocks)).toBe(true);
+    expect(blocks?.some((block) => block.type === "experience_list" || block.type === "experience_card")).toBe(true);
+
+    const detail = await server.inject({
+      method: "GET",
+      url: `/copilot/sessions/${chatBody.data.sessionId}`,
+      headers: { "x-user-id": "user-1" },
+    });
+    expect(detail.statusCode).toBe(200);
+    const detailBody = detail.json() as ApiSuccess<Record<string, unknown>>;
+    const messages = detailBody.data.messages as Array<Record<string, unknown>>;
+    const assistant = messages.find((item) => item.role === "assistant");
+    const restoredMetadata = assistant?.metadata as Record<string, unknown> | undefined;
+    expect(restoredMetadata?.productBlocks).toBeTruthy();
+
+    const serialized = JSON.stringify(restoredMetadata ?? {});
+    expect(serialized).not.toContain("systemPrompt");
+    expect(serialized).not.toContain("toolArguments");
+    expect(serialized).not.toContain("reasoning_content");
+  });
+
   it("GET /copilot/sessions/:id normalizes turn Date completedAt without warnings", async () => {
     const session = await kernel.copilotServices.sessionService.getOrCreateSession("user-1", {});
 

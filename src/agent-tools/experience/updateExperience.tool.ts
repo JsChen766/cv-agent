@@ -15,30 +15,39 @@ export function updateExperienceTool(): ToolDefinition {
     riskLevel: "medium",
     execute: async (input, context) => {
       const id = String(input.experienceId);
-      const patch = sanitizeExperiencePatch(input.patch) as Partial<ProductExperience>;
+      const rawPatch = sanitizeExperiencePatch(input.patch);
+      const structured = isRecord(rawPatch.structured) ? rawPatch.structured : undefined;
+      const { structured: _structured, ...experiencePatch } = rawPatch;
+      const patch = experiencePatch as Partial<ProductExperience>;
       const content = typeof input.content === "string" ? input.content.trim() : "";
-      const hasPatch = hasPatchFields(patch);
+      const hasPatch = hasPatchFields(rawPatch);
 
       if (!hasPatch && !content) {
         return {
           status: "needs_input",
-          message: "我还没有生成可写入的改写内容，请先生成改写版本后再确认保存。",
+          message: "请先提供要改写的内容或更新字段。",
           visibility: "error_user_visible",
           actionResult: {
             status: "needs_input",
             actionType: "update_experience",
             missingInputs: ["content"],
-            message: "我还没有生成可写入的改写内容，请先生成改写版本后再确认保存。",
+            message: "请先提供要改写的内容或更新字段。",
           },
         };
       }
 
       const updated = await context.kernel.productServices.experienceService.updateExperience(context.userId, id, patch);
       if (!updated) return { status: "failed", message: "Experience not found.", data: { id }, visibility: "error_user_visible" };
+
       let revision;
-      if (content) {
+      if (content || structured) {
+        const revisions = await context.kernel.productServices.experienceService.listRevisions(context.userId, id);
+        const current = updated.currentRevisionId
+          ? revisions.find((item) => item.id === updated.currentRevisionId)
+          : revisions.at(0);
         revision = await context.kernel.productServices.experienceService.createRevision(context.userId, id, {
-          content,
+          content: content || current?.content || "",
+          structured,
           source: "copilot",
         });
       }
@@ -46,7 +55,7 @@ export function updateExperienceTool(): ToolDefinition {
         status: "success",
         message: `Updated experience "${updated.title}".`,
         data: { experience: updated, revision },
-        workspacePatch: { activePanel: "experience_library", active: { experienceId: updated.id } },
+        workspacePatch: { activePanel: "experience_library", activeExperienceId: updated.id, active: { experienceId: updated.id } },
         visibility: "user_summary",
         actionResult: {
           status: "success",
@@ -55,7 +64,7 @@ export function updateExperienceTool(): ToolDefinition {
           revisionSuggestion: revision ? {
             kind: "experience" as const,
             sourceId: updated.id,
-            sourceTextPreview: content ? content.slice(0, 200) : undefined,
+            sourceTextPreview: (content || revision.content).slice(0, 200),
             rewrittenText: revision.content,
             usedModel: false,
           } : undefined,
@@ -67,4 +76,8 @@ export function updateExperienceTool(): ToolDefinition {
       };
     },
   };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }

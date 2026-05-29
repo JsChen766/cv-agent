@@ -7,6 +7,7 @@ CREATE TABLE IF NOT EXISTS product_experience (
   role TEXT,
   start_date TEXT,
   end_date TEXT,
+  source_document_id TEXT,
   tags_json JSONB NOT NULL DEFAULT '[]'::jsonb,
   status TEXT NOT NULL,
   current_revision_id TEXT,
@@ -16,6 +17,7 @@ CREATE TABLE IF NOT EXISTS product_experience (
 CREATE INDEX IF NOT EXISTS idx_product_experience_user_id ON product_experience(user_id);
 CREATE INDEX IF NOT EXISTS idx_product_experience_user_status ON product_experience(user_id, status);
 CREATE INDEX IF NOT EXISTS idx_product_experience_created_at ON product_experience(created_at);
+CREATE INDEX IF NOT EXISTS idx_product_experience_source_document_id ON product_experience(source_document_id);
 
 CREATE TABLE IF NOT EXISTS product_experience_revision (
   id TEXT PRIMARY KEY,
@@ -143,6 +145,9 @@ CREATE TABLE IF NOT EXISTS product_import_candidate (
   category TEXT NOT NULL,
   organization TEXT,
   role TEXT,
+  start_date TEXT,
+  end_date TEXT,
+  source_document_id TEXT,
   content TEXT NOT NULL,
   structured_json JSONB,
   status TEXT NOT NULL,

@@ -11,8 +11,10 @@ import type {
   CopilotActionResult,
   CopilotChatRequest,
   CopilotChatResponse,
+  CopilotMessageMetadata,
   CopilotMessage,
   CopilotWorkspace,
+  ProductBlock,
   ProductTimelineItem,
 } from "../../copilot/types.js";
 import { detectLocale, type CopilotLocale } from "../../copilot/locale.js";
@@ -1057,6 +1059,73 @@ export class AgentOrchestrator {
     };
 
     switch (request.action.type) {
+      case "list_experiences":
+        return { kind: "step", step: explicitStep("experience_receiver", "list_experiences", {
+          limit: numberValue(payload.limit),
+        }, "List experiences.") };
+
+      case "search_experiences": {
+        const query = stringValue(payload.query) ?? stringValue(payload.keyword);
+        if (!query) {
+          return { kind: "needs_input", missingInputs: ["query"], message: "Please provide a keyword to search experiences." };
+        }
+        return { kind: "step", step: explicitStep("experience_receiver", "search_experiences", {
+          query,
+          limit: numberValue(payload.limit),
+        }, "Search experiences.") };
+      }
+
+      case "get_experience":
+      case "open_inspector": {
+        const experienceId = resolve.experienceId();
+        if (!experienceId) {
+          return { kind: "needs_input", missingInputs: ["experienceId"], message: "Please choose an experience first." };
+        }
+        return { kind: "step", step: explicitStep("experience_receiver", "get_experience", { id: experienceId }, "Open experience detail.") };
+      }
+
+      case "save_experience_from_text": {
+        const text = stringValue(payload.text) ?? stringValue(payload.content) ?? stringValue(payload.rawText);
+        if (!text) {
+          return { kind: "needs_input", missingInputs: ["text"], message: "Please provide experience text to save." };
+        }
+        return { kind: "step", step: explicitStep("experience_receiver", "save_experience_from_text", { text }, "Save experience from text.") };
+      }
+
+      case "update_experience": {
+        const experienceId = resolve.experienceId();
+        if (!experienceId) {
+          return { kind: "needs_input", missingInputs: ["experienceId"], message: "Please choose an experience first." };
+        }
+        const content = resolve.content();
+        const patch = isRecord(payload.patch) ? sanitizeExperiencePatch(payload.patch) : {};
+        if (!content && Object.keys(patch).length === 0) {
+          return { kind: "needs_input", missingInputs: ["content_or_patch"], message: "Please provide update fields or rewritten content." };
+        }
+        return { kind: "step", step: explicitStep("experience_receiver", "update_experience", {
+          experienceId,
+          patch,
+          ...(content ? { content } : {}),
+        }, "Update experience after confirmation.") };
+      }
+
+      case "match_experience": {
+        const experienceId = resolve.experienceId();
+        if (!experienceId) {
+          return { kind: "needs_input", missingInputs: ["experienceId"], message: "Please choose an experience to match." };
+        }
+        const jdId = resolve.jdId();
+        const jdText = resolve.jdText();
+        if (!jdId && !jdText) {
+          return { kind: "needs_input", missingInputs: ["jdId", "jdText"], message: "Please provide JD content before matching." };
+        }
+        return { kind: "step", step: explicitStep("experience_receiver", "match_experience", {
+          experienceId,
+          jdId,
+          jdText,
+        }, "Match experience against JD.") };
+      }
+
       case "rewrite_experience": {
         const experienceId = resolve.experienceId();
         if (!experienceId) {
@@ -1257,7 +1326,20 @@ export class AgentOrchestrator {
     });
     const assistantText = sanitized.invalidCount > 0 ? t(run, "invalidConfirmation") : composed.assistantText;
     const workspacePatch = sanitized.invalidCount > 0 ? {} : input.workspacePatch;
-    const assistantMessage = await this.saveMessage(userId, run.context.sessionId, "assistant", assistantText, run.context.turnId, sanitized.toolResults);
+    const assistantMessageMetadata = buildAssistantMessageMetadata({
+      toolResults: sanitized.toolResults,
+      workspace: run.workspace,
+      workspacePatch,
+    });
+    const assistantMessage = await this.saveMessage(
+      userId,
+      run.context.sessionId,
+      "assistant",
+      assistantText,
+      run.context.turnId,
+      sanitized.toolResults,
+      assistantMessageMetadata,
+    );
     this.emit(run, "agent.message.completed", "回复已生成", {
       agentName: "AgentOrchestrator",
       status: "success",
@@ -1328,6 +1410,7 @@ export class AgentOrchestrator {
     content: string,
     turnId?: string,
     toolResults: ToolResult[] = [],
+    metadata?: CopilotMessageMetadata,
   ): Promise<CopilotMessage> {
     const message: CopilotMessage = {
       id: `msg-${randomUUID()}`,
@@ -1339,6 +1422,7 @@ export class AgentOrchestrator {
         ? "clarifying_question"
         : "plain_text",
       createdAt: new Date().toISOString(),
+      metadata: role === "assistant" ? metadata : undefined,
     };
     return this.deps.kernel.copilotServices.sessionService.saveMessage(userId, message);
   }
@@ -1590,6 +1674,236 @@ function mergeWorkspacePatch(results: ToolResult[]): Record<string, unknown> {
   return results
     .filter((result) => result.status === "success")
     .reduce<Record<string, unknown>>((merged, result) => ({ ...merged, ...(result.workspacePatch ?? {}) }), {});
+}
+
+function buildAssistantMessageMetadata(input: {
+  toolResults: ToolResult[];
+  workspace: CopilotWorkspace | null;
+  workspacePatch: Record<string, unknown>;
+}): CopilotMessageMetadata {
+  const actionResult = sanitizeActionResultForMetadata(primaryActionResult(input.toolResults));
+  const productBlocks = buildProductBlocks(input.toolResults);
+  const workspaceSnapshot = buildWorkspaceSnapshot(input.workspace, input.workspacePatch);
+  const relatedResourceIds = buildRelatedResourceIds(input.toolResults, input.workspace);
+
+  return {
+    ...(productBlocks.length > 0 ? { productBlocks } : {}),
+    ...(actionResult ? { actionResult } : {}),
+    ...(workspaceSnapshot ? { workspaceSnapshot } : {}),
+    ...(hasRelatedResourceIds(relatedResourceIds) ? { relatedResourceIds } : {}),
+  };
+}
+
+function primaryActionResult(toolResults: ToolResult[]): CopilotActionResult | undefined {
+  const actionResults = toolResults
+    .map((result) => result.actionResult)
+    .filter((item): item is CopilotActionResult => item !== undefined && typeof item.status === "string");
+  return actionResults.at(-1);
+}
+
+function sanitizeActionResultForMetadata(result: CopilotActionResult | undefined): CopilotActionResult | undefined {
+  if (!result) return undefined;
+  const metadata = sanitizeMetadataObject(result.metadata);
+  return {
+    actionType: result.actionType,
+    status: result.status,
+    message: result.message,
+    reason: result.reason,
+    pendingActionId: result.pendingActionId,
+    missingInputs: result.missingInputs,
+    exportRecord: result.exportRecord,
+    revisionSuggestion: result.revisionSuggestion,
+    evidenceId: result.evidenceId,
+    variantId: result.variantId,
+    ...(metadata && Object.keys(metadata).length > 0 ? { metadata } : {}),
+  };
+}
+
+function buildProductBlocks(toolResults: ToolResult[]): ProductBlock[] {
+  const blocks: ProductBlock[] = [];
+  for (const result of toolResults) {
+    if (!result.data || typeof result.data !== "object") continue;
+    const data = result.data as Record<string, unknown>;
+    if (Array.isArray(data.items) && typeof data.count === "number") {
+      blocks.push({
+        type: "experience_list",
+        title: "Experience library",
+        data: {
+          count: data.count,
+          items: (data.items as Array<Record<string, unknown>>).slice(0, 20).map(sanitizeExperienceItem),
+        },
+      });
+      continue;
+    }
+    if (isRecord(data.experience)) {
+      blocks.push({
+        type: "experience_card",
+        title: String((data.experience as Record<string, unknown>).title ?? "Experience"),
+        data: sanitizeExperienceItem(data.experience as Record<string, unknown>),
+      });
+      continue;
+    }
+    if (isRecord(data.currentRevision) || Array.isArray(data.revisions)) {
+      const experience = isRecord(data.experience) ? sanitizeExperienceItem(data.experience as Record<string, unknown>) : undefined;
+      blocks.push({
+        type: "experience_detail",
+        title: typeof experience?.title === "string" ? experience.title : "Experience detail",
+        data: sanitizeMetadataObject({
+          experience,
+          currentRevision: isRecord(data.currentRevision) ? sanitizeRevision(data.currentRevision as Record<string, unknown>) : undefined,
+          revisionCount: Array.isArray(data.revisions) ? data.revisions.length : undefined,
+        }) ?? {},
+      });
+      continue;
+    }
+    if (isRecord(result.actionResult)) {
+      blocks.push({
+        type: "action_result",
+        title: String((result.actionResult as Record<string, unknown>).actionType ?? "Action result"),
+        data: sanitizeMetadataObject(result.actionResult as Record<string, unknown>) ?? {},
+      });
+    }
+  }
+  return blocks.slice(0, 8);
+}
+
+function sanitizeExperienceItem(item: Record<string, unknown>): Record<string, unknown> {
+  return sanitizeMetadataObject({
+    id: item.id,
+    category: item.category,
+    title: item.title,
+    organization: item.organization,
+    role: item.role,
+    startDate: item.startDate,
+    endDate: item.endDate,
+    tags: item.tags,
+    status: item.status,
+    currentRevisionId: item.currentRevisionId,
+    content: typeof item.content === "string" ? item.content.slice(0, 500) : undefined,
+    structured: isRecord(item.structured) ? item.structured : undefined,
+    updatedAt: item.updatedAt,
+  }) ?? {};
+}
+
+function sanitizeRevision(item: Record<string, unknown>): Record<string, unknown> {
+  return sanitizeMetadataObject({
+    id: item.id,
+    source: item.source,
+    content: typeof item.content === "string" ? item.content.slice(0, 800) : undefined,
+    structured: isRecord(item.structured) ? item.structured : undefined,
+    createdAt: item.createdAt,
+  }) ?? {};
+}
+
+function buildWorkspaceSnapshot(workspace: CopilotWorkspace | null, patch: Record<string, unknown>): CopilotMessageMetadata["workspaceSnapshot"] {
+  if (!workspace && Object.keys(patch).length === 0) return undefined;
+  const mergedActive = {
+    ...(workspace?.active ?? {}),
+    ...(isRecord(patch.active) ? patch.active : {}),
+  };
+  const snapshot = sanitizeMetadataObject({
+    activePanel: stringValue(patch.activePanel) ?? workspace?.activePanel,
+    active: mergedActive,
+    productGenerationId: stringValue(patch.productGenerationId) ?? workspace?.productGenerationId,
+    jdId: stringValue(patch.jdId) ?? workspace?.jdId,
+    resumeId: stringValue(patch.resumeId) ?? workspace?.resumeId,
+    activeVariantId: stringValue(patch.activeVariantId) ?? workspace?.activeVariantId,
+    variantCount: Array.isArray(patch.variants) ? patch.variants.length : workspace?.variants.length,
+    experienceCount: Array.isArray(patch.experiences) ? patch.experiences.length : workspace?.experiences?.length,
+  });
+  return snapshot as CopilotMessageMetadata["workspaceSnapshot"] | undefined;
+}
+
+function buildRelatedResourceIds(toolResults: ToolResult[], workspace: CopilotWorkspace | null): NonNullable<CopilotMessageMetadata["relatedResourceIds"]> {
+  const experienceIds = new Set<string>();
+  const jdIds = new Set<string>();
+  const resumeIds = new Set<string>();
+  const generationIds = new Set<string>();
+
+  for (const result of toolResults) {
+    collectIdsFromUnknown(result.data, { experienceIds, jdIds, resumeIds, generationIds });
+    collectIdsFromUnknown(result.actionResult, { experienceIds, jdIds, resumeIds, generationIds });
+  }
+  if (workspace?.active?.experienceId) experienceIds.add(workspace.active.experienceId);
+  if (workspace?.jdId) jdIds.add(workspace.jdId);
+  if (workspace?.resumeId) resumeIds.add(workspace.resumeId);
+  if (workspace?.productGenerationId) generationIds.add(workspace.productGenerationId);
+
+  return {
+    experienceIds: Array.from(experienceIds),
+    jdIds: Array.from(jdIds),
+    resumeIds: Array.from(resumeIds),
+    generationIds: Array.from(generationIds),
+  };
+}
+
+function collectIdsFromUnknown(
+  value: unknown,
+  buckets: {
+    experienceIds: Set<string>;
+    jdIds: Set<string>;
+    resumeIds: Set<string>;
+    generationIds: Set<string>;
+  },
+): void {
+  if (!isRecord(value)) return;
+  const record = value as Record<string, unknown>;
+  addId(buckets.experienceIds, record.experienceId);
+  addId(buckets.jdIds, record.jdId);
+  addId(buckets.resumeIds, record.resumeId);
+  addId(buckets.generationIds, record.generationId);
+  if (isRecord(record.experience)) addId(buckets.experienceIds, record.experience.id);
+  if (isRecord(record.jd)) addId(buckets.jdIds, record.jd.id);
+  if (isRecord(record.resume)) addId(buckets.resumeIds, record.resume.id);
+  if (isRecord(record.generation)) addId(buckets.generationIds, record.generation.id);
+}
+
+function addId(set: Set<string>, value: unknown): void {
+  const id = stringValue(value);
+  if (id) set.add(id);
+}
+
+function hasRelatedResourceIds(value: NonNullable<CopilotMessageMetadata["relatedResourceIds"]>): boolean {
+  return (value.experienceIds?.length ?? 0) > 0
+    || (value.jdIds?.length ?? 0) > 0
+    || (value.resumeIds?.length ?? 0) > 0
+    || (value.generationIds?.length ?? 0) > 0;
+}
+
+const BLOCKED_METADATA_KEYS = new Set([
+  "systemPrompt",
+  "system_prompt",
+  "toolArguments",
+  "tool_args",
+  "toolArgs",
+  "reasoning_content",
+  "chainOfThought",
+  "cot",
+  "providerRawPayload",
+  "rawProviderPayload",
+  "rawRequest",
+  "rawResponse",
+  "apiKey",
+  "authorization",
+]);
+
+function sanitizeMetadataObject(value: unknown): Record<string, unknown> | undefined {
+  if (!isRecord(value)) return undefined;
+  const sanitized: Record<string, unknown> = {};
+  for (const [key, raw] of Object.entries(value)) {
+    if (BLOCKED_METADATA_KEYS.has(key)) continue;
+    const next = sanitizeMetadataValue(raw);
+    if (next !== undefined) sanitized[key] = next;
+  }
+  return Object.keys(sanitized).length > 0 ? sanitized : undefined;
+}
+
+function sanitizeMetadataValue(value: unknown): unknown {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") return value;
+  if (Array.isArray(value)) return value.map(sanitizeMetadataValue).filter((item) => item !== undefined).slice(0, 40);
+  if (isRecord(value)) return sanitizeMetadataObject(value) ?? {};
+  return undefined;
 }
 
 function ensureToolResultVisibility(result: ToolResult, toolName?: string): ToolResult {
@@ -1891,5 +2205,14 @@ function hydrateNeedsInputMessage(toolName: string, locale: CopilotLocale): stri
 
 function stringValue(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function numberValue(value: unknown): number | undefined {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string") {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return undefined;
 }
 

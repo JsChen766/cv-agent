@@ -28,17 +28,17 @@ export class PostgresProductExperienceRepository implements ProductExperienceRep
   public async createExperience(record: ProductExperience): Promise<ProductExperience> {
     await this.database.query(
       `INSERT INTO product_experience (
-        id, user_id, category, title, organization, role, start_date, end_date, tags_json,
+        id, user_id, category, title, organization, role, start_date, end_date, source_document_id, tags_json,
         status, current_revision_id, created_at, updated_at
-      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,$10,$11,$12,$13)
+      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,$11,$12,$13,$14)
       ON CONFLICT (id) DO UPDATE SET
         category = EXCLUDED.category, title = EXCLUDED.title, organization = EXCLUDED.organization,
         role = EXCLUDED.role, start_date = EXCLUDED.start_date, end_date = EXCLUDED.end_date,
-        tags_json = EXCLUDED.tags_json, status = EXCLUDED.status,
+        source_document_id = EXCLUDED.source_document_id, tags_json = EXCLUDED.tags_json, status = EXCLUDED.status,
         current_revision_id = EXCLUDED.current_revision_id, updated_at = EXCLUDED.updated_at`,
       [
         record.id, record.userId, record.category, record.title, record.organization ?? null,
-        record.role ?? null, record.startDate ?? null, record.endDate ?? null,
+        record.role ?? null, record.startDate ?? null, record.endDate ?? null, record.sourceDocumentId ?? null,
         JSON.stringify(record.tags), record.status, record.currentRevisionId ?? null,
         record.createdAt, record.updatedAt,
       ],
@@ -246,10 +246,26 @@ export class PostgresProductImportRepository implements ProductImportRepository 
   }
   public async createImportCandidate(record: ProductImportCandidate): Promise<ProductImportCandidate> {
     await this.database.query(
-      `INSERT INTO product_import_candidate (id,job_id,user_id,title,category,organization,role,content,structured_json,status,created_at,updated_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,$10,$11,$12)
+      `INSERT INTO product_import_candidate (id,job_id,user_id,title,category,organization,role,start_date,end_date,source_document_id,content,structured_json,status,created_at,updated_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12::jsonb,$13,$14,$15)
        ON CONFLICT (id) DO UPDATE SET status=EXCLUDED.status, updated_at=EXCLUDED.updated_at`,
-      [record.id, record.jobId, record.userId, record.title, record.category, record.organization ?? null, record.role ?? null, record.content, JSON.stringify(record.structured ?? null), record.status, record.createdAt, record.updatedAt],
+      [
+        record.id,
+        record.jobId,
+        record.userId,
+        record.title,
+        record.category,
+        record.organization ?? null,
+        record.role ?? null,
+        record.startDate ?? null,
+        record.endDate ?? null,
+        record.sourceDocumentId ?? null,
+        record.content,
+        JSON.stringify(record.structured ?? null),
+        record.status,
+        record.createdAt,
+        record.updatedAt,
+      ],
     );
     return record;
   }
@@ -304,10 +320,10 @@ export class PostgresProductGenerationRepository implements ProductGenerationRep
 }
 
 function toExperience(row: PgRow): ProductExperience {
-  return { id: text(row, "id"), userId: text(row, "user_id"), category: text(row, "category") as ProductExperience["category"], title: text(row, "title"), organization: optionalText(row, "organization"), role: optionalText(row, "role"), startDate: optionalText(row, "start_date"), endDate: optionalText(row, "end_date"), tags: jsonValue<string[]>(row, "tags_json", []), status: text(row, "status") as ProductExperience["status"], currentRevisionId: optionalText(row, "current_revision_id"), createdAt: timestamp(row, "created_at"), updatedAt: timestamp(row, "updated_at") };
+  return { id: text(row, "id"), userId: text(row, "user_id"), category: text(row, "category") as ProductExperience["category"], title: text(row, "title"), organization: optionalText(row, "organization"), role: optionalText(row, "role"), startDate: optionalText(row, "start_date"), endDate: optionalText(row, "end_date"), sourceDocumentId: optionalText(row, "source_document_id"), tags: jsonValue<string[]>(row, "tags_json", []), status: text(row, "status") as ProductExperience["status"], currentRevisionId: optionalText(row, "current_revision_id"), createdAt: timestamp(row, "created_at"), updatedAt: timestamp(row, "updated_at") };
 }
 function toRevision(row: PgRow): ProductExperienceRevision {
-  return { id: text(row, "id"), experienceId: text(row, "experience_id"), userId: text(row, "user_id"), content: text(row, "content"), structured: jsonValue(row, "structured_json", undefined), source: text(row, "source") as ProductExperienceRevision["source"], createdAt: timestamp(row, "created_at") };
+  return { id: text(row, "id"), experienceId: text(row, "experience_id"), userId: text(row, "user_id"), content: text(row, "content"), structured: jsonValue<Record<string, unknown> | undefined>(row, "structured_json", undefined), source: text(row, "source") as ProductExperienceRevision["source"], createdAt: timestamp(row, "created_at") };
 }
 function toVariant(row: PgRow): ProductExperienceVariant {
   return { id: text(row, "id"), experienceId: text(row, "experience_id"), revisionId: text(row, "revision_id"), userId: text(row, "user_id"), variantType: text(row, "variant_type") as ProductExperienceVariant["variantType"], language: text(row, "language") as ProductExperienceVariant["language"], targetJdId: optionalText(row, "target_jd_id"), content: text(row, "content"), evidenceIds: jsonValue<string[]>(row, "evidence_ids_json", []), score: jsonValue(row, "score_json", undefined), status: text(row, "status") as ProductExperienceVariant["status"], createdAt: timestamp(row, "created_at") };
@@ -325,7 +341,7 @@ function toImportJob(row: PgRow): ProductImportJob {
   return { id: text(row, "id"), userId: text(row, "user_id"), sourceType: text(row, "source_type") as ProductImportJob["sourceType"], status: text(row, "status") as ProductImportJob["status"], rawText: optionalText(row, "raw_text"), errorMessage: optionalText(row, "error_message"), createdAt: timestamp(row, "created_at"), updatedAt: timestamp(row, "updated_at") };
 }
 function toImportCandidate(row: PgRow): ProductImportCandidate {
-  return { id: text(row, "id"), jobId: text(row, "job_id"), userId: text(row, "user_id"), title: text(row, "title"), category: text(row, "category") as ProductImportCandidate["category"], organization: optionalText(row, "organization"), role: optionalText(row, "role"), content: text(row, "content"), structured: jsonValue(row, "structured_json", undefined), status: text(row, "status") as ProductImportCandidate["status"], createdAt: timestamp(row, "created_at"), updatedAt: timestamp(row, "updated_at") };
+  return { id: text(row, "id"), jobId: text(row, "job_id"), userId: text(row, "user_id"), title: text(row, "title"), category: text(row, "category") as ProductImportCandidate["category"], organization: optionalText(row, "organization"), role: optionalText(row, "role"), startDate: optionalText(row, "start_date"), endDate: optionalText(row, "end_date"), sourceDocumentId: optionalText(row, "source_document_id"), content: text(row, "content"), structured: jsonValue<Record<string, unknown> | undefined>(row, "structured_json", undefined), status: text(row, "status") as ProductImportCandidate["status"], createdAt: timestamp(row, "created_at"), updatedAt: timestamp(row, "updated_at") };
 }
 function toGeneration(row: PgRow): ProductGeneration {
   return { id: text(row, "id"), userId: text(row, "user_id"), sessionId: optionalText(row, "session_id"), jdId: optionalText(row, "jd_id"), resumeId: optionalText(row, "resume_id"), targetRole: optionalText(row, "target_role"), inputSnapshot: jsonValue<Record<string, unknown>>(row, "input_snapshot_json", {}), outputSnapshot: jsonValue<ProductGeneration["outputSnapshot"]>(row, "output_snapshot_json", undefined), selectedVariantIds: jsonValue<string[]>(row, "selected_variant_ids_json", []), createdAt: timestamp(row, "created_at") };

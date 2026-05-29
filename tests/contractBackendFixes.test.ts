@@ -120,6 +120,41 @@ describe("Contract: experience revisions", () => {
     // variants should be present (even if empty)
     expect(Array.isArray(detailData.variants)).toBe(true);
   });
+
+  it("POST /product/experiences accepts structured/startDate/endDate and detail returns structured revision", async () => {
+    const created = await server.inject({
+      method: "POST",
+      url: "/product/experiences",
+      headers: { "x-user-id": "user-1" },
+      payload: {
+        title: "WEEX Internship",
+        category: "work",
+        organization: "WEEX Exchange",
+        role: "Data Analyst Intern",
+        startDate: "2026-01",
+        endDate: "2026-04",
+        tags: ["sql", "python"],
+        structured: {
+          company: "WEEX Exchange",
+          highlights: ["Built dashboards"],
+        },
+        content: "Built SQL dashboards for retention analysis.",
+      },
+    });
+    expect(created.statusCode).toBe(200);
+    const createdData = (created.json() as ApiSuccess<{ experience: Record<string, unknown>; revision: Record<string, unknown> }>).data;
+    expect(createdData.experience.startDate).toBe("2026-01");
+    expect(createdData.experience.endDate).toBe("2026-04");
+    expect(createdData.revision.structured).toMatchObject({ company: "WEEX Exchange" });
+
+    const detail = await server.inject({
+      method: "GET",
+      url: `/product/experiences/${createdData.experience.id as string}`,
+      headers: { "x-user-id": "user-1" },
+    });
+    const detailData = (detail.json() as ApiSuccess<{ revisions: Array<Record<string, unknown>> }>).data;
+    expect(detailData.revisions[0]?.structured).toBeTruthy();
+  });
 });
 
 describe("Contract: copilot explicit actions", () => {
@@ -137,6 +172,46 @@ describe("Contract: copilot explicit actions", () => {
       status: "needs_input",
       missingInputs: ["experienceId"],
     });
+    await kernel.close();
+  });
+
+  it("match_experience without JD returns needs_input instead of unsupported", async () => {
+    const kernel = await createP12Kernel();
+    const runtime = new AgentOrchestrator({ kernel });
+    const ctx = createTestKernelContext({ user: { id: "user-1" }, request: { requestId: "req-1", traceId: "trace-1" } });
+    const { experience } = await kernel.productServices.experienceService.createExperience("user-1", {
+      title: "Test Exp",
+      content: "Did analytics with SQL.",
+    });
+    const session = await kernel.copilotServices.sessionService.getOrCreateSession("user-1", {});
+
+    const result = await runtime.handleExplicitAction(ctx, {
+      sessionId: session.id,
+      action: { type: "match_experience", payload: { experienceId: experience.id } },
+    });
+    expect(result.raw.actionResults?.[0]).toMatchObject({
+      status: "needs_input",
+      missingInputs: expect.arrayContaining(["jdId", "jdText"]),
+    });
+    await kernel.close();
+  });
+
+  it("open_inspector maps to get_experience and returns success", async () => {
+    const kernel = await createP12Kernel();
+    const runtime = new AgentOrchestrator({ kernel });
+    const ctx = createTestKernelContext({ user: { id: "user-1" }, request: { requestId: "req-1", traceId: "trace-1" } });
+    const { experience } = await kernel.productServices.experienceService.createExperience("user-1", {
+      title: "Inspector Exp",
+      content: "Some content.",
+    });
+    const session = await kernel.copilotServices.sessionService.getOrCreateSession("user-1", {});
+
+    const result = await runtime.handleExplicitAction(ctx, {
+      sessionId: session.id,
+      action: { type: "open_inspector", payload: { experienceId: experience.id } },
+    });
+    const firstToolResult = result.raw.toolResults?.[0] as { status?: string } | undefined;
+    expect(firstToolResult?.status).toBe("success");
     await kernel.close();
   });
 

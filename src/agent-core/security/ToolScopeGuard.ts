@@ -30,7 +30,7 @@ export async function guardToolScope(
   const conflictResult = guardResolverConflicts(toolName, args);
   if (conflictResult) return conflictResult;
 
-  if (["get_experience", "update_experience", "prepare_update_experience", "delete_experience", "prepare_delete_experience"].includes(toolName)) {
+  if (["get_experience", "match_experience", "update_experience", "prepare_update_experience", "delete_experience", "prepare_delete_experience"].includes(toolName)) {
     const experienceId = stringValue(args.experienceId) ?? stringValue(args.id);
     if (!experienceId) return undefined;
     const activeId = context.clientState?.activeExperienceId ?? workspace?.active?.experienceId;
@@ -48,7 +48,7 @@ export async function guardToolScope(
     if (!resume) return needsInput(toolName, "resumeId", "Resume not found. Please choose an existing resume.");
   }
 
-  if (["get_jd", "generate_resume_from_jd"].includes(toolName)) {
+  if (["get_jd", "generate_resume_from_jd", "match_experience"].includes(toolName)) {
     const jdId = stringValue(args.jdId) ?? stringValue(args.id);
     if (!jdId) return undefined;
     const jd = await context.kernel.productServices.jdService.getJD(context.userId, jdId);

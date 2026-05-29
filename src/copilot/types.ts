@@ -39,6 +39,33 @@ export type CopilotTurn = {
   error?: string | null;
 };
 
+export type ProductBlock = {
+  type: "experience_list" | "experience_card" | "experience_detail" | "action_result";
+  title?: string;
+  data: Record<string, unknown>;
+};
+
+export type CopilotMessageMetadata = {
+  productBlocks?: ProductBlock[];
+  actionResult?: CopilotActionResult;
+  workspaceSnapshot?: {
+    activePanel?: CopilotWorkspace["activePanel"];
+    active?: CopilotWorkspace["active"];
+    productGenerationId?: string | null;
+    jdId?: string | null;
+    resumeId?: string | null;
+    activeVariantId?: string | null;
+    variantCount?: number;
+    experienceCount?: number;
+  };
+  relatedResourceIds?: {
+    experienceIds?: string[];
+    jdIds?: string[];
+    resumeIds?: string[];
+    generationIds?: string[];
+  };
+};
+
 export type CopilotMessage = {
   id: string;
   sessionId: string;
@@ -53,7 +80,7 @@ export type CopilotMessage = {
     | "decision_summary"
     | "clarifying_question";
   createdAt: string;
-  metadata?: Record<string, unknown>;
+  metadata?: CopilotMessageMetadata;
 };
 
 export type CopilotWorkspace = {
@@ -163,6 +190,13 @@ export type ProductActionType =
   | "revise_more_quantified"
   | "show_evidence"
   | "explain_choice"
+  | "match_experience"
+  | "open_inspector"
+  | "list_experiences"
+  | "search_experiences"
+  | "get_experience"
+  | "save_experience_from_text"
+  | "update_experience"
   | "generate_from_jd"
   | "optimize_resume_item"
   | "rewrite_experience"

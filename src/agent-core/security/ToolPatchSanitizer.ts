@@ -6,6 +6,8 @@ const ALLOWED_EXPERIENCE_PATCH_KEYS = new Set([
   "tags",
   "startDate",
   "endDate",
+  "structured",
+  "sourceDocumentId",
 ]);
 
 const EXPERIENCE_CATEGORIES = new Set(["work", "project", "education", "award", "skill", "other"]);
@@ -33,7 +35,7 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 }
 
 function sanitizeExperiencePatchValue(key: string, value: unknown): unknown {
-  if (["title", "organization", "role", "startDate", "endDate"].includes(key)) {
+  if (["title", "organization", "role", "startDate", "endDate", "sourceDocumentId"].includes(key)) {
     return stringValue(value);
   }
   if (key === "category") {
@@ -44,6 +46,9 @@ function sanitizeExperiencePatchValue(key: string, value: unknown): unknown {
     if (!Array.isArray(value)) return undefined;
     const tags = Array.from(new Set(value.map(stringValue).filter((item): item is string => Boolean(item))));
     return tags.length > 0 ? tags.slice(0, 20) : undefined;
+  }
+  if (key === "structured") {
+    return isPlainObject(value) ? value : undefined;
   }
   return undefined;
 }

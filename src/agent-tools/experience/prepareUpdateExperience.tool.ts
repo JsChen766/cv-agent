@@ -1,3 +1,4 @@
+import type { ProductExperience } from "../../product/types.js";
 import type { ToolDefinition } from "../../agent-core/tools/Tool.js";
 import { ToolResultSchema, UpdateExperienceInputSchema } from "../../agent-core/validation/ToolInputSchemas.js";
 import { hasPatchFields, sanitizeExperiencePatch } from "../../agent-core/security/ToolPatchSanitizer.js";
@@ -13,29 +14,37 @@ export function prepareUpdateExperienceTool(): ToolDefinition {
     requiresConfirmation: false,
     riskLevel: "low",
     execute: async (input, context) => {
-      const patch = sanitizeExperiencePatch(input.patch);
+      const rawPatch = sanitizeExperiencePatch(input.patch);
+      const structured = isRecord(rawPatch.structured) ? rawPatch.structured : undefined;
+      const { structured: _structured, ...experiencePatch } = rawPatch;
+      const patch = experiencePatch as Partial<ProductExperience>;
       const hasContent = typeof input.content === "string" && input.content.trim().length > 0;
-      const hasPatch = hasPatchFields(patch);
+      const hasPatch = hasPatchFields(rawPatch);
       if (!hasContent && !hasPatch) {
         return {
           status: "needs_input",
-          message: "我还没有生成可预览的改写内容，请先生成改写版本。",
+          message: "请先提供要改写的内容或更新字段，再预览改写结果。",
           visibility: "error_user_visible",
           actionResult: {
             status: "needs_input",
             actionType: "prepare_update_experience",
             missingInputs: ["content"],
-            message: "我还没有生成可预览的改写内容，请先生成改写版本。",
+            message: "请先提供要改写的内容或更新字段，再预览改写结果。",
           },
         };
       }
       const id = String(input.experienceId);
       const before = await context.kernel.productServices.experienceService.getExperience(context.userId, id);
       if (!before) return { status: "failed", message: "Experience not found.", data: { id } };
-      const after = { ...before, ...patch, ...(hasContent ? { content: input.content as string } : {}) };
+      const after = {
+        ...before,
+        ...patch,
+        ...(hasContent ? { content: String(input.content).trim() } : {}),
+        ...(structured ? { structured } : {}),
+      };
       return {
         status: "success",
-        message: "已准备好经历改写预览。若要写入经历库，请继续执行 update_experience 并确认。",
+        message: "Prepared experience update preview.",
         data: { before, after },
         visibility: "user_summary",
         actionResult: {
@@ -50,4 +59,8 @@ export function prepareUpdateExperienceTool(): ToolDefinition {
       };
     },
   };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }

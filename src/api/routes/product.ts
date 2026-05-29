@@ -43,7 +43,11 @@ export async function registerProductRoutes(
         category: readCategory(body.category),
         organization: optionalString(body.organization),
         role: optionalString(body.role),
+        startDate: optionalString(body.startDate),
+        endDate: optionalString(body.endDate),
         tags: stringArray(body.tags),
+        structured: optionalRecord(body.structured),
+        sourceDocumentId: optionalString(body.sourceDocumentId),
       });
       return productSuccess(data, kernel, ctx);
     });
@@ -64,16 +68,41 @@ export async function registerProductRoutes(
     const ctx = await contextFor(request);
     const body = requireRecord(request.body);
     return withIdempotency(request, reply, kernel, ctx.user.id, async () => {
-      const patch = {
+      const patch = compactRecord({
         title: optionalString(body.title),
+        category: readCategory(body.category),
         organization: optionalString(body.organization),
         role: optionalString(body.role),
+        startDate: optionalString(body.startDate),
+        endDate: optionalString(body.endDate),
+        sourceDocumentId: optionalString(body.sourceDocumentId),
         ...(Array.isArray(body.tags) ? { tags: stringArray(body.tags) } : {}),
-      };
-      const updated = await kernel.productServices.experienceService.updateExperience(ctx.user.id, param(request, "id"), {
+      });
+      const id = param(request, "id");
+      const structured = optionalRecord(body.structured);
+      const content = optionalString(body.content);
+      const hasPatch = Object.keys(patch).length > 0;
+      const needsRevision = structured !== undefined || typeof content === "string";
+      if (!hasPatch && !needsRevision) {
+        throw new ApiError(ErrorCodes.INVALID_BODY, "Please provide at least one patch field, content, or structured.", 400);
+      }
+      const updated = await kernel.productServices.experienceService.updateExperience(ctx.user.id, id, {
         ...patch,
       });
       if (!updated) throw new ApiError(ErrorCodes.NOT_FOUND, "Experience not found.", 404);
+      if (needsRevision) {
+        const revisions = await kernel.productServices.experienceService.listRevisions(ctx.user.id, id);
+        const currentRevision = updated.currentRevisionId
+          ? revisions.find((item) => item.id === updated.currentRevisionId)
+          : revisions.at(0);
+        const revision = await kernel.productServices.experienceService.createRevision(ctx.user.id, id, {
+          content: content ?? currentRevision?.content ?? "",
+          structured,
+          source: "manual",
+        });
+        const latest = await kernel.productServices.experienceService.getExperience(ctx.user.id, id);
+        return productSuccess({ experience: latest ?? updated, revision }, kernel, ctx);
+      }
       return productSuccess(updated, kernel, ctx);
     });
   });
@@ -85,7 +114,7 @@ export async function registerProductRoutes(
       const revision = await kernel.productServices.experienceService.createRevision(ctx.user.id, param(request, "id"), {
         content: requiredString(body.content, "content"),
         source: readRevisionSource(body.source),
-        structured: body.structured,
+        structured: optionalRecord(body.structured),
       });
       return productSuccess(revision, kernel, ctx);
     });
@@ -324,6 +353,17 @@ function optionalString(value: unknown): string | undefined {
 
 function stringArray(value: unknown): string[] {
   return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
+}
+
+function optionalRecord(value: unknown): Record<string, unknown> | undefined {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined;
+  return value as Record<string, unknown>;
+}
+
+function compactRecord<T extends Record<string, unknown>>(value: T): Partial<T> {
+  return Object.fromEntries(
+    Object.entries(value).filter(([, item]) => item !== undefined),
+  ) as Partial<T>;
 }
 
 function readCategory(value: unknown): ProductExperienceCategory | undefined {

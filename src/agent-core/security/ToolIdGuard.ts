@@ -36,12 +36,12 @@ export function normalizeShowEvidenceArgs(args: Record<string, unknown>): Normal
 }
 
 export function guardToolIds(toolName: string, args: Record<string, unknown>): ToolResult | undefined {
-  if (["get_experience", "update_experience", "prepare_update_experience", "delete_experience", "prepare_delete_experience"].includes(toolName)) {
+  if (["get_experience", "match_experience", "update_experience", "prepare_update_experience", "delete_experience", "prepare_delete_experience"].includes(toolName)) {
     const id = stringValue(args.experienceId) ?? stringValue(args.id);
     if (id && !isCanonicalExperienceId(id)) return needsInput(toolName, "experienceId", "Please select a valid experience from your experience library.");
   }
 
-  if (["get_jd"].includes(toolName)) {
+  if (["get_jd", "match_experience"].includes(toolName)) {
     const jdId = stringValue(args.jdId) ?? stringValue(args.id);
     if (jdId && !isCanonicalJDId(jdId)) return needsInput(toolName, "jdId", "Please select a valid JD from your JD library.");
   }

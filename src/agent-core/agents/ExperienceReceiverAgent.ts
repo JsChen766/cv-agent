@@ -6,6 +6,7 @@ export class ExperienceReceiverAgent extends BaseAgent {
   public readonly name = "experience_receiver" as const;
   public readonly allowedTools = [
     "list_experiences",
+    "match_experience",
     "search_experiences",
     "get_experience",
     "prepare_save_experience_from_text",

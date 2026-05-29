@@ -14,6 +14,7 @@ import type {
   ProductResumeDetail,
   ProductResumeItem,
 } from "../types.js";
+import { extractExperienceDraftFromText } from "../experienceDraft.js";
 import type {
   ProductExperienceRepository,
   ProductGenerationRepository,
@@ -39,7 +40,11 @@ export class ExperienceService {
     content: string;
     organization?: string;
     role?: string;
+    startDate?: string;
+    endDate?: string;
     tags?: string[];
+    structured?: Record<string, unknown>;
+    sourceDocumentId?: string;
     source?: ProductExperienceRevision["source"];
   }): Promise<{ experience: ProductExperience; revision: ProductExperienceRevision }> {
     const now = new Date().toISOString();
@@ -52,6 +57,9 @@ export class ExperienceService {
       title: nonEmpty(input.title, "Untitled experience"),
       organization: optional(input.organization),
       role: optional(input.role),
+      startDate: optional(input.startDate),
+      endDate: optional(input.endDate),
+      sourceDocumentId: optional(input.sourceDocumentId),
       tags: input.tags ?? [],
       status: "active",
       currentRevisionId: revisionId,
@@ -63,19 +71,20 @@ export class ExperienceService {
       experienceId,
       userId,
       content: input.content,
+      structured: input.structured,
       source: input.source ?? "manual",
       createdAt: now,
     };
     return this.repository.createExperienceWithRevision(experience, revision);
   }
 
-  public async listExperiences(userId: string, filters: { limit?: number; status?: ProductExperience["status"] } = {}): Promise<Array<ProductExperience & { content?: string }>> {
+  public async listExperiences(userId: string, filters: { limit?: number; status?: ProductExperience["status"] } = {}): Promise<Array<ProductExperience & { content?: string; structured?: Record<string, unknown> }>> {
     const experiences = await this.repository.listExperiencesByUser(userId, { limit: filters.limit, status: filters.status ?? "active" });
     return Promise.all(experiences.map(async (experience) => {
       const revision = experience.currentRevisionId
         ? await this.repository.getRevisionById(userId, experience.currentRevisionId)
         : null;
-      return { ...experience, content: revision?.content };
+      return { ...experience, content: revision?.content, structured: revision?.structured as Record<string, unknown> | undefined };
     }));
   }
 
@@ -84,7 +93,10 @@ export class ExperienceService {
   }
 
   public async updateExperience(userId: string, id: string, patch: Partial<ProductExperience>): Promise<ProductExperience | null> {
-    return this.repository.updateExperience(userId, id, { ...patch, updatedAt: new Date().toISOString() });
+    const sanitizedPatch = Object.fromEntries(
+      Object.entries(patch).filter(([, value]) => value !== undefined),
+    ) as Partial<ProductExperience>;
+    return this.repository.updateExperience(userId, id, { ...sanitizedPatch, updatedAt: new Date().toISOString() });
   }
 
   public archiveExperience(userId: string, id: string): Promise<ProductExperience | null> {
@@ -93,7 +105,7 @@ export class ExperienceService {
 
   public async createRevision(userId: string, experienceId: string, input: {
     content: string;
-    structured?: unknown;
+    structured?: Record<string, unknown>;
     source?: ProductExperienceRevision["source"];
   }): Promise<ProductExperienceRevision> {
     const experience = await this.repository.getExperienceById(userId, experienceId);
@@ -290,14 +302,20 @@ export class ImportService {
     const chunks = splitExperienceText(job.rawText ?? "");
     const candidates: ProductImportCandidate[] = [];
     for (const [index, content] of chunks.entries()) {
+      const draft = extractExperienceDraftFromText(content);
       const now = new Date().toISOString();
       candidates.push(await this.repository.createImportCandidate({
         id: `pimpcand-${randomUUID()}`,
         jobId,
         userId,
-        title: inferTitle(content, `Imported experience ${index + 1}`),
-        category: inferCategory(content),
-        content,
+        title: draft.title || inferTitle(content, `Imported experience ${index + 1}`),
+        category: draft.category,
+        organization: draft.organization,
+        role: draft.role,
+        startDate: draft.startDate,
+        endDate: draft.endDate,
+        content: draft.content,
+        structured: draft.structured,
         status: "pending",
         createdAt: now,
         updatedAt: now,
@@ -324,6 +342,10 @@ export class ImportService {
       content: candidate.content,
       organization: candidate.organization,
       role: candidate.role,
+      startDate: candidate.startDate,
+      endDate: candidate.endDate,
+      structured: candidate.structured,
+      sourceDocumentId: candidate.sourceDocumentId,
       source: "import",
     });
     const updated = await this.repository.updateCandidateStatus(userId, candidateId, "accepted");
@@ -500,13 +522,4 @@ function splitExperienceText(rawText: string): string[] {
 function inferTitle(content: string, fallback: string): string {
   const firstLine = content.split(/\r?\n/).find((line) => line.trim().length > 0)?.trim();
   return (firstLine ?? fallback).replace(/^[-*]\s*/, "").slice(0, 80);
-}
-
-function inferCategory(content: string): ProductExperienceCategory {
-  const lower = content.toLowerCase();
-  if (lower.includes("university") || lower.includes("education")) return "education";
-  if (lower.includes("award")) return "award";
-  if (lower.includes("skill")) return "skill";
-  if (lower.includes("project")) return "project";
-  return "work";
 }

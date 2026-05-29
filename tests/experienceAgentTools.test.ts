@@ -27,9 +27,27 @@ describe("P12 experience tools", () => {
     expect(prepared.actionResult?.status).not.toBe("needs_confirmation");
     expect((await kernel.productServices.experienceService.listExperiences("user-1")).length).toBe(0);
 
-    const saved = await executor.execute("save_experience_from_text", { text: "WEEX data analysis dashboard with SQL." }, context);
+    const saved = await executor.execute("save_experience_from_text", {
+      text: "2026.01 - 2026.04\nWEEX Exchange Data Analyst Intern\nBuilt growth dashboards with SQL and Python.",
+    }, context);
     const experienceId = (saved.data as { experienceId: string }).experienceId;
     expect(experienceId).toMatch(/^pexp-/);
+    const savedData = saved.data as {
+      draft: {
+        category: string;
+        organization?: string;
+        role?: string;
+        startDate?: string;
+        endDate?: string;
+        tags: string[];
+      };
+    };
+    expect(savedData.draft.category).toBe("work");
+    expect(savedData.draft.organization).toContain("WEEX");
+    expect(savedData.draft.role?.toLowerCase()).toMatch(/intern|analyst/);
+    expect(savedData.draft.startDate).toBe("2026-01");
+    expect(savedData.draft.endDate).toBe("2026-04");
+    expect(savedData.draft.tags).toEqual(expect.arrayContaining(["sql", "python"]));
     expect((await kernel.productServices.experienceService.listExperiences("user-1")).length).toBe(1);
 
     expect((await executor.execute("search_experiences", { query: "WEEX" }, context)).status).toBe("success");
@@ -62,6 +80,54 @@ describe("P12 experience tools", () => {
 
     expect((await executor.execute("delete_experience", { experienceId }, context)).status).toBe("success");
     expect((await kernel.productServices.experienceService.listExperiences("user-1")).length).toBe(0);
+    await kernel.close();
+  });
+
+  it("extracts education structure from save_experience_from_text", async () => {
+    const kernel = await createP12Kernel();
+    const registry = new ToolRegistry();
+    registry.registerMany(createExperienceAgentTools());
+    const context = testContext(kernel, registry.list());
+    const executor = new ToolExecutor(registry, new AgentTraceRecorder());
+
+    const result = await executor.execute("save_experience_from_text", {
+      text: "Sun Yat-sen University\nBachelor in Computer Science, GPA 3.8/4.0\nMajor: Computer Science",
+    }, context);
+    const data = result.data as {
+      draft: {
+        category: string;
+        organization?: string;
+        structured: Record<string, unknown>;
+      };
+    };
+    expect(data.draft.category).toBe("education");
+    expect(data.draft.organization).toContain("University");
+    expect(data.draft.structured.major).toBe("Computer Science");
+    expect(String(data.draft.structured.degree)).toContain("Bachelor");
+    await kernel.close();
+  });
+
+  it("extracts project structure and tech stack from save_experience_from_text", async () => {
+    const kernel = await createP12Kernel();
+    const registry = new ToolRegistry();
+    registry.registerMany(createExperienceAgentTools());
+    const context = testContext(kernel, registry.list());
+    const executor = new ToolExecutor(registry, new AgentTraceRecorder());
+
+    const result = await executor.execute("save_experience_from_text", {
+      text: "Project: Resume Copilot Platform\nProject role: Full Stack Developer\nBuilt a React + Node + SQL platform for resume generation.",
+    }, context);
+    const data = result.data as {
+      draft: {
+        category: string;
+        title: string;
+        structured: Record<string, unknown>;
+      };
+    };
+    expect(data.draft.category).toBe("project");
+    expect(data.draft.title).toContain("Resume Copilot Platform");
+    expect(data.draft.structured.projectName).toContain("Resume Copilot Platform");
+    expect(data.draft.structured.techStack).toEqual(expect.arrayContaining(["react", "node", "sql"]));
     await kernel.close();
   });
 });

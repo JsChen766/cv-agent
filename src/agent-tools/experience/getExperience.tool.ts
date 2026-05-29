@@ -23,6 +23,11 @@ export function getExperienceTool(): ToolDefinition {
         data: { experience, currentRevision: current, revisions },
         workspacePatch: { activePanel: "experience_library", active: { experienceId: experience.id } },
         visibility: "internal",
+        actionResult: {
+          status: "success",
+          actionType: "get_experience",
+          metadata: { experienceId: experience.id },
+        },
       };
     },
   };

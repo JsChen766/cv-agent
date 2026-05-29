@@ -21,6 +21,11 @@ export function listExperiencesTool(): ToolDefinition {
         data: { count: items.length, items },
         workspacePatch: { activePanel: "experience_library", experiences: items },
         visibility: "internal",
+        actionResult: {
+          status: "success",
+          actionType: "list_experiences",
+          metadata: { count: items.length },
+        },
       };
     },
   };

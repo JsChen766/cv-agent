@@ -34,6 +34,56 @@ describe("Product services", () => {
     expect(await kernel.productServices.experienceService.getExperience("user-1", experience.id)).toMatchObject({ id: experience.id });
   });
 
+  it("createExperience stores work structure fields on both experience and initial revision", async () => {
+    const created = await kernel.productServices.experienceService.createExperience("user-1", {
+      title: "WEEX Data Analyst Intern",
+      category: "work",
+      organization: "WEEX Exchange",
+      role: "Data Analyst Intern",
+      startDate: "2026-01",
+      endDate: "2026-04",
+      tags: ["sql", "power bi"],
+      structured: {
+        company: "WEEX Exchange",
+        highlights: ["Built dashboards"],
+        metrics: [{ name: "retention", value: "+12%" }],
+      },
+      content: "Built SQL and Power BI dashboards for retention analysis.",
+    });
+
+    expect(created.experience.organization).toBe("WEEX Exchange");
+    expect(created.experience.role).toBe("Data Analyst Intern");
+    expect(created.experience.startDate).toBe("2026-01");
+    expect(created.experience.endDate).toBe("2026-04");
+    expect(created.revision.structured).toMatchObject({
+      company: "WEEX Exchange",
+      highlights: ["Built dashboards"],
+    });
+  });
+
+  it("createExperience preserves education semantics without forcing a company role", async () => {
+    const created = await kernel.productServices.experienceService.createExperience("user-1", {
+      title: "Sun Yat-sen University",
+      category: "education",
+      organization: "Sun Yat-sen University",
+      content: "BSc in Computer Science.",
+      structured: {
+        school: "Sun Yat-sen University",
+        major: "Computer Science",
+        degree: "Bachelor",
+      },
+    });
+
+    expect(created.experience.category).toBe("education");
+    expect(created.experience.organization).toBe("Sun Yat-sen University");
+    expect(created.experience.role).toBeUndefined();
+    expect(created.revision.structured).toMatchObject({
+      major: "Computer Science",
+      degree: "Bachelor",
+      school: "Sun Yat-sen University",
+    });
+  });
+
   it("creates revisions without overwriting previous revisions and creates variants", async () => {
     const { experience, revision } = await kernel.productServices.experienceService.createExperience("user-1", {
       title: "Design system",

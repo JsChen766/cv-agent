@@ -32,6 +32,11 @@ export function searchExperiencesTool(): ToolDefinition {
         data: { count: items.length, results, query },
         visibility: "internal",
         workspacePatch: { activePanel: "experience_library", experiences: items },
+        actionResult: {
+          status: "success",
+          actionType: "search_experiences",
+          metadata: { count: items.length, query },
+        },
       };
     },
   };

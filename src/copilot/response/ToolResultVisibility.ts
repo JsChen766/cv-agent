@@ -6,6 +6,7 @@ export type ToolResultVisibility =
 
 const INTERNAL_TOOL_NAMES = new Set([
   "list_experiences",
+  "match_experience",
   "get_experience",
   "search_experiences",
   "list_jds",

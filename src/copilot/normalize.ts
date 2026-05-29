@@ -50,7 +50,7 @@ export function normalizeCopilotMessage(msg: unknown): CopilotMessage {
         : "plain_text",
     createdAt:
       typeof msg.createdAt === "string" ? msg.createdAt : new Date().toISOString(),
-    metadata: isRecord(msg.metadata) ? (msg.metadata as Record<string, unknown>) : undefined,
+    metadata: isRecord(msg.metadata) ? (msg.metadata as CopilotMessage["metadata"]) : undefined,
   };
 }
 

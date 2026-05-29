@@ -24,6 +24,7 @@ export type ProductExperience = {
   role?: string;
   startDate?: string;
   endDate?: string;
+  sourceDocumentId?: string;
   tags: string[];
   status: ProductExperienceStatus;
   currentRevisionId?: string;
@@ -36,7 +37,7 @@ export type ProductExperienceRevision = {
   experienceId: string;
   userId: string;
   content: string;
-  structured?: unknown;
+  structured?: Record<string, unknown>;
   source: ProductExperienceRevisionSource;
   createdAt: string;
 };
@@ -134,8 +135,11 @@ export type ProductImportCandidate = {
   category: ProductExperienceCategory;
   organization?: string;
   role?: string;
+  startDate?: string;
+  endDate?: string;
+  sourceDocumentId?: string;
   content: string;
-  structured?: unknown;
+  structured?: Record<string, unknown>;
   status: ProductImportCandidateStatus;
   createdAt: string;
   updatedAt: string;
@@ -151,10 +155,49 @@ export type ProductResumeTemplate = {
   updatedAt: string;
 };
 
-export type ProductExperienceSummary = Pick<ProductExperience, "id" | "category" | "title" | "organization" | "role" | "status" | "currentRevisionId" | "createdAt" | "updatedAt"> & {
+export type ProductExperienceSummary = Pick<ProductExperience, "id" | "category" | "title" | "organization" | "role" | "startDate" | "endDate" | "sourceDocumentId" | "status" | "currentRevisionId" | "createdAt" | "updatedAt"> & {
   content?: string;
+  structured?: Record<string, unknown>;
 };
 export type ProductJDSummary = Pick<ProductJDRecord, "id" | "title" | "company" | "targetRole" | "createdAt" | "updatedAt">;
 export type ProductResumeSummary = Pick<ProductResume, "id" | "title" | "targetRole" | "jdId" | "status" | "createdAt" | "updatedAt">;
 export type ProductResumeDetail = ProductResume & { items: ProductResumeItem[] };
-export type ProductImportCandidateSummary = Pick<ProductImportCandidate, "id" | "jobId" | "title" | "category" | "organization" | "role" | "content" | "status" | "createdAt" | "updatedAt">;
+export type ProductImportCandidateSummary = Pick<ProductImportCandidate, "id" | "jobId" | "title" | "category" | "organization" | "role" | "startDate" | "endDate" | "sourceDocumentId" | "content" | "structured" | "status" | "createdAt" | "updatedAt">;
+
+export type ExperienceDraft = {
+  category: ProductExperienceCategory;
+  title: string;
+  organization?: string;
+  role?: string;
+  startDate?: string;
+  endDate?: string;
+  content: string;
+  tags: string[];
+  structured: {
+    summary?: string;
+    highlights: string[];
+    metrics: Array<{ name: string; value: string; context?: string }>;
+    company?: string;
+    department?: string;
+    employmentType?: string;
+    school?: string;
+    major?: string;
+    degree?: string;
+    gpa?: string;
+    courses?: string[];
+    honors?: string[];
+    projectName?: string;
+    projectRole?: string;
+    techStack?: string[];
+    projectUrl?: string;
+    issuer?: string;
+    awardDate?: string;
+    level?: string;
+    skillCategory?: string;
+    proficiency?: string;
+    evidence?: string[];
+    rawText: string;
+  };
+  confidence: number;
+  warnings: string[];
+};
