@@ -80,6 +80,10 @@ function frontDeskFallback(msg: string): AgentDecision {
   if (containsAny(msg, ["resume", "简历", "export", "导出", "cv"])) {
     return dec("frontdesk", "route", "我来准备简历操作。", { routeTo: "architect", confidence: 0.8 });
   }
+  // JD + experience matching intent → route to experience_receiver
+  if (containsAny(msg, ["jd", "岗位", "job"]) && containsAny(msg, ["match", "匹配", "符合", "适合", "哪些经历", "经历库"])) {
+    return dec("frontdesk", "route", "我来对比你的经历库和这份 JD。", { routeTo: "experience_receiver", confidence: 0.85 });
+  }
   if (containsAny(msg, ["jd", "岗位", "job"])) {
     return dec("frontdesk", "route", "我来分析这个岗位描述。", { routeTo: "strategist", confidence: 0.8 });
   }
@@ -90,6 +94,21 @@ function frontDeskFallback(msg: string): AgentDecision {
 // Only 2 paths: save (when text is substantial) or list.
 
 function experienceReceiverFallback(rawMessage: string): AgentDecision {
+  const msg = lower(rawMessage);
+  // JD matching intent: if JD keywords present, use batch match tool
+  if (containsAny(msg, ["jd", "岗位", "job", "匹配", "符合", "适合"]) && containsAny(msg, ["经历", "experience"])) {
+    return dec(
+      "experience_receiver",
+      "plan",
+      "我来对比你的经历库和这份 JD。",
+      {
+        plan: [
+          step("step-1", "experience_receiver", "match_experiences_against_jd", { jdText: rawMessage, limit: 20 }, "Match all experiences against JD."),
+        ],
+        confidence: 0.8,
+      },
+    );
+  }
   if (rawMessage.length > 30) {
     return dec(
       "experience_receiver",

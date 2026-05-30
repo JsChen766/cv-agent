@@ -7,6 +7,7 @@ export class ExperienceReceiverAgent extends BaseAgent {
   public readonly allowedTools = [
     "list_experiences",
     "match_experience",
+    "match_experiences_against_jd",
     "search_experiences",
     "get_experience",
     "prepare_save_experience_from_text",

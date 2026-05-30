@@ -57,10 +57,21 @@ class P12TestProvider implements LLMProvider {
   }
 
   private frontdesk(message: string): Record<string, unknown> {
-    if (message.includes("experience") || message.includes("library") || message.includes("save") || message.includes("delete")) {
+    // Experience queries (English + Chinese keywords)
+    if (message.includes("experience") || message.includes("library") || message.includes("save") || message.includes("delete")
+        || message.includes("经历")) {
       return { agentName: "frontdesk", responseType: "route", routeTo: "experience_receiver", assistantMessage: "", plan: [], missingInputs: [], confidence: 0.9 };
     }
-    if (message.includes("resume") || message.includes("export") || message.includes("jd")) {
+    // JD-only queries route to architect for generation
+    if ((message.includes("jd") || message.includes("岗位"))
+        && !message.includes("经历")) {
+      return { agentName: "frontdesk", responseType: "route", routeTo: "architect", assistantMessage: "", plan: [], missingInputs: [], confidence: 0.9 };
+    }
+    // JD + experience → experience_receiver for matching
+    if (message.includes("jd") || message.includes("岗位")) {
+      return { agentName: "frontdesk", responseType: "route", routeTo: "experience_receiver", assistantMessage: "", plan: [], missingInputs: [], confidence: 0.9 };
+    }
+    if (message.includes("resume") || message.includes("export") || message.includes("简历") || message.includes("导出")) {
       return { agentName: "frontdesk", responseType: "route", routeTo: "architect", assistantMessage: "", plan: [], missingInputs: [], confidence: 0.9 };
     }
     return { agentName: "frontdesk", responseType: "ask_clarification", assistantMessage: "Please clarify.", plan: [], missingInputs: ["intent"], confidence: 0.5 };
@@ -69,6 +80,10 @@ class P12TestProvider implements LLMProvider {
   private experience(message: string): Record<string, unknown> {
     if (message.includes("save")) return plan("experience_receiver", "save_experience_from_text", { text: message }, "Save experience after confirmation.");
     if (message.includes("delete")) return plan("experience_receiver", "search_experiences", { query: "WEEX" }, "Search experiences before deletion.");
+    // JD matching: if the message mentions JD + experience matching
+    if ((message.includes("jd") || message.includes("岗位")) && (message.includes("匹配") || message.includes("符合"))) {
+      return plan("experience_receiver", "match_experiences_against_jd", { jdText: message, limit: 20 }, "Match experiences against JD.");
+    }
     return plan("experience_receiver", "list_experiences", {}, "List experiences.");
   }
 

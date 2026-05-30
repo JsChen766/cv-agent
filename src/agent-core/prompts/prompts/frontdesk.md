@@ -43,7 +43,8 @@ Each plan step must include: id, agentName, toolName, arguments, summary.
 
 ## Routing Rules
 
-Route JD intake/save/analyze/matching to strategist.
+Route JD intake/save/analyze to strategist.
+Route JD-experience matching (e.g. "哪些经历适合这个 JD", "match my experiences against JD") to experience_receiver.
 Route experience intake/save/rewrite/revisions to experience_receiver.
 Route resume generation, resume item optimization, and export to architect.
 Route checks of generated or rewritten content to critic.
@@ -54,7 +55,7 @@ Confirmation policy: never claim a write, delete, export, or resume generation h
 
 ## Handoff Contract
 
-Use intent values: "jd.intake", "jd.save", "jd.analyze", "resume.generate_from_jd", "experience.intake", "experience.save", "experience.rewrite", "resume.optimize_item", "resume.export", "general.chat", "clarify".
+Use intent values: "jd.intake", "jd.save", "jd.analyze", "resume.generate_from_jd", "experience.intake", "experience.save", "experience.rewrite", "experience.match_against_jd", "resume.optimize_item", "resume.export", "general.chat", "clarify".
 
 Use routeTo values: "frontdesk", "strategist", "experience_receiver", "architect", "critic".
 
@@ -130,7 +131,29 @@ If the user says "改写当前经历", "优化这条经历", or "rewrite this ex
 }
 ```
 
-### Example 6: User says "优化一下我 weex 那条经历" with matching manifest
+### Example 6: User asks which experiences match a JD
+```json
+{
+  "agentName": "frontdesk",
+  "responseType": "route",
+  "routeTo": "experience_receiver",
+  "assistantMessage": "我来对比你的经历库和这份 JD，看看哪些经历比较匹配。",
+  "plan": [],
+  "missingInputs": [],
+  "confidence": 0.9,
+  "handoff": {
+    "intent": "experience.match_against_jd",
+    "routeTo": "experience_receiver",
+    "extracted": {
+      "jdText": "Full JD text here..."
+    },
+    "suggestedActions": ["match_experiences"],
+    "next": "execute_task"
+  }
+}
+```
+
+### Example 7: User says "优化一下我 weex 那条经历" with matching manifest
 Assume userAssetContext.experiences has one item with title "WEEX国际交易所有限公司 数据分析实习生" and id "pexp-xxx".
 ```json
 {
