@@ -961,16 +961,59 @@ export class AgentOrchestrator {
       }
     }
 
+    // For save_experience_from_text: run prepare_save_experience_from_text first
+    // to get LLM-structured data before creating the pending action preview.
+    let enrichedArgs = args;
+    let enrichedPreview = previewFor(tool.name, args);
+    if (tool.name === "save_experience_from_text") {
+      // Dedup: if there's already a pending save_experience_from_text for this session
+      // with the same text, don't create a duplicate card.
+      const existingPending = await this.pendingActions.list(run.context.userId, run.context.sessionId);
+      const duplicatePending = existingPending.find(
+        (pa) => pa.toolName === "save_experience_from_text" && pa.toolArguments?.text === (typeof args.text === "string" ? args.text : undefined),
+      );
+      if (duplicatePending) {
+        // Return the existing pending action's result without creating a new one
+        return {
+          result: {
+            status: "needs_input",
+            message: duplicatePending.summary,
+            pendingActionId: duplicatePending.id,
+            visibility: "action_required",
+            actionResult: {
+              status: "needs_confirmation",
+              actionType: tool.name,
+              pendingActionId: duplicatePending.id,
+            },
+          },
+        };
+      }
+
+      const prepared = await this.getOrExecutePrepareSaveResult(run, args);
+      if (prepared) {
+        enrichedArgs = {
+          ...args,
+          candidate: prepared.draft,
+          experienceDraft: prepared.experienceDraft,
+        };
+        enrichedPreview = {
+          after: {
+            experienceDraft: prepared.experienceDraft,
+          },
+        };
+      }
+    }
+
     const pending = await this.pendingActions.create({
       userId: run.context.userId,
       sessionId: run.context.sessionId,
       turnId: run.context.turnId,
       tool,
-      toolArguments: args,
+      toolArguments: enrichedArgs,
       title: step.summary,
       summary: confirmationSummary(tool.name, localeFor(run)),
-      affectedResources: affectedResourcesFor(tool.name, args),
-      preview: previewFor(tool.name, args),
+      affectedResources: affectedResourcesFor(tool.name, enrichedArgs),
+      preview: enrichedPreview,
     });
     run.trace.add({
       agentName: step.agentName,
@@ -1059,6 +1102,73 @@ export class AgentOrchestrator {
     run.loopController.state.observations = run.context.observations ?? [];
     run.context.loopState = run.loopController.state;
     run.context.agentMessages = run.messageBus.list();
+  }
+
+  /**
+   * Get or execute prepare_save_experience_from_text to produce a structured draft.
+   *
+   * 1. First checks prior observations for an already-executed prepare result.
+   * 2. If not found, executes the prepare tool inline as a read operation.
+   * 3. Returns the LLM-structured draft + experienceDraft, or undefined on failure.
+   */
+  private async getOrExecutePrepareSaveResult(
+    run: RunState,
+    args: Record<string, unknown>,
+  ): Promise<{ draft: Record<string, unknown>; experienceDraft: Record<string, unknown> } | undefined> {
+    // 1. Check prior observations for a prepare_save_experience_from_text result
+    const observations = run.context.observations ?? [];
+    for (const obs of observations) {
+      if (obs.toolName === "prepare_save_experience_from_text" && obs.status === "success") {
+        const data = obs.data as Record<string, unknown> | undefined;
+        if (data?.draft && data?.experienceDraft) {
+          return {
+            draft: data.draft as Record<string, unknown>,
+            experienceDraft: data.experienceDraft as Record<string, unknown>,
+          };
+        }
+      }
+    }
+
+    // 2. Execute prepare_save_experience_from_text inline as a read operation
+    const prepareTool = this.tools.get("prepare_save_experience_from_text");
+    if (!prepareTool) return undefined;
+
+    try {
+      const text = typeof args.text === "string" ? args.text : "";
+      if (!text.trim()) return undefined;
+
+      const result = await run.executor.executeDefinition(
+        prepareTool,
+        { text },
+        run.context,
+      );
+
+      if (result.status === "success") {
+        const data = result.data as Record<string, unknown> | undefined;
+        if (data?.draft && data?.experienceDraft) {
+          // Record this as an observation so downstream code can see it
+          const observation: AgentObservation = {
+            id: `obs-${Math.random().toString(36).slice(2)}`,
+            stepId: "inline-prepare",
+            agentName: "experience_receiver",
+            toolName: "prepare_save_experience_from_text",
+            status: "success",
+            message: result.message,
+            data: result.data,
+            createdAt: new Date().toISOString(),
+          };
+          run.context.observations = [...(run.context.observations ?? []), observation];
+          return {
+            draft: data.draft as Record<string, unknown>,
+            experienceDraft: data.experienceDraft as Record<string, unknown>,
+          };
+        }
+      }
+    } catch {
+      // prepare failed — fall through
+    }
+
+    return undefined;
   }
 
   private mapExplicitAction(
@@ -2181,14 +2291,12 @@ function legacyAffectedResourcesFor(toolName: string, args: Record<string, unkno
 }
 
 function previewFor(toolName: string, args: Record<string, unknown>) {
+  // save_experience_from_text preview is now handled by getOrExecutePrepareSaveResult
+  // which calls prepare_save_experience_from_text (LLM) before creating the pending action.
+  // Rule-based preview is intentionally disabled for save_experience_from_text
+  // to prevent weak raw-text drafts from appearing in the confirmation UI.
   if (toolName === "save_experience_from_text") {
-    const text = typeof args.text === "string" ? args.text : "";
-    const draft = extractExperienceDraftFromText(text);
-    return {
-      after: {
-        experienceDraft: buildNormalizedExperiencePreview(draft, { missingFields: draft.warnings }),
-      },
-    };
+    return undefined;
   }
   if (toolName === "update_experience") {
     const patch = sanitizeExperiencePatch(args.patch);

@@ -384,4 +384,67 @@ describe("Copilot confirm contract", () => {
     const body = response.json();
     expect(body.ok).toBe(true);
   });
+
+  it("save_experience_from_text pending action preview uses structured draft (not raw text)", { timeout: 15000 }, async () => {
+    // Chat with experience text
+    const chatResponse = await server.inject({
+      method: "POST",
+      url: "/copilot/chat",
+      headers: { "x-user-id": "user-1" },
+      payload: {
+        message: "save experience: 基于边缘视觉的城市非机动车违规行为智能监测系统 项目负责人 2024.01 - 2025.02 基于 Python + YOLOv8 构建实时检测管线，在 3 个路口部署，违规识别准确率 92%。",
+      },
+    });
+    expect(chatResponse.statusCode).toBe(200);
+    const chatBody = chatResponse.json() as ApiSuccess<CopilotChatResponse>;
+
+    // Verify the response has pending actions in raw
+    const rawPendingActions = chatBody.data.raw?.pendingActions as Array<Record<string, unknown>> | undefined;
+    // If no pending actions in raw, try fetching from pending-actions endpoint
+    let pendingAction: Record<string, unknown> | undefined;
+    if (rawPendingActions && rawPendingActions.length > 0) {
+      pendingAction = rawPendingActions[0];
+    } else {
+      const paResponse = await server.inject({
+        method: "GET",
+        url: `/copilot/pending-actions?sessionId=${chatBody.data.sessionId}`,
+        headers: { "x-user-id": "user-1" },
+      });
+      expect(paResponse.statusCode).toBe(200);
+      const paBody = paResponse.json() as ApiSuccess<Array<Record<string, unknown>>>;
+      pendingAction = paBody.data.find((a) => a.toolName === "save_experience_from_text");
+    }
+
+    // Must have a save_experience_from_text pending action
+    expect(pendingAction).toBeTruthy();
+    const toolName = pendingAction!.toolName as string | undefined;
+    expect(toolName).toBe("save_experience_from_text");
+
+    // Preview must exist
+    const preview = pendingAction!.preview as { after?: { experienceDraft?: Record<string, unknown> } } | undefined;
+    expect(preview).toBeTruthy();
+    expect(preview?.after?.experienceDraft).toBeTruthy();
+
+    const draft = preview!.after!.experienceDraft!;
+    // Category should be "project" for this input
+    expect(draft.category).toBe("project");
+    // Title should not be generic fallback
+    expect(typeof draft.title).toBe("string");
+    expect(draft.title).not.toBe("Untitled experience");
+    if (draft.role) expect(String(draft.role)).toContain("项目负责人");
+
+    // Skills should include Python / YOLOv8
+    const skills = Array.isArray(draft.skills) ? draft.skills as string[] : [];
+    const skillLower = skills.map((s) => String(s).toLowerCase()).join(" ");
+    expect(skillLower).toMatch(/python|yolov8|yolo/);
+
+    // toolArguments should be enriched with candidate/experienceDraft
+    const toolArgs = pendingAction!.toolArguments as Record<string, unknown> | undefined;
+    expect(toolArgs).toBeTruthy();
+    expect(toolArgs!.text).toBeTruthy();
+    // In test mode with deterministic fallback, candidate should be present
+    const candidate = toolArgs!.candidate;
+    const expDraft = toolArgs!.experienceDraft;
+    expect(candidate || expDraft).toBeTruthy();
+  });
 });

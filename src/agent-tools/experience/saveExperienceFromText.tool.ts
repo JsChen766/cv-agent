@@ -24,6 +24,41 @@ async function saveExperience(
   draft: DraftLike,
   context: AgentContext,
 ): Promise<ToolResult> {
+  // Idempotency guard: check for recently-saved duplicate before inserting.
+  // Prevents the same experience from being saved twice in quick succession
+  // (e.g. double-confirm, frontend re-render, or agent re-invocation).
+  const recent = await context.kernel.productServices.experienceService.listExperiences(context.userId, { limit: 20, status: "active" });
+  const duplicate = recent.find((exp) => {
+    if (exp.title !== draft.title) return false;
+    // Also match on content prefix to avoid false positives on generic titles
+    const expContent = (exp as { content?: string }).content;
+    if (expContent && draft.content) {
+      const a = expContent.replace(/\s+/g, "").slice(0, 120);
+      const b = draft.content.replace(/\s+/g, "").slice(0, 120);
+      if (a !== b) return false;
+    }
+    return true;
+  });
+  if (duplicate) {
+    return {
+      status: "success",
+      message: `Experience "${duplicate.title}" already saved. No duplicate was created.`,
+      data: {
+        experienceId: duplicate.id,
+        title: duplicate.title,
+        alreadySaved: true,
+      },
+      workspacePatch: { activePanel: "experience_library", activeExperienceId: duplicate.id, active: { experienceId: duplicate.id } },
+      actionResult: {
+        status: "success",
+        actionType: "save_experience_from_text",
+        experienceId: duplicate.id,
+        reason: "duplicate_prevented",
+        message: `Experience "${duplicate.title}" already saved.`,
+      },
+    };
+  }
+
   const category = normalizeCategory(draft.category ?? "other", draft.title, draft.role, draft.content);
   const saved = await context.kernel.productServices.experienceService.createExperience(context.userId, {
     title: draft.title,
@@ -80,6 +115,15 @@ export function saveExperienceFromTextTool(): ToolDefinition {
     riskLevel: "medium",
     execute: async (input, context) => {
       const text = String(input.text);
+
+      // If a structured candidate was passed from the prepare phase, use it directly.
+      // This avoids re-extracting from raw text and ensures the confirmed data
+      // matches the LLM-structured preview the user saw.
+      const candidate = isRecord(input.candidate) ? candidateToDraftLike(input.candidate) : null;
+      if (candidate) {
+        return saveExperience(candidate, context);
+      }
+
       const llmExtractor = context.kernel.llmExperienceExtractor;
 
       // Primary path: LLM extraction
@@ -87,7 +131,6 @@ export function saveExperienceFromTextTool(): ToolDefinition {
         const candidates = await llmExtractor.extractCandidates(text);
         if (candidates.length > 0) {
           const draft = extractedCandidateToDraft(candidates[0]);
-          // Convert to DraftLike shape
           const draftLike: DraftLike = {
             category: draft.category,
             title: draft.title,
@@ -117,5 +160,33 @@ export function saveExperienceFromTextTool(): ToolDefinition {
       // Deterministic fallback: rule-based extraction (test mode only)
       return saveExperience(extractExperienceDraftFromText(text), context);
     },
+  };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/**
+ * Convert a structured candidate object (from prepare_save_experience_from_text)
+ * into a DraftLike shape for saveExperience().
+ */
+function candidateToDraftLike(candidate: Record<string, unknown>): DraftLike | null {
+  const title = typeof candidate.title === "string" ? candidate.title : "";
+  const content = typeof candidate.content === "string" ? candidate.content : "";
+  if (!title || !content) return null;
+
+  return {
+    category: (typeof candidate.category === "string" ? candidate.category : "other") as DraftLike["category"],
+    title,
+    organization: typeof candidate.organization === "string" ? candidate.organization : undefined,
+    role: typeof candidate.role === "string" ? candidate.role : undefined,
+    startDate: typeof candidate.startDate === "string" ? candidate.startDate : undefined,
+    endDate: typeof candidate.endDate === "string" ? candidate.endDate : undefined,
+    content,
+    tags: Array.isArray(candidate.tags) ? candidate.tags.filter((t): t is string => typeof t === "string") : [],
+    structured: (isRecord(candidate.structured) ? candidate.structured : { rawText: content }) as DraftLike["structured"],
+    confidence: typeof candidate.confidence === "number" ? candidate.confidence : 0.5,
+    warnings: Array.isArray(candidate.warnings) ? candidate.warnings.filter((w): w is string => typeof w === "string") : [],
   };
 }

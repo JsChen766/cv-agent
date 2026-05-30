@@ -25,7 +25,7 @@ export function buildNormalizedExperiencePreview(
     title: firstString(draft.title, structured.projectName, `${role || ""} ${organization || ""}`.trim(), "经历草稿"),
     organization: organization || undefined,
     role: role || undefined,
-    startDate: firstString(draft.startDate, structured.awardDate),
+    startDate: firstString(draft.startDate, (structured as Record<string, unknown>).startDate, structured.awardDate),
     endDate: draft.endDate,
     location: firstString((structured as Record<string, unknown>).location),
     description: description || undefined,

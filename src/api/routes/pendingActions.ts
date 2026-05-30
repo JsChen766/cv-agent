@@ -37,8 +37,19 @@ export async function registerPendingActionRoutes(
   app.post("/copilot/pending-actions/:id/confirm", async (request) => {
     const resolvedAuth = await authResolver.resolve(request);
     const ctx = createKernelRequestContext(request, resolvedAuth);
-    const response = await getOrchestrator().runtimeConfirm(ctx, readId(request.params));
-    return success(response, { requestId: ctx.request.requestId, traceId: ctx.request.traceId, mode: kernel.mode });
+    const pendingActionId = readId(request.params);
+    const response = await getOrchestrator().runtimeConfirm(ctx, pendingActionId);
+
+    // Attach confirm metadata to the meta field so the frontend can
+    // distinguish a completed confirmation from a new pending action
+    // without changing the response body shape.
+    return success(response, {
+      requestId: ctx.request.requestId,
+      traceId: ctx.request.traceId,
+      mode: kernel.mode,
+      confirmStatus: "completed" as const,
+      pendingActionId,
+    });
   });
 
   app.post("/copilot/pending-actions/:id/cancel", async (request) => {

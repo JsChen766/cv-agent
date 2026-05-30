@@ -5,6 +5,10 @@ export type ApiMeta = {
   traceId?: string;
   mode: "postgres" | "in_memory";
   warnings?: string[];
+  /** Set on /copilot/pending-actions/:id/confirm to signal completed confirmation. */
+  confirmStatus?: "completed";
+  /** The confirmed pending action ID. */
+  pendingActionId?: string;
 };
 
 export type ApiSuccess<T> = {
