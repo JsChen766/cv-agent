@@ -40,7 +40,7 @@ export type CopilotTurn = {
 };
 
 export type ProductBlock = {
-  type: "experience_list" | "experience_card" | "experience_detail" | "action_result";
+  type: "experience_list" | "experience_card" | "experience_detail" | "action_result" | "experience_match_results";
   title?: string;
   data: Record<string, unknown>;
 };

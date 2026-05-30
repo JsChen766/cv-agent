@@ -1993,10 +1993,44 @@ function buildProductBlocks(toolResults: ToolResult[]): ProductBlock[] {
   let experienceCard: ProductBlock | null = null;
   let detailBlock: ProductBlock | null = null;
   let actionBlock: ProductBlock | null = null;
+  let matchBlock: ProductBlock | null = null;
 
   for (const result of toolResults) {
     if (!result.data || typeof result.data !== "object") continue;
     const data = result.data as Record<string, unknown>;
+
+    // Match results block — priority over plain lists
+    if (isRecord(data.topResults) && typeof data.totalCount === "number") {
+      const topResults = data.topResults as Record<string, unknown>;
+      const high = (topResults.high as Array<Record<string, unknown>>) ?? [];
+      const medium = (topResults.medium as Array<Record<string, unknown>>) ?? [];
+      const low = (topResults.low as Array<Record<string, unknown>>) ?? [];
+      const jdPreview = typeof data.jdPreview === "string" ? data.jdPreview : undefined;
+      const scoreDist = isRecord(data.scoreDistribution) ? data.scoreDistribution as Record<string, unknown> : {};
+      matchBlock = {
+        type: "experience_match_results",
+        title: "JD 匹配经历推荐",
+        data: sanitizeMetadataObject({
+          totalCount: data.totalCount,
+          matchMethod: data.matchMethod,
+          jdPreview,
+          scoreDistribution: {
+            high: typeof scoreDist.high === "number" ? scoreDist.high : high.length,
+            medium: typeof scoreDist.medium === "number" ? scoreDist.medium : medium.length,
+            low: typeof scoreDist.low === "number" ? scoreDist.low : low.length,
+          },
+          topResults: {
+            high: high.slice(0, 5).map(sanitizeMatchResult),
+            medium: medium.slice(0, 5).map(sanitizeMatchResult),
+            low: low.slice(0, 5).map(sanitizeMatchResult),
+          },
+          // Flat list for backward compat
+          allResults: [...high, ...medium, ...low].slice(0, 10).map(sanitizeMatchResult),
+        }) ?? {},
+      };
+      continue;
+    }
+
     if (Array.isArray(data.items) && typeof data.count === "number") {
       experienceList = {
         type: "experience_list",
@@ -2037,6 +2071,8 @@ function buildProductBlocks(toolResults: ToolResult[]): ProductBlock[] {
       };
     }
   }
+  // Match results have highest priority — they're the most actionable
+  if (matchBlock) return [matchBlock];
   if (experienceCard) return [experienceCard];
   if (detailBlock) return [detailBlock];
   if (experienceList) return [experienceList];
@@ -2059,6 +2095,24 @@ function sanitizeExperienceItem(item: Record<string, unknown>): Record<string, u
     content: typeof item.content === "string" ? item.content.slice(0, 500) : undefined,
     structured: isRecord(item.structured) ? item.structured : undefined,
     updatedAt: item.updatedAt,
+  }) ?? {};
+}
+
+function sanitizeMatchResult(item: Record<string, unknown>): Record<string, unknown> {
+  return sanitizeMetadataObject({
+    experienceId: item.experienceId,
+    title: item.title,
+    category: item.category,
+    role: item.role,
+    organization: item.organization,
+    matchScore: item.matchScore,
+    matchLevel: item.matchLevel,
+    reason: item.reason,
+    matchedRequirements: item.matchedRequirements,
+    missingRequirements: item.missingRequirements,
+    evidenceFromExperience: item.evidenceFromExperience,
+    suggestedUsage: item.suggestedUsage,
+    rewriteSuggestion: item.rewriteSuggestion,
   }) ?? {};
 }
 

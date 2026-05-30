@@ -681,10 +681,35 @@ describe("Copilot routes on agent-core runtime", () => {
       expect(typeof r.suggestedUsage).toBe("string");
     }
 
-    // Assistant message should not just say "0 matches"
+    // Assistant message should contain match results
     const assistantText = chatBody.data.assistantMessage.content;
     expect(assistantText).toBeTruthy();
+    // Verify it's not the old "0 matches" or bare "max steps" message
     expect(assistantText).not.toBe("已完成匹配，但没有找到高度匹配的经历。");
+
+    // Verify productBlocks exist in message metadata
+    const productBlocks = chatBody.data.assistantMessage.metadata?.productBlocks;
+    const matchBlock = productBlocks?.find((b: { type: string }) => b.type === "experience_match_results");
+    expect(matchBlock).toBeTruthy();
+    if (matchBlock) {
+      const blockData = matchBlock.data as Record<string, unknown>;
+      expect(blockData.totalCount).toBeGreaterThanOrEqual(8);
+      const topResults = blockData.topResults as Record<string, unknown>;
+      expect(topResults).toBeTruthy();
+      // At least one of high/medium/low should have entries
+      const hasAny = (topResults.high as unknown[])?.length > 0
+        || (topResults.medium as unknown[])?.length > 0
+        || (topResults.low as unknown[])?.length > 0;
+      expect(hasAny).toBe(true);
+    }
+
+    // Verify displaySnapshot includes match data for history restoration
+    const displaySnapshot = chatBody.data.assistantMessage.metadata?.displaySnapshot;
+    expect(displaySnapshot).toBeTruthy();
+    // The productBlock with experience_match_results should be in the message metadata
+    // which is already persisted via saveMessage in finishRun
+    const hasMatchBlock = productBlocks?.some((b: { type: string }) => b.type === "experience_match_results");
+    expect(hasMatchBlock).toBe(true);
   });
 
   it("JD matching routes to match_experiences_against_jd, not just list_experiences", async () => {

@@ -98,9 +98,10 @@ function readPayload(request: LLMChatRequest): Record<string, unknown> {
   const text = [...request.messages].reverse().find((message) => message.role === "user")?.content ?? "{}";
   try {
     const parsed = JSON.parse(text) as unknown;
-    return typeof parsed === "object" && parsed !== null && !Array.isArray(parsed) ? parsed as Record<string, unknown> : {};
+    return typeof parsed === "object" && parsed !== null && !Array.isArray(parsed) ? parsed as Record<string, unknown> : { userMessage: text };
   } catch {
-    return {};
+    // Not JSON — the user message is plain text, use it directly
+    return { userMessage: text };
   }
 }
 

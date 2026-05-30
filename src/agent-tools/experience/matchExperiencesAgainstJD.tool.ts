@@ -337,14 +337,17 @@ function buildSuccessResponse(
 
   const topResults: MatchTopResults = { high, medium, low };
 
-  // Build a helpful message
+  // Build a helpful message that lists candidate titles
   let message: string;
   if (high.length > 0) {
-    message = `已匹配 ${totalCount} 条经历，其中 ${high.length} 条高度匹配、${medium.length} 条部分匹配。`;
+    const names = high.slice(0, 3).map((m) => `「${m.title}」`).join("、");
+    message = `已匹配 ${totalCount} 条经历，其中 ${high.length} 条高度匹配：${names}。${medium.length > 0 ? `另有 ${medium.length} 条部分匹配。` : ""}`;
   } else if (medium.length > 0) {
-    message = `已匹配 ${totalCount} 条经历，没有强匹配结果，但 ${medium.length} 条经历可作为候选素材。`;
+    const names = medium.slice(0, 3).map((m) => `「${m.title}」`).join("、");
+    message = `已匹配 ${totalCount} 条经历，没有强匹配结果，但以下 ${medium.length} 条经历可作为候选素材：${names}。${low.length > 0 ? `另有 ${low.length} 条可参考。` : ""}`;
   } else {
-    message = `已匹配 ${totalCount} 条经历，暂无高度或中度匹配结果。以下为全部经历的匹配分析，建议补充经历细节或改写相关内容以获得更好的匹配效果。`;
+    const names = low.slice(0, 3).map((m) => `「${m.title}」`).join("、");
+    message = `已匹配 ${totalCount} 条经历，暂无高度或中度匹配结果。候选素材：${names || "暂无"}。建议补充经历细节或改写相关内容以获得更好的匹配效果。`;
   }
 
   return {
@@ -366,7 +369,7 @@ function buildSuccessResponse(
       count: sorted.length,
     },
     visibility: "user_summary" as const,
-    workspacePatch: { activePanel: "experience_library" },
+    workspacePatch: { activePanel: "jd_matching" },
     actionResult: {
       actionType: "match_experiences_against_jd" as const,
       status: "success" as const,
