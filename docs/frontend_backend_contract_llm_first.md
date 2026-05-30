@@ -22,7 +22,7 @@
 | `DEEPSEEK_BASE_URL` | DeepSeek API 基础 URL（备选） | (无) | [src/agent-core/runtime/AgentRuntimeConfig.ts:34-36](src/agent-core/runtime/AgentRuntimeConfig.ts:34-36) |
 | `AGENT_BASE_URL` | 通用 Agent 基础 URL（备选） | (无) | 同上 |
 | `AGENT_MODEL_BASE_URL` | Agent 模型基础 URL（备选） | (无) | 同上 |
-| `JOB_WORKER_ENABLED` | 是否启用后台 Job Worker | `false` | [src/platform/config.ts:86](src/platform/config.ts:86) |
+| `JOB_WORKER_ENABLED` | 是否启用后台 Job Worker。**设为 `true` 时 API server 启动后自动创建 BackgroundWorker 并轮询 job** | `false` | [src/platform/config.ts:86](src/platform/config.ts:86) + [src/api/server.ts](src/api/server.ts:17-28) |
 | `FILE_UPLOAD_ENABLED` | 是否启用文件上传 | `true` | [src/platform/config.ts:91](src/platform/config.ts:91) |
 | `PDF_RENDERER` | PDF 渲染器：`none` / `playwright` / `external` | `none` | [src/platform/config.ts:164](src/platform/config.ts:164) |
 
@@ -100,14 +100,22 @@
 
 | AUTH_MODE | 前端传参方式 | 用户 ID 来源 |
 |---|---|---|
-| `dev_header` | 每个请求 Header `x-user-id: <your-id>` | Header 值直接作为 userId [src/api/auth/DevHeaderAuthResolver.ts:8-11](src/api/auth/DevHeaderAuthResolver.ts:8-11) |
+| `dev_header` | 每个请求 Header `x-user-id: <your-id>` | Header 值直接作为 userId [src/api/auth/DevHeaderAuthResolver.ts](src/api/auth/DevHeaderAuthResolver.ts) |
 | `bearer_static` | Header `Authorization: Bearer <token>` | 服务端配置的固定 userId [src/api/auth/BearerStaticAuthResolver.ts](src/api/auth/BearerStaticAuthResolver.ts) |
-| `cookie_session` | Cookie `coolto_session` | Session 中存储的 userId，**当前为 Stub 实现** |
+| `cookie_session` | Cookie `coolto_session`（由 `/auth/dev-login` 下发） | Session 中存储的 userId [src/api/auth/CookieSessionAuthResolver.ts](src/api/auth/CookieSessionAuthResolver.ts) |
 | `bearer_token` / `service` | **预留，未实现** | [src/api/auth/createAuthResolver.ts:38-41](src/api/auth/createAuthResolver.ts:38-41) |
 
+**三种模式均已完整实现**。生产环境推荐 `bearer_static`（最简单）或 `cookie_session`（需配合登录流程）。
+
+`cookie_session` 完整链路：
+1. 前端调用 `POST /auth/dev-login`（带 `x-user-id` header），后端创建 session 并返回 `Set-Cookie` header。
+2. 后续请求自动带 Cookie，`CookieSessionAuthResolver` 通过 `AuthService.validateSessionToken()` 验证。
+3. 需要数据库支撑（Postgres 或 in-memory）。
+
 **前端要求**：
-- 开发环境使用 `dev_header`，`x-user-id` **必须稳定**（同一用户的数据隔离依赖这个 ID）。
+- 开发环境可使用 `dev_header`，`x-user-id` **必须稳定**（同一用户的数据隔离依赖这个 ID）。
 - 切换用户 ID 会看到完全不同的数据视图。
+- 生产环境使用 `bearer_static` 时需配置 `AUTH_STATIC_BEARER_TOKEN` + `AUTH_STATIC_USER_ID`。
 
 ### 3.2 幂等键（Idempotency-Key）
 
@@ -1448,12 +1456,19 @@ pending → failed                 (执行失败)
 
 ### 14.2 代码与契约一致性
 
-当前代码与文档描述一致，未发现代码 bug。以下为两个已知的限制点（已在文档中标记 TODO）：
+当前代码与文档描述一致。以下为已修复项：
 
-| 问题 | 详情 | 影响 |
+| 问题 | 状态 | 修复 |
 |---|---|---|
-| **BackgroundWorker 未自动启动** | `server.ts` 未在 `JOB_WORKER_ENABLED=true` 时启动 `BackgroundWorker` [src/api/server.ts](src/api/server.ts:1-37) | 文件解析/导入/导出 job 会永远 pending，前端轮询无果 |
-| **AUTH_MODE `cookie_session` 为 Stub 实现** | [src/api/auth/StubCookieSessionAuthResolver.ts](src/api/auth/StubCookieSessionAuthResolver.ts) 是占位实现 | 生产环境不可用 |
+| **BackgroundWorker 自动启动** | ✅ 已修复 | `server.ts` 在 `JOB_WORKER_ENABLED=true` 时自动创建并启动 `BackgroundWorker`，监听 `parse_document`、`import_resume_file`、`export_resume_html`、`export_resume_pdf` 四种 job 类型。SIGINT/SIGTERM 时自动 stop。 [src/api/server.ts](src/api/server.ts:17-28) |
+| **AUTH_MODE `cookie_session` 实现** | ✅ 已修复 | `CookieSessionAuthResolver` 已完整实现（原命名 `StubCookieSessionAuthResolver` 有误导），通过 `AuthService.validateSessionToken()` 验证，支持 Postgres 和 in-memory。 [src/api/auth/CookieSessionAuthResolver.ts](src/api/auth/CookieSessionAuthResolver.ts) |
+
+当前仍存在的已知限制：
+
+| 问题 | 详情 |
+|---|---|
+| **`LLM_PROVIDER_NOT_CONFIGURED` 以 `Error` 抛出** | 不是 `ApiError`，error.code 被 `errorMapper` 映射为 `PROVIDER_ERROR`。前端可按 `error.message` 前缀 `"LLM_PROVIDER_NOT_CONFIGURED:"` 做精确判断。 |
+| **`bearer_token` / `service` 认证模式未实现** | createAuthResolver 中显式 throw Error。 |
 
 ### 14.3 前端最应优先接入的 5 个契约点
 
@@ -1465,8 +1480,8 @@ pending → failed                 (执行失败)
 
 ### 14.4 当前可能导致前端"看起来跑不通"的后端限制
 
-1. **Job Worker 需手动启动**：如果 `JOB_WORKER_ENABLED` 未设为 `true` 且未手动启动 worker，所有异步 job 会永远停在 `pending`。
+1. **`JOB_WORKER_ENABLED=true` 时 worker 自动启动**：已修复。设为 `true` 后 API server 启动自动拉取并执行 job。如未设为 `true`，所有异步 job 仍会停在 `pending`。
 2. **in_memory 模式数据不持久**：未设 `DATABASE_URL` 时数据在重启后丢失。
 3. **无 LLM Key 时所有智能功能不可用**：需配置 `DEEPSEEK_API_KEY` 或 `AGENT_API_KEY` + `AGENT_MODEL_PROVIDER`。
 4. **PDF 导出需额外配置**：`PDF_RENDERER=playwright` 且 Playwright 浏览器已安装，否则返回 503。
-5. **Cookie Session 认证为 Stub**：生产环境需使用 `bearer_static` 或自行实现 `cookie_session`。
+5. **Cookie Session 认证已完整可用**：`CookieSessionAuthResolver` 通过 `AuthService` 验证 session，支持 Postgres/in-memory。生产环境也可用 `bearer_static` 做更简单的部署。

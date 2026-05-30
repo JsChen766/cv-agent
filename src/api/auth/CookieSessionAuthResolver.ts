@@ -4,7 +4,20 @@ import type { AuthService } from "../../auth/index.js";
 import { readSessionCookieName } from "../../auth/index.js";
 import type { AuthResolver, ResolvedAuth } from "./types.js";
 
-export class StubCookieSessionAuthResolver implements AuthResolver<FastifyRequest> {
+/**
+ * Cookie-based session authentication resolver.
+ *
+ * Reads the session cookie (name from SESSION_COOKIE_NAME env, default "coolto_session"),
+ * validates it against the AuthService, and returns the authenticated user.
+ *
+ * Requires a configured AuthService (in-memory or Postgres) — the service is passed
+ * through the kernel chain: createKernel → kernel.authService → createAuthResolver.
+ *
+ * Sessions are created by POST /auth/dev-login (sets the cookie on the response).
+ * In production, replace dev-login with an OAuth or password-based login flow that
+ * calls AuthService.createSession() and sets the same cookie.
+ */
+export class CookieSessionAuthResolver implements AuthResolver<FastifyRequest> {
   public constructor(private readonly authService?: AuthService) {}
 
   public async resolve(request: FastifyRequest): Promise<ResolvedAuth> {

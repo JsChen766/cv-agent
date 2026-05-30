@@ -295,6 +295,13 @@ export type CopilotActionResult = {
     sourceTextPreview?: string;
     rewrittenText?: string;
     usedModel?: boolean;
+    /** Per-change annotations from LLM rewrite (rewording, quantification, etc.). Always an array — empty when no changes detected. */
+    changes?: Array<{
+      type: "rewording" | "restructuring" | "quantification" | "trimming" | "expansion" | "translation" | "other";
+      description: string;
+      original?: string;
+      rewritten?: string;
+    }>;
   };
   evidenceId?: string;
   variantId?: string;

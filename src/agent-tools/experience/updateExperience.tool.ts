@@ -70,6 +70,7 @@ export function updateExperienceTool(): ToolDefinition {
               sourceTextPreview: originalContent.slice(0, 200),
               rewrittenText: revision.content,
               usedModel: true,
+              changes: [],
             },
             metadata: {
               experienceId: updated.id,

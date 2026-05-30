@@ -4,7 +4,7 @@ import { readPlatformConfig } from "../../platform/config.js";
 import { BearerStaticAuthResolver } from "./BearerStaticAuthResolver.js";
 import { DevHeaderAuthResolver } from "./DevHeaderAuthResolver.js";
 import { DisabledAuthResolver } from "./DisabledAuthResolver.js";
-import { StubCookieSessionAuthResolver } from "./StubCookieSessionAuthResolver.js";
+import { CookieSessionAuthResolver } from "./CookieSessionAuthResolver.js";
 import type { AuthResolver } from "./types.js";
 
 export function createAuthResolver(authService?: AuthService): AuthResolver<FastifyRequest> {
@@ -32,7 +32,7 @@ export function createAuthResolver(authService?: AuthService): AuthResolver<Fast
     return new BearerStaticAuthResolver(token, userId);
   }
   if (authMode === "cookie_session") {
-    return new StubCookieSessionAuthResolver(authService);
+    return new CookieSessionAuthResolver(authService);
   }
   if (authMode === "bearer_token") {
     throw new Error("AUTH_MODE bearer_token is reserved but not implemented yet.");

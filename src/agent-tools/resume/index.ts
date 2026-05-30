@@ -197,6 +197,7 @@ export function createResumeAgentTools(): ToolDefinition[] {
                     sourceTextPreview: preview.sourceTextPreview,
                     rewrittenText: preview.rewrittenText,
                     usedModel: true,
+                    changes: preview.changes ?? [],
                   },
                   metadata: {
                     nextAction: "revise_resume_item",
@@ -258,6 +259,7 @@ export function createResumeAgentTools(): ToolDefinition[] {
                 sourceTextPreview: sourceText.slice(0, 200),
                 rewrittenText,
                 usedModel: true,
+                changes: [],
               },
               metadata: { nextAction: "revise_resume_item", requiresConfirmation: true, usedModel: true },
             },
@@ -370,11 +372,51 @@ export function createResumeAgentTools(): ToolDefinition[] {
                 sourceTextPreview: sourceText.slice(0, 200),
                 rewrittenText: finalText,
                 usedModel,
+                changes: [],
               },
             },
           }
           : { status: "failed", message: "Resume item not found.", data: { id: itemId }, visibility: "error_user_visible" };
       },
+    },
+  ];
+}
+
+/**
+ * Build executable actions for a generated variant card.
+ *
+ * Frontend renders these as clickable buttons. On click, POST /copilot/actions with
+ * { sessionId, action: { type, variantId: action.variantId, payload: action.payload } }.
+ * The payload carries enough context for the backend to resolve generation + variant IDs.
+ */
+function buildVariantActions(variantId: string, generationId: string, _index: number) {
+  return [
+    {
+      id: `act-accept-${variantId}`,
+      type: "accept" as const,
+      label: "采用此版本",
+      description: "将当前版本保存到简历库。",
+      variantId,
+      payload: { variantId, generationId },
+      primary: true,
+    },
+    {
+      id: `act-evidence-${variantId}`,
+      type: "show_evidence" as const,
+      label: "查看依据",
+      description: "查看此版本的经历引用和证据来源。",
+      variantId,
+      payload: { variantId, generationId },
+      primary: false,
+    },
+    {
+      id: `act-prefer-${variantId}`,
+      type: "prefer" as const,
+      label: "偏好此风格",
+      description: "告诉 AI 你更偏好这种表达风格，后续版本会向此靠拢。",
+      variantId,
+      payload: { variantId, generationId },
+      primary: false,
     },
   ];
 }
@@ -434,7 +476,7 @@ export function toWorkspaceVariant(
     missingInfo: variant.missingInfo ?? (hasExperiences ? ["请确认草稿中的指标是否真实可验证。"] : ["请补充工作或项目经历素材。"]),
     sourceExperienceIds,
     sourceEvidenceIds,
-    actions: [],
+    actions: buildVariantActions(variant.id, generationId, index),
     raw: {
       generationId,
       jdId: jd.id,

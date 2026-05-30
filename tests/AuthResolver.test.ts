@@ -2,8 +2,8 @@ import type { FastifyRequest } from "fastify";
 import { afterEach, describe, expect, it } from "vitest";
 import { ApiError } from "../src/api/errors.js";
 import {
+  CookieSessionAuthResolver,
   DevHeaderAuthResolver,
-  StubCookieSessionAuthResolver,
   createAuthResolver,
 } from "../src/api/auth/index.js";
 
@@ -54,8 +54,8 @@ describe("AuthResolver", () => {
       } satisfies Partial<ApiError>);
   });
 
-  it("keeps cookie session auth as an explicit stub", async () => {
-    const resolver = new StubCookieSessionAuthResolver();
+  it("resolves cookie session via AuthService", async () => {
+    const resolver = new CookieSessionAuthResolver();
 
     await expect(resolver.resolve({ headers: {} } as unknown as FastifyRequest))
       .rejects
@@ -83,7 +83,7 @@ describe("AuthResolver", () => {
 
   it("creates resolver from implemented AUTH_MODE values", () => {
     process.env.AUTH_MODE = "cookie_session";
-    expect(createAuthResolver()).toBeInstanceOf(StubCookieSessionAuthResolver);
+    expect(createAuthResolver()).toBeInstanceOf(CookieSessionAuthResolver);
 
     process.env.AUTH_MODE = "dev_header";
     expect(createAuthResolver()).toBeInstanceOf(DevHeaderAuthResolver);

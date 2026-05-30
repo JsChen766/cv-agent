@@ -94,6 +94,7 @@ export function prepareUpdateExperienceTool(): ToolDefinition {
               sourceTextPreview: llmPreview.sourceTextPreview,
               rewrittenText: llmPreview.rewrittenText,
               usedModel: true,
+              changes: llmPreview.changes ?? [],
             },
           } : {}),
           metadata: {
