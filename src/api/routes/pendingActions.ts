@@ -55,7 +55,7 @@ export async function registerPendingActionRoutes(
   app.post("/copilot/pending-actions/:id/cancel", async (request) => {
     const resolvedAuth = await authResolver.resolve(request);
     const ctx = createKernelRequestContext(request, resolvedAuth);
-    const action = await getOrchestrator().pendingActions.cancel(ctx.user.id, readId(request.params));
+    const action = await getOrchestrator().cancelPendingAction(ctx.user.id, readId(request.params));
     return success(action, { requestId: ctx.request.requestId, traceId: ctx.request.traceId, mode: kernel.mode });
   });
 }

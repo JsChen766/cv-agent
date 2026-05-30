@@ -42,6 +42,10 @@ export class CopilotOrchestrator {
     return this.runtime.confirmPendingAction(ctx, pendingActionId);
   }
 
+  public cancelPendingAction(userId: string, id: string) {
+    return this.runtime.cancelPendingAction(userId, id);
+  }
+
   public handleStream(
     ctx: KernelRequestContext,
     body: CopilotChatRequest,

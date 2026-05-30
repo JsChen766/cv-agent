@@ -494,6 +494,125 @@ describe("Copilot routes on agent-core runtime", () => {
       },
     });
   });
+  it("history messages persist full display snapshot (pending cards, tool results, workspace patch)", async () => {
+    // 1. Chat to create a pending save_experience_from_text card
+    const chatResponse = await server.inject({
+      method: "POST",
+      url: "/copilot/chat",
+      headers: { "x-user-id": "user-1" },
+      payload: { message: "save experience: Project X, lead dev, 2024-01 to 2024-06" },
+    });
+    expect(chatResponse.statusCode).toBe(200);
+    const chatBody = chatResponse.json() as ApiSuccess<CopilotChatResponse>;
+    const sessionId = chatBody.data.sessionId;
+
+    // 2. Read session detail — the assistant message must have displaySnapshot
+    const detailResponse = await server.inject({
+      method: "GET",
+      url: `/copilot/sessions/${sessionId}`,
+      headers: { "x-user-id": "user-1" },
+    });
+    expect(detailResponse.statusCode).toBe(200);
+    const detail = detailResponse.json() as ApiSuccess<{
+      messages: Array<{ role: string; metadata?: { displaySnapshot?: Record<string, unknown> } }>;
+    }>;
+
+    const assistantMsg = detail.data.messages.find((m) => m.role === "assistant");
+    expect(assistantMsg).toBeTruthy();
+    const snapshot = assistantMsg?.metadata?.displaySnapshot;
+    expect(snapshot).toBeTruthy();
+
+    // Must have pending actions
+    const pendingActions = snapshot?.pendingActions as Array<Record<string, unknown>> | undefined;
+    expect(pendingActions).toBeTruthy();
+    expect(pendingActions!.length).toBeGreaterThan(0);
+
+    const pa = pendingActions![0];
+    expect(pa.toolName).toBe("save_experience_from_text");
+    expect(pa.status).toBe("pending");
+    expect(pa.title).toBeTruthy();
+    expect(pa.summary).toBeTruthy();
+    // Preview must contain experience draft
+    const preview = pa.preview as { after?: { experienceDraft?: Record<string, unknown> } } | undefined;
+    expect(preview?.after?.experienceDraft).toBeTruthy();
+    const draft = preview!.after!.experienceDraft!;
+    expect(draft.category).toBe("project");
+    expect(typeof draft.title).toBe("string");
+    expect(draft.title).toBeTruthy();
+
+    // Must have tool results
+    const toolResults = snapshot?.toolResults as Array<Record<string, unknown>> | undefined;
+    expect(toolResults).toBeTruthy();
+    expect(toolResults!.length).toBeGreaterThan(0);
+
+    // 3. Confirm the pending action
+    const paResponse = await server.inject({
+      method: "GET",
+      url: `/copilot/pending-actions?sessionId=${sessionId}`,
+      headers: { "x-user-id": "user-1" },
+    });
+    const paBody = paResponse.json() as ApiSuccess<Array<{ id: string }>>;
+    const pendingId = paBody.data[0]?.id;
+    expect(pendingId).toBeTruthy();
+
+    const confirmResponse = await server.inject({
+      method: "POST",
+      url: `/copilot/pending-actions/${pendingId}/confirm`,
+      headers: { "x-user-id": "user-1" },
+    });
+    expect(confirmResponse.statusCode).toBe(200);
+
+    // 4. Re-read history — pending action status should be "executed", preview still present
+    const detailAfter = await server.inject({
+      method: "GET",
+      url: `/copilot/sessions/${sessionId}`,
+      headers: { "x-user-id": "user-1" },
+    });
+    expect(detailAfter.statusCode).toBe(200);
+    const detailAfterBody = detailAfter.json() as ApiSuccess<{
+      messages: Array<{ role: string; metadata?: { displaySnapshot?: Record<string, unknown> } }>;
+    }>;
+
+    const assistantAfter = detailAfterBody.data.messages.find((m) => m.role === "assistant");
+    const snapshotAfter = assistantAfter?.metadata?.displaySnapshot;
+    expect(snapshotAfter).toBeTruthy();
+
+    const paAfter = (snapshotAfter?.pendingActions as Array<Record<string, unknown>>)?.[0];
+    expect(paAfter).toBeTruthy();
+    // Status must be updated to executed (not pending)
+    expect(paAfter.status).toBe("executed");
+    // Preview must still be present
+    const previewAfter = paAfter.preview as { after?: { experienceDraft?: Record<string, unknown> } } | undefined;
+    expect(previewAfter?.after?.experienceDraft).toBeTruthy();
+  });
+
+  it("old messages without displaySnapshot do not crash the detail endpoint", async () => {
+    // Create a session manually and insert a message without displaySnapshot
+    const session = await kernel.copilotServices.sessionService.getOrCreateSession("user-1", {});
+    await kernel.copilotServices.sessionService.saveMessage("user-1", {
+      id: "msg-legacy",
+      sessionId: session.id,
+      role: "assistant",
+      content: "Legacy message without display snapshot.",
+      kind: "plain_text",
+      createdAt: new Date().toISOString(),
+      // No metadata at all
+    } as never);
+
+    const detailResponse = await server.inject({
+      method: "GET",
+      url: `/copilot/sessions/${session.id}`,
+      headers: { "x-user-id": "user-1" },
+    });
+    expect(detailResponse.statusCode).toBe(200);
+    const detail = detailResponse.json() as ApiSuccess<{
+      messages: Array<{ role: string; content: string; metadata?: unknown }>;
+    }>;
+    const legacy = detail.data.messages.find((m) => m.role === "assistant");
+    expect(legacy).toBeTruthy();
+    expect(legacy!.content).toBe("Legacy message without display snapshot.");
+    // Must not crash — metadata may be undefined or lack displaySnapshot
+  });
 });
 
 function parseSse(payload: string): Array<{ event: string; data: unknown }> {

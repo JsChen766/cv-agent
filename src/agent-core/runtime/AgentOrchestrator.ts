@@ -18,6 +18,7 @@ import type {
   CopilotWorkspace,
   ProductBlock,
   ProductTimelineItem,
+  DisplayPendingAction,
 } from "../../copilot/types.js";
 import { detectLocale, type CopilotLocale } from "../../copilot/locale.js";
 import { ResponseComposer } from "../../copilot/response/ResponseComposer.js";
@@ -448,12 +449,67 @@ export class AgentOrchestrator {
       }
     }
 
+    // Update the original message's display snapshot to mark this pending action as executed
+    await this.updatePendingActionDisplayStatus(ctx.user.id, id, "executed");
+
     return this.finishRun(ctx.user.id, run, {
       assistantText: result.message ?? t(run, "confirmedExecuted"),
       toolResults: [result],
       pendingActions: [],
       workspacePatch: mergeWorkspacePatch([result]),
     });
+  }
+
+  /**
+   * Public entry point for canceling a pending action with display status update.
+   */
+  public async cancelPendingAction(userId: string, id: string) {
+    const action = await this.pendingActions.cancel(userId, id);
+    await this.updatePendingActionDisplayStatus(userId, id, "cancelled");
+    return action;
+  }
+
+  /**
+   * Update the displaySnapshot.pendingActions status in the assistant message
+   * that originally created this pending action, so history cards show the
+   * correct read-only state after confirm/cancel.
+   */
+  private async updatePendingActionDisplayStatus(
+    userId: string,
+    pendingActionId: string,
+    newStatus: "executed" | "cancelled" | "expired",
+  ): Promise<void> {
+    try {
+      const action = await this.pendingActions.get(userId, pendingActionId);
+      if (!action || !action.turnId) return;
+
+      // Find the assistant message for this turn
+      const messages = await this.deps.kernel.copilotServices.sessionService.listMessages(userId, action.sessionId, 50);
+      const assistantMsg = messages.find(
+        (msg) => msg.role === "assistant" && msg.turnId === action.turnId,
+      );
+      if (!assistantMsg?.metadata?.displaySnapshot?.pendingActions) return;
+
+      // Update the status of the matching pending action
+      const updatedPendingActions = assistantMsg.metadata.displaySnapshot.pendingActions.map((pa) =>
+        pa.id === pendingActionId ? { ...pa, status: newStatus } : pa,
+      );
+
+      // Re-save the message with updated display snapshot
+      const updatedMetadata: CopilotMessageMetadata = {
+        ...assistantMsg.metadata,
+        displaySnapshot: {
+          ...assistantMsg.metadata.displaySnapshot,
+          pendingActions: updatedPendingActions,
+        },
+      };
+      await this.deps.kernel.copilotServices.sessionService.saveMessage(userId, {
+        ...assistantMsg,
+        metadata: updatedMetadata,
+      });
+    } catch {
+      // Non-critical — history restoration is best-effort
+    }
   }
 
   private emit(
@@ -1477,6 +1533,7 @@ export class AgentOrchestrator {
       toolResults: sanitized.toolResults,
       workspace: run.workspace,
       workspacePatch,
+      pendingActions: input.pendingActions,
     });
     const assistantMessage = await this.saveMessage(
       userId,
@@ -1827,18 +1884,83 @@ function buildAssistantMessageMetadata(input: {
   toolResults: ToolResult[];
   workspace: CopilotWorkspace | null;
   workspacePatch: Record<string, unknown>;
+  pendingActions?: PendingAction[];
 }): CopilotMessageMetadata {
   const actionResult = sanitizeActionResultForMetadata(primaryActionResult(input.toolResults));
   const productBlocks = buildProductBlocks(input.toolResults);
   const workspaceSnapshot = buildWorkspaceSnapshot(input.workspace, input.workspacePatch);
   const relatedResourceIds = buildRelatedResourceIds(input.toolResults, input.workspace);
 
+  // Build display snapshot for history restoration
+  const pendingActions = input.pendingActions ?? [];
+  const displaySnapshot = buildDisplaySnapshot(input.toolResults, pendingActions, input.workspacePatch);
+
   return {
     ...(productBlocks.length > 0 ? { productBlocks } : {}),
     ...(actionResult ? { actionResult } : {}),
     ...(workspaceSnapshot ? { workspaceSnapshot } : {}),
     ...(hasRelatedResourceIds(relatedResourceIds) ? { relatedResourceIds } : {}),
+    ...(displaySnapshot ? { displaySnapshot } : {}),
   };
+}
+
+/**
+ * Build a display snapshot that captures all renderable card data
+ * for this assistant message, so the frontend can restore history
+ * without depending on browser cache or runtime state.
+ */
+function buildDisplaySnapshot(
+  toolResults: ToolResult[],
+  pendingActions: PendingAction[],
+  workspacePatch: Record<string, unknown>,
+): CopilotMessageMetadata["displaySnapshot"] {
+  const hasPending = pendingActions.length > 0;
+  const hasToolResults = toolResults.length > 0;
+  if (!hasPending && !hasToolResults) return undefined;
+
+  const snapshot: NonNullable<CopilotMessageMetadata["displaySnapshot"]> = {};
+
+  if (hasPending) {
+    snapshot.pendingActions = pendingActions.map((pa) => ({
+      id: pa.id,
+      toolName: pa.toolName,
+      title: pa.title,
+      summary: pa.summary,
+      riskLevel: pa.riskLevel as string,
+      status: pa.status as DisplayPendingAction["status"],
+      preview: pa.preview,
+      createdAt: pa.createdAt,
+    }));
+  }
+
+  if (hasToolResults) {
+    snapshot.toolResults = toolResults
+      .filter((tr) => tr.visibility !== "internal")
+      .map((tr) => ({
+        status: tr.status,
+        message: tr.message,
+        visibility: tr.visibility,
+        actionResult: tr.actionResult ? {
+          actionType: typeof tr.actionResult.actionType === "string" ? tr.actionResult.actionType : undefined,
+          status: typeof tr.actionResult.status === "string" ? tr.actionResult.status : "success",
+          message: typeof tr.actionResult.message === "string" ? tr.actionResult.message : undefined,
+          reason: typeof tr.actionResult.reason === "string" ? tr.actionResult.reason : undefined,
+          pendingActionId: typeof tr.actionResult.pendingActionId === "string" ? tr.actionResult.pendingActionId : undefined,
+          experienceId: typeof tr.actionResult.experienceId === "string" ? tr.actionResult.experienceId : undefined,
+          variantId: typeof tr.actionResult.variantId === "string" ? tr.actionResult.variantId : undefined,
+          revisionSuggestion: (tr.actionResult.revisionSuggestion ?? undefined) as CopilotActionResult["revisionSuggestion"],
+          metadata: isRecord(tr.actionResult.metadata) ? tr.actionResult.metadata as Record<string, unknown> : undefined,
+        } : undefined,
+        data: tr.data,
+        workspacePatch: tr.workspacePatch,
+      }));
+  }
+
+  if (Object.keys(workspacePatch).length > 0) {
+    snapshot.workspacePatch = workspacePatch;
+  }
+
+  return Object.keys(snapshot).length > 0 ? snapshot : undefined;
 }
 
 function primaryActionResult(toolResults: ToolResult[]): CopilotActionResult | undefined {

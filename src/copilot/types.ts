@@ -64,6 +64,56 @@ export type CopilotMessageMetadata = {
     resumeIds?: string[];
     generationIds?: string[];
   };
+  /**
+   * Full display snapshot for restoring history cards without frontend cache.
+   * Populated by finishRun on every assistant message.
+   * Old messages without this field only render plain text (degraded mode).
+   */
+  displaySnapshot?: CopilotMessageDisplaySnapshot;
+};
+
+/**
+ * Complete renderable snapshot persisted with every assistant message
+ * so the frontend can restore card UI from history without runtime state.
+ */
+export type CopilotMessageDisplaySnapshot = {
+  /** Pending actions visible at the time this message was created. */
+  pendingActions?: DisplayPendingAction[];
+  /** Tool results that generated frontend-visible cards. */
+  toolResults?: DisplayToolResult[];
+  /** Workspace patch applied by this turn. */
+  workspacePatch?: Record<string, unknown>;
+};
+
+export type DisplayPendingAction = {
+  id: string;
+  toolName: string;
+  title: string;
+  summary: string;
+  riskLevel: string;
+  /** Current status. After confirm/cancel, this is updated to executed/cancelled. */
+  status: "pending" | "confirmed" | "executed" | "cancelled" | "expired" | "failed";
+  preview?: unknown;
+  createdAt: string;
+};
+
+export type DisplayToolResult = {
+  status: string;
+  message?: string;
+  visibility?: string;
+  actionResult?: {
+    actionType?: string;
+    status: string;
+    message?: string;
+    reason?: string;
+    pendingActionId?: string;
+    experienceId?: string;
+    variantId?: string;
+    revisionSuggestion?: CopilotActionResult["revisionSuggestion"];
+    metadata?: Record<string, unknown>;
+  };
+  data?: unknown;
+  workspacePatch?: Record<string, unknown>;
 };
 
 export type CopilotMessage = {
