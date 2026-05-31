@@ -12,6 +12,8 @@ export class ExperienceReceiverAgent extends BaseAgent {
     "get_experience",
     "prepare_save_experience_from_text",
     "save_experience_from_text",
+    "prepare_save_jd_from_text",
+    "save_jd_from_text",
     "prepare_update_experience",
     "update_experience",
     "prepare_delete_experience",

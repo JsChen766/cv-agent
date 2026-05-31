@@ -1,4 +1,4 @@
-import { z } from "zod";
+﻿import { z } from "zod";
 import type { ToolDefinition } from "../../agent-core/tools/Tool.js";
 import type { ModelClientChatRequest } from "../../agent-core/model/types.js";
 import { ToolResultSchema } from "../../agent-core/validation/ToolInputSchemas.js";
@@ -18,6 +18,7 @@ type MatchResult = {
   category?: string;
   role?: string;
   organization?: string;
+  dateRange?: string;
   matchScore: number;
   matchLevel: "high" | "medium" | "low";
   matchedRequirements: string[];
@@ -131,6 +132,8 @@ type EnrichedExperience = {
   category?: string;
   role?: string;
   organization?: string;
+  startDate?: string;
+  endDate?: string;
   content: string;
   tags: string[];
   structured?: Record<string, unknown>;
@@ -138,7 +141,7 @@ type EnrichedExperience = {
 
 async function enrichWithContent(
   context: { userId: string; kernel: { productServices: { experienceService: { listRevisions: (userId: string, experienceId: string) => Promise<Array<{ id: string; content: string; structured?: Record<string, unknown> }>> } } } },
-  experiences: Array<{ id: string; title: string; organization?: string; role?: string; currentRevisionId?: string; category?: string; tags?: string[] }>,
+  experiences: Array<{ id: string; title: string; organization?: string; role?: string; startDate?: string; endDate?: string; currentRevisionId?: string; category?: string; tags?: string[] }>,
 ): Promise<EnrichedExperience[]> {
   const results: EnrichedExperience[] = [];
   for (const exp of experiences) {
@@ -160,6 +163,8 @@ async function enrichWithContent(
       category: exp.category,
       role: exp.role,
       organization: exp.organization,
+      startDate: exp.startDate,
+      endDate: exp.endDate,
       content,
       tags: exp.tags ?? [],
       structured,
@@ -247,6 +252,7 @@ async function llmBatchMatch(
       category: exp?.category,
       role: exp?.role,
       organization: exp?.organization,
+      dateRange: formatDateRange(exp?.startDate, exp?.endDate),
       matchScore: score,
       matchLevel: (typeof item.matchLevel === "string" && ["high", "medium", "low"].includes(item.matchLevel as string))
         ? (item.matchLevel as "high" | "medium" | "low")
@@ -297,6 +303,7 @@ function keywordBatchMatch(
       category: exp.category,
       role: exp.role,
       organization: exp.organization,
+      dateRange: formatDateRange(exp.startDate, exp.endDate),
       matchScore: score,
       matchLevel: level,
       matchedRequirements: matchedReqs.map((w) => `关键词: ${w}`),
@@ -323,7 +330,7 @@ function keywordBatchMatch(
 
 function buildSuccessResponse(
   matches: MatchResult[],
-  totalCount: number,
+  totalExperienceCount: number,
   jdId: string | undefined,
   jdText: string,
   matchMethod: string,
@@ -336,27 +343,39 @@ function buildSuccessResponse(
   const low = sorted.filter((m) => m.matchLevel === "low");
 
   const topResults: MatchTopResults = { high, medium, low };
+  const candidateCount = medium.length + low.length;
+  const jdSummary = summarizeJD(jdText);
+  const summary =
+    high.length > 0
+      ? `已匹配 ${totalExperienceCount} 条经历，其中 ${high.length} 条为高匹配。`
+      : medium.length > 0
+        ? `已匹配 ${totalExperienceCount} 条经历，暂无高匹配经历，但 ${medium.length} 条可作为候选素材。`
+        : `已匹配 ${totalExperienceCount} 条经历，暂无高匹配经历，但 ${candidateCount} 条可作为候选素材。`;
 
-  // Build a helpful message that lists candidate titles
   let message: string;
   if (high.length > 0) {
-    const names = high.slice(0, 3).map((m) => `「${m.title}」`).join("、");
-    message = `已匹配 ${totalCount} 条经历，其中 ${high.length} 条高度匹配：${names}。${medium.length > 0 ? `另有 ${medium.length} 条部分匹配。` : ""}`;
+    message = `我已根据这份 JD 匹配了经历库，其中 ${high.length} 条为高匹配。`;
   } else if (medium.length > 0) {
-    const names = medium.slice(0, 3).map((m) => `「${m.title}」`).join("、");
-    message = `已匹配 ${totalCount} 条经历，没有强匹配结果，但以下 ${medium.length} 条经历可作为候选素材：${names}。${low.length > 0 ? `另有 ${low.length} 条可参考。` : ""}`;
+    message = `我已根据这份 JD 匹配了经历库，暂无高匹配经历，但有 ${medium.length} 条可作为候选素材。`;
   } else {
-    const names = low.slice(0, 3).map((m) => `「${m.title}」`).join("、");
-    message = `已匹配 ${totalCount} 条经历，暂无高度或中度匹配结果。候选素材：${names || "暂无"}。建议补充经历细节或改写相关内容以获得更好的匹配效果。`;
+    message = `我已根据这份 JD 匹配了经历库，暂无高匹配经历，但有 ${candidateCount} 条可作为候选素材。`;
   }
 
   return {
     status: "success" as const,
     message,
     data: {
-      totalCount,
+      totalCount: totalExperienceCount,
+      totalExperienceCount,
       matchMethod,
       jdId,
+      transientJD: !jdId,
+      jdText: jdText.slice(0, 8000),
+      jdSummary,
+      summary,
+      highMatches: high.length,
+      mediumMatches: medium.length,
+      lowMatches: low.length,
       jdPreview: jdText.slice(0, 300),
       scoreDistribution: {
         high: high.length,
@@ -380,6 +399,7 @@ function buildSuccessResponse(
         highCount: high.length,
         mediumCount: medium.length,
         lowCount: low.length,
+        summary,
       },
     },
   };
@@ -388,13 +408,19 @@ function buildSuccessResponse(
 function emptyResult(jdId: string | undefined) {
   return {
     status: "success" as const,
-    message: "你的经历库目前是空的。请先添加一些经历，我再来做匹配。",
+    message: "我已根据这份 JD 匹配了经历库，但你的经历库目前为空。",
     data: {
       totalCount: 0,
+      totalExperienceCount: 0,
       count: 0,
       matches: [],
       topResults: { high: [], medium: [], low: [] },
       jdId,
+      transientJD: !jdId,
+      summary: "已匹配 0 条经历，当前经历库为空。",
+      highMatches: 0,
+      mediumMatches: 0,
+      lowMatches: 0,
       scoreDistribution: { high: 0, medium: 0, low: 0 },
     },
     visibility: "user_summary" as const,
@@ -402,6 +428,30 @@ function emptyResult(jdId: string | undefined) {
 }
 
 // ── Helpers ────────────────────────────────────────────────────
+
+function formatDateRange(startDate?: string, endDate?: string): string | undefined {
+  const start = typeof startDate === "string" ? startDate.trim() : "";
+  const end = typeof endDate === "string" ? endDate.trim() : "";
+  if (!start && !end) return undefined;
+  if (!start) return end;
+  if (!end) return `${start} - Present`;
+  return `${start} - ${end}`;
+}
+
+function summarizeJD(jdText: string): { title?: string; company?: string; targetRole?: string; preview: string } {
+  const preview = jdText.slice(0, 300);
+  const lines = jdText
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+  const firstLine = lines[0];
+  const title = firstLine && firstLine.length <= 80 ? firstLine : undefined;
+  return {
+    title,
+    targetRole: title,
+    preview,
+  };
+}
 
 function clampScore(score: number): number {
   return Math.max(0, Math.min(1, Number(score.toFixed(2))));

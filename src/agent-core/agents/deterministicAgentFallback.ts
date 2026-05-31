@@ -1,4 +1,4 @@
-import type { AgentDecision, AgentName, PlanStep } from "../validation/AgentOutputSchemas.js";
+﻿import type { AgentDecision, AgentName, PlanStep } from "../validation/AgentOutputSchemas.js";
 
 /*
  * Deterministic fallback — invoked ONLY when the modelClient is unavailable or
@@ -95,6 +95,7 @@ function frontDeskFallback(msg: string): AgentDecision {
 
 function experienceReceiverFallback(rawMessage: string): AgentDecision {
   const msg = lower(rawMessage);
+  const asksSaveJD = containsAny(msg, ["保存", "入库", "记录", "save"]);
   // JD matching intent: if JD keywords present, use batch match tool
   if (containsAny(msg, ["jd", "岗位", "job", "匹配", "符合", "适合"]) && containsAny(msg, ["经历", "experience"])) {
     return dec(
@@ -104,6 +105,9 @@ function experienceReceiverFallback(rawMessage: string): AgentDecision {
       {
         plan: [
           step("step-1", "experience_receiver", "match_experiences_against_jd", { jdText: rawMessage, limit: 20 }, "Match all experiences against JD."),
+          ...(asksSaveJD
+            ? [step("step-2", "experience_receiver", "save_jd_from_text", { text: rawMessage }, "Save JD after showing match results.")]
+            : []),
         ],
         confidence: 0.8,
       },

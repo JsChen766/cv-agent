@@ -1,4 +1,4 @@
-import type { PendingAction } from "../../agent-core/confirmation/PendingAction.js";
+﻿import type { PendingAction } from "../../agent-core/confirmation/PendingAction.js";
 import type { AgentContext } from "../../agent-core/runtime/AgentContext.js";
 import type { CriticReview } from "../../agent-core/validation/AgentOutputSchemas.js";
 import type { ToolResult } from "../../agent-core/tools/ToolResult.js";
@@ -47,15 +47,22 @@ export class ResponseComposer {
     }
 
     const fallback = input.fallbackText?.trim();
-    if (input.criticReview?.verdict === "pass" && fallback && !isBlockedToolLog(fallback)) {
-      return { assistantText: fallback };
-    }
 
     const generated = input.toolResults.find((result) => result.actionResult?.actionType === "generate_resume_from_jd" || hasVariants(result));
     if (generated) {
       const count = variantCount(generated) ?? input.workspace?.variants?.length ?? 0;
       return {
         assistantText: `已基于 JD 生成 ${count || "多个"} 个简历版本。你可以选择一个版本保存到简历库，或继续让我改得更量化/更保守。`,
+      };
+    }
+
+    const jdMatch = input.toolResults.find((result) => result.actionResult?.actionType === "match_experiences_against_jd");
+    if (jdMatch) {
+      const matchData = matchResultsData(jdMatch);
+      const saveAction = saveJDActionFromMatch(matchData);
+      return {
+        assistantText: shortMatchSummary(matchData) ?? "I have matched your experiences against this JD.",
+        ...(saveAction ? { nextActions: [saveAction] } : {}),
       };
     }
 
@@ -84,6 +91,10 @@ export class ResponseComposer {
           ? `I recognized this as a JD for ${role}. You can ask me to save it, analyze it, or generate a tailored resume from it.`
           : `我已识别到这是一份【${role}】相关 JD。你可以让我保存到 JD 库、分析岗位要求，或基于它生成定制简历。`,
       };
+    }
+
+    if (input.criticReview?.verdict === "pass" && fallback && !isBlockedToolLog(fallback)) {
+      return { assistantText: fallback };
     }
 
     const visibleSummary = input.toolResults
@@ -143,6 +154,57 @@ function dataCount(result: ToolResult): number | undefined {
     if (typeof count === "number") return count;
   }
   return undefined;
+}
+
+function matchResultsData(result: ToolResult): Record<string, unknown> {
+  return typeof result.data === "object" && result.data !== null
+    ? result.data as Record<string, unknown>
+    : {};
+}
+
+function shortMatchSummary(data: Record<string, unknown>): string | undefined {
+  const summary = stringValue(data.summary);
+  if (summary) return summary;
+  const total = numberValue(data.totalExperienceCount) ?? numberValue(data.totalCount);
+  const high = numberValue(data.highMatches) ?? 0;
+  const medium = numberValue(data.mediumMatches) ?? 0;
+  const low = numberValue(data.lowMatches) ?? 0;
+  const candidate = medium + low;
+  if (typeof total !== "number") return undefined;
+  if (high > 0) return `我已根据这份 JD 匹配了经历库，其中 ${high} 条为高匹配。`;
+  return `我已根据这份 JD 匹配了经历库，暂无高匹配经历，但有 ${candidate} 条可作为候选素材。`;
+}
+
+function saveJDActionFromMatch(data: Record<string, unknown>): ProductAction | undefined {
+  const jdId = stringValue(data.jdId);
+  if (jdId) return undefined;
+  const jdText = stringValue(data.jdText);
+  if (!jdText) return undefined;
+  const jdSummary = typeof data.jdSummary === "object" && data.jdSummary !== null
+    ? data.jdSummary as Record<string, unknown>
+    : {};
+  return {
+    id: "save-jd-from-jd-match",
+    type: "save_jd_from_text",
+    label: "保存该 JD 到 JD 库",
+    primary: false,
+    payload: {
+      jdText,
+      rawText: jdText,
+      title: stringValue(jdSummary.title),
+      company: stringValue(jdSummary.company),
+      targetRole: stringValue(jdSummary.targetRole),
+    },
+  };
+}
+
+function numberValue(value: unknown): number | undefined {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  return undefined;
+}
+
+function stringValue(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
 }
 
 function variantCount(result: ToolResult): number | undefined {

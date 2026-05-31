@@ -40,7 +40,7 @@ export type CopilotTurn = {
 };
 
 export type ProductBlock = {
-  type: "experience_list" | "experience_card" | "experience_detail" | "action_result" | "experience_match_results";
+  type: "experience_list" | "experience_card" | "experience_detail" | "action_result" | "experience_match_results" | "jd_match_results";
   title?: string;
   data: Record<string, unknown>;
 };
@@ -246,6 +246,7 @@ export type ProductActionType =
   | "search_experiences"
   | "get_experience"
   | "save_experience_from_text"
+  | "save_jd_from_text"
   | "update_experience"
   | "generate_from_jd"
   | "optimize_resume_item"

@@ -1,0 +1,175 @@
+﻿import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { createServer } from "../src/api/createServer.js";
+import type { ApiSuccess } from "../src/api/response.js";
+import type { ApiKernel } from "../src/api/types.js";
+import type { CopilotChatResponse } from "../src/copilot/types.js";
+import { createP12Kernel } from "./p12Helpers.js";
+
+describe("JD match orchestration", () => {
+  let kernel: ApiKernel;
+  let server: Awaited<ReturnType<typeof createServer>>;
+
+  beforeEach(async () => {
+    kernel = await createP12Kernel();
+    server = await createServer(kernel);
+  });
+
+  afterEach(async () => {
+    await server.close();
+    await kernel.close();
+  });
+
+  it("matches JD with structured block, short assistant text, save action, and no auto-save", async () => {
+    await seedExperiences(kernel);
+    const jdBefore = await kernel.productServices.jdService.listJDs("user-1", 20);
+
+    const jdText = "前端工程师 JD：要求 Vue3、TypeScript、数据可视化能力，负责业务中台页面与性能优化。";
+    const chatResponse = await server.inject({
+      method: "POST",
+      url: "/copilot/chat",
+      headers: { "x-user-id": "user-1" },
+      payload: { message: `根据这个 JD 匹配经历：${jdText}` },
+    });
+
+    expect(chatResponse.statusCode).toBe(200);
+    const body = chatResponse.json() as ApiSuccess<CopilotChatResponse>;
+    const rawToolResults = body.data.raw.toolResults as Array<Record<string, unknown>> | undefined;
+    const matchResult = rawToolResults?.find((item) => {
+      const ar = item.actionResult as Record<string, unknown> | undefined;
+      return ar?.actionType === "match_experiences_against_jd";
+    });
+
+    expect(matchResult).toBeTruthy();
+
+    const matchData = (matchResult?.data ?? {}) as Record<string, unknown>;
+    const topResults = (matchData.topResults ?? {}) as Record<string, unknown>;
+    const sampleTitle = ([...(topResults.high as unknown[] ?? []), ...(topResults.medium as unknown[] ?? []), ...(topResults.low as unknown[] ?? [])][0] as Record<string, unknown> | undefined)?.title;
+
+    const assistantText = body.data.assistantMessage.content;
+    expect(assistantText).toBeTruthy();
+    if (typeof sampleTitle === "string" && sampleTitle.length > 0) {
+      expect(assistantText).not.toContain(sampleTitle);
+    }
+
+    const blocks = body.data.assistantMessage.metadata?.productBlocks as Array<{ type: string; data?: Record<string, unknown> }> | undefined;
+    const matchBlock = blocks?.find((item) => item.type === "experience_match_results" || item.type === "jd_match_results");
+    expect(matchBlock).toBeTruthy();
+    expect(matchBlock?.data?.summary).toBeTruthy();
+    expect(matchBlock?.data?.jdSummary).toBeTruthy();
+    expect(matchBlock?.data?.topResults).toBeTruthy();
+
+    const nextSaveAction = body.data.nextActions.find((action) => action.type === "save_jd_from_text");
+    expect(nextSaveAction).toBeTruthy();
+    expect(nextSaveAction?.payload?.jdText ?? nextSaveAction?.payload?.rawText).toBeTruthy();
+
+    const jdAfter = await kernel.productServices.jdService.listJDs("user-1", 20);
+    expect(jdAfter.length).toBe(jdBefore.length);
+  });
+
+  it("explicit save-and-match creates save_jd pending action and updates activeJDId after confirm", async () => {
+    await seedExperiences(kernel);
+
+    const response = await server.inject({
+      method: "POST",
+      url: "/copilot/chat",
+      headers: { "x-user-id": "user-1" },
+      payload: {
+        message: "保存这个JD并匹配经历：后端开发 JD，要求 Node.js、TypeScript、MySQL、CI/CD 经验。",
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+    const body = response.json() as ApiSuccess<CopilotChatResponse>;
+    const pendingActions = (body.data.raw.pendingActions ?? []) as Array<{ id: string; toolName?: string }>;
+    const pending = pendingActions.find((item) => item.toolName === "save_jd_from_text");
+    expect(pending).toBeTruthy();
+
+    const jdsBeforeConfirm = await kernel.productServices.jdService.listJDs("user-1", 20);
+    expect(jdsBeforeConfirm.length).toBe(0);
+
+    const confirm = await server.inject({
+      method: "POST",
+      url: `/copilot/pending-actions/${pending!.id}/confirm`,
+      headers: { "x-user-id": "user-1" },
+    });
+
+    expect(confirm.statusCode).toBe(200);
+    const confirmBody = confirm.json() as ApiSuccess<CopilotChatResponse>;
+    expect(confirmBody.data.workspace.jdId).toBeTruthy();
+    expect(confirmBody.data.workspace.active?.jdId).toBeTruthy();
+
+    const jdsAfterConfirm = await kernel.productServices.jdService.listJDs("user-1", 20);
+    expect(jdsAfterConfirm.length).toBe(1);
+    expect(jdsAfterConfirm[0]?.id).toBe(confirmBody.data.workspace.jdId);
+  });
+
+  it("session detail keeps jd match block and save action in productBlocks/displaySnapshot", async () => {
+    await seedExperiences(kernel);
+
+    const chat = await server.inject({
+      method: "POST",
+      url: "/copilot/chat",
+      headers: { "x-user-id": "user-1" },
+      payload: {
+        message: "根据这个 JD 匹配经历：产品经理 JD，要求用户研究、A/B 测试、跨团队协作。",
+      },
+    });
+
+    expect(chat.statusCode).toBe(200);
+    const chatBody = chat.json() as ApiSuccess<CopilotChatResponse>;
+
+    const detail = await server.inject({
+      method: "GET",
+      url: `/copilot/sessions/${chatBody.data.sessionId}`,
+      headers: { "x-user-id": "user-1" },
+    });
+
+    expect(detail.statusCode).toBe(200);
+    const detailBody = detail.json() as ApiSuccess<{ messages: Array<{ role: string; metadata?: Record<string, unknown> }> }>;
+    const assistant = detailBody.data.messages.find((m) => m.role === "assistant");
+    expect(assistant).toBeTruthy();
+
+    const metadata = assistant?.metadata as Record<string, unknown> | undefined;
+    const blocks = metadata?.productBlocks as Array<{ type: string; data?: Record<string, unknown> }> | undefined;
+    const matchBlock = blocks?.find((item) => item.type === "experience_match_results" || item.type === "jd_match_results");
+    expect(matchBlock).toBeTruthy();
+
+    const blockActions = (matchBlock?.data?.actions as Array<Record<string, unknown>> | undefined) ?? [];
+    expect(blockActions.some((item) => item.type === "save_jd_from_text")).toBe(true);
+
+    const displaySnapshot = metadata?.displaySnapshot as Record<string, unknown> | undefined;
+    expect(displaySnapshot).toBeTruthy();
+    const toolResults = (displaySnapshot?.toolResults as Array<Record<string, unknown>> | undefined) ?? [];
+    expect(toolResults.some((item) => {
+      const ar = item.actionResult as Record<string, unknown> | undefined;
+      return ar?.actionType === "match_experiences_against_jd";
+    })).toBe(true);
+  });
+});
+
+async function seedExperiences(kernel: ApiKernel): Promise<void> {
+  const inputs = [
+    {
+      title: "前端中台开发",
+      category: "work" as const,
+      content: "负责 Vue3 + TypeScript 中台开发，包含图表大屏与性能优化。",
+      organization: "A 公司",
+      role: "前端工程师",
+    },
+    {
+      title: "数据分析项目",
+      category: "project" as const,
+      content: "使用 Python 与 SQL 做业务分析，搭建实验看板并推进 A/B 测试。",
+      organization: "B 团队",
+      role: "数据分析",
+    },
+  ];
+
+  for (const input of inputs) {
+    await kernel.productServices.experienceService.createExperience("user-1", {
+      ...input,
+      tags: [],
+      source: "copilot",
+    });
+  }
+}

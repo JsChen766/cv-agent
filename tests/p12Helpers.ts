@@ -78,6 +78,19 @@ class P12TestProvider implements LLMProvider {
   }
 
   private experience(message: string): Record<string, unknown> {
+    if ((message.includes("jd") || message.includes("岗位")) && (message.includes("保存") || message.includes("入库") || message.includes("记录") || message.includes("save"))) {
+      return {
+        agentName: "experience_receiver",
+        responseType: "plan",
+        assistantMessage: "",
+        plan: [
+          { id: "step-1", agentName: "experience_receiver", toolName: "match_experiences_against_jd", arguments: { jdText: message, limit: 20 }, summary: "Match experiences against JD." },
+          { id: "step-2", agentName: "experience_receiver", toolName: "save_jd_from_text", arguments: { text: message }, summary: "Save JD after matching." },
+        ],
+        missingInputs: [],
+        confidence: 0.9,
+      };
+    }
     if (message.includes("save")) return plan("experience_receiver", "save_experience_from_text", { text: message }, "Save experience after confirmation.");
     if (message.includes("delete")) return plan("experience_receiver", "search_experiences", { query: "WEEX" }, "Search experiences before deletion.");
     // JD matching: if the message mentions JD + experience matching

@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+﻿import { randomUUID } from "node:crypto";
 import type { ApiKernel } from "../../api/types.js";
 import { ActiveAssetContextBuilder, type ActiveAssetContext } from "../../copilot/ActiveAssetContextBuilder.js";
 import { UserAssetContextBuilder } from "../../copilot/context/UserAssetContextBuilder.js";
@@ -731,7 +731,8 @@ export class AgentOrchestrator {
         };
       }
 
-      const plan = this.validatePlan(decision.plan, specialist);
+      const augmentedPlan = maybeAppendJDSaveStep(decision.plan, run.context);
+      const plan = this.validatePlan(augmentedPlan, specialist);
       const executed = await this.executePlan(run, plan);
       toolResults.push(...executed.toolResults);
       pendingActions.push(...executed.pendingActions);
@@ -1293,6 +1294,26 @@ export class AgentOrchestrator {
           return { kind: "needs_input", missingInputs: ["text"], message: "Please provide experience text to save." };
         }
         return { kind: "step", step: explicitStep("experience_receiver", "save_experience_from_text", { text }, "Save experience from text.") };
+      }
+
+      case "save_jd_from_text": {
+        const jdText =
+          stringValue(payload.jdText)
+          ?? stringValue(payload.rawText)
+          ?? stringValue(payload.text)
+          ?? resolve.jdText();
+        if (!jdText) {
+          return { kind: "needs_input", missingInputs: ["jdText"], message: "Please provide JD text to save." };
+        }
+        return {
+          kind: "step",
+          step: explicitStep("experience_receiver", "save_jd_from_text", {
+            text: jdText,
+            title: stringValue(payload.title),
+            company: stringValue(payload.company),
+            targetRole: stringValue(payload.targetRole),
+          }, "Save JD after confirmation."),
+        };
       }
 
       case "update_experience": {
@@ -2006,13 +2027,28 @@ function buildProductBlocks(toolResults: ToolResult[]): ProductBlock[] {
       const medium = (topResults.medium as Array<Record<string, unknown>>) ?? [];
       const low = (topResults.low as Array<Record<string, unknown>>) ?? [];
       const jdPreview = typeof data.jdPreview === "string" ? data.jdPreview : undefined;
+      const jdSummary = isRecord(data.jdSummary) ? data.jdSummary as Record<string, unknown> : {};
       const scoreDist = isRecord(data.scoreDistribution) ? data.scoreDistribution as Record<string, unknown> : {};
+      const summary = stringValue(data.summary)
+        ?? `已匹配 ${typeof data.totalExperienceCount === "number" ? data.totalExperienceCount : data.totalCount} 条经历，暂无高匹配经历。`;
+      const saveAction = buildSaveJDAction(data);
       matchBlock = {
         type: "experience_match_results",
         title: "JD 匹配经历推荐",
         data: sanitizeMetadataObject({
+          totalExperienceCount: typeof data.totalExperienceCount === "number" ? data.totalExperienceCount : data.totalCount,
           totalCount: data.totalCount,
+          highMatches: typeof data.highMatches === "number" ? data.highMatches : high.length,
+          mediumMatches: typeof data.mediumMatches === "number" ? data.mediumMatches : medium.length,
+          lowMatches: typeof data.lowMatches === "number" ? data.lowMatches : low.length,
+          summary,
           matchMethod: data.matchMethod,
+          jdSummary: sanitizeMetadataObject({
+            title: jdSummary.title,
+            company: jdSummary.company,
+            targetRole: jdSummary.targetRole,
+            preview: jdSummary.preview ?? jdPreview,
+          }),
           jdPreview,
           scoreDistribution: {
             high: typeof scoreDist.high === "number" ? scoreDist.high : high.length,
@@ -2024,6 +2060,7 @@ function buildProductBlocks(toolResults: ToolResult[]): ProductBlock[] {
             medium: medium.slice(0, 5).map(sanitizeMatchResult),
             low: low.slice(0, 5).map(sanitizeMatchResult),
           },
+          ...(saveAction ? { actions: [saveAction] } : {}),
           // Flat list for backward compat
           allResults: [...high, ...medium, ...low].slice(0, 10).map(sanitizeMatchResult),
         }) ?? {},
@@ -2105,6 +2142,7 @@ function sanitizeMatchResult(item: Record<string, unknown>): Record<string, unkn
     category: item.category,
     role: item.role,
     organization: item.organization,
+    dateRange: item.dateRange,
     matchScore: item.matchScore,
     matchLevel: item.matchLevel,
     reason: item.reason,
@@ -2114,6 +2152,24 @@ function sanitizeMatchResult(item: Record<string, unknown>): Record<string, unkn
     suggestedUsage: item.suggestedUsage,
     rewriteSuggestion: item.rewriteSuggestion,
   }) ?? {};
+}
+
+function buildSaveJDAction(data: Record<string, unknown>): Record<string, unknown> | undefined {
+  if (typeof data.jdId === "string" && data.jdId.trim().length > 0) return undefined;
+  const rawText = stringValue(data.jdText);
+  if (!rawText) return undefined;
+  const jdSummary = isRecord(data.jdSummary) ? data.jdSummary as Record<string, unknown> : {};
+  return sanitizeMetadataObject({
+    type: "save_jd_from_text",
+    label: "保存该 JD 到 JD 库",
+    payload: {
+      jdText: rawText,
+      rawText,
+      title: stringValue(jdSummary.title),
+      company: stringValue(jdSummary.company),
+      targetRole: stringValue(jdSummary.targetRole),
+    },
+  });
 }
 
 function sanitizeRevision(item: Record<string, unknown>): Record<string, unknown> {
@@ -2294,6 +2350,36 @@ function confirmationSummary(toolName: string, locale: CopilotLocale): string {
   if (toolName === "export_resume") return "Please confirm creating this resume export.";
   if (toolName === "accept_generation_variant") return "Please confirm saving this variant to your resume.";
   return `Please confirm ${toolName}.`;
+}
+
+function maybeAppendJDSaveStep(plan: PlanStep[], context: AgentContext): PlanStep[] {
+  if (!shouldSaveJDFromMessage(context.userMessage)) return plan;
+  if (plan.some((step) => step.toolName === "save_jd_from_text" || step.toolName === "prepare_save_jd_from_text")) return plan;
+  const matchStep = plan.find((step) => step.toolName === "match_experiences_against_jd");
+  if (!matchStep) return plan;
+  const args = (matchStep.arguments ?? {}) as Record<string, unknown>;
+  const jdText =
+    stringValue(args.jdText)
+    ?? stringValue(context.productContext.requestJDText)
+    ?? stringValue((context.productContext.frontDeskHandoff as { extracted?: { jdText?: string } } | undefined)?.extracted?.jdText);
+  if (!jdText) return plan;
+  return [
+    ...plan,
+    {
+      id: `${matchStep.id}-save-jd`,
+      agentName: matchStep.agentName,
+      toolName: "save_jd_from_text",
+      arguments: { text: jdText },
+      summary: "Save JD after matching results.",
+    },
+  ];
+}
+
+function shouldSaveJDFromMessage(message: string): boolean {
+  const text = message.toLowerCase();
+  const mentionsJD = text.includes("jd") || text.includes("岗位");
+  if (!mentionsJD) return false;
+  return text.includes("保存") || text.includes("入库") || text.includes("记录") || text.includes("save");
 }
 
 function legacyGuardToolIds(toolName: string, args: Record<string, unknown>): ToolResult | undefined {
