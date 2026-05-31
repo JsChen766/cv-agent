@@ -160,6 +160,21 @@ function strategistFallback(): AgentDecision {
 // Only 2 paths: export or list.
 
 function architectFallback(msg: string, clientState: Record<string, unknown>): AgentDecision {
+  if (containsAny(msg, ["生成", "generate"]) && containsAny(msg, ["简历", "resume"])) {
+    const jdText = containsAny(msg, ["jd", "岗位", "职责", "任职要求"]) ? msg : undefined;
+    return dec(
+      "architect",
+      "plan",
+      "我会先匹配经历，再在你确认后基于 JD 生成简历。",
+      {
+        plan: [
+          step("step-1", "architect", "match_experiences_against_jd", { jdText, limit: 20 }, "Match experiences against JD."),
+          step("step-2", "architect", "generate_resume_from_jd", {}, "Generate resume from JD after confirmation."),
+        ],
+        confidence: 0.8,
+      },
+    );
+  }
   if (containsAny(msg, ["export", "导出"])) {
     const resumeId = clientState.activeResumeId as string | undefined;
     return dec(

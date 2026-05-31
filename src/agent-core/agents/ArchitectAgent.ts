@@ -5,6 +5,7 @@ import { BaseAgent } from "./BaseAgent.js";
 export class ArchitectAgent extends BaseAgent {
   public readonly name = "architect" as const;
   public readonly allowedTools = [
+    "match_experiences_against_jd",
     "get_resume",
     "list_resumes",
     "generate_resume_from_jd",

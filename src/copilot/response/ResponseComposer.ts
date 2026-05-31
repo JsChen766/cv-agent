@@ -48,6 +48,17 @@ export class ResponseComposer {
 
     const fallback = input.fallbackText?.trim();
 
+    const exported = input.toolResults.find((result) => result.actionResult?.actionType === "export_resume" && result.status === "success");
+    if (exported) {
+      const exportMessage = visibleMessage(exported);
+      if (exportMessage) return { assistantText: exportMessage };
+      return {
+        assistantText: en
+          ? "Your resume was generated and exported. You can download it from this message."
+          : "已完成简历生成并导出，可直接在这条消息中下载文件。",
+      };
+    }
+
     const generated = input.toolResults.find((result) => result.actionResult?.actionType === "generate_resume_from_jd" || hasVariants(result));
     if (generated) {
       const confirmedPendingAction = Boolean(input.context.productContext.pendingActionId);

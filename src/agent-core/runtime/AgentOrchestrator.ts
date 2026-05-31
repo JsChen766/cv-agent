@@ -376,6 +376,10 @@ export class AgentOrchestrator {
     // the original pending card terminal even if later critic review asks for
     // more user input in this turn.
     await this.updatePendingActionDisplayStatus(ctx.user.id, id, "executed");
+    const followupResults = confirmedAction.toolName === "generate_resume_from_jd"
+      ? await this.finalizeGeneratedResumeAndExport(ctx.user.id, result)
+      : [];
+    const toolResultsForResponse = [result, ...followupResults];
 
     if (shouldReviewTool(confirmedAction.toolName)) {
       // Skip critic gate review for save_experience_from_text confirmations.
@@ -409,7 +413,7 @@ export class AgentOrchestrator {
             assistantText: message,
             toolResults: [failedActionResult("critic_gate", message, "critic_blocked")],
             pendingActions: [],
-            workspacePatch: mergeWorkspacePatch([result]),
+            workspacePatch: mergeWorkspacePatch(toolResultsForResponse),
             criticReview,
           });
         }
@@ -420,7 +424,7 @@ export class AgentOrchestrator {
             assistantText: message,
             toolResults: [needsConfirmationResult(message)],
             pendingActions: [],
-            workspacePatch: mergeWorkspacePatch([result]),
+            workspacePatch: mergeWorkspacePatch(toolResultsForResponse),
             criticReview,
           });
         }
@@ -441,18 +445,18 @@ export class AgentOrchestrator {
           const message = criticRevisionMessage(criticReview, localeFor(run));
           return this.finishRun(ctx.user.id, run, {
             assistantText: message,
-            toolResults: [result, ...gateResult.criticToolResults, needsRevisionResult(message)],
+            toolResults: [...toolResultsForResponse, ...gateResult.criticToolResults, needsRevisionResult(message)],
             pendingActions: [],
-            workspacePatch: mergeWorkspacePatch([result]),
+            workspacePatch: mergeWorkspacePatch(toolResultsForResponse),
             criticReview,
           });
         }
 
         return this.finishRun(ctx.user.id, run, {
           assistantText: result.message ?? t(run, "confirmedExecuted"),
-          toolResults: [result, ...gateResult.criticToolResults],
+          toolResults: [...toolResultsForResponse, ...gateResult.criticToolResults],
           pendingActions: [],
-          workspacePatch: mergeWorkspacePatch([result]),
+          workspacePatch: mergeWorkspacePatch(toolResultsForResponse),
           criticReview,
         });
       }
@@ -460,10 +464,107 @@ export class AgentOrchestrator {
 
     return this.finishRun(ctx.user.id, run, {
       assistantText: result.message ?? t(run, "confirmedExecuted"),
-      toolResults: [result],
+      toolResults: toolResultsForResponse,
       pendingActions: [],
-      workspacePatch: mergeWorkspacePatch([result]),
+      workspacePatch: mergeWorkspacePatch(toolResultsForResponse),
     });
+  }
+
+  private async finalizeGeneratedResumeAndExport(userId: string, generationResult: ToolResult): Promise<ToolResult[]> {
+    const data = isRecord(generationResult.data) ? generationResult.data : null;
+    const generationRecord = isRecord(data?.generation) ? data.generation as Record<string, unknown> : null;
+    const generationId = stringValue(data?.generationId) ?? stringValue(generationRecord?.id);
+    const variants = Array.isArray(data?.variants) ? data?.variants : [];
+    const firstVariant = variants.find((item) => isRecord(item) && stringValue((item as Record<string, unknown>).id));
+    const variantId = stringValue(isRecord(firstVariant) ? (firstVariant as Record<string, unknown>).id : undefined);
+    if (!generationId || !variantId) return [];
+
+    try {
+      const accepted = await this.deps.kernel.productServices.generationProductService.saveAcceptedVariantToResume(userId, {
+        generationId,
+        variantId,
+      });
+      const activeResume = await this.deps.kernel.productServices.resumeService.getResume(userId, accepted.resume.id);
+      const acceptResult: ToolResult = {
+        status: "success",
+        message: "已将推荐版本写入简历并准备导出文件。",
+        visibility: "user_summary",
+        data: {
+          generation: accepted.generation,
+          resume: accepted.resume,
+          item: accepted.item,
+          variant: accepted.variant,
+        },
+        workspacePatch: {
+          activePanel: "resume_editor",
+          resumeId: accepted.resume.id,
+          activeResume: activeResume ?? accepted.resume,
+          active: { resumeId: accepted.resume.id, variantId },
+          status: "accepted",
+        },
+        actionResult: {
+          status: "success",
+          actionType: "accept_generation_variant",
+          variantId,
+          metadata: {
+            generationId,
+            resumeId: accepted.resume.id,
+            autoAccepted: true,
+          },
+        },
+      };
+
+      const created = await this.deps.kernel.exportService.createExport(userId, {
+        resumeId: accepted.resume.id,
+        format: "html",
+      });
+
+      let exportRecord = created.exportRecord;
+      try {
+        exportRecord = await this.deps.kernel.exportService.renderExportJob(userId, created.exportRecord.id);
+      } catch {
+        // Keep queued export record when sync render is not available.
+      }
+
+      const exportResult: ToolResult = {
+        status: "success",
+        message: exportRecord.status === "completed"
+          ? "简历文件已生成，可直接下载。"
+          : "简历导出任务已创建，文件准备完成后可下载。",
+        visibility: "user_summary",
+        data: { exportRecord, job: created.job },
+        workspacePatch: {
+          activePanel: "resume_editor",
+          activeExportId: exportRecord.id,
+          exportRecords: [exportRecord],
+        },
+        actionResult: {
+          status: "success",
+          actionType: "export_resume",
+          exportRecord,
+          metadata: {
+            resumeId: accepted.resume.id,
+            generationId,
+            autoExported: true,
+          },
+        },
+      };
+
+      return [acceptResult, exportResult];
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "自动生成简历文件失败，请稍后重试导出。";
+      return [{
+        status: "failed",
+        message,
+        visibility: "error_user_visible",
+        actionResult: {
+          status: "failed",
+          actionType: "export_resume",
+          reason: "auto_finalize_failed",
+          message,
+        },
+      }];
+    }
   }
 
   /**
@@ -737,7 +838,10 @@ export class AgentOrchestrator {
         };
       }
 
-      const augmentedPlan = maybeAppendJDSaveStep(decision.plan, run.context);
+      const augmentedPlan = maybeAugmentResumeGenerationPlan(
+        maybeAppendJDSaveStep(decision.plan, run.context),
+        run.context,
+      );
       const plan = this.validatePlan(augmentedPlan, specialist);
       const executed = await this.executePlan(run, plan);
       toolResults.push(...executed.toolResults);
@@ -2437,6 +2541,41 @@ function confirmationTitle(toolName: string, locale: CopilotLocale, fallback?: s
   if (toolName === "save_jd_from_text") return "保存 JD 到 JD 库";
   if (toolName === "save_experience_from_text") return locale === "zh-CN" ? "保存经历到经历库" : "Save experience";
   return fallback && fallback.trim().length > 0 ? fallback : toolName.replace(/_/g, " ");
+}
+
+function maybeAugmentResumeGenerationPlan(plan: PlanStep[], context: AgentContext): PlanStep[] {
+  const generateIndex = plan.findIndex((step) => step.toolName === "generate_resume_from_jd");
+  if (generateIndex < 0) return plan;
+  if (plan.some((step) => step.toolName === "match_experiences_against_jd")) return plan;
+
+  const generateStep = plan[generateIndex];
+  const args = (generateStep.arguments ?? {}) as Record<string, unknown>;
+  const jdText =
+    stringValue(args.jdText)
+    ?? stringValue(context.productContext.requestJDText)
+    ?? stringValue((context.productContext.frontDeskHandoff as { extracted?: { jdText?: string } } | undefined)?.extracted?.jdText);
+  const jdId =
+    stringValue(args.jdId)
+    ?? stringValue((context.productContext.frontDeskHandoff as { extracted?: { jdId?: string } } | undefined)?.extracted?.jdId);
+  if (!jdText && !jdId) return plan;
+
+  const matchStep: PlanStep = {
+    id: `${generateStep.id}-match`,
+    agentName: generateStep.agentName,
+    toolName: "match_experiences_against_jd",
+    arguments: {
+      ...(jdId ? { jdId } : {}),
+      ...(jdText ? { jdText } : {}),
+      limit: 20,
+    },
+    summary: "Match experiences against JD before resume generation.",
+  };
+
+  return [
+    ...plan.slice(0, generateIndex),
+    matchStep,
+    ...plan.slice(generateIndex),
+  ];
 }
 
 function maybeAppendJDSaveStep(plan: PlanStep[], context: AgentContext): PlanStep[] {
