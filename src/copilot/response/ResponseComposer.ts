@@ -50,6 +50,11 @@ export class ResponseComposer {
 
     const generated = input.toolResults.find((result) => result.actionResult?.actionType === "generate_resume_from_jd" || hasVariants(result));
     if (generated) {
+      const confirmedPendingAction = Boolean(input.context.productContext.pendingActionId);
+      const generatedMessage = visibleMessage(generated);
+      if (confirmedPendingAction && generatedMessage) {
+        return { assistantText: generatedMessage };
+      }
       const count = variantCount(generated) ?? input.workspace?.variants?.length ?? 0;
       return {
         assistantText: `已基于 JD 生成 ${count || "多个"} 个简历版本。你可以选择一个版本保存到简历库，或继续让我改得更量化/更保守。`,
@@ -59,10 +64,8 @@ export class ResponseComposer {
     const jdMatch = input.toolResults.find((result) => result.actionResult?.actionType === "match_experiences_against_jd");
     if (jdMatch) {
       const matchData = matchResultsData(jdMatch);
-      const saveAction = saveJDActionFromMatch(matchData);
       return {
         assistantText: shortMatchSummary(matchData) ?? "I have matched your experiences against this JD.",
-        ...(saveAction ? { nextActions: [saveAction] } : {}),
       };
     }
 
@@ -173,29 +176,6 @@ function shortMatchSummary(data: Record<string, unknown>): string | undefined {
   if (typeof total !== "number") return undefined;
   if (high > 0) return `我已根据这份 JD 匹配了经历库，其中 ${high} 条为高匹配。`;
   return `我已根据这份 JD 匹配了经历库，暂无高匹配经历，但有 ${candidate} 条可作为候选素材。`;
-}
-
-function saveJDActionFromMatch(data: Record<string, unknown>): ProductAction | undefined {
-  const jdId = stringValue(data.jdId);
-  if (jdId) return undefined;
-  const jdText = stringValue(data.jdText);
-  if (!jdText) return undefined;
-  const jdSummary = typeof data.jdSummary === "object" && data.jdSummary !== null
-    ? data.jdSummary as Record<string, unknown>
-    : {};
-  return {
-    id: "save-jd-from-jd-match",
-    type: "save_jd_from_text",
-    label: "保存该 JD 到 JD 库",
-    primary: false,
-    payload: {
-      jdText,
-      rawText: jdText,
-      title: stringValue(jdSummary.title),
-      company: stringValue(jdSummary.company),
-      targetRole: stringValue(jdSummary.targetRole),
-    },
-  };
 }
 
 function numberValue(value: unknown): number | undefined {

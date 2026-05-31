@@ -81,6 +81,8 @@ export type CopilotMessageDisplaySnapshot = {
   pendingActions?: DisplayPendingAction[];
   /** Tool results that generated frontend-visible cards. */
   toolResults?: DisplayToolResult[];
+  /** Persisted product blocks for deterministic history restore. */
+  productBlocks?: ProductBlock[];
   /** Workspace patch applied by this turn. */
   workspacePatch?: Record<string, unknown>;
 };

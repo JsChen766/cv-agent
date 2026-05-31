@@ -383,6 +383,7 @@ function buildSuccessResponse(
         low: low.length,
       },
       topResults,
+      matchResults: sorted,
       // Legacy flat list for backward compat
       matches: sorted,
       count: sorted.length,

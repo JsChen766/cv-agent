@@ -1,5 +1,6 @@
 import type { ToolDefinition } from "../../agent-core/tools/Tool.js";
 import { IdInputSchema, JDInputSchema, ListInputSchema, TextInputSchema, ToolResultSchema } from "../../agent-core/validation/ToolInputSchemas.js";
+import { computeJDHash } from "../../product/jdHash.js";
 
 export function createJDAgentTools(): ToolDefinition[] {
   return [
@@ -54,13 +55,50 @@ export function createJDAgentTools(): ToolDefinition[] {
       requiresConfirmation: true,
       riskLevel: "medium",
       execute: async (input, context) => {
+        const rawText = String(input.text);
+        const jdHash = computeJDHash(rawText);
+        const existing = await context.kernel.productServices.jdService.listJDs(context.userId, 1000);
+        const duplicate = existing.find((item) => computeJDHash(item.rawText) === jdHash);
+        if (duplicate) {
+          return {
+            status: "success",
+            message: "这份 JD 已在库中，已为你打开该 JD。",
+            data: { jd: duplicate, jdId: duplicate.id, jdHash },
+            workspacePatch: { activePanel: "jd_library", jdId: duplicate.id, active: { jdId: duplicate.id } },
+            visibility: "user_summary",
+            actionResult: {
+              actionType: "save_jd_from_text",
+              status: "success",
+              metadata: {
+                jdId: duplicate.id,
+                duplicate: true,
+                jdHash,
+              },
+            },
+          };
+        }
         const jd = await context.kernel.productServices.jdService.saveJD(context.userId, {
-          rawText: String(input.text),
+          rawText,
           title: typeof input.title === "string" ? input.title : undefined,
           company: typeof input.company === "string" ? input.company : undefined,
           targetRole: typeof input.targetRole === "string" ? input.targetRole : undefined,
         });
-        return { status: "success", message: `Saved JD "${jd.title}".`, data: { jd }, workspacePatch: { activePanel: "jd_library", jdId: jd.id, active: { jdId: jd.id } }, visibility: "user_summary" };
+        return {
+          status: "success",
+          message: `Saved JD "${jd.title}".`,
+          data: { jd, jdId: jd.id, jdHash },
+          workspacePatch: { activePanel: "jd_library", jdId: jd.id, active: { jdId: jd.id } },
+          visibility: "user_summary",
+          actionResult: {
+            actionType: "save_jd_from_text",
+            status: "success",
+            metadata: {
+              jdId: jd.id,
+              duplicate: false,
+              jdHash,
+            },
+          },
+        };
       },
     },
   ];

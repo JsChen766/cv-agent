@@ -7,6 +7,7 @@ import { applyHandoffToDrafts, mostRecentJDDraft } from "../../copilot/context/D
 import { normalizeFrontDeskHandoff } from "../../copilot/handoff/HandoffNormalizer.js";
 import { extractExperienceDraftFromText } from "../../product/experienceDraft.js";
 import { buildNormalizedExperiencePreview } from "../../product/experiencePreview.js";
+import { computeJDHash } from "../../product/jdHash.js";
 import type { FrontDeskHandoff } from "../../copilot/handoff/FrontDeskHandoff.js";
 import type {
   CopilotActionRequest,
@@ -1061,13 +1062,56 @@ export class AgentOrchestrator {
       }
     }
 
+    if (tool.name === "save_jd_from_text") {
+      const jdText = stringValue(args.text) ?? stringValue(args.jdText) ?? stringValue(args.rawText);
+      if (jdText) {
+        const jdHash = computeJDHash(jdText);
+        enrichedArgs = {
+          ...args,
+          text: jdText,
+          jdText,
+          rawText: jdText,
+          jdHash,
+        };
+        enrichedPreview = previewFor(tool.name, enrichedArgs);
+        const existingPending = await this.pendingActions.list(run.context.userId, run.context.sessionId);
+        const duplicatePending = existingPending.find((pa) => {
+          if (pa.toolName !== "save_jd_from_text") return false;
+          const pendingArgs = pa.toolArguments ?? {};
+          const existingHash = stringValue(pendingArgs.jdHash)
+            ?? computeJDHash(
+              stringValue(pendingArgs.text)
+              ?? stringValue(pendingArgs.jdText)
+              ?? stringValue(pendingArgs.rawText)
+              ?? "",
+            );
+          return existingHash === jdHash;
+        });
+        if (duplicatePending) {
+          return {
+            result: {
+              status: "needs_input",
+              message: duplicatePending.summary,
+              pendingActionId: duplicatePending.id,
+              visibility: "action_required",
+              actionResult: {
+                status: "needs_confirmation",
+                actionType: tool.name,
+                pendingActionId: duplicatePending.id,
+              },
+            },
+          };
+        }
+      }
+    }
+
     const pending = await this.pendingActions.create({
       userId: run.context.userId,
       sessionId: run.context.sessionId,
       turnId: run.context.turnId,
       tool,
       toolArguments: enrichedArgs,
-      title: step.summary,
+      title: confirmationTitle(tool.name, localeFor(run), step.summary),
       summary: confirmationSummary(tool.name, localeFor(run)),
       affectedResources: affectedResourcesFor(tool.name, enrichedArgs),
       preview: enrichedPreview,
@@ -1914,7 +1958,7 @@ function buildAssistantMessageMetadata(input: {
 
   // Build display snapshot for history restoration
   const pendingActions = input.pendingActions ?? [];
-  const displaySnapshot = buildDisplaySnapshot(input.toolResults, pendingActions, input.workspacePatch);
+  const displaySnapshot = buildDisplaySnapshot(input.toolResults, pendingActions, input.workspacePatch, productBlocks);
 
   return {
     ...(productBlocks.length > 0 ? { productBlocks } : {}),
@@ -1934,6 +1978,7 @@ function buildDisplaySnapshot(
   toolResults: ToolResult[],
   pendingActions: PendingAction[],
   workspacePatch: Record<string, unknown>,
+  productBlocks: ProductBlock[],
 ): CopilotMessageMetadata["displaySnapshot"] {
   const hasPending = pendingActions.length > 0;
   const hasToolResults = toolResults.length > 0;
@@ -1979,6 +2024,10 @@ function buildDisplaySnapshot(
 
   if (Object.keys(workspacePatch).length > 0) {
     snapshot.workspacePatch = workspacePatch;
+  }
+
+  if (productBlocks.length > 0) {
+    snapshot.productBlocks = productBlocks;
   }
 
   return Object.keys(snapshot).length > 0 ? snapshot : undefined;
@@ -2032,6 +2081,8 @@ function buildProductBlocks(toolResults: ToolResult[]): ProductBlock[] {
       const summary = stringValue(data.summary)
         ?? `已匹配 ${typeof data.totalExperienceCount === "number" ? data.totalExperienceCount : data.totalCount} 条经历，暂无高匹配经历。`;
       const saveAction = buildSaveJDAction(data);
+      const rawMatches = Array.isArray(data.matches) ? data.matches as Array<Record<string, unknown>> : [...high, ...medium, ...low];
+      const sanitizedMatchResults = rawMatches.map(sanitizeMatchResult);
       matchBlock = {
         type: "experience_match_results",
         title: "JD 匹配经历推荐",
@@ -2060,7 +2111,8 @@ function buildProductBlocks(toolResults: ToolResult[]): ProductBlock[] {
             medium: medium.slice(0, 5).map(sanitizeMatchResult),
             low: low.slice(0, 5).map(sanitizeMatchResult),
           },
-          ...(saveAction ? { actions: [saveAction] } : {}),
+          matchResults: sanitizedMatchResults,
+          ...(saveAction ? { saveJDAction: saveAction, actions: [saveAction] } : {}),
           // Flat list for backward compat
           allResults: [...high, ...medium, ...low].slice(0, 10).map(sanitizeMatchResult),
         }) ?? {},
@@ -2158,16 +2210,20 @@ function buildSaveJDAction(data: Record<string, unknown>): Record<string, unknow
   if (typeof data.jdId === "string" && data.jdId.trim().length > 0) return undefined;
   const rawText = stringValue(data.jdText);
   if (!rawText) return undefined;
+  const jdHash = computeJDHash(rawText);
   const jdSummary = isRecord(data.jdSummary) ? data.jdSummary as Record<string, unknown> : {};
   return sanitizeMetadataObject({
+    id: `save-jd-${jdHash.slice(0, 12)}`,
     type: "save_jd_from_text",
     label: "保存该 JD 到 JD 库",
+    primary: false,
     payload: {
       jdText: rawText,
       rawText,
       title: stringValue(jdSummary.title),
       company: stringValue(jdSummary.company),
       targetRole: stringValue(jdSummary.targetRole),
+      jdHash,
     },
   });
 }
@@ -2336,6 +2392,7 @@ function timelineFor(results: ToolResult[], now: string, turnId: string): Produc
 }
 
 function confirmationSummary(toolName: string, locale: CopilotLocale): string {
+  if (toolName === "save_jd_from_text") return "请确认是否将这份 JD 保存到 JD 库。";
   if (locale === "zh-CN") {
     if (toolName === "save_experience_from_text") return "已准备好一条经历草稿，请确认后写入经历库。";
     if (toolName === "update_experience") return "请确认是否更新这段经历。";
@@ -2350,6 +2407,12 @@ function confirmationSummary(toolName: string, locale: CopilotLocale): string {
   if (toolName === "export_resume") return "Please confirm creating this resume export.";
   if (toolName === "accept_generation_variant") return "Please confirm saving this variant to your resume.";
   return `Please confirm ${toolName}.`;
+}
+
+function confirmationTitle(toolName: string, locale: CopilotLocale, fallback?: string): string {
+  if (toolName === "save_jd_from_text") return "保存 JD 到 JD 库";
+  if (toolName === "save_experience_from_text") return locale === "zh-CN" ? "保存经历到经历库" : "Save experience";
+  return fallback && fallback.trim().length > 0 ? fallback : toolName.replace(/_/g, " ");
 }
 
 function maybeAppendJDSaveStep(plan: PlanStep[], context: AgentContext): PlanStep[] {
@@ -2560,6 +2623,26 @@ function previewFor(toolName: string, args: Record<string, unknown>) {
   if (toolName === "save_experience_from_text") {
     return undefined;
   }
+  if (toolName === "save_jd_from_text") {
+    const rawText = stringValue(args.text) ?? stringValue(args.jdText) ?? stringValue(args.rawText);
+    if (!rawText) return undefined;
+    const title = stringValue(args.title);
+    const company = stringValue(args.company);
+    const targetRole = stringValue(args.targetRole) ?? title;
+    const requirements = extractJDRequirements(rawText);
+    const jdDraft = {
+      rawText,
+      title,
+      company,
+      targetRole,
+      requirements,
+      preview: rawText.slice(0, 300),
+    };
+    return {
+      after: { jdDraft },
+      jdDraft,
+    };
+  }
   if (toolName === "update_experience") {
     const patch = sanitizeExperiencePatch(args.patch);
     return { after: { experienceId: args.experienceId, contentPreview: typeof args.content === "string" ? args.content.slice(0, 200) : undefined, patchKeys: Object.keys(patch).slice(0, 10) } };
@@ -2567,6 +2650,16 @@ function previewFor(toolName: string, args: Record<string, unknown>) {
   if (toolName === "delete_experience") return { before: args };
   if (toolName === "export_resume") return { after: args };
   return undefined;
+}
+
+function extractJDRequirements(jdText: string): string[] {
+  const lines = jdText
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+  const requirementLines = lines.filter((line) => /要求|职责|技能|任职|资格|requirement|responsibilit|qualif|skill/i.test(line));
+  const source = requirementLines.length > 0 ? requirementLines : lines;
+  return source.slice(0, 8).map((line) => line.slice(0, 120));
 }
 
 function isString(value: unknown): value is string {

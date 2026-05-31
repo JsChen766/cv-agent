@@ -57,10 +57,15 @@ describe("JD match orchestration", () => {
     expect(matchBlock?.data?.summary).toBeTruthy();
     expect(matchBlock?.data?.jdSummary).toBeTruthy();
     expect(matchBlock?.data?.topResults).toBeTruthy();
+    expect(Array.isArray(matchBlock?.data?.matchResults)).toBe(true);
 
-    const nextSaveAction = body.data.nextActions.find((action) => action.type === "save_jd_from_text");
-    expect(nextSaveAction).toBeTruthy();
-    expect(nextSaveAction?.payload?.jdText ?? nextSaveAction?.payload?.rawText).toBeTruthy();
+    const blockSaveAction = (matchBlock?.data?.saveJDAction as Record<string, unknown> | undefined)
+      ?? ((matchBlock?.data?.actions as Array<Record<string, unknown>> | undefined) ?? []).find((a) => a.type === "save_jd_from_text");
+    expect(blockSaveAction).toBeTruthy();
+    const payload = (blockSaveAction?.payload as Record<string, unknown> | undefined) ?? {};
+    expect(payload.jdText ?? payload.rawText).toBeTruthy();
+    expect(typeof payload.jdHash).toBe("string");
+    expect(body.data.nextActions.some((action) => action.type === "save_jd_from_text")).toBe(false);
 
     const jdAfter = await kernel.productServices.jdService.listJDs("user-1", 20);
     expect(jdAfter.length).toBe(jdBefore.length);
@@ -83,6 +88,15 @@ describe("JD match orchestration", () => {
     const pendingActions = (body.data.raw.pendingActions ?? []) as Array<{ id: string; toolName?: string }>;
     const pending = pendingActions.find((item) => item.toolName === "save_jd_from_text");
     expect(pending).toBeTruthy();
+    const pendingDisplay = (body.data.raw.pendingActions ?? []) as Array<Record<string, unknown>>;
+    const pendingCard = pendingDisplay.find((item) => item.toolName === "save_jd_from_text");
+    expect(pendingCard?.title).toBe("保存 JD 到 JD 库");
+    expect(pendingCard?.summary).toBe("请确认是否将这份 JD 保存到 JD 库。");
+    const preview = pendingCard?.preview as Record<string, unknown> | undefined;
+    const jdDraft = (preview?.jdDraft as Record<string, unknown> | undefined)
+      ?? ((preview?.after as Record<string, unknown> | undefined)?.jdDraft as Record<string, unknown> | undefined);
+    expect(jdDraft).toBeTruthy();
+    expect(typeof jdDraft?.rawText).toBe("string");
 
     const jdsBeforeConfirm = await kernel.productServices.jdService.listJDs("user-1", 20);
     expect(jdsBeforeConfirm.length).toBe(0);
@@ -101,6 +115,85 @@ describe("JD match orchestration", () => {
     const jdsAfterConfirm = await kernel.productServices.jdService.listJDs("user-1", 20);
     expect(jdsAfterConfirm.length).toBe(1);
     expect(jdsAfterConfirm[0]?.id).toBe(confirmBody.data.workspace.jdId);
+
+    const detail = await server.inject({
+      method: "GET",
+      url: `/copilot/sessions/${body.data.sessionId}`,
+      headers: { "x-user-id": "user-1" },
+    });
+    expect(detail.statusCode).toBe(200);
+    const detailBody = detail.json() as ApiSuccess<{ messages: Array<{ role: string; metadata?: Record<string, unknown> }> }>;
+    const assistant = detailBody.data.messages.find((item) => item.role === "assistant");
+    const snapshot = assistant?.metadata?.displaySnapshot as Record<string, unknown> | undefined;
+    const pendingSnapshot = (snapshot?.pendingActions as Array<Record<string, unknown>> | undefined) ?? [];
+    const savePending = pendingSnapshot.find((item) => item.toolName === "save_jd_from_text");
+    expect(savePending?.status).toBe("executed");
+    const persistedPreview = savePending?.preview as Record<string, unknown> | undefined;
+    const persistedDraft = (persistedPreview?.jdDraft as Record<string, unknown> | undefined)
+      ?? ((persistedPreview?.after as Record<string, unknown> | undefined)?.jdDraft as Record<string, unknown> | undefined);
+    expect(persistedDraft?.preview).toBeTruthy();
+  });
+
+  it("duplicate confirm and duplicate save actions only persist one JD", async () => {
+    const text = "save this JD and match experiences: Backend Engineer, Node.js, TypeScript, MySQL.";
+    const first = await server.inject({
+      method: "POST",
+      url: "/copilot/chat",
+      headers: { "x-user-id": "user-1" },
+      payload: { message: text },
+    });
+    expect(first.statusCode).toBe(200);
+    const firstBody = first.json() as ApiSuccess<CopilotChatResponse>;
+    const firstPendingActions = (firstBody.data.raw.pendingActions ?? []) as Array<Record<string, unknown>>;
+    const pending = firstPendingActions.find((item) => item.toolName === "save_jd_from_text");
+    expect(pending?.id).toBeTruthy();
+
+    const confirmOnce = await server.inject({
+      method: "POST",
+      url: `/copilot/pending-actions/${String(pending!.id)}/confirm`,
+      headers: { "x-user-id": "user-1" },
+    });
+    expect(confirmOnce.statusCode).toBe(200);
+
+    const confirmTwice = await server.inject({
+      method: "POST",
+      url: `/copilot/pending-actions/${String(pending!.id)}/confirm`,
+      headers: { "x-user-id": "user-1" },
+    });
+    expect(confirmTwice.statusCode).toBe(200);
+
+    const second = await server.inject({
+      method: "POST",
+      url: "/copilot/actions",
+      headers: { "x-user-id": "user-1" },
+      payload: {
+        sessionId: firstBody.data.sessionId,
+        action: {
+          type: "save_jd_from_text",
+          payload: { jdText: text, rawText: text },
+        },
+      },
+    });
+    expect(second.statusCode).toBe(200);
+    const secondBody = second.json() as ApiSuccess<CopilotChatResponse>;
+    const secondPendingActions = (secondBody.data.raw.pendingActions ?? []) as Array<Record<string, unknown>>;
+    const secondPending = secondPendingActions.find((item) => item.toolName === "save_jd_from_text");
+    expect(secondPending?.id).toBeTruthy();
+
+    const secondConfirm = await server.inject({
+      method: "POST",
+      url: `/copilot/pending-actions/${String(secondPending!.id)}/confirm`,
+      headers: { "x-user-id": "user-1" },
+    });
+    expect(secondConfirm.statusCode).toBe(200);
+    const secondConfirmBody = secondConfirm.json() as ApiSuccess<CopilotChatResponse>;
+    const actionResult = (secondConfirmBody.data.raw.actionResults ?? [])[0] as Record<string, unknown> | undefined;
+    expect(actionResult?.status).toBe("success");
+    const metadata = actionResult?.metadata as Record<string, unknown> | undefined;
+    expect(metadata?.duplicate).toBe(true);
+
+    const all = await kernel.productServices.jdService.listJDs("user-1", 20);
+    expect(all.length).toBe(1);
   });
 
   it("session detail keeps jd match block and save action in productBlocks/displaySnapshot", async () => {
@@ -139,6 +232,8 @@ describe("JD match orchestration", () => {
 
     const displaySnapshot = metadata?.displaySnapshot as Record<string, unknown> | undefined;
     expect(displaySnapshot).toBeTruthy();
+    const snapshotBlocks = displaySnapshot?.productBlocks as Array<{ type: string }> | undefined;
+    expect(snapshotBlocks?.some((item) => item.type === "experience_match_results" || item.type === "jd_match_results")).toBe(true);
     const toolResults = (displaySnapshot?.toolResults as Array<Record<string, unknown>> | undefined) ?? [];
     expect(toolResults.some((item) => {
       const ar = item.actionResult as Record<string, unknown> | undefined;
