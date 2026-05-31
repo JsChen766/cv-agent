@@ -371,13 +371,21 @@ export class AgentOrchestrator {
         workspacePatch: {},
       });
     }
+
+    // Keep history cards deterministic: once the tool body succeeded, mark
+    // the original pending card terminal even if later critic review asks for
+    // more user input in this turn.
+    await this.updatePendingActionDisplayStatus(ctx.user.id, id, "executed");
+
     if (shouldReviewTool(confirmedAction.toolName)) {
       // Skip critic gate review for save_experience_from_text confirmations.
       // The critic already reviewed the draft during the planning phase (prepare_save_experience_from_text).
       // Re-reviewing on confirmation would create a confusing UX loop where the experience is
       // already saved but the user sees "needs revision" — which can trigger an infinite cycle of
       // confirm → review → suggestions → rewrite → confirm → review → ...
-      const skipCriticForConfirm = confirmedAction.toolName === "save_experience_from_text";
+      const skipCriticForConfirm = confirmedAction.toolName === "save_experience_from_text"
+        || confirmedAction.toolName === "generate_resume_from_jd"
+        || confirmedAction.toolName === "save_jd_from_text";
       if (!skipCriticForConfirm) {
         this.emit(run, "agent.critic.started", "正在审查结果…", {
           agentName: "critic",
@@ -449,9 +457,6 @@ export class AgentOrchestrator {
         });
       }
     }
-
-    // Update the original message's display snapshot to mark this pending action as executed
-    await this.updatePendingActionDisplayStatus(ctx.user.id, id, "executed");
 
     return this.finishRun(ctx.user.id, run, {
       assistantText: result.message ?? t(run, "confirmedExecuted"),
@@ -1953,6 +1958,7 @@ function buildAssistantMessageMetadata(input: {
 }): CopilotMessageMetadata {
   const actionResult = sanitizeActionResultForMetadata(primaryActionResult(input.toolResults));
   const productBlocks = buildProductBlocks(input.toolResults);
+  const workspaceForHistory = buildWorkspaceForHistory(input.workspace, input.workspacePatch);
   const workspaceSnapshot = buildWorkspaceSnapshot(input.workspace, input.workspacePatch);
   const relatedResourceIds = buildRelatedResourceIds(input.toolResults, input.workspace);
 
@@ -1963,6 +1969,7 @@ function buildAssistantMessageMetadata(input: {
   return {
     ...(productBlocks.length > 0 ? { productBlocks } : {}),
     ...(actionResult ? { actionResult } : {}),
+    ...(workspaceForHistory ? { workspace: workspaceForHistory } : {}),
     ...(workspaceSnapshot ? { workspaceSnapshot } : {}),
     ...(hasRelatedResourceIds(relatedResourceIds) ? { relatedResourceIds } : {}),
     ...(displaySnapshot ? { displaySnapshot } : {}),
@@ -2407,6 +2414,23 @@ function confirmationSummary(toolName: string, locale: CopilotLocale): string {
   if (toolName === "export_resume") return "Please confirm creating this resume export.";
   if (toolName === "accept_generation_variant") return "Please confirm saving this variant to your resume.";
   return `Please confirm ${toolName}.`;
+}
+
+function buildWorkspaceForHistory(
+  workspace: CopilotWorkspace | null,
+  patch: Record<string, unknown>,
+): CopilotWorkspace | undefined {
+  if (!workspace) return undefined;
+  const mergedActive = {
+    ...(workspace.active ?? {}),
+    ...(isRecord(patch.active) ? patch.active : {}),
+  };
+  return {
+    ...workspace,
+    ...patch,
+    active: mergedActive,
+    updatedAt: stringValue(patch.updatedAt) ?? workspace.updatedAt,
+  } as CopilotWorkspace;
 }
 
 function confirmationTitle(toolName: string, locale: CopilotLocale, fallback?: string): string {

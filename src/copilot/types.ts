@@ -48,6 +48,8 @@ export type ProductBlock = {
 export type CopilotMessageMetadata = {
   productBlocks?: ProductBlock[];
   actionResult?: CopilotActionResult;
+  /** Full workspace snapshot at this assistant turn for high-fidelity history restore. */
+  workspace?: CopilotWorkspace;
   workspaceSnapshot?: {
     activePanel?: CopilotWorkspace["activePanel"];
     active?: CopilotWorkspace["active"];
