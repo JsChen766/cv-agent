@@ -115,7 +115,7 @@ describe("agent runtime loop and critic gate", () => {
     const metadata = response.raw.metadata as RuntimeMetadata;
 
     expect(provider.criticCalls).toBe(0);
-    expect(response.assistantMessage.content).toContain("resume variants");
+    expect(response.assistantMessage.content).toContain("Resume generation has started");
     expect((response.workspace as unknown as { activePanel?: string }).activePanel).toBe("variants");
     expect(metadata.criticReview).toBeUndefined();
     expect(response.raw.actionResults?.[0]?.status).toBe("success");
@@ -133,11 +133,11 @@ describe("agent runtime loop and critic gate", () => {
     const response = await orchestrator.confirmPendingAction(ctx, pendingId);
     const metadata = response.raw.metadata as RuntimeMetadata;
 
-    expect(response.assistantMessage.content).toContain("resume variants");
+    expect(response.assistantMessage.content).toContain("Resume generation has started");
     // Workspace patch is preserved even when critic blocks — the user needs to see what was generated
     expect((response.workspace as unknown as { activePanel?: string }).activePanel).toBe("variants");
     expect(metadata.criticReview).toBeUndefined();
-    expect(JSON.stringify(response.raw.toolResults)).toContain("Confirmed generated resume content.");
+    expect(JSON.stringify(response.raw.toolResults)).toContain("jobId");
     await kernel.close();
   });
 
@@ -152,11 +152,11 @@ describe("agent runtime loop and critic gate", () => {
     const response = await orchestrator.confirmPendingAction(ctx, pendingId);
     const metadata = response.raw.metadata as RuntimeMetadata;
 
-    expect(response.assistantMessage.content).toContain("resume variants");
+    expect(response.assistantMessage.content).toContain("Resume generation has started");
     expect(metadata.loop.stopReason).not.toBe("critic_needs_revision");
     expect(metadata.criticReview).toBeUndefined();
     expect(metadata.agentMessages.some((message) => message.type === "revision_request")).toBe(false);
-    expect(JSON.stringify(response.raw.toolResults)).toContain("Confirmed generated resume content.");
+    expect(JSON.stringify(response.raw.toolResults)).toContain("jobId");
     await kernel.close();
   });
 

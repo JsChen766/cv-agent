@@ -64,6 +64,13 @@ export class ResponseComposer {
     }
 
     if (generated) {
+      if (isGeneratingResume(generated)) {
+        return {
+          assistantText: en
+            ? "Resume generation has started. I will update the result when the background job completes."
+            : "已开始生成简历版本，后台任务完成后会更新结果。",
+        };
+      }
       const count = variantCount(generated) ?? input.workspace?.variants?.length ?? 0;
       return {
         assistantText: en
@@ -156,6 +163,11 @@ function visibleMessage(result: ToolResult): string | undefined {
 
 function hasVariants(result: ToolResult): boolean {
   return typeof result.data === "object" && result.data !== null && Array.isArray((result.data as { variants?: unknown[] }).variants);
+}
+
+function isGeneratingResume(result: ToolResult): boolean {
+  const metadata = result.actionResult?.metadata;
+  return typeof metadata === "object" && metadata !== null && (metadata as Record<string, unknown>).generating === true;
 }
 
 function hasDataCount(result: ToolResult): boolean {

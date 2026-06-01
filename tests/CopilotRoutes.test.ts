@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createServer } from "../src/api/createServer.js";
 import type { ApiSuccess } from "../src/api/response.js";
 import type { ApiKernel } from "../src/api/types.js";
@@ -445,8 +445,9 @@ describe("Copilot routes on agent-core runtime", () => {
     }
   });
 
-  it("confirming generate_resume_from_jd returns variants in workspace and raw tool results", async () => {
+  it("confirming generate_resume_from_jd returns a generating job instead of waiting for variants", async () => {
     const session = await kernel.copilotServices.sessionService.getOrCreateSession("user-1", {});
+    const generateSpy = vi.spyOn(kernel.productServices.generationProductService, "generateResumeFromJD");
 
     const actionResponse = await server.inject({
       method: "POST",
@@ -470,30 +471,31 @@ describe("Copilot routes on agent-core runtime", () => {
 
     expect(confirmed.statusCode).toBe(200);
     const confirmBody = confirmed.json() as ApiSuccess<CopilotChatResponse>;
-    expect(confirmBody.data.workspace.variants.length).toBeGreaterThan(0);
-    expect(confirmBody.data.workspace.productGenerationId).toEqual(expect.any(String));
-    expect(confirmBody.data.workspace.jdId).toEqual(expect.any(String));
+    expect(confirmBody.meta?.confirmStatus).toBe("generating");
+    expect(confirmBody.data.workspace.status).toBe("generating");
+    expect(confirmBody.data.workspace.variants.length).toBe(0);
+    expect(confirmBody.data.workspace.productGenerationId).toBeFalsy();
     expect(confirmBody.data.assistantMessage.kind).toBe("plain_text");
-    expect(confirmBody.data.assistantMessage.content).toMatch(/已基于 JD 生成|Generated \d+ resume variants from the JD/);
+    expect(confirmBody.data.assistantMessage.content).toContain("Resume generation has started");
     expect(confirmBody.data.raw.pendingActions ?? []).toHaveLength(0);
     expect(confirmBody.data.raw.actionResults?.some((item) => item.status === "needs_confirmation")).toBe(false);
+    expect(generateSpy).not.toHaveBeenCalled();
     expect(confirmBody.data.raw.toolResults?.[0]).toMatchObject({
       status: "success",
       data: {
-        generationId: expect.any(String),
-        variants: expect.any(Array),
+        jobId: expect.any(String),
+        jobStatus: "pending",
       },
       workspacePatch: {
-        productGenerationId: expect.any(String),
-        variants: expect.any(Array),
+        status: "generating",
       },
     });
     expect(confirmBody.data.raw.actionResults?.[0]).toMatchObject({
       status: "success",
       actionType: "generate_resume_from_jd",
       metadata: {
-        generationId: expect.any(String),
-        variantCount: expect.any(Number),
+        jobId: expect.any(String),
+        generating: true,
       },
     });
   });

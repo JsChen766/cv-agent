@@ -152,6 +152,49 @@ export class PendingActionService {
 
     await this.repository.update({ ...action, status: "confirmed" });
     try {
+      if (action.toolName === "generate_resume_from_jd") {
+        const job = await input.context.kernel.platformServices.backgroundJobs.createJob({
+          userId: input.context.userId,
+          type: "long_generation",
+          input: {
+            actionType: "generate_resume_from_jd",
+            pendingActionId: action.id,
+            sessionId: input.context.sessionId,
+            toolArguments: parsed.data as Record<string, unknown>,
+          },
+          maxAttempts: 1,
+        });
+        const result: ToolResult = {
+          status: "success",
+          message: "已开始生成简历版本，生成完成后会更新结果。",
+          data: {
+            jobId: job.id,
+            jobStatus: job.status,
+            actionType: action.toolName,
+          },
+          workspacePatch: {
+            activePanel: "variants",
+            status: "generating",
+            summary: "正在生成 JD 简历版本…",
+          },
+          actionResult: {
+            actionType: action.toolName,
+            status: "success",
+            metadata: {
+              jobId: job.id,
+              jobStatus: job.status,
+              generating: true,
+            },
+          },
+          visibility: "user_summary",
+        };
+        const updated = await this.repository.update({
+          ...action,
+          status: "executed",
+          lastResult: result,
+        });
+        return { action: updated, result };
+      }
       const result = await input.executor.executeDefinition(tool, parsed.data as Record<string, unknown>, input.context);
       const updated = await this.repository.update({
         ...action,

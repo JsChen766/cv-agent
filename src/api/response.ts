@@ -5,8 +5,8 @@ export type ApiMeta = {
   traceId?: string;
   mode: "postgres" | "in_memory";
   warnings?: string[];
-  /** Set on /copilot/pending-actions/:id/confirm to signal completed confirmation. */
-  confirmStatus?: "completed";
+  /** Set on /copilot/pending-actions/:id/confirm to signal confirmation state. */
+  confirmStatus?: "completed" | "generating";
   /** The confirmed pending action ID. */
   pendingActionId?: string;
 };

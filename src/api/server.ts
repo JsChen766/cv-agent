@@ -17,9 +17,10 @@ const server = await createServer(kernel);
 
 // Job Worker auto-start when JOB_WORKER_ENABLED=true or by development default.
 let worker: BackgroundWorker | undefined;
-const workerJobTypes: Array<"parse_document" | "import_resume_file" | "export_resume_html" | "export_resume_pdf"> = [
+const workerJobTypes: Array<"parse_document" | "import_resume_file" | "long_generation" | "export_resume_html" | "export_resume_pdf"> = [
   "parse_document",
   "import_resume_file",
+  "long_generation",
   "export_resume_html",
   "export_resume_pdf",
 ];

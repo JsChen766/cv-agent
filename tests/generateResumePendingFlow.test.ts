@@ -212,9 +212,10 @@ describe("generate resume pending-action flow", () => {
     expect(snapshotAction.riskLevel).toBe("medium");
   });
 
-  it("confirm generation returns variants without creating or rendering an export", async () => {
+  it("confirm generation returns a background job without synchronously generating or exporting", async () => {
     const createExportSpy = vi.spyOn(kernel.exportService, "createExport");
     vi.spyOn(kernel.exportService, "renderExportJob").mockImplementation(() => new Promise(() => undefined));
+    const generateSpy = vi.spyOn(kernel.productServices.generationProductService, "generateResumeFromJD");
 
     const bootstrap = await server.inject({
       method: "POST",
@@ -255,12 +256,26 @@ describe("generate resume pending-action flow", () => {
 
     const body = confirm.json() as ApiSuccess<CopilotChatResponse>;
     expect(body.data.raw.pendingActions ?? []).toHaveLength(0);
-    expect(body.data.workspace.variants.length).toBeGreaterThan(0);
-    expect(body.data.workspace.productGenerationId).toBeTruthy();
-    expect(body.data.raw.actionResults?.some((item) => item.actionType === "generate_resume_from_jd" && item.status === "success")).toBe(true);
+    expect(body.data.workspace.status).toBe("generating");
+    expect(body.data.workspace.variants.length).toBe(0);
+    const generationAction = body.data.raw.actionResults?.find((item) => item.actionType === "generate_resume_from_jd" && item.status === "success");
+    const jobId = generationAction?.metadata?.jobId;
+    expect(typeof jobId).toBe("string");
+    expect(generationAction?.metadata?.generating).toBe(true);
+    expect(generateSpy).not.toHaveBeenCalled();
     expect(body.data.raw.actionResults?.some((item) => item.actionType === "export_resume")).toBe(false);
     expect(body.data.workspace.exportRecords ?? []).toHaveLength(0);
     expect(createExportSpy).not.toHaveBeenCalled();
     expect(kernel.exportService.renderExportJob).not.toHaveBeenCalled();
+
+    await kernel.jobRunner.runJob(String(jobId), "user-1");
+    expect(generateSpy).toHaveBeenCalledTimes(1);
+    const job = await kernel.platformServices.backgroundJobs.getJob("user-1", String(jobId));
+    expect(job).toMatchObject({
+      status: "completed",
+      type: "long_generation",
+    });
+    expect(job?.output?.generationId).toEqual(expect.any(String));
+    expect(job?.output?.variantCount).toBeGreaterThan(0);
   });
 });

@@ -28,6 +28,27 @@ export class JobRunner {
       const candidates = await this.deps.productServices.importService.createCandidatesFromText(job.userId, importJob.id);
       return { importJobId: importJob.id, candidateCount: candidates.length };
     });
+    this.registry.register("long_generation", async ({ job }) => {
+      const actionType = stringInput(job.input, "actionType");
+      if (actionType !== "generate_resume_from_jd") {
+        throw new Error(`Unsupported long_generation actionType ${actionType}.`);
+      }
+      const toolArguments = recordInput(job.input, "toolArguments");
+      const result = await this.deps.productServices.generationProductService.generateResumeFromJD({
+        userId: job.userId,
+        sessionId: stringInputOrUndefined(job.input, "sessionId"),
+        jdId: stringInputOrUndefined(toolArguments, "jdId"),
+        jdText: stringInputOrUndefined(toolArguments, "jdText"),
+        targetRole: stringInputOrUndefined(toolArguments, "targetRole"),
+      });
+      return {
+        actionType,
+        generationId: result.generation.id,
+        jdId: result.jd.id,
+        variantCount: result.variants.length,
+        variants: result.variants,
+      };
+    });
     this.registry.register("export_resume_html", async ({ job }) => {
       const exportId = stringInput(job.input, "exportId");
       const exportRecord = await this.deps.getExportService().renderExportJob(job.userId, exportId);
@@ -113,4 +134,10 @@ function stringInput(input: Record<string, unknown> | undefined, key: string): s
 function stringInputOrUndefined(input: Record<string, unknown> | undefined, key: string): string | undefined {
   const value = input?.[key];
   return typeof value === "string" && value.trim() ? value : undefined;
+}
+
+function recordInput(input: Record<string, unknown> | undefined, key: string): Record<string, unknown> {
+  const value = input?.[key];
+  if (typeof value !== "object" || value === null || Array.isArray(value)) throw new Error(`${key} is required.`);
+  return value as Record<string, unknown>;
 }

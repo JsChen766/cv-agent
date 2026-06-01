@@ -39,6 +39,11 @@ export async function registerPendingActionRoutes(
     const ctx = createKernelRequestContext(request, resolvedAuth);
     const pendingActionId = readId(request.params);
     const response = await getOrchestrator().runtimeConfirm(ctx, pendingActionId);
+    const isGenerating = response.raw.actionResults?.some((result) =>
+      result.actionType === "generate_resume_from_jd"
+      && result.metadata
+      && (result.metadata as Record<string, unknown>).generating === true,
+    );
 
     // Attach confirm metadata to the meta field so the frontend can
     // distinguish a completed confirmation from a new pending action
@@ -47,7 +52,7 @@ export async function registerPendingActionRoutes(
       requestId: ctx.request.requestId,
       traceId: ctx.request.traceId,
       mode: kernel.mode,
-      confirmStatus: "completed" as const,
+      confirmStatus: isGenerating ? "generating" as const : "completed" as const,
       pendingActionId,
     });
   });

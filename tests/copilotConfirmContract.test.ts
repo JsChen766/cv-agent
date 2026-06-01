@@ -64,7 +64,7 @@ describe("Copilot confirm contract", () => {
     expect(pendingActionIds.length > 0 || Boolean(pendingFromActionResult)).toBe(true);
   });
 
-  it("confirm pending action returns 200 and workspace has variants", async () => {
+  it("confirm pending action returns 200 with a generating job", async () => {
     // Create session
     const chatResponse = await server.inject({
       method: "POST",
@@ -104,15 +104,17 @@ describe("Copilot confirm contract", () => {
     // Must not be a 500 error
     expect(confirmBody.ok).toBe(true);
 
-    // Workspace must have variants
     const workspace = (confirmBody as ApiSuccess<CopilotChatResponse>).data.workspace;
-    expect(workspace.variants.length).toBeGreaterThan(0);
-    expect(workspace.productGenerationId).toBeTruthy();
-    expect(workspace.activeVariantId).toBeTruthy();
-    expect(workspace.activeVariantId).toBe(workspace.variants[0]?.id);
+    expect((confirmBody as ApiSuccess<CopilotChatResponse>).meta.confirmStatus).toBe("generating");
+    expect(workspace.status).toBe("generating");
+    expect(workspace.variants.length).toBe(0);
+    expect(workspace.productGenerationId).toBeFalsy();
+    const actionResult = (confirmBody as ApiSuccess<CopilotChatResponse>).data.raw.actionResults?.find((item) => item.actionType === "generate_resume_from_jd");
+    expect(actionResult?.metadata?.jobId).toEqual(expect.any(String));
+    expect(actionResult?.metadata?.generating).toBe(true);
   });
 
-  it("confirm response workspace has activeVariantId matching first variant", async () => {
+  it("confirm response workspace stays in generating state before the background job completes", async () => {
     const chatResponse = await server.inject({
       method: "POST",
       url: "/copilot/chat",
@@ -143,10 +145,10 @@ describe("Copilot confirm contract", () => {
     });
     const workspace = (confirmResponse.json() as ApiSuccess<CopilotChatResponse>).data.workspace;
 
-    expect(workspace.productGenerationId).toBeTruthy();
-    expect(workspace.activeVariantId).toBeTruthy();
-    expect(workspace.active?.variantId).toBe(workspace.activeVariantId);
-    expect(workspace.variants.find((v) => v.id === workspace.activeVariantId)).toBeTruthy();
+    expect(workspace.status).toBe("generating");
+    expect(workspace.productGenerationId).toBeFalsy();
+    expect(workspace.activeVariantId).toBeFalsy();
+    expect(workspace.variants).toHaveLength(0);
   });
 
   it("show_evidence after confirmed generation does not return variant not found", async () => {
