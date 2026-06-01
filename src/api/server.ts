@@ -11,10 +11,11 @@ const kernel = await createKernel();
 for (const warning of kernel.warnings) {
   console.warn(warning);
 }
+const platformConfig = readPlatformConfig();
 
 const server = await createServer(kernel);
 
-// Job Worker auto-start when JOB_WORKER_ENABLED=true
+// Job Worker auto-start when JOB_WORKER_ENABLED=true or by development default.
 let worker: BackgroundWorker | undefined;
 const workerJobTypes: Array<"parse_document" | "import_resume_file" | "export_resume_html" | "export_resume_pdf"> = [
   "parse_document",
@@ -22,13 +23,20 @@ const workerJobTypes: Array<"parse_document" | "import_resume_file" | "export_re
   "export_resume_html",
   "export_resume_pdf",
 ];
-if (readPlatformConfig().jobWorkerEnabled) {
+console.log("[worker] config", {
+  jobWorkerEnabled: platformConfig.jobWorkerEnabled,
+  types: workerJobTypes,
+  concurrency: platformConfig.jobWorkerConcurrency,
+});
+if (platformConfig.jobWorkerEnabled) {
   worker = new BackgroundWorker(kernel);
   worker.start(workerJobTypes).then(() => {
-    console.log("[worker] BackgroundWorker started, watching:", workerJobTypes.join(", "));
+    console.log("[worker] BackgroundWorker started", { types: workerJobTypes });
   }).catch((err) => {
     console.error("[worker] BackgroundWorker failed to start:", err instanceof Error ? err.message : err);
   });
+} else {
+  console.warn("[worker] BackgroundWorker disabled; export jobs will remain pending unless run manually or via dev render fallback.");
 }
 
 const close = async () => {

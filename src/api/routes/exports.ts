@@ -7,6 +7,7 @@ import { applyRateLimit } from "../rateLimit.js";
 import { success } from "../response.js";
 import type { ApiKernel } from "../types.js";
 import type { ResumeExportFormat } from "../../exports/index.js";
+import { readPlatformConfig } from "../../platform/config.js";
 import { isRecord, meta, optionalString, param, readLimit } from "./helpers.js";
 
 export async function registerExportRoutes(app: FastifyInstance, kernel: ApiKernel, authResolver: AuthResolver<FastifyRequest>): Promise<void> {
@@ -25,6 +26,12 @@ export async function registerExportRoutes(app: FastifyInstance, kernel: ApiKern
         format: readFormat(body.format),
         templateId: optionalString(body.templateId),
       });
+      console.debug("[exports] POST /exports/resumes/:resumeId", {
+        exportId: result.exportRecord.id,
+        jobId: result.job.id,
+        status: result.exportRecord.status,
+        workerDisabled: Boolean(result.workerDisabled),
+      });
       return success(result, meta(kernel, ctx));
     });
   });
@@ -38,7 +45,21 @@ export async function registerExportRoutes(app: FastifyInstance, kernel: ApiKern
     const ctx = await contextFor(request);
     const record = await kernel.exportService.getExport(ctx.user.id, param(request, "id"));
     if (!record) throw new ApiError(ErrorCodes.NOT_FOUND, "Export not found.", 404);
+    console.debug("[exports] GET /exports/:id", { exportId: record.id, status: record.status, jobId: record.jobId });
     return success(record, meta(kernel, ctx));
+  });
+
+  app.post("/exports/:id/render", async (request, reply) => {
+    const config = readPlatformConfig();
+    if (process.env.NODE_ENV === "production" && !config.debugRoutesEnabled) {
+      throw new ApiError(ErrorCodes.NOT_FOUND, "Route not found.", 404);
+    }
+    const ctx = await contextFor(request);
+    return withIdempotency(request, reply, kernel, ctx.user.id, async () => {
+      const exportId = param(request, "id");
+      const record = await kernel.exportService.renderExportJob(ctx.user.id, exportId);
+      return success(record, meta(kernel, ctx));
+    });
   });
 
   app.get("/exports/:id/download", async (request, reply) => {

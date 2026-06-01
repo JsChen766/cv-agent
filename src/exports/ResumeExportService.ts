@@ -18,7 +18,7 @@ export class ResumeExportService {
     private readonly platformServices: PlatformServices,
   ) {}
 
-  public async createExport(userId: string, input: { resumeId: string; format: ResumeExportFormat; templateId?: string }): Promise<{ exportRecord: ResumeExport; job: Awaited<ReturnType<PlatformServices["backgroundJobs"]["createJob"]>> }> {
+  public async createExport(userId: string, input: { resumeId: string; format: ResumeExportFormat; templateId?: string }): Promise<{ exportRecord: ResumeExport; job: Awaited<ReturnType<PlatformServices["backgroundJobs"]["createJob"]>>; workerDisabled?: boolean }> {
     if (input.format === "docx") throw new ApiError(ErrorCodes.INVALID_BODY, "DOCX export is not supported yet.", 400);
     if (input.format === "pdf" && readPlatformConfig().pdfRenderer === "none") {
       throw new ApiError(ErrorCodes.INTERNAL_ERROR, "PDF renderer is not configured. Set PDF_RENDERER=playwright or PDF_RENDERER=external.", 503);
@@ -43,7 +43,21 @@ export class ResumeExportService {
       maxAttempts: 3,
     });
     const updated = await this.repository.updateExport(userId, record.id, { jobId: job.id });
-    return { exportRecord: updated ?? record, job };
+    const exportRecord = updated ?? record;
+    const workerDisabled = !readPlatformConfig().jobWorkerEnabled;
+    console.debug("[exports] createExport", {
+      exportId: exportRecord.id,
+      jobId: job.id,
+      status: exportRecord.status,
+      workerDisabled,
+    });
+    if (workerDisabled) {
+      console.warn("[exports] worker disabled; export job will not render until a worker or dev fallback runs", {
+        exportId: exportRecord.id,
+        jobId: job.id,
+      });
+    }
+    return { exportRecord, job, ...(workerDisabled ? { workerDisabled } : {}) };
   }
 
   public getExport(userId: string, id: string): Promise<ResumeExport | null> {
@@ -61,27 +75,50 @@ export class ResumeExportService {
   public async renderExportJob(userId: string, exportId: string): Promise<ResumeExport> {
     const record = await this.repository.getExport(userId, exportId);
     if (!record) throw new ApiError(ErrorCodes.NOT_FOUND, "Export not found.", 404);
-    if (record.format === "pdf" && readPlatformConfig().pdfRenderer === "none") {
-      throw new ApiError(ErrorCodes.INTERNAL_ERROR, "PDF renderer is not configured.", 503);
+    console.debug("[exports] renderExportJob start", { exportId, resumeId: record.resumeId, status: record.status });
+    try {
+      if (record.format === "pdf" && readPlatformConfig().pdfRenderer === "none") {
+        throw new ApiError(ErrorCodes.INTERNAL_ERROR, "PDF renderer is not configured.", 503);
+      }
+      const resume = await this.resumeService.getResume(userId, record.resumeId);
+      if (!resume) throw new ApiError(ErrorCodes.NOT_FOUND, "Resume not found.", 404);
+      await this.repository.updateExport(userId, exportId, { status: "rendering" });
+      const html = this.renderer.render(resume, record.templateId);
+      const file = await this.fileService.uploadFile(userId, {
+        originalName: `${resume.title || "resume"}.html`,
+        mimeType: "text/plain",
+        buffer: Buffer.from(html, "utf8"),
+      });
+      const token = `dl_${randomBytes(24).toString("base64url")}`;
+      const completed = await this.repository.updateExport(userId, exportId, {
+        status: "completed",
+        fileId: file.id,
+        downloadTokenHash: createHash("sha256").update(token).digest("hex"),
+        downloadExpiresAt: new Date(Date.now() + readDownloadTtlMinutes() * 60_000).toISOString(),
+        completedAt: new Date().toISOString(),
+      });
+      const finalRecord = completed ?? record;
+      console.debug("[exports] renderExportJob done", {
+        exportId,
+        resumeId: finalRecord.resumeId,
+        fileId: finalRecord.fileId,
+        status: finalRecord.status,
+      });
+      return finalRecord;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Export render failed.";
+      await this.markExportFailed(userId, exportId, message);
+      console.error("[exports] renderExportJob fail", { exportId, resumeId: record.resumeId, error: message });
+      throw error;
     }
-    const resume = await this.resumeService.getResume(userId, record.resumeId);
-    if (!resume) throw new ApiError(ErrorCodes.NOT_FOUND, "Resume not found.", 404);
-    await this.repository.updateExport(userId, exportId, { status: "rendering" });
-    const html = this.renderer.render(resume, record.templateId);
-    const file = await this.fileService.uploadFile(userId, {
-      originalName: `${resume.title || "resume"}.html`,
-      mimeType: "text/plain",
-      buffer: Buffer.from(html, "utf8"),
-    });
-    const token = `dl_${randomBytes(24).toString("base64url")}`;
-    const completed = await this.repository.updateExport(userId, exportId, {
-      status: "completed",
-      fileId: file.id,
-      downloadTokenHash: createHash("sha256").update(token).digest("hex"),
-      downloadExpiresAt: new Date(Date.now() + readDownloadTtlMinutes() * 60_000).toISOString(),
+  }
+
+  public async markExportFailed(userId: string, exportId: string, errorMessage: string): Promise<ResumeExport | null> {
+    return this.repository.updateExport(userId, exportId, {
+      status: "failed",
+      errorMessage,
       completedAt: new Date().toISOString(),
     });
-    return completed ?? record;
   }
 
   public async readDownload(userId: string, id: string): Promise<{ exportRecord: ResumeExport; fileText: string }> {

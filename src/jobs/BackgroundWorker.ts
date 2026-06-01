@@ -4,6 +4,7 @@ import { readPlatformConfig } from "../platform/config.js";
 
 export class BackgroundWorker {
   private stopped = false;
+  private loops: Array<Promise<void>> = [];
 
   public constructor(
     private readonly kernel: ApiKernel,
@@ -13,15 +14,20 @@ export class BackgroundWorker {
   public async start(types?: BackgroundJobType[]): Promise<void> {
     this.stopped = false;
     const concurrency = readPlatformConfig().jobWorkerConcurrency;
-    const workers = Array.from({ length: concurrency }, () => this.loop(types));
-    await Promise.all(workers);
+    this.loops = Array.from({ length: concurrency }, (_, index) => this.loop(types, index).catch((error) => {
+      console.error("[worker] loop failed", {
+        workerId: this.workerId,
+        index,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }));
   }
 
   public stop(): void {
     this.stopped = true;
   }
 
-  private async loop(types?: BackgroundJobType[]): Promise<void> {
+  private async loop(types?: BackgroundJobType[], index = 0): Promise<void> {
     while (!this.stopped) {
       let job: Awaited<ReturnType<typeof this.kernel.platformServices.backgroundJobs.claimNextJob>> = null;
       try {
@@ -32,6 +38,12 @@ export class BackgroundWorker {
         continue;
       }
       if (job) {
+        console.debug("[worker] claimed job", {
+          workerId: this.workerId,
+          index,
+          jobId: job.id,
+          type: job.type,
+        });
         // Run heartbeat concurrently with the job so lock doesn't expire
         const heartbeatInterval = setInterval(() => {
           this.kernel.platformServices.backgroundJobs.heartbeat(job!.userId, job!.id, this.workerId).catch(() => {});

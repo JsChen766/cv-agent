@@ -60,9 +60,12 @@ export class JobRunner {
   private async executeJob(job: BackgroundJob): Promise<void> {
     const handler = this.registry.get(job.type);
     if (!handler) {
-      await this.deps.platformServices.backgroundJobs.markFailed(job.userId, job.id, `No handler registered for job type ${job.type}.`);
+      const message = `No handler registered for job type ${job.type}.`;
+      await this.markExportFailedForJob(job, message);
+      await this.deps.platformServices.backgroundJobs.markFailed(job.userId, job.id, message);
       return;
     }
+    console.debug("[jobs] start", { jobId: job.id, type: job.type, attempts: job.attempts });
     await this.deps.platformServices.backgroundJobs.markProgress(job.userId, job.id, 10, "Job started.");
     try {
       await this.deps.platformServices.backgroundJobs.markProgress(job.userId, job.id, 30, "Processing.");
@@ -70,15 +73,33 @@ export class JobRunner {
       const current = await this.deps.platformServices.backgroundJobs.getJob(job.userId, job.id);
       if (current?.status === "cancelled") return;
       await this.deps.platformServices.backgroundJobs.markCompleted(job.userId, job.id, output);
+      console.debug("[jobs] done", { jobId: job.id, type: job.type, output });
     } catch (error) {
       const current = await this.deps.platformServices.backgroundJobs.getJob(job.userId, job.id);
       if (current?.status === "cancelled") return;
       const message = error instanceof Error ? error.message : "Job failed.";
+      await this.markExportFailedForJob(job, message);
+      console.error("[jobs] fail", { jobId: job.id, type: job.type, error: message });
       if (job.attempts < job.maxAttempts) {
         await this.deps.platformServices.backgroundJobs.scheduleRetry(job.userId, job.id, message, new Date(Date.now() + 1000 * Math.max(1, job.attempts)).toISOString());
       } else {
         await this.deps.platformServices.backgroundJobs.markFailed(job.userId, job.id, message);
       }
+    }
+  }
+
+  private async markExportFailedForJob(job: BackgroundJob, message: string): Promise<void> {
+    if (job.type !== "export_resume_html" && job.type !== "export_resume_pdf") return;
+    const exportId = stringInputOrUndefined(job.input, "exportId");
+    if (!exportId) return;
+    try {
+      await this.deps.getExportService().markExportFailed(job.userId, exportId, message);
+    } catch (error) {
+      console.error("[jobs] export failure sync failed", {
+        jobId: job.id,
+        exportId,
+        error: error instanceof Error ? error.message : String(error),
+      });
     }
   }
 }
@@ -87,4 +108,9 @@ function stringInput(input: Record<string, unknown> | undefined, key: string): s
   const value = input?.[key];
   if (typeof value !== "string" || !value.trim()) throw new Error(`${key} is required.`);
   return value;
+}
+
+function stringInputOrUndefined(input: Record<string, unknown> | undefined, key: string): string | undefined {
+  const value = input?.[key];
+  return typeof value === "string" && value.trim() ? value : undefined;
 }

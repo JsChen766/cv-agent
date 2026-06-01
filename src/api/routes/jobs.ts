@@ -43,6 +43,7 @@ export async function registerJobRoutes(
     const ctx = await contextFor(request);
     const job = await kernel.platformServices.backgroundJobs.getJob(ctx.user.id, param(request, "id"));
     if (!job) throw new ApiError(ErrorCodes.NOT_FOUND, "Job not found.", 404);
+    console.debug("[jobs] GET /jobs/:id", { jobId: job.id, type: job.type, status: job.status });
     return success(job, meta(kernel, ctx));
   });
 
