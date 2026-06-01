@@ -395,10 +395,10 @@ export class AgentOrchestrator {
       });
     }
 
-    // Keep history cards deterministic: once the tool body succeeded, mark
-    // the original pending card terminal even if later critic review asks for
-    // more user input in this turn.
-    await this.updatePendingActionDisplayStatus(ctx.user.id, id, "executed");
+    // Keep history cards deterministic. Generation confirmations only enqueue
+    // work here; the worker marks them executed/failed when the job finishes.
+    const confirmationDisplayStatus = isGenerationQueuedResult(result) ? "confirmed" : "executed";
+    await this.updatePendingActionDisplayStatus(ctx.user.id, id, confirmationDisplayStatus);
     const toolResultsForResponse = [result];
     debugConfirm("finalize_completed", {
       pendingActionId: id,
@@ -523,7 +523,7 @@ export class AgentOrchestrator {
   private async updatePendingActionDisplayStatus(
     userId: string,
     pendingActionId: string,
-    newStatus: "executed" | "cancelled" | "expired",
+    newStatus: "confirmed" | "executed" | "cancelled" | "expired" | "failed",
   ): Promise<void> {
     try {
       const action = await this.pendingActions.get(userId, pendingActionId);
@@ -1190,7 +1190,16 @@ export class AgentOrchestrator {
       });
       const latestSameAction = sameGenerateActions.sort((a, b) => (b.createdAt || "").localeCompare(a.createdAt || ""))[0];
       if (latestSameAction) {
-        if (latestSameAction.status === "pending" || latestSameAction.status === "confirmed") {
+        if (latestSameAction.status === "confirmed" && latestSameAction.lastResult?.status === "success") {
+          const reused = ensureToolResultVisibility(latestSameAction.lastResult, tool.name);
+          return {
+            result: {
+              ...reused,
+              message: reused.message ?? "已确认，正在生成简历版本。生成完成后会展示在这里。",
+            },
+          };
+        }
+        if (latestSameAction.status === "pending") {
           return {
             result: {
               status: "needs_input",
@@ -2081,6 +2090,17 @@ function readVariantCount(result: ToolResult): number {
   return metadataCount ?? 0;
 }
 
+function isGenerationQueuedResult(result: ToolResult): boolean {
+  const data = isRecord(result.data) ? result.data : null;
+  const metadata = isRecord(result.actionResult?.metadata) ? result.actionResult.metadata : null;
+  return result.actionResult?.actionType === "generate_resume_from_jd"
+    && (
+      metadata?.generating === true
+      || stringValue(metadata?.jobId) !== undefined
+      || stringValue(data?.jobId) !== undefined
+    );
+}
+
 function buildAssistantMessageMetadata(input: {
   toolResults: ToolResult[];
   workspace: CopilotWorkspace | null;
@@ -2505,7 +2525,7 @@ function hasRelatedResourceIds(value: NonNullable<CopilotMessageMetadata["relate
 function updatePendingStatusInProductBlocks(
   blocks: unknown,
   pendingActionId: string,
-  status: "executed" | "cancelled" | "expired",
+  status: "confirmed" | "executed" | "cancelled" | "expired" | "failed",
 ): unknown[] | undefined {
   if (!Array.isArray(blocks)) return undefined;
   return blocks.map((block) => {

@@ -9,6 +9,7 @@ import type { AuthService } from "../auth/index.js";
 import type { FileService } from "../files/index.js";
 import type { ResumeExportService } from "../exports/index.js";
 import type { JobRunner } from "../jobs/index.js";
+import type { PendingActionService } from "../agent-core/confirmation/PendingActionService.js";
 
 export type ApiMode = "postgres" | "in_memory";
 
@@ -25,6 +26,7 @@ export type ApiKernel = {
   fileService: FileService;
   exportService: ResumeExportService;
   jobRunner: JobRunner;
+  pendingActions: PendingActionService;
   frontDeskModelClient?: ModelClient;
   llmExperienceExtractor?: LLMExperienceExtractor;
   llmGenerationService?: LLMGenerationService;

@@ -86,6 +86,18 @@ export class PendingActionService {
     return this.repository.update({ ...action, status: "cancelled" });
   }
 
+  public async markExecuted(userId: string, id: string, result: ToolResult): Promise<PendingAction | undefined> {
+    const action = await this.get(userId, id);
+    if (!action) return undefined;
+    return this.repository.update({ ...action, status: "executed", lastResult: result });
+  }
+
+  public async markFailed(userId: string, id: string, result: ToolResult): Promise<PendingAction | undefined> {
+    const action = await this.get(userId, id);
+    if (!action) return undefined;
+    return this.repository.update({ ...action, status: "failed", lastResult: result });
+  }
+
   public async confirm(input: {
     userId: string;
     id: string;
@@ -190,7 +202,7 @@ export class PendingActionService {
         };
         const updated = await this.repository.update({
           ...action,
-          status: "executed",
+          status: "confirmed",
           lastResult: result,
         });
         return { action: updated, result };

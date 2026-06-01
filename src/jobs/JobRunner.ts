@@ -2,12 +2,15 @@ import type { ResumeExportService } from "../exports/index.js";
 import type { FileService } from "../files/index.js";
 import type { BackgroundJob, PlatformServices } from "../platform/index.js";
 import type { ProductServices } from "../product/index.js";
+import type { PendingActionService } from "../agent-core/confirmation/PendingActionService.js";
+import type { ToolResult } from "../agent-core/tools/ToolResult.js";
 import { JobRegistry } from "./JobRegistry.js";
 
 export type JobRunnerDeps = {
   platformServices: PlatformServices;
   fileService: FileService;
   productServices: ProductServices;
+  pendingActions: PendingActionService;
   getExportService(): ResumeExportService;
 };
 
@@ -41,13 +44,27 @@ export class JobRunner {
         jdText: stringInputOrUndefined(toolArguments, "jdText"),
         targetRole: stringInputOrUndefined(toolArguments, "targetRole"),
       });
-      return {
+      const activeVariantId = result.variants[0]?.id;
+      const output = {
         actionType,
         generationId: result.generation.id,
         jdId: result.jd.id,
         variantCount: result.variants.length,
+        activeVariantId,
         variants: result.variants,
       };
+      const pendingActionId = stringInputOrUndefined(job.input, "pendingActionId");
+      if (pendingActionId) {
+        await this.deps.pendingActions.markExecuted(job.userId, pendingActionId, buildGenerationSuccessResult({
+          generationId: result.generation.id,
+          jdId: result.jd.id,
+          activeVariantId,
+          variants: result.variants,
+          jd: result.jd,
+          generation: result.generation,
+        }));
+      }
+      return output;
     });
     this.registry.register("export_resume_html", async ({ job }) => {
       const exportId = stringInput(job.input, "exportId");
@@ -83,6 +100,7 @@ export class JobRunner {
     if (!handler) {
       const message = `No handler registered for job type ${job.type}.`;
       await this.markExportFailedForJob(job, message);
+      await this.markGenerationFailedForJob(job, message);
       await this.deps.platformServices.backgroundJobs.markFailed(job.userId, job.id, message);
       return;
     }
@@ -104,6 +122,7 @@ export class JobRunner {
       if (job.attempts < job.maxAttempts) {
         await this.deps.platformServices.backgroundJobs.scheduleRetry(job.userId, job.id, message, new Date(Date.now() + 1000 * Math.max(1, job.attempts)).toISOString());
       } else {
+        await this.markGenerationFailedForJob(job, message);
         await this.deps.platformServices.backgroundJobs.markFailed(job.userId, job.id, message);
       }
     }
@@ -123,6 +142,80 @@ export class JobRunner {
       });
     }
   }
+
+  private async markGenerationFailedForJob(job: BackgroundJob, message: string): Promise<void> {
+    if (job.type !== "long_generation") return;
+    const pendingActionId = stringInputOrUndefined(job.input, "pendingActionId");
+    if (!pendingActionId) return;
+    try {
+      await this.deps.pendingActions.markFailed(job.userId, pendingActionId, {
+        status: "failed",
+        message,
+        data: {
+          jobId: job.id,
+          actionType: stringInputOrUndefined(job.input, "actionType") ?? "generate_resume_from_jd",
+        },
+        actionResult: {
+          actionType: "generate_resume_from_jd",
+          status: "failed",
+          reason: "generation_job_failed",
+          message,
+          metadata: {
+            jobId: job.id,
+            jobStatus: "failed",
+          },
+        },
+        visibility: "error_user_visible",
+      });
+    } catch (error) {
+      console.error("[jobs] generation failure sync failed", {
+        jobId: job.id,
+        pendingActionId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+}
+
+function buildGenerationSuccessResult(input: {
+  generationId: string;
+  jdId: string;
+  activeVariantId?: string;
+  variants: unknown[];
+  jd: unknown;
+  generation: unknown;
+}): ToolResult {
+  return {
+    status: "success",
+    message: "简历版本已生成，请选择一个版本保存为简历。",
+    data: {
+      generationId: input.generationId,
+      jd: input.jd,
+      variants: input.variants,
+      generation: input.generation,
+    },
+    workspacePatch: {
+      activePanel: "variants",
+      status: "ready",
+      productGenerationId: input.generationId,
+      jdId: input.jdId,
+      activeVariantId: input.activeVariantId,
+      variants: input.variants,
+      summary: `已生成 ${input.variants.length} 个简历版本，请选择一个版本保存为简历。`,
+    },
+    actionResult: {
+      actionType: "generate_resume_from_jd",
+      status: "success",
+      message: "简历版本已生成，请选择一个版本保存为简历。",
+      metadata: {
+        generationId: input.generationId,
+        variantCount: input.variants.length,
+        activeVariantId: input.activeVariantId,
+        jdId: input.jdId,
+      },
+    },
+    visibility: "user_summary",
+  };
 }
 
 function stringInput(input: Record<string, unknown> | undefined, key: string): string {

@@ -56,6 +56,7 @@ import { OpenAICompatibleProvider } from "../../providers/OpenAICompatibleProvid
 import { LLMExperienceExtractor } from "../../product/LLMExperienceExtractor.js";
 import { LLMGenerationService } from "../../product/LLMGenerationService.js";
 import { LLMRewriteService } from "../../product/LLMRewriteService.js";
+import { PendingActionService } from "../../agent-core/confirmation/PendingActionService.js";
 
 export async function createKernel(): Promise<ApiKernel> {
   const databaseUrl = process.env.DATABASE_URL;
@@ -133,12 +134,14 @@ function buildKernel(input: BuildKernelInput): ApiKernel {
     sessionService: new CopilotSessionService(input.copilotPersistence),
     workspaceService: new CopilotWorkspaceService(input.copilotPersistence, productServices),
   };
+  const pendingActions = new PendingActionService();
   const fileService = new FileService(input.fileRepository, input.fileStorage);
   let exportService!: ResumeExportService;
   const jobRunner = new JobRunner({
     platformServices: input.platformServices,
     fileService,
     productServices,
+    pendingActions,
     getExportService: () => exportService,
   });
   exportService = new ResumeExportService(
@@ -159,6 +162,7 @@ function buildKernel(input: BuildKernelInput): ApiKernel {
     fileService,
     exportService,
     jobRunner,
+    pendingActions,
     frontDeskModelClient: model.client,
     llmExperienceExtractor,
     llmGenerationService,

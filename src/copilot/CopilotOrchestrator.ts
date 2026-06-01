@@ -19,7 +19,7 @@ export class CopilotOrchestrator {
   private readonly runtime: AgentOrchestrator;
 
   public constructor(deps: CopilotOrchestratorDeps) {
-    this.runtime = new AgentOrchestrator({ kernel: deps.kernel });
+    this.runtime = new AgentOrchestrator({ kernel: deps.kernel, pendingActions: deps.kernel.pendingActions });
   }
 
   public get pendingActions() {
