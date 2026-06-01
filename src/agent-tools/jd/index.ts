@@ -1,6 +1,7 @@
 import type { ToolDefinition } from "../../agent-core/tools/Tool.js";
 import { IdInputSchema, JDInputSchema, ListInputSchema, TextInputSchema, ToolResultSchema } from "../../agent-core/validation/ToolInputSchemas.js";
 import { computeJDHash } from "../../product/jdHash.js";
+import { normalizeDraftContext } from "../../copilot/context/DraftContext.js";
 
 export function createJDAgentTools(): ToolDefinition[] {
   return [
@@ -57,6 +58,9 @@ export function createJDAgentTools(): ToolDefinition[] {
       execute: async (input, context) => {
         const rawText = String(input.text);
         const jdHash = computeJDHash(rawText);
+        const now = new Date().toISOString();
+        const normalizedDrafts = normalizeDraftContext(context.workspace?.drafts);
+        const jdDraftsAfterSave = markSavedJDDrafts(normalizedDrafts.jdDrafts, jdHash, now);
         const existing = await context.kernel.productServices.jdService.listJDs(context.userId, 1000);
         const duplicate = existing.find((item) => computeJDHash(item.rawText) === jdHash);
         if (duplicate) {
@@ -64,7 +68,12 @@ export function createJDAgentTools(): ToolDefinition[] {
             status: "success",
             message: "这份 JD 已在库中，已为你打开该 JD。",
             data: { jd: duplicate, jdId: duplicate.id, jdHash },
-            workspacePatch: { activePanel: "jd_library", jdId: duplicate.id, active: { jdId: duplicate.id } },
+            workspacePatch: {
+              activePanel: "jd_library",
+              jdId: duplicate.id,
+              active: { jdId: duplicate.id, jdDraftId: undefined },
+              drafts: { ...normalizedDrafts, jdDrafts: jdDraftsAfterSave },
+            },
             visibility: "user_summary",
             actionResult: {
               actionType: "save_jd_from_text",
@@ -87,7 +96,12 @@ export function createJDAgentTools(): ToolDefinition[] {
           status: "success",
           message: `Saved JD "${jd.title}".`,
           data: { jd, jdId: jd.id, jdHash },
-          workspacePatch: { activePanel: "jd_library", jdId: jd.id, active: { jdId: jd.id } },
+          workspacePatch: {
+            activePanel: "jd_library",
+            jdId: jd.id,
+            active: { jdId: jd.id, jdDraftId: undefined },
+            drafts: { ...normalizedDrafts, jdDrafts: jdDraftsAfterSave },
+          },
           visibility: "user_summary",
           actionResult: {
             actionType: "save_jd_from_text",
@@ -102,4 +116,22 @@ export function createJDAgentTools(): ToolDefinition[] {
       },
     },
   ];
+}
+
+function markSavedJDDrafts(
+  drafts: Array<{ rawText: string; status: string; updatedAt: string; lastReferencedAt: string }>,
+  jdHash: string,
+  now: string,
+) {
+  let matched = false;
+  return drafts.map((draft) => {
+    if (computeJDHash(draft.rawText || "") !== jdHash) return draft;
+    matched = true;
+    return {
+      ...draft,
+      status: "saved",
+      updatedAt: now,
+      lastReferencedAt: now,
+    };
+  }).filter((draft) => matched ? draft.status !== "saved" : true);
 }
