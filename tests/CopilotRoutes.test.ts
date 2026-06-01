@@ -473,7 +473,10 @@ describe("Copilot routes on agent-core runtime", () => {
     expect(confirmBody.data.workspace.variants.length).toBeGreaterThan(0);
     expect(confirmBody.data.workspace.productGenerationId).toEqual(expect.any(String));
     expect(confirmBody.data.workspace.jdId).toEqual(expect.any(String));
-    expect(confirmBody.data.assistantMessage.content).toContain("已基于 JD 生成");
+    expect(confirmBody.data.assistantMessage.kind).toBe("plain_text");
+    expect(confirmBody.data.assistantMessage.content).toMatch(/已基于 JD 生成|Generated \d+ resume variants from the JD/);
+    expect(confirmBody.data.raw.pendingActions ?? []).toHaveLength(0);
+    expect(confirmBody.data.raw.actionResults?.some((item) => item.status === "needs_confirmation")).toBe(false);
     expect(confirmBody.data.raw.toolResults?.[0]).toMatchObject({
       status: "success",
       data: {

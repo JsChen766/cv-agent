@@ -289,7 +289,7 @@ describe("JD match orchestration", () => {
     const confirmBody = confirmResponse.json() as ApiSuccess<CopilotChatResponse>;
     const actionResults = confirmBody.data.raw.actionResults ?? [];
     expect(actionResults.some((result) => result.actionType === "generate_resume_from_jd" && result.status === "success")).toBe(true);
-    expect(actionResults.some((result) => result.actionType === "export_resume" && result.status === "success")).toBe(true);
+    expect(actionResults.some((result) => result.actionType === "export_resume")).toBe(false);
     expect(confirmBody.data.raw.pendingActions ?? []).toHaveLength(0);
   });
 });

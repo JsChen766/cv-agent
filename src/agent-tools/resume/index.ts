@@ -55,7 +55,7 @@ export function createResumeAgentTools(): ToolDefinition[] {
         const variants = result.variants.map((variant, index) => toWorkspaceVariant(variant, result.jd, result.generation.id, index));
         return {
           status: "success",
-          message: `已基于 JD 生成 ${variants.length} 个简历版本，你可以查看并选择保存到简历库。`,
+          message: `已基于 JD 生成 ${variants.length} 个简历版本。请选择一个版本保存为简历，之后可以导出文件。`,
           data: {
             generationId: result.generation.id,
             jd: result.jd,

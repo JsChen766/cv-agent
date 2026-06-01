@@ -102,7 +102,7 @@ describe("agent runtime loop and critic gate", () => {
     await kernel.close();
   });
 
-  it("reviews a confirmed high-risk pending action and applies the result when critic passes", async () => {
+  it("does not re-review confirmed generate_resume_from_jd after the pending action executes", async () => {
     const { kernel, orchestrator, provider } = await setupRuntime("confirm-pass");
     registerConfirmedGenerateTool(orchestrator);
     const ctx = createTestKernelContext({ user: { id: "confirm-pass-user" }, request: { requestId: "req-confirm-pass", traceId: "trace-confirm-pass" } });
@@ -114,15 +114,15 @@ describe("agent runtime loop and critic gate", () => {
     const response = await orchestrator.confirmPendingAction(ctx, pendingId);
     const metadata = response.raw.metadata as RuntimeMetadata;
 
-    expect(provider.criticCalls).toBe(1);
-    expect(response.assistantMessage.content).toContain("Confirmed generated resume content.");
+    expect(provider.criticCalls).toBe(0);
+    expect(response.assistantMessage.content).toContain("resume variants");
     expect((response.workspace as unknown as { activePanel?: string }).activePanel).toBe("variants");
-    expect(metadata.criticReview?.verdict).toBe("pass");
+    expect(metadata.criticReview).toBeUndefined();
     expect(response.raw.actionResults?.[0]?.status).toBe("success");
     await kernel.close();
   });
 
-  it("blocks a confirmed high-risk pending action without applying its workspace patch", async () => {
+  it("keeps confirmed generate_resume_from_jd result even when critic fixture would block a new run", async () => {
     const { kernel, orchestrator } = await setupRuntime("confirm-blocked");
     registerConfirmedGenerateTool(orchestrator);
     const ctx = createTestKernelContext({ user: { id: "confirm-blocked-user" }, request: { requestId: "req-confirm-blocked", traceId: "trace-confirm-blocked" } });
@@ -133,16 +133,15 @@ describe("agent runtime loop and critic gate", () => {
     const response = await orchestrator.confirmPendingAction(ctx, pendingId);
     const metadata = response.raw.metadata as RuntimeMetadata;
 
-    expect(response.assistantMessage.content).toContain("Cannot use this generated content");
-    expect(response.assistantMessage.content).not.toContain("Confirmed generated resume content.");
+    expect(response.assistantMessage.content).toContain("resume variants");
     // Workspace patch is preserved even when critic blocks — the user needs to see what was generated
     expect((response.workspace as unknown as { activePanel?: string }).activePanel).toBe("variants");
-    expect(metadata.criticReview?.verdict).toBe("blocked");
-    expect(JSON.stringify(response.raw.toolResults)).not.toContain("Confirmed generated resume content.");
+    expect(metadata.criticReview).toBeUndefined();
+    expect(JSON.stringify(response.raw.toolResults)).toContain("Confirmed generated resume content.");
     await kernel.close();
   });
 
-  it("returns critic suggestions for confirmed high-risk pending action needs_revision", async () => {
+  it("keeps confirmed generate_resume_from_jd result even when critic fixture would request revision", async () => {
     const { kernel, orchestrator } = await setupRuntime("confirm-revision");
     registerConfirmedGenerateTool(orchestrator);
     const ctx = createTestKernelContext({ user: { id: "confirm-revision-user" }, request: { requestId: "req-confirm-revision", traceId: "trace-confirm-revision" } });
@@ -153,12 +152,10 @@ describe("agent runtime loop and critic gate", () => {
     const response = await orchestrator.confirmPendingAction(ctx, pendingId);
     const metadata = response.raw.metadata as RuntimeMetadata;
 
-    expect(response.assistantMessage.content).toContain("Please make this more conservative.");
-    expect(response.assistantMessage.content).toContain("Use conservative wording.");
-    expect(response.assistantMessage.content).not.toContain("Confirmed generated resume content.");
-    expect(metadata.loop.stopReason).toBe("critic_needs_revision");
-    expect(metadata.criticReview?.verdict).toBe("needs_revision");
-    expect(metadata.agentMessages.some((message) => message.type === "revision_request")).toBe(true);
+    expect(response.assistantMessage.content).toContain("resume variants");
+    expect(metadata.loop.stopReason).not.toBe("critic_needs_revision");
+    expect(metadata.criticReview).toBeUndefined();
+    expect(metadata.agentMessages.some((message) => message.type === "revision_request")).toBe(false);
     expect(JSON.stringify(response.raw.toolResults)).toContain("Confirmed generated resume content.");
     await kernel.close();
   });

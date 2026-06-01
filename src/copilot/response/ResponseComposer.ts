@@ -53,35 +53,22 @@ export class ResponseComposer {
 
     const generated = input.toolResults.find((result) => result.actionResult?.actionType === "generate_resume_from_jd" || hasVariants(result));
     const exported = input.toolResults.find((result) => result.actionResult?.actionType === "export_resume" && result.status === "success");
-    if (exported && generated) {
-      const count = variantCount(generated) ?? input.workspace?.variants?.length ?? 0;
-      const exportMessage = visibleMessage(exported) ?? (en
-        ? "The resume file is ready to download."
-        : "简历文件已生成，可直接下载。");
-      return {
-        assistantText: `已基于 JD 生成 ${count || "多个"} 个简历版本，并已准备好可下载文件。${exportMessage}`,
-      };
-    }
-
     if (exported) {
       const exportMessage = visibleMessage(exported);
       if (exportMessage) return { assistantText: exportMessage };
       return {
         assistantText: en
-          ? "Your resume was generated and exported. You can download it from this message."
-          : "已完成简历生成并导出，可直接在这条消息中下载文件。",
+          ? "The resume export job has been created. A download button will appear when the file is ready."
+          : "简历导出任务已创建，文件生成完成后可下载。",
       };
     }
 
     if (generated) {
-      const confirmedPendingAction = Boolean(input.context.productContext.pendingActionId);
-      const generatedMessage = visibleMessage(generated);
-      if (confirmedPendingAction && generatedMessage) {
-        return { assistantText: generatedMessage };
-      }
       const count = variantCount(generated) ?? input.workspace?.variants?.length ?? 0;
       return {
-        assistantText: `已基于 JD 生成 ${count || "多个"} 个简历版本。你可以选择一个版本保存到简历库，或继续让我改得更量化/更保守。`,
+        assistantText: en
+          ? `Generated ${count || "multiple"} resume variants from the JD. Choose one variant to save as a resume, then you can export a file.`
+          : `已基于 JD 生成 ${count || "多个"} 个简历版本。请选择一个版本保存为简历，之后可以导出文件。`,
       };
     }
 

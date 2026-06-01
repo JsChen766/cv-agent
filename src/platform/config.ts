@@ -83,7 +83,7 @@ export function readPlatformConfig(env: NodeJS.ProcessEnv = process.env): Platfo
     internalKernelRoutesEnabled: readInternalKernelRoutesEnabled(env, nodeEnv),
 
     // job worker
-    jobWorkerEnabled: readBoolean(env.JOB_WORKER_ENABLED) ?? false,
+    jobWorkerEnabled: readBoolean(env.JOB_WORKER_ENABLED) ?? nodeEnv !== "test",
     jobWorkerConcurrency: readPositiveNumber(env.JOB_WORKER_CONCURRENCY) ?? 1,
     jobPollIntervalMs: readPositiveNumber(env.JOB_POLL_INTERVAL_MS) ?? 2000,
 

@@ -399,17 +399,11 @@ export class AgentOrchestrator {
     // the original pending card terminal even if later critic review asks for
     // more user input in this turn.
     await this.updatePendingActionDisplayStatus(ctx.user.id, id, "executed");
-    const followupResults = confirmedAction.toolName === "generate_resume_from_jd"
-      ? await this.finalizeGeneratedResumeAndExport(ctx.user.id, result)
-      : [];
-    const toolResultsForResponse = [result, ...followupResults];
+    const toolResultsForResponse = [result];
     debugConfirm("finalize_completed", {
       pendingActionId: id,
       generationId: readGenerationId(result),
       variantCount: readVariantCount(result),
-      resumeId: readResumeId(followupResults),
-      exportId: readExportRecord(followupResults)?.id,
-      exportStatus: readExportRecord(followupResults)?.status,
       elapsedMs: Date.now() - confirmStartedAt,
     });
 
@@ -510,109 +504,6 @@ export class AgentOrchestrator {
       elapsedMs: Date.now() - confirmStartedAt,
     });
     return response;
-  }
-
-  private async finalizeGeneratedResumeAndExport(userId: string, generationResult: ToolResult): Promise<ToolResult[]> {
-    const data = isRecord(generationResult.data) ? generationResult.data : null;
-    const generationRecord = isRecord(data?.generation) ? data.generation as Record<string, unknown> : null;
-    const generationId = stringValue(data?.generationId) ?? stringValue(generationRecord?.id);
-    const variants = Array.isArray(data?.variants) ? data?.variants : [];
-    const firstVariant = variants.find((item) => isRecord(item) && stringValue((item as Record<string, unknown>).id));
-    const variantId = stringValue(isRecord(firstVariant) ? (firstVariant as Record<string, unknown>).id : undefined);
-    if (!generationId || !variantId) return [];
-
-    try {
-      const accepted = await this.deps.kernel.productServices.generationProductService.saveAcceptedVariantToResume(userId, {
-        generationId,
-        variantId,
-      });
-      const activeResume = await this.deps.kernel.productServices.resumeService.getResume(userId, accepted.resume.id);
-      const acceptResult: ToolResult = {
-        status: "success",
-        message: "已将推荐版本写入简历并准备导出文件。",
-        visibility: "user_summary",
-        data: {
-          generation: accepted.generation,
-          resume: accepted.resume,
-          item: accepted.item,
-          variant: accepted.variant,
-        },
-        workspacePatch: {
-          activePanel: "resume_editor",
-          resumeId: accepted.resume.id,
-          activeResume: activeResume ?? accepted.resume,
-          active: { resumeId: accepted.resume.id, variantId },
-          status: "accepted",
-        },
-        actionResult: {
-          status: "success",
-          actionType: "accept_generation_variant",
-          variantId,
-          metadata: {
-            generationId,
-            resumeId: accepted.resume.id,
-            autoAccepted: true,
-          },
-        },
-      };
-
-      const created = await this.deps.kernel.exportService.createExport(userId, {
-        resumeId: accepted.resume.id,
-        format: "html",
-      });
-
-      let exportRecord = created.exportRecord;
-      try {
-        exportRecord = await withTimeout(
-          this.deps.kernel.exportService.renderExportJob(userId, created.exportRecord.id),
-          readConfirmExportRenderTimeoutMs(),
-        );
-      } catch (error) {
-        if (error instanceof Error && error.message === "EXPORT_RENDER_TIMEOUT") {
-          exportRecord = { ...created.exportRecord, status: "rendering" as const };
-        }
-        // Keep queued/rendering export record when sync render is slow or unavailable.
-      }
-
-      const exportResult: ToolResult = {
-        status: "success",
-        message: exportRecord.status === "completed"
-          ? "简历文件已生成，可直接下载。"
-          : "简历导出任务已创建，文件准备完成后可下载。",
-        visibility: "user_summary",
-        data: { exportRecord, job: created.job },
-        workspacePatch: {
-          activePanel: "resume_editor",
-          activeExportId: exportRecord.id,
-          exportRecords: [exportRecord],
-        },
-        actionResult: {
-          status: "success",
-          actionType: "export_resume",
-          exportRecord,
-          metadata: {
-            resumeId: accepted.resume.id,
-            generationId,
-            autoExported: true,
-          },
-        },
-      };
-
-      return [acceptResult, exportResult];
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "自动生成简历文件失败，请稍后重试导出。";
-      return [{
-        status: "failed",
-        message,
-        visibility: "error_user_visible",
-        actionResult: {
-          status: "failed",
-          actionType: "export_resume",
-          reason: "auto_finalize_failed",
-          message,
-        },
-      }];
-    }
   }
 
   /**
@@ -2169,22 +2060,6 @@ function mergeWorkspacePatch(results: ToolResult[]): Record<string, unknown> {
     .reduce<Record<string, unknown>>((merged, result) => ({ ...merged, ...(result.workspacePatch ?? {}) }), {});
 }
 
-function readConfirmExportRenderTimeoutMs(): number {
-  const parsed = Number(process.env.CONFIRM_EXPORT_RENDER_TIMEOUT_MS);
-  if (Number.isFinite(parsed) && parsed > 0) return parsed;
-  return 4000;
-}
-
-function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const timeout = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => reject(new Error("EXPORT_RENDER_TIMEOUT")), timeoutMs);
-  });
-  return Promise.race([promise, timeout]).finally(() => {
-    if (timer) clearTimeout(timer);
-  });
-}
-
 function debugConfirm(event: string, payload: Record<string, unknown>): void {
   if (process.env.DEBUG_CONFIRM !== "true" && process.env.NODE_ENV !== "development") return;
   if (process.env.DEBUG_CONFIRM === "false") return;
@@ -2204,36 +2079,6 @@ function readVariantCount(result: ToolResult): number {
   const metadata = isRecord(result.actionResult?.metadata) ? result.actionResult.metadata : null;
   const metadataCount = numberValue(metadata?.variantCount);
   return metadataCount ?? 0;
-}
-
-function readResumeId(results: ToolResult[]): string | undefined {
-  for (const result of results) {
-    const data = isRecord(result.data) ? result.data : null;
-    const resume = isRecord(data?.resume) ? data.resume : null;
-    const patch = isRecord(result.workspacePatch) ? result.workspacePatch : null;
-    const active = isRecord(patch?.active) ? patch.active : null;
-    const id = stringValue(patch?.resumeId)
-      ?? stringValue(active?.resumeId)
-      ?? stringValue(resume?.id)
-      ?? stringValue(isRecord(result.actionResult?.metadata) ? result.actionResult.metadata.resumeId : undefined);
-    if (id) return id;
-  }
-  return undefined;
-}
-
-function readExportRecord(results: ToolResult[]): { id?: string; status?: string } | undefined {
-  for (const result of results) {
-    const actionRecord = isRecord(result.actionResult?.exportRecord) ? result.actionResult.exportRecord : null;
-    const data = isRecord(result.data) ? result.data : null;
-    const dataRecord = isRecord(data?.exportRecord) ? data.exportRecord : null;
-    const record = actionRecord ?? dataRecord;
-    if (!record) continue;
-    return {
-      id: stringValue(record.id),
-      status: stringValue(record.status),
-    };
-  }
-  return undefined;
 }
 
 function buildAssistantMessageMetadata(input: {

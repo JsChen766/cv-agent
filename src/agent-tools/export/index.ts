@@ -77,17 +77,32 @@ export function createExportAgentTools(): ToolDefinition[] {
       requiresConfirmation: true,
       riskLevel: "medium",
       execute: async (input, context) => {
+        const format = (input.format || "html") as ResumeExportFormat;
         const result = await context.kernel.exportService.createExport(context.userId, {
           resumeId: String(input.resumeId),
-          format: input.format as ResumeExportFormat,
+          format,
           templateId: typeof input.templateId === "string" ? input.templateId : undefined,
         });
         return {
           status: "success",
-          message: `Created ${String(input.format).toUpperCase()} export job.`,
+          message: "简历导出任务已创建，文件生成完成后可下载。",
           data: { exportRecord: result.exportRecord, job: result.job },
-          workspacePatch: { activePanel: "resume_editor", activeExportId: result.exportRecord.id },
-          actionResult: { status: "success", actionType: "export_resume", exportRecord: result.exportRecord },
+          workspacePatch: {
+            activePanel: "resume_editor",
+            activeExportId: result.exportRecord.id,
+            exportRecords: [result.exportRecord],
+          },
+          actionResult: {
+            status: "success",
+            actionType: "export_resume",
+            exportRecord: result.exportRecord,
+            metadata: {
+              resumeId: String(input.resumeId),
+              exportId: result.exportRecord.id,
+              exportStatus: result.exportRecord.status,
+            },
+          },
+          visibility: "user_summary",
         };
       },
     },
