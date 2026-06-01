@@ -13,6 +13,7 @@ export class ArchitectAgent extends BaseAgent {
     "revise_resume_item",
     "prepare_export_resume",
     "export_resume",
+    "get_export",
   ];
 
   public constructor(deps: { modelClient?: ModelClient; promptRegistry: PromptRegistry }) {

@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createServer } from "../src/api/createServer.js";
 import { AgentOrchestrator } from "../src/agent-core/runtime/AgentOrchestrator.js";
 import type { ToolDefinition } from "../src/agent-core/tools/Tool.js";
@@ -12,11 +12,14 @@ describe("generate resume pending-action flow", () => {
   let server: Awaited<ReturnType<typeof createServer>>;
 
   beforeEach(async () => {
+    process.env.CONFIRM_EXPORT_RENDER_TIMEOUT_MS = "25";
     kernel = await createP12Kernel();
     server = await createServer(kernel);
   });
 
   afterEach(async () => {
+    delete process.env.CONFIRM_EXPORT_RENDER_TIMEOUT_MS;
+    vi.restoreAllMocks();
     await server.close();
     await kernel.close();
   });
@@ -207,5 +210,55 @@ describe("generate resume pending-action flow", () => {
     const snapshotAction = snapshotBlock.action as Record<string, unknown>;
     expect(snapshotAction.status).toBe("executed");
     expect(snapshotAction.riskLevel).toBe("medium");
+  });
+
+  it("confirm generation returns variants and export record when sync export render is slow", async () => {
+    vi.spyOn(kernel.exportService, "renderExportJob").mockImplementation(() => new Promise(() => undefined));
+
+    const bootstrap = await server.inject({
+      method: "POST",
+      url: "/copilot/chat",
+      headers: { "x-user-id": "user-1" },
+      payload: { message: "start" },
+    });
+    const sessionId = (bootstrap.json() as ApiSuccess<CopilotChatResponse>).data.sessionId;
+
+    const actionResponse = await server.inject({
+      method: "POST",
+      url: "/copilot/actions",
+      headers: { "x-user-id": "user-1" },
+      payload: {
+        sessionId,
+        action: {
+          type: "generate_from_jd",
+          payload: {
+            jdText: "Frontend JD with Vue3 + TypeScript and dashboard delivery.",
+            targetRole: "Frontend Engineer",
+          },
+        },
+      },
+    });
+    const actionBody = actionResponse.json() as ApiSuccess<CopilotChatResponse>;
+    const pendingId = (actionBody.data.raw.pendingActions as Array<{ id: string }> | undefined)?.[0]?.id;
+    expect(pendingId).toBeTruthy();
+
+    const startedAt = Date.now();
+    const confirm = await server.inject({
+      method: "POST",
+      url: `/copilot/pending-actions/${pendingId}/confirm`,
+      headers: { "x-user-id": "user-1" },
+    });
+    const elapsedMs = Date.now() - startedAt;
+    expect(confirm.statusCode).toBe(200);
+    expect(elapsedMs).toBeLessThan(1000);
+
+    const body = confirm.json() as ApiSuccess<CopilotChatResponse>;
+    expect(body.data.raw.pendingActions ?? []).toHaveLength(0);
+    expect(body.data.workspace.variants.length).toBeGreaterThan(0);
+    expect(body.data.workspace.productGenerationId).toBeTruthy();
+    expect(body.data.raw.actionResults?.some((item) => item.actionType === "generate_resume_from_jd" && item.status === "success")).toBe(true);
+    const exportAction = body.data.raw.actionResults?.find((item) => item.actionType === "export_resume");
+    expect(body.data.workspace.exportRecords?.[0]?.id || exportAction?.exportRecord?.id).toBeTruthy();
+    expect(body.data.workspace.exportRecords?.[0]?.status).toBe("rendering");
   });
 });

@@ -160,6 +160,20 @@ function strategistFallback(): AgentDecision {
 // Only 2 paths: export or list.
 
 function architectFallback(msg: string, clientState: Record<string, unknown>): AgentDecision {
+  const exportId = msg.match(/\bexport-[a-z0-9-]+\b/i)?.[0];
+  if (exportId && containsAny(msg, ["下载", "download", "导出任务", "export"])) {
+    return dec(
+      "architect",
+      "plan",
+      "我来检查这条导出任务的文件状态。",
+      {
+        plan: [
+          step("step-1", "architect", "get_export", { id: exportId }, "Get export download status."),
+        ],
+        confidence: 0.9,
+      },
+    );
+  }
   if (containsAny(msg, ["生成", "generate"]) && containsAny(msg, ["简历", "resume"])) {
     const jdText = containsAny(msg, ["jd", "岗位", "职责", "任职要求"]) ? msg : undefined;
     return dec(

@@ -325,8 +325,10 @@ export class AgentOrchestrator {
   }
 
   public async confirmPendingAction(ctx: KernelRequestContext, id: string): Promise<CopilotChatResponse> {
+    const confirmStartedAt = Date.now();
     const action = await this.pendingActions.get(ctx.user.id, id);
     if (!action) throw new AgentError("PERMISSION_DENIED", "Pending action not found.", { statusCode: 404 });
+    debugConfirm("start", { pendingActionId: id, toolName: action.toolName, sessionId: action.sessionId });
     const session = await this.deps.kernel.copilotServices.sessionService.getSession(ctx.user.id, action.sessionId);
     if (!session) throw new AgentError("PRODUCT_STATE_NOT_FOUND", "Session not found.", { statusCode: 404 });
     const run = await this.buildAgentContext(ctx, {
@@ -359,6 +361,13 @@ export class AgentOrchestrator {
     }
     const confirmedAction = confirmed.action;
     const result = ensureToolResultVisibility(confirmed.result, confirmedAction.toolName);
+    debugConfirm("tool_completed", {
+      pendingActionId: id,
+      toolName: confirmedAction.toolName,
+      status: result.status,
+      generationId: readGenerationId(result),
+      variantCount: readVariantCount(result),
+    });
     const tool = this.tools.get(confirmedAction.toolName);
     const step = confirmedActionStep(confirmedAction, tool?.ownerAgent ?? "frontdesk");
     const execution: ToolExecutionRecord = { step, result };
@@ -394,6 +403,15 @@ export class AgentOrchestrator {
       ? await this.finalizeGeneratedResumeAndExport(ctx.user.id, result)
       : [];
     const toolResultsForResponse = [result, ...followupResults];
+    debugConfirm("finalize_completed", {
+      pendingActionId: id,
+      generationId: readGenerationId(result),
+      variantCount: readVariantCount(result),
+      resumeId: readResumeId(followupResults),
+      exportId: readExportRecord(followupResults)?.id,
+      exportStatus: readExportRecord(followupResults)?.status,
+      elapsedMs: Date.now() - confirmStartedAt,
+    });
 
     if (shouldReviewTool(confirmedAction.toolName)) {
       // Skip critic gate review for save_experience_from_text confirmations.
@@ -476,12 +494,22 @@ export class AgentOrchestrator {
       }
     }
 
-    return this.finishRun(ctx.user.id, run, {
+    const response = await this.finishRun(ctx.user.id, run, {
       assistantText: result.message ?? t(run, "confirmedExecuted"),
       toolResults: toolResultsForResponse,
       pendingActions: [],
       workspacePatch: mergeWorkspacePatch(toolResultsForResponse),
     });
+    debugConfirm("completed", {
+      pendingActionId: id,
+      generationId: response.workspace.productGenerationId,
+      variantCount: response.workspace.variants.length,
+      resumeId: response.workspace.resumeId,
+      exportId: response.workspace.exportRecords?.[0]?.id,
+      exportStatus: response.workspace.exportRecords?.[0]?.status,
+      elapsedMs: Date.now() - confirmStartedAt,
+    });
+    return response;
   }
 
   private async finalizeGeneratedResumeAndExport(userId: string, generationResult: ToolResult): Promise<ToolResult[]> {
@@ -535,9 +563,15 @@ export class AgentOrchestrator {
 
       let exportRecord = created.exportRecord;
       try {
-        exportRecord = await this.deps.kernel.exportService.renderExportJob(userId, created.exportRecord.id);
-      } catch {
-        // Keep queued export record when sync render is not available.
+        exportRecord = await withTimeout(
+          this.deps.kernel.exportService.renderExportJob(userId, created.exportRecord.id),
+          readConfirmExportRenderTimeoutMs(),
+        );
+      } catch (error) {
+        if (error instanceof Error && error.message === "EXPORT_RENDER_TIMEOUT") {
+          exportRecord = { ...created.exportRecord, status: "rendering" as const };
+        }
+        // Keep queued/rendering export record when sync render is slow or unavailable.
       }
 
       const exportResult: ToolResult = {
@@ -2133,6 +2167,73 @@ function mergeWorkspacePatch(results: ToolResult[]): Record<string, unknown> {
   return results
     .filter((result) => result.status === "success")
     .reduce<Record<string, unknown>>((merged, result) => ({ ...merged, ...(result.workspacePatch ?? {}) }), {});
+}
+
+function readConfirmExportRenderTimeoutMs(): number {
+  const parsed = Number(process.env.CONFIRM_EXPORT_RENDER_TIMEOUT_MS);
+  if (Number.isFinite(parsed) && parsed > 0) return parsed;
+  return 4000;
+}
+
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error("EXPORT_RENDER_TIMEOUT")), timeoutMs);
+  });
+  return Promise.race([promise, timeout]).finally(() => {
+    if (timer) clearTimeout(timer);
+  });
+}
+
+function debugConfirm(event: string, payload: Record<string, unknown>): void {
+  if (process.env.DEBUG_CONFIRM !== "true" && process.env.NODE_ENV !== "development") return;
+  if (process.env.DEBUG_CONFIRM === "false") return;
+  console.debug("[pending-action-confirm]", { event, ...payload });
+}
+
+function readGenerationId(result: ToolResult): string | undefined {
+  const data = isRecord(result.data) ? result.data : null;
+  const generation = isRecord(data?.generation) ? data.generation : null;
+  const metadata = isRecord(result.actionResult?.metadata) ? result.actionResult.metadata : null;
+  return stringValue(data?.generationId) ?? stringValue(generation?.id) ?? stringValue(metadata?.generationId);
+}
+
+function readVariantCount(result: ToolResult): number {
+  const data = isRecord(result.data) ? result.data : null;
+  if (Array.isArray(data?.variants)) return data.variants.length;
+  const metadata = isRecord(result.actionResult?.metadata) ? result.actionResult.metadata : null;
+  const metadataCount = numberValue(metadata?.variantCount);
+  return metadataCount ?? 0;
+}
+
+function readResumeId(results: ToolResult[]): string | undefined {
+  for (const result of results) {
+    const data = isRecord(result.data) ? result.data : null;
+    const resume = isRecord(data?.resume) ? data.resume : null;
+    const patch = isRecord(result.workspacePatch) ? result.workspacePatch : null;
+    const active = isRecord(patch?.active) ? patch.active : null;
+    const id = stringValue(patch?.resumeId)
+      ?? stringValue(active?.resumeId)
+      ?? stringValue(resume?.id)
+      ?? stringValue(isRecord(result.actionResult?.metadata) ? result.actionResult.metadata.resumeId : undefined);
+    if (id) return id;
+  }
+  return undefined;
+}
+
+function readExportRecord(results: ToolResult[]): { id?: string; status?: string } | undefined {
+  for (const result of results) {
+    const actionRecord = isRecord(result.actionResult?.exportRecord) ? result.actionResult.exportRecord : null;
+    const data = isRecord(result.data) ? result.data : null;
+    const dataRecord = isRecord(data?.exportRecord) ? data.exportRecord : null;
+    const record = actionRecord ?? dataRecord;
+    if (!record) continue;
+    return {
+      id: stringValue(record.id),
+      status: stringValue(record.status),
+    };
+  }
+  return undefined;
 }
 
 function buildAssistantMessageMetadata(input: {
