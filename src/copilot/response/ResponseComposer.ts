@@ -31,7 +31,10 @@ export type ResponseComposerOutput = {
 export class ResponseComposer {
   public compose(input: ResponseComposerInput): ResponseComposerOutput {
     const en = input.locale === "en";
-    const actionable = input.toolResults.find((result) => result.visibility === "action_required" || result.actionResult?.status === "needs_confirmation");
+    const actionable = input.toolResults.find((result) => (
+      result.actionResult?.status === "needs_confirmation"
+      || (result.visibility === "action_required" && result.actionResult?.status === "needs_confirmation")
+    ));
     if (actionable) {
       return { assistantText: confirmationText(input, actionable) };
     }

@@ -49,16 +49,22 @@ export class PendingActionService {
   }
 
   public async list(userId: string, sessionId?: string): Promise<PendingAction[]> {
+    const actions = await this.listAll(userId, sessionId);
+    return actions.filter((action) => action.status === "pending");
+  }
+
+  public async listAll(userId: string, sessionId?: string): Promise<PendingAction[]> {
     const actions = await this.repository.list(userId, sessionId);
-    const active: PendingAction[] = [];
+    const normalized: PendingAction[] = [];
     for (const action of actions) {
       if (action.status === "pending" && isExpired(action)) {
-        await this.repository.update({ ...action, status: "expired" });
+        const expired = await this.repository.update({ ...action, status: "expired" });
+        normalized.push(expired);
         continue;
       }
-      if (action.status === "pending") active.push(action);
+      normalized.push(action);
     }
-    return active;
+    return normalized;
   }
 
   public async get(userId: string, id: string): Promise<PendingAction | undefined> {

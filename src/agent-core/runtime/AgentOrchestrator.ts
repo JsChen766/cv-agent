@@ -336,14 +336,27 @@ export class AgentOrchestrator {
       request: { sessionId: session.id, message: `[confirm] ${action.toolName}` },
       productContext: { pendingActionId: id },
     });
-    const confirmed = await this.pendingActions.confirm({
-      userId: ctx.user.id,
-      id,
-      registry: this.tools,
-      executor: run.executor,
-      context: run.context,
-      workspace: run.workspace,
-    });
+    let confirmed: Awaited<ReturnType<PendingActionService["confirm"]>>;
+    try {
+      confirmed = await this.pendingActions.confirm({
+        userId: ctx.user.id,
+        id,
+        registry: this.tools,
+        executor: run.executor,
+        context: run.context,
+        workspace: run.workspace,
+      });
+    } catch (error) {
+      const latest = await this.pendingActions.get(ctx.user.id, id);
+      if (latest?.status === "cancelled") {
+        await this.updatePendingActionDisplayStatus(ctx.user.id, id, "cancelled");
+      } else if (latest?.status === "expired") {
+        await this.updatePendingActionDisplayStatus(ctx.user.id, id, "expired");
+      } else if (latest?.status === "executed") {
+        await this.updatePendingActionDisplayStatus(ctx.user.id, id, "executed");
+      }
+      throw error;
+    }
     const confirmedAction = confirmed.action;
     const result = ensureToolResultVisibility(confirmed.result, confirmedAction.toolName);
     const tool = this.tools.get(confirmedAction.toolName);
@@ -596,20 +609,31 @@ export class AgentOrchestrator {
       const assistantMsg = messages.find(
         (msg) => msg.role === "assistant" && msg.turnId === action.turnId,
       );
-      if (!assistantMsg?.metadata?.displaySnapshot?.pendingActions) return;
+      if (!assistantMsg?.metadata) return;
 
-      // Update the status of the matching pending action
-      const updatedPendingActions = assistantMsg.metadata.displaySnapshot.pendingActions.map((pa) =>
+      const metadata = assistantMsg.metadata;
+      const updatedPendingActions = metadata.displaySnapshot?.pendingActions?.map((pa) =>
         pa.id === pendingActionId ? { ...pa, status: newStatus } : pa,
       );
+      const updatedMetadataProductBlocks = updatePendingStatusInProductBlocks(metadata.productBlocks, pendingActionId, newStatus);
+      const updatedSnapshotProductBlocks = updatePendingStatusInProductBlocks(
+        metadata.displaySnapshot?.productBlocks,
+        pendingActionId,
+        newStatus,
+      );
 
-      // Re-save the message with updated display snapshot
       const updatedMetadata: CopilotMessageMetadata = {
-        ...assistantMsg.metadata,
-        displaySnapshot: {
-          ...assistantMsg.metadata.displaySnapshot,
-          pendingActions: updatedPendingActions,
-        },
+        ...metadata,
+        ...(updatedMetadataProductBlocks ? { productBlocks: updatedMetadataProductBlocks as ProductBlock[] } : {}),
+        ...(metadata.displaySnapshot || updatedPendingActions || updatedSnapshotProductBlocks
+          ? {
+            displaySnapshot: {
+              ...(metadata.displaySnapshot ?? {}),
+              ...(updatedPendingActions ? { pendingActions: updatedPendingActions } : {}),
+              ...(updatedSnapshotProductBlocks ? { productBlocks: updatedSnapshotProductBlocks as ProductBlock[] } : {}),
+            },
+          }
+          : {}),
       };
       await this.deps.kernel.copilotServices.sessionService.saveMessage(userId, {
         ...assistantMsg,
@@ -1215,6 +1239,59 @@ export class AgentOrchestrator {
       }
     }
 
+    if (tool.name === "generate_resume_from_jd") {
+      const jdId = stringValue(args.jdId);
+      const jdText = stringValue(args.jdText);
+      const jdHash = stringValue(args.jdHash) ?? (jdText ? computeJDHash(jdText) : undefined);
+      enrichedArgs = {
+        ...enrichedArgs,
+        ...(jdHash ? { jdHash } : {}),
+      };
+
+      const history = await this.pendingActions.listAll(run.context.userId, run.context.sessionId);
+      const sameGenerateActions = history.filter((item) => {
+        if (item.toolName !== "generate_resume_from_jd") return false;
+        const itemArgs = item.toolArguments ?? {};
+        const itemJdId = stringValue(itemArgs.jdId);
+        const itemJdHash =
+          stringValue(itemArgs.jdHash)
+          ?? (() => {
+            const text = stringValue(itemArgs.jdText) ?? stringValue(itemArgs.text) ?? stringValue(itemArgs.rawText);
+            return text ? computeJDHash(text) : undefined;
+          })();
+        if (jdId && itemJdId && jdId === itemJdId) return true;
+        if (jdHash && itemJdHash && jdHash === itemJdHash) return true;
+        return false;
+      });
+      const latestSameAction = sameGenerateActions.sort((a, b) => (b.createdAt || "").localeCompare(a.createdAt || ""))[0];
+      if (latestSameAction) {
+        if (latestSameAction.status === "pending" || latestSameAction.status === "confirmed") {
+          return {
+            result: {
+              status: "needs_input",
+              message: latestSameAction.summary || "请确认后继续生成简历。",
+              pendingActionId: latestSameAction.id,
+              visibility: "action_required",
+              actionResult: {
+                status: "needs_confirmation",
+                actionType: tool.name,
+                pendingActionId: latestSameAction.id,
+              },
+            },
+          };
+        }
+        if (latestSameAction.status === "executed" && latestSameAction.lastResult?.status === "success") {
+          const reused = ensureToolResultVisibility(latestSameAction.lastResult, tool.name);
+          return {
+            result: {
+              ...reused,
+              message: reused.message ?? "简历已生成，可查看版本或下载文件。",
+            },
+          };
+        }
+      }
+    }
+
     const pending = await this.pendingActions.create({
       userId: run.context.userId,
       sessionId: run.context.sessionId,
@@ -1222,7 +1299,7 @@ export class AgentOrchestrator {
       tool,
       toolArguments: enrichedArgs,
       title: confirmationTitle(tool.name, localeFor(run), step.summary),
-      summary: confirmationSummary(tool.name, localeFor(run)),
+      summary: confirmationSummary(tool.name, localeFor(run), enrichedArgs),
       affectedResources: affectedResourcesFor(tool.name, enrichedArgs),
       preview: enrichedPreview,
     });
@@ -1538,9 +1615,12 @@ export class AgentOrchestrator {
         if (!jdId && !jdText) {
           return { kind: "needs_input", missingInputs: ["jdId", "jdText"], message: "请先选择或粘贴一段 JD。" };
         }
+        const jdHash = jdText ? computeJDHash(jdText) : undefined;
         return { kind: "step", step: explicitStep("architect", "generate_resume_from_jd", {
           jdId,
           jdText,
+          jdHash,
+          jdSaved: Boolean(payload.jdSaved) || Boolean(jdId),
           targetRole: stringValue(payload.targetRole),
         }, "Generate resume from JD after confirmation.") };
       }
@@ -2476,6 +2556,49 @@ function hasRelatedResourceIds(value: NonNullable<CopilotMessageMetadata["relate
     || (value.generationIds?.length ?? 0) > 0;
 }
 
+function updatePendingStatusInProductBlocks(
+  blocks: unknown,
+  pendingActionId: string,
+  status: "executed" | "cancelled" | "expired",
+): unknown[] | undefined {
+  if (!Array.isArray(blocks)) return undefined;
+  return blocks.map((block) => {
+    if (!isRecord(block)) return block;
+
+    const payload = isRecord(block.payload) ? block.payload : undefined;
+    const payloadAction = isRecord(payload?.action) ? payload.action : undefined;
+    if (payloadAction && stringValue(payloadAction.id) === pendingActionId) {
+      return {
+        ...block,
+        payload: {
+          ...payload,
+          action: {
+            ...payloadAction,
+            status,
+          },
+        },
+      };
+    }
+
+    const data = isRecord(block.data) ? block.data : undefined;
+    const dataAction = isRecord(data?.action) ? data.action : undefined;
+    if (dataAction && stringValue(dataAction.id) === pendingActionId) {
+      return {
+        ...block,
+        data: {
+          ...data,
+          action: {
+            ...dataAction,
+            status,
+          },
+        },
+      };
+    }
+
+    return block;
+  });
+}
+
 const BLOCKED_METADATA_KEYS = new Set([
   "systemPrompt",
   "system_prompt",
@@ -2554,8 +2677,15 @@ function timelineFor(results: ToolResult[], now: string, turnId: string): Produc
   }));
 }
 
-function confirmationSummary(toolName: string, locale: CopilotLocale): string {
+function confirmationSummary(toolName: string, locale: CopilotLocale, args?: Record<string, unknown>): string {
   if (toolName === "save_jd_from_text") return "请确认是否将这份 JD 保存到 JD 库。";
+  if (toolName === "generate_resume_from_jd") {
+    if (locale === "zh-CN") {
+      const jdSaved = Boolean(args?.jdSaved) || Boolean(stringValue(args?.jdId));
+      return jdSaved ? "JD 已保存，现在确认生成简历。" : "我已准备好基于这份 JD 生成简历版本，请确认后开始。";
+    }
+    return "I am ready to generate resume variants from this JD. Please confirm to start.";
+  }
   if (locale === "zh-CN") {
     if (toolName === "save_experience_from_text") return "已准备好一条经历草稿，请确认后写入经历库。";
     if (toolName === "update_experience") return "请确认是否更新这段经历。";
