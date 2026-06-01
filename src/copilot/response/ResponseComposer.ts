@@ -48,7 +48,18 @@ export class ResponseComposer {
 
     const fallback = input.fallbackText?.trim();
 
+    const generated = input.toolResults.find((result) => result.actionResult?.actionType === "generate_resume_from_jd" || hasVariants(result));
     const exported = input.toolResults.find((result) => result.actionResult?.actionType === "export_resume" && result.status === "success");
+    if (exported && generated) {
+      const count = variantCount(generated) ?? input.workspace?.variants?.length ?? 0;
+      const exportMessage = visibleMessage(exported) ?? (en
+        ? "The resume file is ready to download."
+        : "简历文件已生成，可直接下载。");
+      return {
+        assistantText: `已基于 JD 生成 ${count || "多个"} 个简历版本，并已准备好可下载文件。${exportMessage}`,
+      };
+    }
+
     if (exported) {
       const exportMessage = visibleMessage(exported);
       if (exportMessage) return { assistantText: exportMessage };
@@ -59,7 +70,6 @@ export class ResponseComposer {
       };
     }
 
-    const generated = input.toolResults.find((result) => result.actionResult?.actionType === "generate_resume_from_jd" || hasVariants(result));
     if (generated) {
       const confirmedPendingAction = Boolean(input.context.productContext.pendingActionId);
       const generatedMessage = visibleMessage(generated);
