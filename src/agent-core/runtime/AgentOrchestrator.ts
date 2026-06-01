@@ -18,6 +18,7 @@ import type {
   CopilotMessage,
   CopilotWorkspace,
   ProductBlock,
+  ProductAction,
   ProductTimelineItem,
   DisplayPendingAction,
 } from "../../copilot/types.js";
@@ -2191,7 +2192,8 @@ function buildProductBlocks(toolResults: ToolResult[]): ProductBlock[] {
       const scoreDist = isRecord(data.scoreDistribution) ? data.scoreDistribution as Record<string, unknown> : {};
       const summary = stringValue(data.summary)
         ?? `已匹配 ${typeof data.totalExperienceCount === "number" ? data.totalExperienceCount : data.totalCount} 条经历，暂无高匹配经历。`;
-      const saveAction = buildSaveJDAction(data);
+      const jdActions = buildJDMatchActions(data);
+      const saveAction = jdActions.find((action) => action.type === "save_jd_from_text" && !action.payload?.generateAfterSave);
       const rawMatches = Array.isArray(data.matches) ? data.matches as Array<Record<string, unknown>> : [...high, ...medium, ...low];
       const sanitizedMatchResults = rawMatches.map(sanitizeMatchResult);
       matchBlock = {
@@ -2223,7 +2225,8 @@ function buildProductBlocks(toolResults: ToolResult[]): ProductBlock[] {
             low: low.slice(0, 5).map(sanitizeMatchResult),
           },
           matchResults: sanitizedMatchResults,
-          ...(saveAction ? { saveJDAction: saveAction, actions: [saveAction] } : {}),
+          ...(saveAction ? { saveJDAction: saveAction } : {}),
+          ...(jdActions.length ? { actions: jdActions } : {}),
           // Flat list for backward compat
           allResults: [...high, ...medium, ...low].slice(0, 10).map(sanitizeMatchResult),
         }) ?? {},
@@ -2337,6 +2340,55 @@ function buildSaveJDAction(data: Record<string, unknown>): Record<string, unknow
       jdHash,
     },
   });
+}
+
+function buildJDMatchActions(data: Record<string, unknown>): ProductAction[] {
+  const rawText = stringValue(data.jdText);
+  const jdId = stringValue(data.jdId);
+  const jdHash = rawText ? computeJDHash(rawText) : undefined;
+  const jdSummary = isRecord(data.jdSummary) ? data.jdSummary as Record<string, unknown> : {};
+  const title = stringValue(jdSummary.title);
+  const company = stringValue(jdSummary.company);
+  const targetRole = stringValue(jdSummary.targetRole);
+  const basePayload = sanitizeMetadataObject({
+    jdId,
+    jdText: rawText,
+    rawText,
+    title,
+    company,
+    targetRole,
+    jdHash,
+  }) ?? {};
+
+  const actions: ProductAction[] = [];
+  if (rawText && !jdId) {
+    actions.push({
+      id: `save-generate-jd-${jdHash?.slice(0, 12) ?? "draft"}`,
+      type: "save_jd_from_text",
+      label: "保存 JD 并生成简历",
+      description: "先保存到 JD 库，再基于保存后的 JD 发起简历生成。",
+      primary: true,
+      payload: { ...basePayload, generateAfterSave: true },
+    });
+  }
+
+  if (rawText || jdId) {
+    actions.push({
+      id: `generate-jd-${jdId || jdHash?.slice(0, 12) || "draft"}`,
+      type: "generate_from_jd",
+      label: jdId ? "基于该 JD 生成简历" : "不保存 JD，直接生成简历",
+      description: jdId ? "使用已保存 JD 生成简历版本。" : "不写入 JD 库，直接使用这份 JD 文本生成简历。",
+      primary: Boolean(jdId),
+      payload: basePayload,
+    });
+  }
+
+  const saveAction = buildSaveJDAction(data);
+  if (saveAction) {
+    actions.push(saveAction as ProductAction);
+  }
+
+  return actions;
 }
 
 function sanitizeRevision(item: Record<string, unknown>): Record<string, unknown> {

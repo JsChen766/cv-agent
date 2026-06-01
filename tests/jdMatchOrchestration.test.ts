@@ -65,6 +65,9 @@ describe("JD match orchestration", () => {
     const payload = (blockSaveAction?.payload as Record<string, unknown> | undefined) ?? {};
     expect(payload.jdText ?? payload.rawText).toBeTruthy();
     expect(typeof payload.jdHash).toBe("string");
+    const blockActions = (matchBlock?.data?.actions as Array<Record<string, unknown>> | undefined) ?? [];
+    expect(blockActions.some((action) => action.type === "save_jd_from_text" && (action.payload as Record<string, unknown> | undefined)?.generateAfterSave === true)).toBe(true);
+    expect(blockActions.some((action) => action.type === "generate_from_jd")).toBe(true);
     expect(body.data.nextActions.some((action) => action.type === "save_jd_from_text")).toBe(false);
 
     const jdAfter = await kernel.productServices.jdService.listJDs("user-1", 20);
@@ -239,6 +242,55 @@ describe("JD match orchestration", () => {
       const ar = item.actionResult as Record<string, unknown> | undefined;
       return ar?.actionType === "match_experiences_against_jd";
     })).toBe(true);
+  });
+
+  it("direct generate action from match block creates one confirmation and confirmation returns export", async () => {
+    await seedExperiences(kernel);
+    const jdText = "前端工程师 JD：要求 Vue3、TypeScript、性能优化，负责业务中台页面。";
+    const matchResponse = await server.inject({
+      method: "POST",
+      url: "/copilot/chat",
+      headers: { "x-user-id": "user-1" },
+      payload: { message: `先根据这个 JD 匹配经历：${jdText}` },
+    });
+    expect(matchResponse.statusCode).toBe(200);
+    const matchBody = matchResponse.json() as ApiSuccess<CopilotChatResponse>;
+    const blocks = matchBody.data.assistantMessage.metadata?.productBlocks as Array<{ type: string; data?: Record<string, unknown> }> | undefined;
+    const matchBlock = blocks?.find((item) => item.type === "experience_match_results" || item.type === "jd_match_results");
+    const actions = (matchBlock?.data?.actions as Array<Record<string, unknown>> | undefined) ?? [];
+    const generateAction = actions.find((action) => action.type === "generate_from_jd");
+    expect(generateAction).toBeTruthy();
+
+    const actionResponse = await server.inject({
+      method: "POST",
+      url: "/copilot/actions",
+      headers: { "x-user-id": "user-1" },
+      payload: {
+        sessionId: matchBody.data.sessionId,
+        action: {
+          type: "generate_from_jd",
+          payload: generateAction?.payload,
+        },
+      },
+    });
+    expect(actionResponse.statusCode).toBe(200);
+    const actionBody = actionResponse.json() as ApiSuccess<CopilotChatResponse>;
+    const pendingActions = (actionBody.data.raw.pendingActions ?? []) as Array<{ id: string; toolName: string }>;
+    expect(pendingActions.filter((action) => action.toolName === "generate_resume_from_jd")).toHaveLength(1);
+    const pending = pendingActions.find((action) => action.toolName === "generate_resume_from_jd");
+    expect(pending).toBeTruthy();
+
+    const confirmResponse = await server.inject({
+      method: "POST",
+      url: `/copilot/pending-actions/${String(pending!.id)}/confirm`,
+      headers: { "x-user-id": "user-1" },
+    });
+    expect(confirmResponse.statusCode).toBe(200);
+    const confirmBody = confirmResponse.json() as ApiSuccess<CopilotChatResponse>;
+    const actionResults = confirmBody.data.raw.actionResults ?? [];
+    expect(actionResults.some((result) => result.actionType === "generate_resume_from_jd" && result.status === "success")).toBe(true);
+    expect(actionResults.some((result) => result.actionType === "export_resume" && result.status === "success")).toBe(true);
+    expect(confirmBody.data.raw.pendingActions ?? []).toHaveLength(0);
   });
 });
 
