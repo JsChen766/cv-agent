@@ -17,7 +17,7 @@ import type {
 import { extractExperienceDraftFromText } from "../experienceDraft.js";
 import type { LLMExperienceExtractor } from "../LLMExperienceExtractor.js";
 import { extractedCandidateToDraft } from "../LLMExperienceExtractor.js";
-import type { LLMGenerationService } from "../LLMGenerationService.js";
+import { LLMGenerationError, type LLMGenerationService } from "../LLMGenerationService.js";
 import { isDeterministicFallbackAllowed } from "../deterministicFallbackGuard.js";
 import type {
   ProductExperienceRepository,
@@ -435,18 +435,18 @@ export class GenerationProductService {
 
     let variants: ProductGeneratedVariant[];
     if (this.llmGenerationService) {
-      variants = await this.llmGenerationService.generateVariants(
-        input.userId,
-        jd.rawText,
-        input.targetRole ?? jd.targetRole,
-        experiences,
-      );
+      try {
+        variants = await this.llmGenerationService.generateVariants(
+          input.userId,
+          jd.rawText,
+          input.targetRole ?? jd.targetRole,
+          experiences,
+        );
+      } catch (error) {
+        throw generationFailureError(error);
+      }
       if (variants.length === 0) {
-        // LLM returned empty — only fall back in test mode
-        if (!isDeterministicFallbackAllowed()) {
-          throw new Error("LLM_PROVIDER_NOT_CONFIGURED: The AI model could not generate any resume variants. Please check your API key configuration.");
-        }
-        variants = buildDraftVariants(input.userId, jd.rawText, input.targetRole ?? jd.targetRole, experiences);
+        throw new Error("LLM_GENERATION_FAILED: The AI model call completed but no valid resume variants were produced.");
       }
     } else if (!isDeterministicFallbackAllowed()) {
       throw new Error("LLM_PROVIDER_NOT_CONFIGURED: No AI model provider is configured. Set DEEPSEEK_API_KEY or AGENT_API_KEY to enable intelligent resume generation.");
@@ -516,6 +516,20 @@ export class GenerationProductService {
   public listGenerations(userId: string, limit?: number): Promise<ProductGeneration[]> {
     return this.repository.listGenerationsByUser(userId, { limit });
   }
+}
+
+function generationFailureError(error: unknown): Error {
+  if (error instanceof LLMGenerationError) {
+    const details = [
+      `phase=${error.phase}`,
+      error.providerErrorMessage ? `provider=${error.providerErrorMessage}` : "",
+      error.schemaIssues?.length ? `schemaIssues=${error.schemaIssues.join(" | ")}` : "",
+      error.rawContentPreview ? `rawContentPreview=${error.rawContentPreview}` : "",
+    ].filter(Boolean).join("; ");
+    return new Error(`LLM_GENERATION_FAILED: The AI model call failed or produced no valid resume variants. ${details}`);
+  }
+  const message = error instanceof Error ? error.message : String(error);
+  return new Error(`LLM_GENERATION_FAILED: The AI model call failed or produced no valid resume variants. ${message}`);
 }
 
 function buildDraftVariants(

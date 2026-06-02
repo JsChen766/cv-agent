@@ -81,7 +81,8 @@ export class ModelClient {
 
   private wrapError(error: unknown): AgentError {
     if (error instanceof AgentError) return error;
-    return new AgentError("MODEL_FAILED", "Model provider request failed.", { cause: error });
+    const message = error instanceof Error ? error.message : String(error);
+    return new AgentError("MODEL_FAILED", `Model provider request failed: ${message}`, { cause: error });
   }
 }
 

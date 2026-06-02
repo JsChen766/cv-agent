@@ -198,6 +198,124 @@ describe("LLM-first: ModelClient call verification", () => {
   });
 });
 
+describe("LLM generation error visibility and tolerant parsing", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  function createGenerationProductService(genService?: LLMGenerationService) {
+    const jdRepo = new InMemoryProductJDRepository();
+    const resumeRepo = new InMemoryProductResumeRepository();
+    const expRepo = new InMemoryProductExperienceRepository();
+    const genRepo = new InMemoryProductGenerationRepository();
+    const jdService = new JDService(jdRepo);
+    const resumeService = new ResumeService(resumeRepo);
+    const expService = new ExperienceService(expRepo);
+    return new GenerationProductService(genRepo, jdService, resumeService, expService, genService);
+  }
+
+  it("reports provider not configured only when no generation LLM exists outside test fallback", async () => {
+    const previousNodeEnv = process.env.NODE_ENV;
+    try {
+      process.env.NODE_ENV = "development";
+      const productService = createGenerationProductService();
+      await expect(productService.generateResumeFromJD({
+        userId: "user-1",
+        jdText: "Frontend role.",
+      })).rejects.toThrow(/LLM_PROVIDER_NOT_CONFIGURED: No AI model provider is configured/);
+    } finally {
+      process.env.NODE_ENV = previousNodeEnv;
+    }
+  });
+
+  it("preserves provider errors such as 401 instead of reporting provider not configured", async () => {
+    const chatSpy = vi.fn().mockRejectedValue(new Error("deepseek request failed (401): Unauthorized"));
+    const genService = new LLMGenerationService(fakeModelClient(chatSpy));
+    const productService = createGenerationProductService(genService);
+
+    await expect(productService.generateResumeFromJD({
+      userId: "user-1",
+      jdText: "Frontend role.",
+    })).rejects.toThrow(/LLM_GENERATION_FAILED.*401.*Unauthorized/);
+  });
+
+  it("normalizes 0-100 and string scores and fills optional fields", async () => {
+    const chatSpy = vi.fn().mockResolvedValue({
+      content: JSON.stringify({
+        variants: [{
+          content: "Vue and TypeScript engineer focused on product dashboards.",
+          score: { overall: 85, relevance: "90", evidenceStrength: "0.75" },
+        }],
+      }),
+    });
+    const genService = new LLMGenerationService(fakeModelClient(chatSpy));
+
+    const variants = await genService.generateVariants("user-1", "Vue role.", "Frontend Engineer", []);
+
+    expect(variants).toHaveLength(1);
+    expect(variants[0].scores?.overall).toBe(0.85);
+    expect(variants[0].scores?.relevance).toBe(0.9);
+    expect(variants[0].scores?.evidenceStrength).toBe(0.75);
+    expect(variants[0].reason).toBe("Generated based on JD and experience library.");
+    expect(variants[0].sourceExperienceIds).toEqual([]);
+  });
+
+  it("accepts a top-level variants array", async () => {
+    const chatSpy = vi.fn().mockResolvedValue({
+      content: JSON.stringify([{ content: "Array-wrapped resume variant." }]),
+    });
+    const genService = new LLMGenerationService(fakeModelClient(chatSpy));
+
+    const variants = await genService.generateVariants("user-1", "Vue role.", undefined, []);
+
+    expect(variants).toHaveLength(1);
+    expect(variants[0].content).toContain("Array-wrapped");
+  });
+
+  it("extracts markdown-wrapped JSON", async () => {
+    const chatSpy = vi.fn().mockResolvedValue({
+      content: [
+        "Here is the JSON:",
+        "```json",
+        JSON.stringify({ variants: [{ content: "Markdown wrapped resume variant." }] }),
+        "```",
+      ].join("\n"),
+    });
+    const genService = new LLMGenerationService(fakeModelClient(chatSpy));
+
+    const variants = await genService.generateVariants("user-1", "Vue role.", undefined, []);
+
+    expect(variants).toHaveLength(1);
+    expect(variants[0].content).toContain("Markdown wrapped");
+  });
+
+  it("repairs an invalid first response and returns variants", async () => {
+    const chatSpy = vi.fn()
+      .mockResolvedValueOnce({ content: JSON.stringify({ variants: [{ score: { overall: 80 } }] }) })
+      .mockResolvedValueOnce({ content: JSON.stringify({ variants: [{ content: "Repaired resume variant.", score: { overall: 80 } }] }) });
+    const genService = new LLMGenerationService(fakeModelClient(chatSpy));
+
+    const variants = await genService.generateVariants("user-1", "Vue role.", undefined, []);
+
+    expect(chatSpy).toHaveBeenCalledTimes(2);
+    expect(variants).toHaveLength(1);
+    expect(variants[0].content).toContain("Repaired");
+  });
+
+  it("throws LLM_GENERATION_FAILED when initial and repair outputs are invalid", async () => {
+    const chatSpy = vi.fn()
+      .mockResolvedValueOnce({ content: JSON.stringify({ variants: [{ score: { overall: 80 } }] }) })
+      .mockResolvedValueOnce({ content: JSON.stringify({ variants: [{ reason: "still missing content" }] }) });
+    const genService = new LLMGenerationService(fakeModelClient(chatSpy));
+    const productService = createGenerationProductService(genService);
+
+    await expect(productService.generateResumeFromJD({
+      userId: "user-1",
+      jdText: "Frontend role.",
+    })).rejects.toThrow(/LLM_GENERATION_FAILED.*schemaIssues=.*content/);
+  });
+});
+
 // ============================================================
 // Section 2: No-LLM-key fail-fast verification
 // ============================================================

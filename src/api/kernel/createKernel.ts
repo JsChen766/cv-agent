@@ -29,7 +29,7 @@ import {
   type ProductJDRepository,
   type ProductResumeRepository,
 } from "../../product/index.js";
-import type { ApiKernel } from "../types.js";
+import type { ApiKernel, ModelRuntimeConfig } from "../types.js";
 import { InMemoryPlatformServices, PostgresPlatformServices, type PlatformServices } from "../../platform/index.js";
 import { AuthService, InMemoryAuthRepository, PostgresAuthRepository } from "../../auth/index.js";
 import {
@@ -111,6 +111,7 @@ function buildKernel(input: BuildKernelInput): ApiKernel {
 
   // LLM services
   const model = createModelClient();
+  debugModelConfig(model.config);
   const llmExperienceExtractor = model.client ? new LLMExperienceExtractor(model.client) : undefined;
   const llmGenerationService = model.client ? new LLMGenerationService(model.client) : undefined;
   const llmRewriteService = model.client ? new LLMRewriteService(model.client) : undefined;
@@ -167,6 +168,7 @@ function buildKernel(input: BuildKernelInput): ApiKernel {
     llmExperienceExtractor,
     llmGenerationService,
     llmRewriteService,
+    modelRuntimeConfig: model.config,
     close: input.close,
   };
 }
@@ -193,7 +195,7 @@ function createFileStorage(): FileStorage {
   return provider === "memory" ? new InMemoryFileStorage() : new LocalFileStorage();
 }
 
-function createModelClient(): { client?: ModelClient; warnings: string[] } {
+function createModelClient(): { client?: ModelClient; warnings: string[]; config: ModelRuntimeConfig } {
   const provider = process.env.AGENT_MODEL_PROVIDER ?? process.env.AGENT_PROVIDER ?? "deepseek";
   const model = process.env.AGENT_MODEL ?? process.env.DEEPSEEK_MODEL ?? "deepseek-chat";
 
@@ -205,29 +207,55 @@ function createModelClient(): { client?: ModelClient; warnings: string[] } {
       process.env.AGENT_BASE_URL ??
       "https://api.openai.com/v1";
     if (!apiKey) {
-      return { warnings: ["OPENAI_API_KEY, AGENT_MODEL_API_KEY, or AGENT_API_KEY is not set. Agent model calls are disabled."] };
+      return {
+        config: { provider, model: process.env.OPENAI_MODEL ?? model, baseURL, apiKeyConfigured: false },
+        warnings: ["OPENAI_API_KEY, AGENT_MODEL_API_KEY, or AGENT_API_KEY is not set. Agent model calls are disabled."],
+      };
     }
     return {
       client: new ModelClient({
         provider: new OpenAICompatibleProvider({ name: provider, apiKey, baseURL }),
         defaultModel: process.env.OPENAI_MODEL ?? model,
       }),
+      config: { provider, model: process.env.OPENAI_MODEL ?? model, baseURL, apiKeyConfigured: true, apiKeyMasked: maskApiKey(apiKey) },
       warnings: [],
     };
   }
 
   const apiKey = process.env.DEEPSEEK_API_KEY ?? process.env.AGENT_MODEL_API_KEY ?? process.env.AGENT_API_KEY;
+  const baseURL = process.env.DEEPSEEK_BASE_URL ?? process.env.AGENT_MODEL_BASE_URL ?? process.env.AGENT_BASE_URL ?? "https://api.deepseek.com";
   if (!apiKey) {
-    return { warnings: ["DEEPSEEK_API_KEY, AGENT_MODEL_API_KEY, or AGENT_API_KEY is not set. Agent model calls are disabled."] };
+    return {
+      config: { provider: "deepseek", model, baseURL, apiKeyConfigured: false },
+      warnings: ["DEEPSEEK_API_KEY, AGENT_MODEL_API_KEY, or AGENT_API_KEY is not set. Agent model calls are disabled."],
+    };
   }
   return {
     client: new ModelClient({
       provider: new DeepSeekProvider({
         apiKey,
-        baseURL: process.env.DEEPSEEK_BASE_URL ?? process.env.AGENT_MODEL_BASE_URL ?? process.env.AGENT_BASE_URL,
+        baseURL,
       }),
       defaultModel: model,
     }),
+    config: { provider: "deepseek", model, baseURL, apiKeyConfigured: true, apiKeyMasked: maskApiKey(apiKey) },
     warnings: [],
   };
+}
+
+function maskApiKey(apiKey: string): string {
+  if (apiKey.length <= 8) return "****";
+  return `${apiKey.slice(0, 4)}...${apiKey.slice(-4)}`;
+}
+
+function debugModelConfig(config: ModelRuntimeConfig): void {
+  if (process.env.NODE_ENV !== "development" && process.env.DEBUG_LLM_CONFIG !== "true") return;
+  if (process.env.DEBUG_LLM_CONFIG === "false") return;
+  console.debug("[model] config", {
+    provider: config.provider,
+    model: config.model,
+    baseURL: config.baseURL,
+    apiKeyConfigured: config.apiKeyConfigured,
+    apiKeyMasked: config.apiKeyMasked,
+  });
 }

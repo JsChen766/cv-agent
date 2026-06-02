@@ -13,6 +13,14 @@ import type { PendingActionService } from "../agent-core/confirmation/PendingAct
 
 export type ApiMode = "postgres" | "in_memory";
 
+export type ModelRuntimeConfig = {
+  provider: string;
+  model: string;
+  baseURL?: string;
+  apiKeyConfigured: boolean;
+  apiKeyMasked?: string;
+};
+
 export type ApiKernel = {
   mode: ApiMode;
   warnings: string[];
@@ -31,5 +39,6 @@ export type ApiKernel = {
   llmExperienceExtractor?: LLMExperienceExtractor;
   llmGenerationService?: LLMGenerationService;
   llmRewriteService?: LLMRewriteService;
+  modelRuntimeConfig?: ModelRuntimeConfig;
   close(): Promise<void>;
 };
