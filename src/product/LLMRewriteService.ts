@@ -1,5 +1,6 @@
 import { z } from "zod";
 import type { ModelClient } from "../agent-core/model/ModelClient.js";
+import { PromptRegistry } from "../agent-core/prompts/PromptRegistry.js";
 import { safeParseJsonOutput } from "../infrastructure/llm/JsonOutputParser.js";
 
 const RewriteResultSchema = z.object({
@@ -47,39 +48,10 @@ const ClaimCheckResultSchema = z.object({
 export type RewritePreview = z.infer<typeof RewritePreviewSchema>;
 export type ClaimCheckResult = z.infer<typeof ClaimCheckResultSchema>;
 
-const EXPERIENCE_REWRITE_SYSTEM = [
-  "You are a professional resume editor. Rewrite the provided experience to improve its impact while preserving all factual claims.",
-  "",
-  "Rules:",
-  "- Preserve ALL facts: company names, project names, metrics, numbers, dates, roles.",
-  "- Do NOT invent new metrics, numbers, or achievements.",
-  "- If the original lacks metrics, use conservative phrasing like 'contributed to' or 'helped improve'.",
-  "- Improve clarity, impact, and structure.",
-  "- Use the STAR method (Situation, Task, Action, Result) where applicable.",
-  "- Output ONLY valid JSON.",
-].join("\n");
-
-const RESUME_ITEM_REWRITE_SYSTEM = [
-  "You are a professional resume editor. Rewrite a single resume bullet point based on a specific instruction.",
-  "",
-  "Rules:",
-  "- Only rewrite the content provided below.",
-  "- Preserve ALL factual claims, metrics, and numbers from the original.",
-  "- Do NOT invent new metrics, numbers, company names, or project names.",
-  "- If the instruction asks for quantification but the original has no metrics, use conservative phrasing.",
-  "- Output ONLY valid JSON with a 'rewrittenText' field.",
-].join("\n");
-
-const CLAIM_CHECK_SYSTEM = [
-  "You are a resume fact-checker. Analyze the provided resume content against the candidate's experience library.",
-  "",
-  "Rules:",
-  "- For each factual claim in the content, determine if it is supported by the experiences.",
-  "- A claim is 'supported' if the experience library contains matching facts, metrics, company names, or project details.",
-  "- A claim is 'unsupported' if no experience confirms it or if it appears to be fabricated.",
-  "- Be conservative: if unsure, mark as 'unsupported'.",
-  "- Output ONLY valid JSON.",
-].join("\n");
+const PROMPTS = new PromptRegistry();
+const EXPERIENCE_REWRITE_SYSTEM = PROMPTS.get("product.rewrite.experienceSystem");
+const RESUME_ITEM_REWRITE_SYSTEM = PROMPTS.get("product.rewrite.resumeItemSystem");
+const CLAIM_CHECK_SYSTEM = PROMPTS.get("product.rewrite.claimCheckSystem");
 
 export class LLMRewriteService {
   public constructor(private readonly modelClient: ModelClient) {}

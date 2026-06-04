@@ -14,6 +14,9 @@ const AGENT_PROMPT_FILES: Record<AgentName, string> = {
 const PRODUCT_PROMPT_FILES = {
   "product.experienceExtraction.system": "product/experience-extraction-system.md",
   "product.experienceExtraction.repair": "product/experience-extraction-repair.md",
+  "product.rewrite.experienceSystem": "product/rewrite-experience-system.md",
+  "product.rewrite.resumeItemSystem": "product/rewrite-resume-item-system.md",
+  "product.rewrite.claimCheckSystem": "product/rewrite-claim-check-system.md",
 } as const;
 
 export type ProductPromptName = keyof typeof PRODUCT_PROMPT_FILES;
