@@ -6,6 +6,7 @@ import type {
   ProductResumeSummary,
 } from "../product/types.js";
 import type { AgentStreamEvent } from "../agent-core/runtime/AgentStreamEvent.js";
+import type { AgentRoomEvent } from "../agent-core/events/AgentRoomEvent.js";
 import type { DraftContext } from "./context/DraftContext.js";
 import type { FrontDeskHandoff } from "./handoff/FrontDeskHandoff.js";
 import type { JDProfile } from "./profile/JDProfile.js";
@@ -72,6 +73,8 @@ export type CopilotMessageMetadata = {
    * Old messages without this field only render plain text (degraded mode).
    */
   displaySnapshot?: CopilotMessageDisplaySnapshot;
+  /** AgentRoomEvents for agent group chat history restore (D-02 Phase 3). */
+  agentRoomEvents?: import("../agent-core/events/AgentRoomEvent.js").AgentRoomEvent[];
 };
 
 /**
@@ -87,6 +90,8 @@ export type CopilotMessageDisplaySnapshot = {
   productBlocks?: ProductBlock[];
   /** Workspace patch applied by this turn. */
   workspacePatch?: Record<string, unknown>;
+  /** AgentRoomEvents saved at message creation time for history restore. */
+  agentRoomEvents?: import("../agent-core/events/AgentRoomEvent.js").AgentRoomEvent[];
 };
 
 export type DisplayPendingAction = {
@@ -380,6 +385,8 @@ export type CopilotChatResponse = {
   workspace: CopilotWorkspace;
   nextActions: ProductAction[];
   suggestedPrompts?: SuggestedPrompt[];
+  /** Phase 1: optional AgentRoomEvent stream for "agent group chat" frontend */
+  agentRoomEvents?: AgentRoomEvent[];
   raw: CopilotRawSection;
 };
 

@@ -2222,3 +2222,181 @@ D-01 状态：**已完成第一阶段**
 1. B-20 Phase 3：覆盖 generate_resume_from_jd、match_experiences_against_jd
 2. B-01 Phase 4：抽 ExplicitActionMapper
 3. B-17/B-19：补真实 Postgres integration test
+
+### 9.43 本轮计划：D-02 Agent Room Event 协议
+
+本轮目标：新增 AgentRoomEvent / SpecialInfoPayload 类型和 AgentRoomEventProjector，将现有 ToolResult/ProductBlock/PendingAction 投影为前端"Agent 工作群"可消费的 events。不破坏旧 API。
+
+注意：先只写本轮计划，代码完成后再回写结果。
+
+### 9.44 本轮结果：D-02 Agent Room Event 协议
+
+新增类型 (`src/agent-core/events/AgentRoomEvent.ts`)：
+
+* `AgentRoomEvent` — 单个 agent 可见事件
+* `AgentRoomAgentName` — 5 个核心 agent + "system"
+* `AgentRoomEventKind` — agent_text / tool_call / tool_result / pending_action / special_info / error / system
+* `SpecialInfoKind` — 12 种渲染卡片类型（match_matrix, evidence_stack, variant_compare_board, decision_panel, asset_capsule, export_receipt 等）
+* `SpecialInfoPayload` — 卡片 payload（kind, title, summary, data, relatedResourceIds, actions, source）
+* `AgentRoomEventVisibility` — 三态可见性
+
+新增投影器 (`src/agent-core/events/AgentRoomEventProjector.ts`)：
+
+* `projectAgentRoomEvents(input)` → `AgentRoomEvent[]`
+* ProductBlock → special_info events（按 block type 分配 agentName / roleLabel / specialKind）
+* ToolResult → tool_result / error events（跳过 internal visibility）
+* PendingAction → decision_panel events
+* WorkspacePatch.activePanel → asset_capsule system events
+* 未知 block type → 静默跳过（不抛错）
+
+Block type → Agent/SpecialInfo 映射：
+
+| Block Type | Agent | SpecialInfo |
+|---|---|---|
+| experience_match_results | strategist / JD Analyst | match_matrix |
+| experience_list | experience_receiver / Cataloger | asset_capsule |
+| experience_card | experience_receiver / Cataloger | asset_capsule |
+| experience_detail | experience_receiver / Cataloger | asset_capsule |
+| action_result | system | decision_panel |
+
+接入 CopilotChatResponse：
+
+* `src/copilot/types.ts` 新增可选字段 `agentRoomEvents?: AgentRoomEvent[]`
+* 不影响旧字段（productBlocks, workspacePatch, actionResult, timeline）
+* Phase 1 策略：response-only，不持久化到 message metadata
+
+D-02 当前状态：**已完成 Phase 1**（协议 + 投影器，可选字段接入 response）
+
+修改/新增文件：
+
+* `src/agent-core/events/AgentRoomEvent.ts` — 新增（类型定义）
+* `src/agent-core/events/AgentRoomEventProjector.ts` — 新增（投影器）
+* `src/copilot/types.ts` — 修改（CopilotChatResponse 新增可选字段）
+* `tests/AgentRoomEventProjector.test.ts` — 新增（8 tests）
+
+行为兼容性：全部旧字段保留，未修改 productBlocks, workspacePatch, actionResult, pending action, ToolExecutor, AgentOrchestrator, LLM, 数据库, 前端。
+
+测试结果：
+
+* `npm run typecheck`：通过。
+* `npm test`：全部 50 files / 484 tests 通过（+8 projector tests）。
+
+下一轮建议：
+
+1. Phase 2：AgentOrchestrator.finishRun 中实际 populate agentRoomEvents
+2. 前端读取 agentRoomEvents 驱动工作群 UI 重构
+3. B-20 Phase 3
+
+### 9.45 本轮计划：D-02 Phase 2 agentRoomEvents 真实 response 接入
+
+本轮目标：在 `finishRun` 中调用 `projectAgentRoomEvents()`，使 chat/action/confirm response 均返回 agentRoomEvents。不破坏旧字段。
+
+注意：先只写本轮计划，代码完成后再回写结果。
+
+### 9.46 本轮结果：D-02 Phase 2 agentRoomEvents 真实 response 接入
+
+修改前链路：
+
+```
+finishRun() → CopilotChatResponse {
+  sessionId, turnId, assistantMessage, timeline, workspace,
+  nextActions, raw (trace + toolResults + metadata)
+}
+```
+
+修改后链路：
+
+```
+finishRun() → projectAgentRoomEvents({
+  productBlocks, toolResults, pendingActionIds,
+  workspacePatch, sessionId, turnId,
+}) → CopilotChatResponse {
+  ...all old fields...,
+  agentRoomEvents: [...] // only when non-empty
+}
+```
+
+接入点：`AgentOrchestrator.finishRun`（line 1793+），chat / action / confirm 三条链路共享。
+
+事件生成策略：
+
+| Source | Events Generated |
+|---|---|
+| `productBlocks` | special_info per block (mapped via BLOCK_MAP) |
+| `toolResults` | tool_result / error per result (skip internal) |
+| `pendingActions` | pending_action → decision_panel per action |
+| `workspacePatch.activePanel` | system / asset_capsule |
+| empty / unknown | graceful skip (no events, no crash) |
+
+修改的文件：
+
+* `src/agent-core/runtime/AgentOrchestrator.ts`：+1 import，+9 行 projector call + response field
+
+D-02 当前状态：**Phase 2 已完成**（chat/action/confirm response 均已接入 agentRoomEvents）
+
+行为兼容性：
+
+| 检查项 | 结果 |
+|---|---|
+| API response envelope | 不变（仅新增可选字段） |
+| productBlocks | 不变 |
+| workspacePatch | 不变 |
+| actionResult | 不变 |
+| pending action payload | 不变 |
+| pending action 状态机 | 不变 |
+| ToolExecutor | 不变 |
+| LLM | 不变 |
+| 数据库 | 不变（无新持久化） |
+| 前端契约 | 不变 |
+
+测试结果：
+
+* `npm run typecheck`：通过。
+* `npm test`：全部 50 files / 484 tests 通过。
+
+下一轮建议：
+
+1. 前端：基于 agentRoomEvents 设计 Agent 工作群 UI
+2. Phase 3：session history restore 时从 message metadata 回放 agentRoomEvents
+3. B-20 Phase 3
+
+### 9.47 本轮计划：D-02 Phase 3 agentRoomEvents session history 回放
+
+本轮目标：agentRoomEvents 写入 message metadata 持久化；旧消息无 agentRoomEvents 时 fallback projection from displaySnapshot。不新增表，derived-on-read。
+
+注意：先只写本轮计划，代码完成后再回写结果。
+
+### 9.48 本轮结果：D-02 Phase 3 agentRoomEvents session history 回放
+
+持久化策略：**derived-on-read + metadata persistence**
+
+* 新消息：`finishRun` 在 `buildAssistantMessageMetadata` 中持久化 `agentRoomEvents` 到 message metadata；
+* 旧消息：`reprojectAgentRoomEvents(metadata)` 从 `displaySnapshot`（productBlocks + workspacePatch）fallback 投影；
+* 不需要新增表；
+* 不需要 migration。
+
+修改文件：
+
+* `src/copilot/types.ts`：`CopilotMessageMetadata` 新增 `agentRoomEvents?` 字段
+* `src/agent-core/events/AgentRoomEventProjector.ts`：新增 `reprojectAgentRoomEvents(metadata, messageId?)` fallback 函数，带 deterministic event ID
+* `src/agent-core/runtime/AgentOrchestrator.ts`：`buildAssistantMessageMetadata` 接受并持久化 `agentRoomEvents`；`finishRun` 在 metadata 前计算 agentRoomEvents
+* `tests/AgentRoomEventProjector.test.ts`：+6 tests（空 metadata、持久化优先、fallback projection、deterministic ID）
+
+Deterministic ID 策略：`evt-history-{messageId}-{index}`
+
+D-02 完整状态：
+
+| Phase | 内容 | 状态 |
+|---|---|---|
+| Phase 1 | 类型 + 投影器 + response type | 完成 |
+| Phase 2 | finishRun 实时接入 | 完成 |
+| Phase 3 | metadata 持久化 + fallback reprojection | **完成** |
+
+行为兼容性：全部旧字段保留，未修改 API、数据库 schema、pending action、ToolExecutor、LLM。
+
+测试结果：
+
+* `npm run typecheck`：通过。
+* `npm test`：全部 50 files / 490 tests 通过（+6 history replay tests）。
+
+下一轮建议：前端基于 agentRoomEvents 设计 Agent 工作群 UI。

@@ -33,6 +33,7 @@ import { sanitizeExperiencePatch } from "../security/ToolPatchSanitizer.js";
 import { previewFor, confirmationSummary, confirmationTitle } from "./PreviewPresenter.js";
 import { buildProductBlocks, sanitizeMetadataObject } from "./ProductBlockPresenter.js";
 import { mergeWorkspacePatch, buildWorkspaceSnapshot, buildRelatedResourceIds, hasRelatedResourceIds, updatePendingStatusInProductBlocks, buildWorkspaceForHistory } from "./WorkspaceProjector.js";
+import { projectAgentRoomEvents } from "../events/AgentRoomEventProjector.js";
 import { guardToolScope } from "../security/ToolScopeGuard.js";
 import { tasksFromHandoff } from "../../copilot/tasks/TaskStateReducer.js";
 import { createAgentTools } from "../../agent-tools/index.js";
@@ -1753,11 +1754,20 @@ export class AgentOrchestrator {
     });
     const assistantText = sanitized.invalidCount > 0 ? t(run, "invalidConfirmation") : composed.assistantText;
     const workspacePatch = sanitized.invalidCount > 0 ? {} : input.workspacePatch;
+    const agentRoomEvents = projectAgentRoomEvents({
+      productBlocks: buildProductBlocks(sanitized.toolResults),
+      toolResults: sanitized.toolResults,
+      pendingActionIds: input.pendingActions.map((pa) => pa.id),
+      workspacePatch,
+      sessionId: run.context.sessionId,
+      turnId: run.context.turnId,
+    });
     const assistantMessageMetadata = buildAssistantMessageMetadata({
       toolResults: sanitized.toolResults,
       workspace: run.workspace,
       workspacePatch,
       pendingActions: input.pendingActions,
+      agentRoomEvents: agentRoomEvents.length > 0 ? agentRoomEvents : undefined,
     });
     const assistantMessage = await this.saveMessage(
       userId,
@@ -1797,6 +1807,7 @@ export class AgentOrchestrator {
       timeline: timelineFor(sanitized.toolResults, now, run.context.turnId),
       workspace,
       nextActions: composed.nextActions ?? [],
+      agentRoomEvents: agentRoomEvents.length > 0 ? agentRoomEvents : undefined,
       raw: {
         artifactIds: [],
         evidenceChainIds: [],
@@ -2136,6 +2147,7 @@ function buildAssistantMessageMetadata(input: {
   workspace: CopilotWorkspace | null;
   workspacePatch: Record<string, unknown>;
   pendingActions?: PendingAction[];
+  agentRoomEvents?: import("../events/AgentRoomEvent.js").AgentRoomEvent[];
 }): CopilotMessageMetadata {
   const actionResult = sanitizeActionResultForMetadata(primaryActionResult(input.toolResults));
   const productBlocks = buildProductBlocks(input.toolResults);
@@ -2154,6 +2166,7 @@ function buildAssistantMessageMetadata(input: {
     ...(workspaceSnapshot ? { workspaceSnapshot } : {}),
     ...(hasRelatedResourceIds(relatedResourceIds) ? { relatedResourceIds } : {}),
     ...(displaySnapshot ? { displaySnapshot } : {}),
+    ...(input.agentRoomEvents?.length ? { agentRoomEvents: input.agentRoomEvents } : {}),
   };
 }
 
