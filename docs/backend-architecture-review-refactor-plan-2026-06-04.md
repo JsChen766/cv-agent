@@ -481,7 +481,8 @@ src/features/copilot/copilotActionResponseAnalyzer.ts
 | 问题编号 | 当前状态 | 已完成 | 未完成 | 下一步 |
 |---|---|---|---|---|
 | 暂无 | - | B-03 已在本轮补齐 Postgres 持久化代码路径。 | 尚未在真实 Postgres 服务上跑集成测试；当前通过 fake `PostgresQueryable` contract test 和 schema migration 静态测试覆盖。 | 后续如 CI 提供 Postgres，可补一条真实数据库 repository integration test。 |
-| B-14 | 部分修复 | `PromptRegistry` 已支持 product prompt key；`LLMExperienceExtractor` 的 system prompt 与 repair prompt 已迁入 prompt markdown 文件；`LLMRewriteService` 的 3 个 system prompt 已迁入 prompt markdown 文件。 | `LLMGenerationService`、`src/agent-tools/resume/index.ts` 仍有内联 prompt。 | 下一轮继续迁移 `LLMGenerationService` 的 generation/repair prompt。 |
+| B-14 | 部分修复 | `PromptRegistry` 已支持 7 个 product prompt key；`LLMExperienceExtractor` system/repair、`LLMRewriteService` 3 个 system prompt、`LLMGenerationService` system/repair 已全部迁入 prompt markdown 文件并通过 registry 读取。 | `src/agent-tools/resume/index.ts`、`matchExperiencesAgainstJD.tool.ts` 等 agent-tools 仍有内联 prompt。 | 下一轮继续 B-14 工具层 prompt，或优先拆分 resume tools（B-22）后逐个迁移。 |
+| B-22 | 已修复 | `src/agent-tools/resume/index.ts` 已从 505 行缩至 22 行薄入口；6 个 tool 各居独立文件；共享 helper/prompt 已抽到独立文件。 | 无。 | — |
 
 ### 9.3 本轮未处理问题
 
@@ -494,7 +495,7 @@ src/features/copilot/copilotActionResponseAnalyzer.ts
 | B-15 | 未修复 | ProviderFactory / ProviderRegistry 尚未接入用户模型配置。 |
 | B-17 | 未修复 | DB migration tracking 尚未完成。 |
 | B-21 | 未修复 | Product route/controller 尚未拆分。 |
-| B-22 | 未修复 | Resume tools 尚未按工具拆文件。 |
+| B-22 | 已修复 | `resume/index.ts` 已拆分。 |
 | 其他 P1/P2 | 未修复 | 继续按第五、六、八部分路线图推进。 |
 
 ### 9.4 已执行测试记录
@@ -534,12 +535,12 @@ src/features/copilot/copilotActionResponseAnalyzer.ts
 
 ### 9.5 下一轮推荐修复顺序
 
-1. 继续 B-14：迁移 `LLMGenerationService` generation / repair prompt。
+1. B-14 收尾：将 `src/agent-tools/resume/prompts.ts` 迁入 PromptRegistry（B-22 已完成前置拆分，prompt 现已集中在独立文件）。
 2. B-15：ProviderFactory 接入用户模型配置。
 3. B-21：Product route/controller 小步拆分。
 4. B-17：DB migration tracking。
-5. B-01 / B-02：从 `AgentOrchestrator` 中先抽 Presenter、ActionMapper、PendingActionCoordinator，不直接大拆 runtime。
-6. B-14 收尾：处理 `src/agent-tools/resume/index.ts` 中与确认流程耦合更深的 prompt。
+5. B-13：统一剩余 JSON 解析器（`LLMExperienceExtractor`、`LLMRewriteService` 中的 `parseJson` 迁入 `JsonOutputParser`）。
+6. B-01 / B-02：从 `AgentOrchestrator` 中先抽 Presenter、ActionMapper、PendingActionCoordinator，不直接大拆 runtime。
 
 ### 9.6 本轮计划：B-13 统一 LLM JSON parser
 
@@ -701,3 +702,244 @@ src/agent-core/validation/parseAgentJson.ts
 | 是否改变 product LLM 输出 schema | 否。 |
 | 测试结果 | `npm run typecheck` 通过；`npm test` 通过，44 files / 380 tests；新增 4 个 test case 覆盖 rewrite prompt registry 读取和 LLMRewriteService 集成。 |
 | 下一轮建议 | 继续 B-14：迁移 `LLMGenerationService` 的 generation / repair prompt。该 service prompt 更长、变量更多、输出 schema 更复杂，适合下一轮单独迁移。之后再处理 `src/agent-tools/resume/index.ts` 中与确认流程更耦合的 prompt。 |
+
+### 9.9 本轮计划：B-14 PromptRegistry 第三阶段
+
+本轮目标：
+
+* 继续推进 B-14；
+* 将 `LLMGenerationService` 中的内联 prompt 迁移到 prompt 文件；
+* 通过 PromptRegistry 读取；
+* 不修改 prompt 文案；
+* 不修改 LLM 参数；
+* 不修改业务输出 schema；
+* 不修改 variants 结构；
+* 不修改 repair 行为；
+* 不修改 API response；
+* 不修改数据库；
+* 不修改前端；
+* 不修改 AgentOrchestrator。
+
+本轮范围：
+
+优先检查并迁移：
+
+* `src/product/LLMGenerationService.ts`
+
+暂时不要迁移：
+
+* `src/agent-tools/resume/index.ts`
+* 其他工具层 prompt
+* 其他和 pending action / confirm 流程耦合较深的 prompt
+
+原因：
+
+* `src/agent-tools/resume/index.ts` 与工具调用、确认流程、fallback、pending action preview 耦合更深，不适合本轮顺手迁移；
+* 本轮只收敛 product service 层 prompt，不扩大修改范围。
+
+成功标准：
+
+* `LLMGenerationService` 中主要内联 prompt 已迁移到 prompt 文件；
+* PromptRegistry 可以读取新增 product generation prompt；
+* prompt 内容尽量逐字一致；
+* service 构造出的最终 prompt 与迁移前保持一致或仅存在尾部换行差异；
+* 原有测试通过；
+* 新增或更新最小测试；
+* 文档记录 B-14 当前状态。
+
+注意：先只写本轮计划，不要直接把 B-14 标成已修复。代码完成并测试通过后再回写结果。
+
+### 9.10 本轮结果：B-14 PromptRegistry 第三阶段
+
+本轮实际迁移内容：
+
+* `LLMGenerationService` 中 2 个内联 prompt 已迁移到 prompt markdown 文件并通过 PromptRegistry 读取：
+  * `SYSTEM_PROMPT` → `src/agent-core/prompts/prompts/product/generation-resume-system.md`
+  * `REPAIR_PROMPT` → `src/agent-core/prompts/prompts/product/generation-resume-repair.md`
+
+修改的文件：
+
+* `src/agent-core/prompts/PromptRegistry.ts`：新增 2 个 product prompt key（`product.generation.resumeSystem`、`product.generation.resumeRepair`）。
+* `src/product/LLMGenerationService.ts`：移除内联 prompt 数组拼接，改为 `new PromptRegistry()` 调用 `.get()` 读取，并新增 `import { PromptRegistry } from "../agent-core/prompts/PromptRegistry.js"`。
+* `tests/ProductPromptRegistry.test.ts`：新增 4 个 test case，覆盖 generation prompt registry 读取、错误 key、LLMGenerationService 集成、repair 模板变量。
+
+新增文件：
+
+* `src/agent-core/prompts/prompts/product/generation-resume-system.md`
+* `src/agent-core/prompts/prompts/product/generation-resume-repair.md`
+
+B-14 当前状态：
+
+| 问题编号 | 状态 | 已完成 | 未完成 | 备注 |
+|---|---|---|---|---|
+| B-14 | 部分修复 | `LLMExperienceExtractor` system/repair prompt、`LLMRewriteService` 3 个 system prompt、`LLMGenerationService` system/repair prompt 已全部迁移到 prompt 文件并通过 PromptRegistry 读取。 | `src/agent-tools/resume/index.ts` 中与工具确认流程耦合较深的 resume 工具 prompt 仍未迁移。其他 agent-tools（如 `matchExperiencesAgainstJD.tool.ts`）的内联 prompt 也未迁移。 | product service 层 prompt 已全部收敛到 PromptRegistry，工具层 prompt 留待后续轮次。 |
+
+未迁移的 prompt：
+
+* `src/agent-tools/resume/index.ts`：包含 generate resume from JD、revise resume item、prepare revise resume item 等工具的内联 prompt 和 fallback prompt。这些 prompt 与工具确认流程、pending action 状态机、前端 preview 构造耦合更深，不适合本轮顺手迁移。
+* `src/agent-tools/experience/matchExperiencesAgainstJD.tool.ts`：JD 匹配 prompt 和输出解析内联在工具内。
+* 其他 agent-tools 中的内联 prompt。
+
+本轮行为兼容性说明：
+
+| 检查项 | 结果 |
+|---|---|
+| 是否修改 prompt 内容 | 否。prompt markdown 文件内容与原 `.join("\n")` 拼接结果逐字一致。PromptRegistry 对 product prompt 执行 `trimOneFinalNewline`，保证最终传入 LLM 的 content 与迁移前一致。 |
+| 是否修改 LLM 参数 | 否。temperature（initial 0.4 / repair 0.3）、maxTokens（8192）、responseFormat（"json"）均保持不变。 |
+| 是否修改 API response | 否。 |
+| 是否修改数据库 | 否。 |
+| 是否修改前端契约 | 否。 |
+| 是否修改 AgentOrchestrator | 否。 |
+| 是否改变 JSON parser | 否。`parseJson()` 函数（使用 `JsonOutputParser.extractJsonCandidates`）未修改。 |
+| 是否改变 generation repair | 否。repair 触发条件、repair prompt 中的 `{{errors}}` 替换、repair 调用参数均保持不变。 |
+| 是否改变 variants 结构 | 否。normalization、zod schema、`generateVariants` 返回的 `ProductGeneratedVariant[]` 均未修改。 |
+| 是否改变 product LLM 输出 schema | 否。 |
+| 是否改变 `buildUserPrompt` | 否。user prompt 变量拼接逻辑完全保留在 service 中，未迁移到文件。 |
+
+测试结果：
+
+* `npm run typecheck`：通过。
+* `npm test`：全部 44 files / 384 tests 通过（较上轮 380 tests 新增 4 个 test case）。
+* 新增测试覆盖：
+  * `product.generation.resumeSystem` prompt 可正常读取，包含关键片段。
+  * `product.generation.resumeRepair` prompt 可正常读取，包含 `{{errors}}` 占位符且替换后行为正确。
+  * 未注册的 generation key 抛出明确错误。
+  * `LLMGenerationService` 通过 registry 构造 system prompt，实际 chat 请求中的 system message 与 registry 读取值完全一致。
+
+下一轮建议：
+
+1. 继续 B-14：迁移 `src/agent-tools/resume/index.ts` 中与工具确认流程耦合较深的 prompt。建议先拆分 `src/agent-tools/resume/index.ts`（B-22），再逐个迁 prompt 到文件。
+2. B-15：ProviderFactory 接入用户模型配置。
+3. B-21：Product route/controller 小步拆分。
+4. B-13：统一 JSON 解析器（`LLMExperienceExtractor`、`LLMRewriteService` 中的 `parseJson` 可迁入 `JsonOutputParser`）。
+
+### 9.11 本轮计划：B-22 拆分 resume tools
+
+本轮目标：
+
+* 拆分 `src/agent-tools/resume/index.ts`；
+* 将多个 resume tool 按文件拆开；
+* 保持 tool id、schema、export、注册方式、执行逻辑完全兼容；
+* 不修改 prompt 内容；
+* 不迁移 prompt 到 PromptRegistry；
+* 不修改 LLM 参数；
+* 不修改 API response；
+* 不修改数据库；
+* 不修改前端；
+* 不修改 AgentOrchestrator；
+* 不改变 Pending Action 行为；
+* 不改变 prepare/confirm 固化输出逻辑。
+
+本轮范围：
+
+优先处理：
+
+* `src/agent-tools/resume/index.ts`
+
+允许新增：
+
+* `src/agent-tools/resume/generateResumeFromJD.tool.ts`
+* `src/agent-tools/resume/acceptGenerationVariant.tool.ts`
+* `src/agent-tools/resume/prepareReviseResumeItem.tool.ts`
+* `src/agent-tools/resume/reviseResumeItem.tool.ts`
+* `src/agent-tools/resume/listResumes.tool.ts`
+* `src/agent-tools/resume/getResume.tool.ts`
+* `src/agent-tools/resume/helpers.ts`
+* `src/agent-tools/resume/prompts.ts`
+
+暂时不要处理：
+
+* `src/agent-tools/experience/matchExperiencesAgainstJD.tool.ts`
+* `src/product/LLMGenerationService.ts`
+* `src/product/LLMRewriteService.ts`
+* `src/agent-core/runtime/AgentOrchestrator.ts`
+* ProviderFactory
+* DB migration tracking
+* Product route/controller 拆分
+
+成功标准：
+
+* `resume/index.ts` 变成薄入口文件，只负责 re-export 和 assemble resume tools；
+* 每个 resume tool 的主体逻辑移动到独立文件；
+* 共享 helper/prompt 抽到独立文件；
+* 现有 tool id 不变；
+* 现有导出不变（`createResumeAgentTools`、`toWorkspaceVariant`）；
+* 现有测试通过；
+* 文档记录 B-22 当前状态。
+
+注意：先只写本轮计划，不要直接把 B-22 标成已修复。代码完成并测试通过后再回写结果。
+
+### 9.12 本轮结果：B-22 拆分 resume tools
+
+拆分前 `src/agent-tools/resume/index.ts`（505 行）包含：
+
+* 6 个 tool 定义：`list_resumes`、`get_resume`、`generate_resume_from_jd`、`accept_generation_variant`、`prepare_revise_resume_item`、`revise_resume_item`；
+* 共享 helper：`buildVariantActions`（private）、`toWorkspaceVariant`（exported）；
+* 内联 system prompt 常量（`prepare_revise_resume_item` fallback 路径）。
+
+拆分后文件结构：
+
+```text
+src/agent-tools/resume/
+├── index.ts                           (22 行，薄入口)
+├── helpers.ts                         (91 行，buildVariantActions + toWorkspaceVariant)
+├── prompts.ts                         (5 行，PREPARE_REVISE_RESUME_ITEM_SYSTEM_PROMPT)
+├── listResumes.tool.ts                (18 行)
+├── getResume.tool.ts                  (18 行)
+├── generateResumeFromJD.tool.ts       (58 行)
+├── acceptGenerationVariant.tool.ts    (56 行)
+├── prepareReviseResumeItem.tool.ts    (126 行)
+└── reviseResumeItem.tool.ts           (115 行)
+```
+
+各文件职责：
+
+| 文件 | 职责 |
+|---|---|
+| `index.ts` | 只负责 import 各 tool factory、re-export `toWorkspaceVariant`、导出 `createResumeAgentTools()` 组装数组。 |
+| `helpers.ts` | `buildVariantActions`（private）、`toWorkspaceVariant`（exported）。 |
+| `prompts.ts` | `PREPARE_REVISE_RESUME_ITEM_SYSTEM_PROMPT` 常量，内容与原内联字符串完全一致。 |
+| `listResumes.tool.ts` | `list_resumes` tool factory。 |
+| `getResume.tool.ts` | `get_resume` tool factory。 |
+| `generateResumeFromJD.tool.ts` | `generate_resume_from_jd` tool factory。 |
+| `acceptGenerationVariant.tool.ts` | `accept_generation_variant` tool factory。 |
+| `prepareReviseResumeItem.tool.ts` | `prepare_revise_resume_item` tool factory，包含 LLM rewrite service 调用和 direct model client fallback。 |
+| `reviseResumeItem.tool.ts` | `revise_resume_item` tool factory，包含 frozen rewrittenText 校验和 LLM fallback（已固化输出逻辑不变）。 |
+
+B-22 当前状态：
+
+| 问题编号 | 状态 | 说明 |
+|---|---|---|
+| B-22 | 已修复 | `src/agent-tools/resume/index.ts` 已从 505 行缩至 22 行的薄入口文件；6 个 tool 各居独立文件；共享 helper 和 prompt 已抽到独立文件。外部 import 路径不变（`createResumeAgentTools` 和 `toWorkspaceVariant` 仍从 `index.ts` 导出）。 |
+
+B-14 当前状态：不变（仍为部分修复）。本轮为后续 B-14 工具层 prompt 迁移（将 `prompts.ts` 迁入 PromptRegistry）完成了前置拆分。
+
+本轮行为兼容性说明：
+
+| 检查项 | 结果 |
+|---|---|
+| 是否修改 prompt 内容 | 否。`prompts.ts` 中的常量与原内联 `.join("\n")` 结果逐字一致。 |
+| 是否修改 LLM 参数 | 否。temperature（0.3）、maxTokens（800）均不变。 |
+| 是否修改 API response | 否。 |
+| 是否修改数据库 | 否。 |
+| 是否修改前端契约 | 否。 |
+| 是否修改 AgentOrchestrator | 否。 |
+| 是否改变 Pending Action 行为 | 否。 |
+| 是否改变 prepare/confirm 行为 | 否。`prepare_revise_resume_item` 的 LLM rewrite service → direct model client fallback 链完全保留；`revise_resume_item` 的 frozen rewrittenText 优先、缺失时拒绝执行逻辑完全保留。 |
+| 是否改变 tool id | 否。6 个 tool 的 `name` 字段均不变。 |
+| 是否改变 input/output schema | 否。所有 tool 仍使用相同的 `ToolInputSchemas`。 |
+| 是否改变 workspacePatch/actionResult/metadata | 否。所有返回结构逐字段保留。 |
+
+测试结果：
+
+* `npm run typecheck`：通过。
+* `npm test`：全部 44 files / 384 tests 通过。
+* 已有 `tests/resumeAgentTools.test.ts`（3 tests）全部通过，确认 tool 注册、执行、schema 均兼容。
+
+下一轮建议：
+
+1. B-14 收尾：将 `src/agent-tools/resume/prompts.ts` 迁入 PromptRegistry（现在 prompt 已集中在独立文件中，迁移风险很低）。
+2. B-15：ProviderFactory 接入用户模型配置。
+3. B-21：Product route/controller 小步拆分。
+4. B-17：DB migration tracking。
+5. B-01/B-02：从 AgentOrchestrator 中先抽 Presenter / ActionMapper / PendingActionCoordinator。

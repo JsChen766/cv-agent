@@ -17,6 +17,8 @@ const PRODUCT_PROMPT_FILES = {
   "product.rewrite.experienceSystem": "product/rewrite-experience-system.md",
   "product.rewrite.resumeItemSystem": "product/rewrite-resume-item-system.md",
   "product.rewrite.claimCheckSystem": "product/rewrite-claim-check-system.md",
+  "product.generation.resumeSystem": "product/generation-resume-system.md",
+  "product.generation.resumeRepair": "product/generation-resume-repair.md",
 } as const;
 
 export type ProductPromptName = keyof typeof PRODUCT_PROMPT_FILES;

@@ -3,7 +3,9 @@ import { ModelClient } from "../src/agent-core/model/ModelClient.js";
 import type { LLMChatRequest, LLMProvider } from "../src/agent-core/model/types.js";
 import { PromptRegistry } from "../src/agent-core/prompts/PromptRegistry.js";
 import { LLMExperienceExtractor } from "../src/product/LLMExperienceExtractor.js";
+import { LLMGenerationService } from "../src/product/LLMGenerationService.js";
 import { LLMRewriteService } from "../src/product/LLMRewriteService.js";
+import type { ProductExperienceSummary } from "../src/product/types.js";
 
 describe("Product prompts in PromptRegistry", () => {
   it("loads the migrated product experience extraction prompts", () => {
@@ -140,5 +142,104 @@ describe("Rewrite prompts in PromptRegistry", () => {
     expect(capturedRequest?.messages[0]?.content).toBe(
       registry.get("product.rewrite.claimCheckSystem"),
     );
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════
+// Generation prompts in PromptRegistry
+// ═══════════════════════════════════════════════════════════════
+
+function fakeExperiencesForGen(): ProductExperienceSummary[] {
+  return [
+    {
+      id: "exp-1",
+      title: "Frontend Developer @ Acme",
+      organization: "Acme",
+      role: "Frontend Developer",
+      startDate: "2022-01",
+      endDate: "2024-01",
+      category: "work",
+      content: "Built React components, improved performance by 40%.",
+      status: "active",
+      currentRevisionId: "rev-1",
+      sourceDocumentId: undefined,
+      createdAt: "2024-01-01T00:00:00Z",
+      updatedAt: "2024-01-01T00:00:00Z",
+    },
+  ];
+}
+
+describe("Generation prompts in PromptRegistry", () => {
+  it("loads the migrated generation system and repair prompts", () => {
+    const registry = new PromptRegistry();
+
+    const systemPrompt = registry.get("product.generation.resumeSystem");
+    const repairPrompt = registry.get("product.generation.resumeRepair");
+
+    // System prompt contains key instructions
+    expect(systemPrompt).toContain("You are a professional resume writer.");
+    expect(systemPrompt).toContain("ONLY use facts, metrics, and experiences that are present");
+    expect(systemPrompt).toContain("sourceExperienceIds");
+    expect(systemPrompt).toContain("evidenceSummary");
+    expect(systemPrompt).toContain("riskSummary");
+    expect(systemPrompt).toContain("missingInfo");
+    expect(systemPrompt).toContain("Output ONLY valid JSON. No markdown, no explanation.");
+    expect(systemPrompt.endsWith("No markdown, no explanation.")).toBe(true);
+
+    // Repair prompt contains key instructions
+    expect(repairPrompt).toContain("The previous output failed JSON schema validation.");
+    expect(repairPrompt).toContain("Errors: {{errors}}");
+    expect(repairPrompt).toContain("Output ONLY the corrected JSON.");
+  });
+
+  it("throws a clear error for an unregistered generation prompt key", () => {
+    const registry = new PromptRegistry();
+
+    expect(() => registry.get("product.generation.missing" as any)).toThrow(
+      "Prompt not registered: product.generation.missing",
+    );
+  });
+
+  it("LLMGenerationService constructs system prompt from registry", async () => {
+    const registry = new PromptRegistry();
+    let capturedRequest: LLMChatRequest | undefined;
+    const provider: LLMProvider = {
+      name: "fake",
+      async chat(request: LLMChatRequest) {
+        capturedRequest = request;
+        return {
+          content: JSON.stringify({
+            variants: [{
+              content: "Experienced frontend developer with React.",
+              score: { overall: 0.8, relevance: 0.9, evidenceStrength: 0.7 },
+              reason: "Good match.",
+              sourceExperienceIds: ["exp-1"],
+            }],
+          }),
+        };
+      },
+    };
+
+    const service = new LLMGenerationService(
+      new ModelClient({ provider, defaultModel: "fake", maxRetries: 0 }),
+    );
+    await service.generateVariants("user-1", "React developer needed.", "Frontend Engineer", fakeExperiencesForGen());
+
+    expect(capturedRequest?.messages[0]?.role).toBe("system");
+    expect(capturedRequest?.messages[0]?.content).toBe(
+      registry.get("product.generation.resumeSystem"),
+    );
+  });
+
+  it("LLMGenerationService repair prompt template contains {{errors}} placeholder", () => {
+    const registry = new PromptRegistry();
+    const repairPrompt = registry.get("product.generation.resumeRepair");
+
+    // The repair prompt is a template with {{errors}} placeholder — verify it is present
+    expect(repairPrompt).toContain("{{errors}}");
+    // Verify the replacement pattern works as expected by the service
+    const filled = repairPrompt.replace("{{errors}}", "some error detail");
+    expect(filled).toContain("some error detail");
+    expect(filled).not.toContain("{{errors}}");
   });
 });
