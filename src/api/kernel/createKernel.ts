@@ -56,7 +56,10 @@ import { OpenAICompatibleProvider } from "../../providers/OpenAICompatibleProvid
 import { LLMExperienceExtractor } from "../../product/LLMExperienceExtractor.js";
 import { LLMGenerationService } from "../../product/LLMGenerationService.js";
 import { LLMRewriteService } from "../../product/LLMRewriteService.js";
+import { InMemoryPendingActionRepository } from "../../agent-core/confirmation/InMemoryPendingActionRepository.js";
 import { PendingActionService } from "../../agent-core/confirmation/PendingActionService.js";
+import { PostgresPendingActionRepository } from "../../agent-core/confirmation/PostgresPendingActionRepository.js";
+import type { PendingActionRepository } from "../../agent-core/confirmation/PendingActionRepository.js";
 
 export async function createKernel(): Promise<ApiKernel> {
   const databaseUrl = process.env.DATABASE_URL;
@@ -80,6 +83,7 @@ async function createPostgresKernel(databaseUrl: string): Promise<ApiKernel> {
     authService: new AuthService(new PostgresAuthRepository(database)),
     fileRepository: new PostgresFileRepository(database),
     exportRepository: new PostgresResumeExportRepository(database),
+    pendingActionRepository: new PostgresPendingActionRepository(database),
     fileStorage: createFileStorage(),
     close: () => database.close(),
   });
@@ -99,6 +103,7 @@ function createInMemoryKernel(): ApiKernel {
     authService: new AuthService(new InMemoryAuthRepository()),
     fileRepository: new InMemoryFileRepository(),
     exportRepository: new InMemoryResumeExportRepository(),
+    pendingActionRepository: new InMemoryPendingActionRepository(),
     fileStorage: new InMemoryFileStorage(),
     close: async () => {},
   });
@@ -135,7 +140,7 @@ function buildKernel(input: BuildKernelInput): ApiKernel {
     sessionService: new CopilotSessionService(input.copilotPersistence),
     workspaceService: new CopilotWorkspaceService(input.copilotPersistence, productServices),
   };
-  const pendingActions = new PendingActionService();
+  const pendingActions = new PendingActionService(input.pendingActionRepository);
   const fileService = new FileService(input.fileRepository, input.fileStorage);
   let exportService!: ResumeExportService;
   const jobRunner = new JobRunner({
@@ -187,6 +192,7 @@ type BuildKernelInput = {
   fileRepository: FileRepository;
   fileStorage: FileStorage;
   exportRepository: ResumeExportRepository;
+  pendingActionRepository: PendingActionRepository;
   close(): Promise<void>;
 };
 

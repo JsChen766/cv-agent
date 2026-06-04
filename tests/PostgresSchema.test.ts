@@ -91,6 +91,23 @@ describe("PostgreSQL schema", () => {
     expect(content).toContain("idx_product_generation_session_id");
     expect(content).toContain("template-default");
   });
+
+  it("has 0010 migration for persistent pending actions", () => {
+    const migrationPath = join(process.cwd(), "src", "persistence", "postgres", "migrations", "0010_pending_action.sql");
+    expect(existsSync(migrationPath)).toBe(true);
+    const content = readFileSync(migrationPath, "utf8");
+    expect(content).toContain("CREATE TABLE IF NOT EXISTS pending_action");
+    expect(content).toContain("status TEXT NOT NULL CHECK");
+    expect(content).toContain("'pending', 'confirmed', 'cancelled', 'executed', 'expired', 'failed'");
+    expect(content).toContain("input_json JSONB NOT NULL DEFAULT '{}'::jsonb");
+    expect(content).toContain("result_json JSONB");
+    expect(content).toContain("job_id TEXT");
+    expect(content).toContain("dedupe_key TEXT");
+    expect(content).toContain("idx_pending_action_user_session");
+    expect(content).toContain("idx_pending_action_status");
+    expect(content).toContain("idx_pending_action_expires_at");
+    expect(content).toContain("idx_pending_action_job_id");
+  });
 });
 
 function stripSqlComments(sql: string): string {

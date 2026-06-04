@@ -446,6 +446,8 @@ pending
 | B-09 | 已修复 | resume item rewrite confirm 不再二次调用 LLM；缺少固化 `rewrittenText` 时要求重新 preview。 | `src/agent-core/runtime/AgentOrchestrator.ts`、`src/agent-tools/resume/index.ts` |
 | B-11 | 已修复 | `internship` route 校验已修复。 | `src/api/routes/product.ts` |
 | Contract 漂移 | 已修复 | `activePanel: jd_matching`、`evidenceFromExperience: string[]`、docx 未实现状态已对齐。 | 后端 `src/agent-tools/experience/matchExperiencesAgainstJD.tool.ts`；前端 `src/types/copilot.ts`、`src/types/export.ts`、`src/features/copilot/copilotActionResponseAnalyzer.ts` |
+| B-03 | 已修复 | Pending Action 已补齐 Postgres 持久化：新增 `pending_action` migration、`PostgresPendingActionRepository`、Kernel Postgres 模式注入；confirm/cancel/markExecuted/markFailed/expire 均复用 repository 条件状态迁移。 | `src/persistence/postgres/migrations/0010_pending_action.sql`、`src/agent-core/confirmation/PostgresPendingActionRepository.ts`、`src/agent-core/confirmation/PendingActionService.ts`、`src/api/kernel/createKernel.ts`、`src/index.ts`、`tests/PostgresPendingActionRepository.test.ts`、`tests/PostgresSchema.test.ts` |
+| B-13 | 已修复（第一阶段） | 新增统一 LLM JSON parser；product 侧经历识别、简历生成、改写的重复 JSON 解析已迁入公共 parser；agent 专用 parser 暂保留其 `AgentError` 语义。 | `src/infrastructure/llm/JsonOutputParser.ts`、`src/product/LLMExperienceExtractor.ts`、`src/product/LLMGenerationService.ts`、`src/product/LLMRewriteService.ts`、`tests/JsonOutputParser.test.ts` |
 
 上一轮后端实际修改文件：
 
@@ -478,7 +480,7 @@ src/features/copilot/copilotActionResponseAnalyzer.ts
 
 | 问题编号 | 当前状态 | 已完成 | 未完成 | 下一步 |
 |---|---|---|---|---|
-| B-03 | 部分修复 | Pending Action repository 接口和内存条件迁移能力已补齐。`confirm` 已通过 repository 原子条件迁移抢占执行权。 | 尚无 Postgres `pending_action` 表、`PostgresPendingActionRepository`、migration、Kernel 注入和重启恢复能力。 | 补齐 Pending Action 的 Postgres 持久化，并在 Postgres 模式下注入持久化 repository。 |
+| 暂无 | - | B-03 已在本轮补齐 Postgres 持久化代码路径。 | 尚未在真实 Postgres 服务上跑集成测试；当前通过 fake `PostgresQueryable` contract test 和 schema migration 静态测试覆盖。 | 后续如 CI 提供 Postgres，可补一条真实数据库 repository integration test。 |
 
 ### 9.3 本轮未处理问题
 
@@ -488,7 +490,6 @@ src/features/copilot/copilotActionResponseAnalyzer.ts
 |---|---|---|
 | B-01 | 未修复 | 未大拆 `AgentOrchestrator`，符合低风险修复原则。 |
 | B-02 | 未修复 | Pending Action Workflow 尚未独立抽象。 |
-| B-13 | 未修复 | LLM JSON parser 尚未统一。 |
 | B-14 | 未修复 | PromptRegistry 尚未覆盖 product prompt。 |
 | B-15 | 未修复 | ProviderFactory / ProviderRegistry 尚未接入用户模型配置。 |
 | B-17 | 未修复 | DB migration tracking 尚未完成。 |
@@ -515,12 +516,71 @@ src/features/copilot/copilotActionResponseAnalyzer.ts
 | `npm run typecheck` | 通过 |
 | `npm run lint:types` | 通过 |
 
+本轮 B-03 修复测试结果：
+
+后端：
+
+| 命令 | 结果 |
+|---|---|
+| `npm run typecheck` | 通过 |
+| `npm test` | 通过，41 files / 355 tests |
+
+补充测试覆盖：
+
+| 测试文件 | 覆盖内容 |
+|---|---|
+| `tests/PostgresPendingActionRepository.test.ts` | Postgres repository contract：create/get/list/update、条件状态迁移、重复 confirm 不二次迁移、result 持久化。 |
+| `tests/PostgresSchema.test.ts` | `0010_pending_action.sql` migration 存在性、表、状态 CHECK、JSON 字段和索引。 |
+
 ### 9.5 下一轮推荐修复顺序
 
-1. B-03：补齐 Pending Action Postgres 持久化。
-2. B-13：统一 LLM JSON parser。
-3. B-14：PromptRegistry 覆盖 product prompt。
-4. B-15：ProviderFactory 接入用户模型配置。
-5. B-21：Product route/controller 小步拆分。
-6. B-17：DB migration tracking。
-7. B-01 / B-02：从 `AgentOrchestrator` 中先抽 Presenter、ActionMapper、PendingActionCoordinator，不直接大拆 runtime。
+1. B-14：PromptRegistry 覆盖 product prompt。
+2. B-15：ProviderFactory 接入用户模型配置。
+3. B-21：Product route/controller 小步拆分。
+4. B-17：DB migration tracking。
+5. B-01 / B-02：从 `AgentOrchestrator` 中先抽 Presenter、ActionMapper、PendingActionCoordinator，不直接大拆 runtime。
+
+### 9.6 本轮计划：B-13 统一 LLM JSON parser
+
+本轮目标：统一 LLM JSON 解析逻辑的第一步，先抽公共 parser，并替换最明显、行为最容易保持一致的重复调用点。
+
+本轮范围：
+
+| 范围项 | 说明 |
+|---|---|
+| 只抽公共 parser | 新增统一 JSON 提取与解析能力，避免继续复制 `fenced block`、首尾 `{}`/`[]` 截取和 `JSON.parse` 逻辑。 |
+| 不改 prompt 内容 | 所有 system/user/repair prompt 文案保持不变。 |
+| 不改 LLM 输出 schema | 不调整业务 schema、Zod schema 或模型输出字段。 |
+| 不改业务 fallback 语义 | 原来失败后返回空数组、retry、repair 或 throw 的位置继续保留原语义。 |
+| 不引入新 Provider | 不处理 ProviderFactory、ProviderRegistry 或用户模型配置。 |
+| 不修改 AgentOrchestrator 主流程 | 本轮不拆 runtime，不改 plan/workflow/pending action 流程。 |
+| 不改数据库和前端 | 本轮不新增 migration，不修改前端契约。 |
+
+重点涉及位置：
+
+```text
+src/product/LLMExperienceExtractor.ts
+src/product/LLMGenerationService.ts
+src/product/LLMRewriteService.ts
+src/agent-core/validation/parseAgentJson.ts
+```
+
+本轮成功标准：
+
+| 标准 | 目标 |
+|---|---|
+| 新增统一 parser | 新增 `JsonOutputParser`，支持 object、array、value、fenced JSON、普通 fenced block、前后带解释文字的 JSON 提取。 |
+| 替换调用点 | 至少替换 2 到 3 个最明显重复 parser 调用点。 |
+| 保持行为兼容 | 不改变 API response、prompt 文案、LLM 参数、业务输出结构和 fallback 语义。 |
+| 测试覆盖 | 新增 parser 单元测试，并确保既有测试继续通过。 |
+
+本轮执行结果：
+
+| 项目 | 结果 |
+|---|---|
+| B-13 状态 | 已修复（第一阶段）。公共 parser 已落地，product 侧主要重复解析点已统一；agent-core 专用 parser 因错误类型和 runtime fallback 语义更敏感，本轮不强行替换。 |
+| 新增 parser | `src/infrastructure/llm/JsonOutputParser.ts`，支持 raw object、raw array、json fenced block、plain fenced block、解释性文本中的 object/array 提取、expected object/array 校验、zod schema 校验、结构化错误码和 preview 截断。 |
+| 已替换调用点 | `src/product/LLMExperienceExtractor.ts::parseJsonResponse`；`src/product/LLMGenerationService.ts::parseJson` 的候选提取；`src/product/LLMRewriteService.ts::parseJson`。 |
+| 未替换调用点 | `src/agent-core/validation/parseAgentJson.ts` 暂保留：它当前抛 `AgentError("INVALID_AGENT_OUTPUT")`，直接替换可能影响 agent fallback 和 plan validation 观测口径。下一步可在保留 `AgentError` wrapper 的前提下复用公共 parser。 |
+| 行为兼容性 | 未修改 prompt、LLM 参数、业务 Zod schema、API response envelope、数据库结构或前端字段；product 侧解析失败仍按原位置返回 `{}`、触发 repair、返回 null 或抛原有 `LLMGenerationError`。 |
+| 测试结果 | `npm run typecheck` 通过；`npm test` 通过，42 files / 369 tests；`npm run lint --if-present` 通过，项目无实际 lint 脚本输出。 |

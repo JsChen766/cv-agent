@@ -14,6 +14,7 @@ export * from "./agent-core/tools/ToolExecutor.js";
 export * from "./agent-core/tools/ToolResult.js";
 export * from "./agent-core/confirmation/PendingAction.js";
 export * from "./agent-core/confirmation/PendingActionService.js";
+export * from "./agent-core/confirmation/PostgresPendingActionRepository.js";
 export * from "./agent-core/confirmation/PendingActionRepository.js";
 export * from "./agent-core/confirmation/InMemoryPendingActionRepository.js";
 export * from "./agent-tools/index.js";

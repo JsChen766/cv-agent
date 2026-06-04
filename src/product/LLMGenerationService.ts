@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import type { ModelClient } from "../agent-core/model/ModelClient.js";
+import { extractJsonCandidates } from "../infrastructure/llm/JsonOutputParser.js";
 import type { ProductExperienceSummary, ProductGeneratedVariant } from "./types.js";
 
 export type LLMGenerationErrorPhase =
@@ -495,7 +496,7 @@ export class LLMGenerationService {
 
 function parseJson(content: string, stage: "initial" | "repair"): unknown {
   const trimmed = content.trim();
-  const candidates = extractJsonCandidates(trimmed);
+  const candidates = extractJsonCandidates(trimmed).map((candidate) => candidate.text);
   const parseErrors: string[] = [];
   for (const candidate of candidates) {
     try {
@@ -508,43 +509,6 @@ function parseJson(content: string, stage: "initial" | "repair"): unknown {
     `LLM_GENERATION_FAILED: JSON parse failed during ${stage}. ${parseErrors[0] ?? "No JSON object or array found."}`,
     { phase: "json_parse", rawContentPreview: preview(content), providerErrorMessage: parseErrors[0] },
   );
-}
-
-function extractJsonCandidates(content: string): string[] {
-  const candidates: string[] = [];
-  for (const match of content.matchAll(/```(?:json)?\s*([\s\S]*?)```/gi)) {
-    candidates.push(match[1].trim());
-  }
-  candidates.push(content);
-  candidates.push(...balancedJsonSlices(content, "{", "}"));
-  candidates.push(...balancedJsonSlices(content, "[", "]"));
-  return Array.from(new Set(candidates.filter(Boolean))).sort((a, b) => b.length - a.length);
-}
-
-function balancedJsonSlices(content: string, open: "{" | "[", close: "}" | "]"): string[] {
-  const slices: string[] = [];
-  for (let start = 0; start < content.length; start += 1) {
-    if (content[start] !== open) continue;
-    let depth = 0;
-    let inString = false;
-    let escaped = false;
-    for (let index = start; index < content.length; index += 1) {
-      const char = content[index];
-      if (inString) {
-        if (escaped) { escaped = false; }
-        else if (char === "\\") { escaped = true; }
-        else if (char === "\"") { inString = false; }
-        continue;
-      }
-      if (char === "\"") { inString = true; }
-      else if (char === open) { depth += 1; }
-      else if (char === close) {
-        depth -= 1;
-        if (depth === 0) { slices.push(content.slice(start, index + 1)); break; }
-      }
-    }
-  }
-  return slices;
 }
 
 // ═══════════════════════════════════════════════════════════════

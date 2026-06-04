@@ -58,8 +58,8 @@ export class PendingActionService {
     const normalized: PendingAction[] = [];
     for (const action of actions) {
       if (action.status === "pending" && isExpired(action)) {
-        const expired = await this.repository.update({ ...action, status: "expired" });
-        normalized.push(expired);
+        const expired = await this.repository.updateStatusIfCurrent(userId, action.id, "pending", { status: "expired" });
+        normalized.push(expired ?? { ...action, status: "expired" });
         continue;
       }
       normalized.push(action);
@@ -71,7 +71,8 @@ export class PendingActionService {
     const action = await this.repository.getById(userId, id);
     if (!action) return undefined;
     if (isExpired(action) && action.status === "pending") {
-      return this.repository.update({ ...action, status: "expired" });
+      const expired = await this.repository.updateStatusIfCurrent(userId, id, "pending", { status: "expired" });
+      return expired ?? this.repository.getById(userId, id);
     }
     return action;
   }
@@ -83,19 +84,35 @@ export class PendingActionService {
     if (action.status !== "pending") {
       throw new AgentError("CONFIRMATION_EXPIRED", "该操作已处理，无法重复取消。", { statusCode: 409 });
     }
-    return this.repository.update({ ...action, status: "cancelled" });
+    const cancelled = await this.repository.updateStatusIfCurrent(userId, id, "pending", { status: "cancelled" });
+    if (cancelled) return cancelled;
+    const latest = await this.get(userId, id);
+    if (latest?.status === "cancelled") return latest;
+    throw new AgentError("CONFIRMATION_EXPIRED", "璇ユ搷浣滃凡澶勭悊锛屾棤娉曢噸澶嶅彇娑堛€?", { statusCode: 409 });
   }
 
   public async markExecuted(userId: string, id: string, result: ToolResult): Promise<PendingAction | undefined> {
-    const action = await this.get(userId, id);
-    if (!action) return undefined;
-    return this.repository.update({ ...action, status: "executed", lastResult: result });
+    const executed = await this.repository.updateStatusIfCurrent(userId, id, "confirmed", { status: "executed", lastResult: result });
+    if (executed) return executed;
+    const latest = await this.get(userId, id);
+    if (!latest) return undefined;
+    if (latest.status === "executed") return latest;
+    if (latest.status === "pending") {
+      return this.repository.updateStatusIfCurrent(userId, id, "pending", { status: "executed", lastResult: result });
+    }
+    return latest;
   }
 
   public async markFailed(userId: string, id: string, result: ToolResult): Promise<PendingAction | undefined> {
-    const action = await this.get(userId, id);
-    if (!action) return undefined;
-    return this.repository.update({ ...action, status: "failed", lastResult: result });
+    const failed = await this.repository.updateStatusIfCurrent(userId, id, "confirmed", { status: "failed", lastResult: result });
+    if (failed) return failed;
+    const latest = await this.get(userId, id);
+    if (!latest) return undefined;
+    if (latest.status === "failed") return latest;
+    if (latest.status === "pending") {
+      return this.repository.updateStatusIfCurrent(userId, id, "pending", { status: "failed", lastResult: result });
+    }
+    return latest;
   }
 
   public async confirm(input: {

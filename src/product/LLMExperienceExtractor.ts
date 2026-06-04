@@ -1,5 +1,6 @@
 import { z } from "zod";
 import type { ModelClient } from "../agent-core/model/ModelClient.js";
+import { safeParseJsonOutput } from "../infrastructure/llm/JsonOutputParser.js";
 import type { ProductExperienceCategory } from "./types.js";
 
 const WorkExperienceSchema = z.object({
@@ -220,21 +221,8 @@ export class LLMExperienceExtractor {
   }
 
   private parseJsonResponse(content: string): unknown {
-    const trimmed = content.trim();
-    // Handle markdown code blocks
-    const jsonBlock = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/);
-    const json = jsonBlock?.[1] ?? trimmed;
-    try {
-      return JSON.parse(json);
-    } catch {
-      // Try to find JSON object in the text
-      const braceStart = json.indexOf("{");
-      const braceEnd = json.lastIndexOf("}");
-      if (braceStart >= 0 && braceEnd > braceStart) {
-        return JSON.parse(json.slice(braceStart, braceEnd + 1));
-      }
-      return {};
-    }
+    const result = safeParseJsonOutput(content, { expected: "object" });
+    return result.ok ? result.value : {};
   }
 }
 
