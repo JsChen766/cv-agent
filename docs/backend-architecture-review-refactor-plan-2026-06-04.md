@@ -2152,3 +2152,73 @@ B-01/B-02 当前状态：
 1. B-20 Phase 3：覆盖 generate_resume_from_jd、match_experiences_against_jd
 2. B-01 Phase 4：抽 ExplicitActionMapper
 3. B-17/B-19：补真实 Postgres integration test
+
+### 9.41 本轮计划：D-01 Agent / Tool / Prompt 领域注册机制
+
+本轮目标：新增轻量 AgentDomainModule / AgentDomainRegistry，将当前硬编码 agent/tool 注册收敛为静态 domain module。为未来 study-abroad 预留扩展点。不实现留学业务。
+
+注意：先只写本轮计划，代码完成后再回写结果。
+
+### 9.42 本轮结果：D-01 Agent / Tool / Prompt 领域注册机制
+
+修改前硬编码点：
+
+* AgentOrchestrator constructor 中手动 `new FrontDeskAgent/StrategistAgent/...` 5 行硬编码
+* createAgentTools 中手动 `...createExperienceAgentTools(), ...createJDAgentTools(), ...` 5 行硬编码
+
+修改后：
+
+* AgentOrchestrator constructor → `new AgentDomainRegistry([careerDomain]).createAgents({modelClient, promptRegistry})`
+* createAgentTools → `careerDomain.tools` 展开
+
+新增文件：
+
+* `src/agent-core/domain/AgentDomainModule.ts` — `AgentFactoryDeps`, `AgentFactory`, `AgentDomainModule` 类型
+* `src/agent-core/domain/AgentDomainRegistry.ts` — `createAgents(deps)`, `createTools()`, `listDomainIds()`
+* `src/agent-domains/career/index.ts` — 5 agents + 5 tool groups 组成的 `careerDomain`
+* `tests/AgentDomainRegistry.test.ts` — 8 tests：agent 创建、tool 顺序、重复检测、向后兼容
+
+修改文件：
+
+* `src/agent-tools/index.ts` — 委托 `careerDomain.tools`
+* `src/agent-core/runtime/AgentOrchestrator.ts` — 移除 5 个 agent import，委托 registry
+
+未来新增 study-abroad domain 示例：
+
+```ts
+// Example — not implemented
+const studyAbroadDomain: AgentDomainModule = {
+  id: "study-abroad",
+  agents: [...],
+  tools: [...],
+};
+// const registry = new AgentDomainRegistry([careerDomain, studyAbroadDomain]);
+```
+
+行为兼容性：
+
+| 检查项 | 结果 |
+|---|---|
+| agent names | 不变（5 个） |
+| tool ids | 不变 |
+| tool order | 不变 |
+| prompt keys | 不变 |
+| prompt 内容 | 不变 |
+| API response | 不变 |
+| pending action | 不变 |
+| AgentOrchestrator 主流程 | 不变 |
+| LLM | 不变 |
+| 数据库 | 不变 |
+
+D-01 状态：**已完成第一阶段**
+
+测试结果：
+
+* `npm run typecheck`：通过。
+* `npm test`：全部 49 files / 476 tests 通过（+8 registry tests）。
+
+下一轮建议：
+
+1. B-20 Phase 3：覆盖 generate_resume_from_jd、match_experiences_against_jd
+2. B-01 Phase 4：抽 ExplicitActionMapper
+3. B-17/B-19：补真实 Postgres integration test

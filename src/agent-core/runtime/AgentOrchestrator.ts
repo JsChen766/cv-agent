@@ -38,12 +38,9 @@ import { tasksFromHandoff } from "../../copilot/tasks/TaskStateReducer.js";
 import { createAgentTools } from "../../agent-tools/index.js";
 import type { PendingAction } from "../confirmation/PendingAction.js";
 import { PendingActionService } from "../confirmation/PendingActionService.js";
-import { ArchitectAgent } from "../agents/ArchitectAgent.js";
 import { getAgentDecisionMeta, type Agent } from "../agents/BaseAgent.js";
-import { CriticAgent } from "../agents/CriticAgent.js";
-import { ExperienceReceiverAgent } from "../agents/ExperienceReceiverAgent.js";
-import { FrontDeskAgent } from "../agents/FrontDeskAgent.js";
-import { StrategistAgent } from "../agents/StrategistAgent.js";
+import { AgentDomainRegistry } from "../domain/AgentDomainRegistry.js";
+import { careerDomain } from "../../agent-domains/career/index.js";
 import { PromptRegistry } from "../prompts/PromptRegistry.js";
 import type { ToolDefinition } from "../tools/Tool.js";
 import { ToolExecutor } from "../tools/ToolExecutor.js";
@@ -108,13 +105,8 @@ export class AgentOrchestrator {
     this.activeAssetContextBuilder = new ActiveAssetContextBuilder(deps.kernel);
     this.userAssetContextBuilder = new UserAssetContextBuilder(deps.kernel);
     const modelClient = deps.kernel.frontDeskModelClient;
-    this.agents = {
-      frontdesk: new FrontDeskAgent({ modelClient, promptRegistry }),
-      experience_receiver: new ExperienceReceiverAgent({ modelClient, promptRegistry }),
-      strategist: new StrategistAgent({ modelClient, promptRegistry }),
-      architect: new ArchitectAgent({ modelClient, promptRegistry }),
-      critic: new CriticAgent({ modelClient, promptRegistry }),
-    };
+    const domainRegistry = new AgentDomainRegistry([careerDomain]);
+    this.agents = domainRegistry.createAgents({ modelClient, promptRegistry });
   }
 
   public getSession(userId: string, sessionId: string) {
