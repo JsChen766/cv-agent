@@ -3,7 +3,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { AgentName } from "../validation/AgentOutputSchemas.js";
 
-const PROMPT_FILES: Record<AgentName, string> = {
+const AGENT_PROMPT_FILES: Record<AgentName, string> = {
   frontdesk: "frontdesk.md",
   experience_receiver: "experience-receiver.md",
   strategist: "strategist.md",
@@ -11,19 +11,45 @@ const PROMPT_FILES: Record<AgentName, string> = {
   critic: "critic.md",
 };
 
+const PRODUCT_PROMPT_FILES = {
+  "product.experienceExtraction.system": "product/experience-extraction-system.md",
+  "product.experienceExtraction.repair": "product/experience-extraction-repair.md",
+} as const;
+
+export type ProductPromptName = keyof typeof PRODUCT_PROMPT_FILES;
+export type PromptName = AgentName | ProductPromptName;
+
+const PROMPT_FILES: Record<PromptName, string> = {
+  ...AGENT_PROMPT_FILES,
+  ...PRODUCT_PROMPT_FILES,
+};
+
 export class PromptRegistry {
-  private readonly cache = new Map<AgentName, string>();
+  private readonly cache = new Map<PromptName, string>();
   private readonly root: string;
 
   public constructor(root = join(dirname(fileURLToPath(import.meta.url)), "prompts")) {
     this.root = root;
   }
 
-  public get(agentName: AgentName): string {
-    const cached = this.cache.get(agentName);
+  public get(promptName: AgentName): string;
+  public get(promptName: ProductPromptName): string;
+  public get(promptName: PromptName): string {
+    const cached = this.cache.get(promptName);
     if (cached) return cached;
-    const prompt = readFileSync(join(this.root, PROMPT_FILES[agentName]), "utf8");
-    this.cache.set(agentName, prompt);
+    const file = PROMPT_FILES[promptName];
+    if (!file) throw new Error(`Prompt not registered: ${String(promptName)}`);
+    const rawPrompt = readFileSync(join(this.root, file), "utf8");
+    const prompt = isProductPromptName(promptName) ? trimOneFinalNewline(rawPrompt) : rawPrompt;
+    this.cache.set(promptName, prompt);
     return prompt;
   }
+}
+
+function isProductPromptName(value: PromptName): value is ProductPromptName {
+  return Object.prototype.hasOwnProperty.call(PRODUCT_PROMPT_FILES, value);
+}
+
+function trimOneFinalNewline(value: string): string {
+  return value.replace(/\r?\n$/, "");
 }

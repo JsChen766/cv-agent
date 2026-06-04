@@ -1,5 +1,6 @@
 import { z } from "zod";
 import type { ModelClient } from "../agent-core/model/ModelClient.js";
+import { PromptRegistry } from "../agent-core/prompts/PromptRegistry.js";
 import { safeParseJsonOutput } from "../infrastructure/llm/JsonOutputParser.js";
 import type { ProductExperienceCategory } from "./types.js";
 
@@ -88,25 +89,8 @@ const ExtractionResultSchema = z.object({
 export type ExtractedCandidate = z.infer<typeof ExtractedCandidateSchema>;
 type ExtractionResult = z.infer<typeof ExtractionResultSchema>;
 
-const SYSTEM_PROMPT = [
-  "You are a professional resume parser. Extract ALL experiences from the provided text.",
-  "For each experience, determine its type and extract structured fields.",
-  "",
-  "Type definitions:",
-  "- work: Full-time/part-time employment. Fields: title, company, role, department, employmentType, startDate, endDate, achievements, metrics, skills, content, confidence",
-  "- project: A specific project or initiative. Fields: title, projectName, projectRole, techStack, projectUrl, startDate, endDate, responsibilities, outcomes, metrics, content, confidence",
-  "- education: Academic background. Fields: title, school, degree, major, gpa, courses, honors, startDate, endDate, content, confidence",
-  "- award: Honors and awards. Fields: title, awardName, issuer, level, awardDate, description, content, confidence",
-  "- skill: Skills and competencies. Fields: title, skillCategory, skills, proficiency, evidence, content, confidence",
-  "",
-  "Rules:",
-  "- Every candidate MUST have a type, title, and content field.",
-  "- dates: use YYYY-MM or YYYY format. Use 'present' for current/ongoing.",
-  "- metrics: extract name, value, and surrounding context. Only include real metrics from the text.",
-  "- confidence: 0.0-1.0 based on how clearly this experience is described.",
-  "- Split each distinct role/project/school/award into its own candidate.",
-  "- Output ONLY valid JSON. No markdown, no explanation.",
-].join("\n");
+const PROMPTS = new PromptRegistry();
+const SYSTEM_PROMPT = PROMPTS.get("product.experienceExtraction.system");
 
 function buildUserPrompt(text: string): string {
   const truncated = text.length > 8000 ? text.slice(0, 8000) + "\n...[truncated]" : text;
@@ -121,14 +105,7 @@ function buildUserPrompt(text: string): string {
   ].join("\n");
 }
 
-const REPAIR_PROMPT = [
-  "The previous output failed JSON schema validation.",
-  "Errors: {{errors}}",
-  "",
-  "Please fix the issues and return a valid JSON object with a 'candidates' array.",
-  "Each candidate must have the required fields: type, title, content.",
-  "Output ONLY the corrected JSON. No markdown, no explanation.",
-].join("\n");
+const REPAIR_PROMPT = PROMPTS.get("product.experienceExtraction.repair");
 
 export class LLMExperienceExtractor {
   public constructor(private readonly modelClient: ModelClient) {}

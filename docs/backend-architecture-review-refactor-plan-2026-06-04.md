@@ -447,7 +447,7 @@ pending
 | B-11 | 已修复 | `internship` route 校验已修复。 | `src/api/routes/product.ts` |
 | Contract 漂移 | 已修复 | `activePanel: jd_matching`、`evidenceFromExperience: string[]`、docx 未实现状态已对齐。 | 后端 `src/agent-tools/experience/matchExperiencesAgainstJD.tool.ts`；前端 `src/types/copilot.ts`、`src/types/export.ts`、`src/features/copilot/copilotActionResponseAnalyzer.ts` |
 | B-03 | 已修复 | Pending Action 已补齐 Postgres 持久化：新增 `pending_action` migration、`PostgresPendingActionRepository`、Kernel Postgres 模式注入；confirm/cancel/markExecuted/markFailed/expire 均复用 repository 条件状态迁移。 | `src/persistence/postgres/migrations/0010_pending_action.sql`、`src/agent-core/confirmation/PostgresPendingActionRepository.ts`、`src/agent-core/confirmation/PendingActionService.ts`、`src/api/kernel/createKernel.ts`、`src/index.ts`、`tests/PostgresPendingActionRepository.test.ts`、`tests/PostgresSchema.test.ts` |
-| B-13 | 已修复（第一阶段） | 新增统一 LLM JSON parser；product 侧经历识别、简历生成、改写的重复 JSON 解析已迁入公共 parser；agent 专用 parser 暂保留其 `AgentError` 语义。 | `src/infrastructure/llm/JsonOutputParser.ts`、`src/product/LLMExperienceExtractor.ts`、`src/product/LLMGenerationService.ts`、`src/product/LLMRewriteService.ts`、`tests/JsonOutputParser.test.ts` |
+| B-13 | 已修复 | 新增统一 LLM JSON parser；product 侧经历识别、简历生成、改写的重复 JSON 解析已迁入公共 parser；agent 专用 `parseAgentJson` 已通过 wrapper 复用公共 parser，并继续抛 `AgentError("INVALID_AGENT_OUTPUT")`。 | `src/infrastructure/llm/JsonOutputParser.ts`、`src/product/LLMExperienceExtractor.ts`、`src/product/LLMGenerationService.ts`、`src/product/LLMRewriteService.ts`、`src/agent-core/validation/parseAgentJson.ts`、`tests/JsonOutputParser.test.ts`、`tests/parseAgentJson.test.ts` |
 
 上一轮后端实际修改文件：
 
@@ -481,6 +481,7 @@ src/features/copilot/copilotActionResponseAnalyzer.ts
 | 问题编号 | 当前状态 | 已完成 | 未完成 | 下一步 |
 |---|---|---|---|---|
 | 暂无 | - | B-03 已在本轮补齐 Postgres 持久化代码路径。 | 尚未在真实 Postgres 服务上跑集成测试；当前通过 fake `PostgresQueryable` contract test 和 schema migration 静态测试覆盖。 | 后续如 CI 提供 Postgres，可补一条真实数据库 repository integration test。 |
+| B-14 | 部分修复 | `PromptRegistry` 已支持 product prompt key；`LLMExperienceExtractor` 的 system prompt 与 repair prompt 已迁入 prompt markdown 文件。 | `LLMGenerationService`、`LLMRewriteService`、`src/agent-tools/resume/index.ts` 仍有内联 prompt。 | 下一轮继续迁移 resume generation / rewrite prompt，并保持 prompt 内容与 LLM 参数不变。 |
 
 ### 9.3 本轮未处理问题
 
@@ -490,7 +491,6 @@ src/features/copilot/copilotActionResponseAnalyzer.ts
 |---|---|---|
 | B-01 | 未修复 | 未大拆 `AgentOrchestrator`，符合低风险修复原则。 |
 | B-02 | 未修复 | Pending Action Workflow 尚未独立抽象。 |
-| B-14 | 未修复 | PromptRegistry 尚未覆盖 product prompt。 |
 | B-15 | 未修复 | ProviderFactory / ProviderRegistry 尚未接入用户模型配置。 |
 | B-17 | 未修复 | DB migration tracking 尚未完成。 |
 | B-21 | 未修复 | Product route/controller 尚未拆分。 |
@@ -534,7 +534,7 @@ src/features/copilot/copilotActionResponseAnalyzer.ts
 
 ### 9.5 下一轮推荐修复顺序
 
-1. B-14：PromptRegistry 覆盖 product prompt。
+1. 继续 B-14：迁移剩余 product prompt。
 2. B-15：ProviderFactory 接入用户模型配置。
 3. B-21：Product route/controller 小步拆分。
 4. B-17：DB migration tracking。
@@ -584,3 +584,52 @@ src/agent-core/validation/parseAgentJson.ts
 | 未替换调用点 | `src/agent-core/validation/parseAgentJson.ts` 暂保留：它当前抛 `AgentError("INVALID_AGENT_OUTPUT")`，直接替换可能影响 agent fallback 和 plan validation 观测口径。下一步可在保留 `AgentError` wrapper 的前提下复用公共 parser。 |
 | 行为兼容性 | 未修改 prompt、LLM 参数、业务 Zod schema、API response envelope、数据库结构或前端字段；product 侧解析失败仍按原位置返回 `{}`、触发 repair、返回 null 或抛原有 `LLMGenerationError`。 |
 | 测试结果 | `npm run typecheck` 通过；`npm test` 通过，42 files / 369 tests；`npm run lint --if-present` 通过，项目无实际 lint 脚本输出。 |
+
+### 9.7 本轮计划：B-13 收尾与 B-14 PromptRegistry 第一阶段
+
+本轮目标分为两部分：B-13 收尾让 agent JSON parser 复用公共 parser，但保持 agent 层错误语义不变；B-14 第一阶段只迁移 product prompt 的管理方式，不修改 prompt 内容、模型调用参数或业务逻辑。
+
+本轮范围：
+
+| 范围项 | 说明 |
+|---|---|
+| B-13 收尾 | `src/agent-core/validation/parseAgentJson.ts` 通过 wrapper 方式复用 `JsonOutputParser`，继续抛 `AgentError("INVALID_AGENT_OUTPUT")`。 |
+| B-14 第一阶段 | 统计 product 侧内联 prompt，选择 1 到 2 个低风险 prompt 迁入 prompt 文件，并通过现有 `PromptRegistry` 或轻量扩展读取。 |
+| 不改业务语义 | 不改 AgentOrchestrator、agent plan schema、agent prompt、product 输出 schema、API response、数据库 schema 或前端契约。 |
+| 不改模型行为 | 不改 LLM prompt 文案本身，不改 prompt 变量替换方式，不改 temperature、maxTokens、responseFormat 等调用参数。 |
+| 测试优先 | 补充 `parseAgentJson` wrapper 测试和 product prompt registry 最小测试，避免大 snapshot。 |
+
+本轮初步判断：
+
+| 模块 | 当前情况 | 本轮处理策略 |
+|---|---|---|
+| `src/agent-core/validation/parseAgentJson.ts` | 仍有本地 fenced JSON 提取和 `JSON.parse`。 | 改为调用公共 parser，并将所有 parser 错误包回原有 `AgentError("INVALID_AGENT_OUTPUT")`。 |
+| `src/agent-core/prompts/PromptRegistry.ts` | 当前只支持 agent prompt key 与 `prompts/*.md`。 | 轻量扩展支持 product prompt key，继续使用现有 prompt 根目录，不新建割裂的 registry。 |
+| `src/product/LLMExperienceExtractor.ts` | system prompt 和 repair prompt 独立、变量少、输出 schema 稳定。 | 优先迁移 `SYSTEM_PROMPT` 与 `REPAIR_PROMPT` 到 product prompt markdown 文件。 |
+| `src/product/LLMGenerationService.ts` | prompt 较长且与 generation repair、normalization 强相关。 | 本轮暂不迁移，后续 B-14 第二阶段处理。 |
+| `src/product/LLMRewriteService.ts` | 有 3 个 rewrite/check system prompt。 | 本轮暂不迁移，后续可按 rewrite/check 分批处理。 |
+| `src/agent-tools/resume/index.ts` | 工具内仍有内联 rewrite prompt。 | 本轮暂不迁移，避免同时触碰工具确认流程。 |
+
+成功标准：
+
+| 标准 | 目标 |
+|---|---|
+| B-13 对外行为不变 | 合法 JSON 与 fenced JSON 仍正常解析；非法 JSON、无 JSON 仍抛 `AgentError("INVALID_AGENT_OUTPUT")`，错误 code 不变。 |
+| Product prompt 文件化 | 至少 1 个 product prompt 从内联字符串迁移到 prompt 文件，prompt 内容逐字保持一致。 |
+| PromptRegistry 覆盖 product | 能通过明确 key 读取新增 product prompt；读取不存在 key 时有明确错误。 |
+| 测试通过 | `npm run typecheck`、`npm test`、`npm run lint --if-present` 通过或说明原因。 |
+
+本轮执行结果：
+
+| 项目 | 结果 |
+|---|---|
+| B-13 状态 | 已修复。`parseAgentJson.ts` 已复用 `JsonOutputParser`，函数签名和调用方 import 不变；非法 JSON、无 JSON 仍统一包回 `AgentError("INVALID_AGENT_OUTPUT")`，不暴露基础设施层 parser error。 |
+| B-14 状态 | 部分修复。已完成 PromptRegistry 覆盖 product prompt 的第一阶段，不标记为完全修复。 |
+| 新增 prompt 文件 | `src/agent-core/prompts/prompts/product/experience-extraction-system.md`；`src/agent-core/prompts/prompts/product/experience-extraction-repair.md`。 |
+| 修改的 service | `src/product/LLMExperienceExtractor.ts`：移除经历抽取 system/repair 内联 prompt，改为通过 `PromptRegistry` 读取；`buildUserPrompt` 与变量替换方式保持不变。 |
+| PromptRegistry 变化 | `src/agent-core/prompts/PromptRegistry.ts` 新增 product prompt key：`product.experienceExtraction.system`、`product.experienceExtraction.repair`；未注册 key 会抛出明确错误 `Prompt not registered: ...`。 |
+| 未迁移 prompt | `src/product/LLMGenerationService.ts` 的 generation / repair prompt；`src/product/LLMRewriteService.ts` 的 experience rewrite、resume item rewrite、claim check prompt；`src/agent-tools/resume/index.ts` 的工具内 rewrite prompt。 |
+| 未迁移原因 | 这些 prompt 与生成策略、rewrite fallback 或工具确认流程更贴近，本轮为降低风险只迁移独立性最高的经历抽取 prompt。 |
+| 行为兼容性 | 未修改 prompt 文案、LLM 参数、API response、数据库 schema、前端契约、AgentOrchestrator、product LLM 输出 schema 或解析失败 fallback。product prompt 文件读取时仅去掉文件末尾单个换行，以保持与原 `join("\n")` 常量一致。 |
+| 测试结果 | `npm run typecheck` 通过；`npm test` 通过，44 files / 376 tests；`npm run lint --if-present` 通过，项目无实际 lint 脚本输出。 |
+| 下一轮建议 | 继续 B-14，优先迁移 `LLMRewriteService` 中相对独立的 rewrite / claim check system prompt；再迁移 `LLMGenerationService` 的 generation prompt；最后处理 `src/agent-tools/resume/index.ts` 中与确认流程更耦合的 prompt。 |
