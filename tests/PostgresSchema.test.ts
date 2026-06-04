@@ -110,6 +110,89 @@ describe("PostgreSQL schema", () => {
   });
 });
 
+describe("0011 product constraints migration", () => {
+  const migrationPath = join(process.cwd(), "src", "persistence", "postgres", "migrations", "0011_product_constraints.sql");
+  const exists = existsSync(migrationPath);
+  const content = exists ? readFileSync(migrationPath, "utf8") : "";
+
+  it("migration file exists", () => {
+    expect(exists).toBe(true);
+  });
+
+  it("adds category CHECK on product_experience", () => {
+    expect(content).toContain("chk_product_experience_category");
+    expect(content).toContain("category IN ('work','internship','project','education','award','skill','other')");
+  });
+
+  it("adds status CHECK on product_experience", () => {
+    expect(content).toContain("chk_product_experience_status");
+    expect(content).toContain("status IN ('active','archived','deleted')");
+  });
+
+  it("adds source CHECK on product_experience_revision", () => {
+    expect(content).toContain("chk_product_experience_revision_source");
+    expect(content).toContain("source IN ('manual','import','copilot','resume_upload')");
+  });
+
+  it("adds variant_type CHECK on product_experience_variant", () => {
+    expect(content).toContain("chk_product_experience_variant_variant_type");
+    expect(content).toContain("variant_type IN ('full','medium','short','jd_tailored','custom')");
+  });
+
+  it("adds language CHECK on product_experience_variant", () => {
+    expect(content).toContain("chk_product_experience_variant_language");
+    expect(content).toContain("language IN ('zh','en')");
+  });
+
+  it("adds section_type CHECK on product_resume_item", () => {
+    expect(content).toContain("chk_product_resume_item_section_type");
+    expect(content).toContain("section_type IN ('experience','education','project','skill','award','summary','other')");
+  });
+
+  it("adds source_type CHECK on product_import_job", () => {
+    expect(content).toContain("chk_product_import_job_source_type");
+    expect(content).toContain("source_type IN ('text','pdf')");
+  });
+
+  it("adds status CHECK on product_import_candidate", () => {
+    expect(content).toContain("chk_product_import_candidate_status");
+    expect(content).toContain("status IN ('pending','accepted','rejected','merged')");
+  });
+
+  it("adds FK from import_candidate to import_job", () => {
+    expect(content).toContain("fk_product_import_candidate_job_id");
+    expect(content).toContain("REFERENCES product_import_job(id)");
+  });
+
+  it("adds FK from resume_item to resume", () => {
+    expect(content).toContain("fk_product_resume_item_resume_id");
+    expect(content).toContain("REFERENCES product_resume(id)");
+  });
+
+  it("adds FK from revision to experience", () => {
+    expect(content).toContain("fk_product_experience_revision_experience_id");
+    expect(content).toContain("REFERENCES product_experience(id)");
+  });
+
+  it("adds FK from variant to experience", () => {
+    expect(content).toContain("fk_product_experience_variant_experience_id");
+  });
+
+  it("adds FK from variant to revision", () => {
+    expect(content).toContain("fk_product_experience_variant_revision_id");
+    expect(content).toContain("REFERENCES product_experience_revision(id)");
+  });
+
+  it("uses DO $$ blocks to safely add constraints", () => {
+    expect(content).toContain("EXCEPTION WHEN duplicate_object THEN NULL");
+  });
+
+  it("adds composite index on import_candidate(user_id, status)", () => {
+    expect(content).toContain("idx_product_import_candidate_user_status");
+    expect(content).toContain("ON product_import_candidate(user_id, status)");
+  });
+});
+
 function stripSqlComments(sql: string): string {
   return sql
     .replace(/\/\*[\s\S]*?\*\//g, "") // block comments

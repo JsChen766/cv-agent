@@ -30,6 +30,8 @@ import { defaultToolResultVisibility } from "../../copilot/response/ToolResultVi
 import { affectedResourcesFor } from "../security/ToolAffectedResources.js";
 import { guardToolIds, stripInternalToolArgs } from "../security/ToolIdGuard.js";
 import { sanitizeExperiencePatch } from "../security/ToolPatchSanitizer.js";
+import { previewFor, confirmationSummary, confirmationTitle } from "./PreviewPresenter.js";
+import { buildProductBlocks, sanitizeMetadataObject } from "./ProductBlockPresenter.js";
 import { guardToolScope } from "../security/ToolScopeGuard.js";
 import { tasksFromHandoff } from "../../copilot/tasks/TaskStateReducer.js";
 import { createAgentTools } from "../../agent-tools/index.js";
@@ -2256,236 +2258,11 @@ function sanitizeActionResultForMetadata(result: CopilotActionResult | undefined
   };
 }
 
-function buildProductBlocks(toolResults: ToolResult[]): ProductBlock[] {
-  let experienceList: ProductBlock | null = null;
-  let experienceCard: ProductBlock | null = null;
-  let detailBlock: ProductBlock | null = null;
-  let actionBlock: ProductBlock | null = null;
-  let matchBlock: ProductBlock | null = null;
 
-  for (const result of toolResults) {
-    if (!result.data || typeof result.data !== "object") continue;
-    const data = result.data as Record<string, unknown>;
 
-    // Match results block — priority over plain lists
-    if (isRecord(data.topResults) && typeof data.totalCount === "number") {
-      const topResults = data.topResults as Record<string, unknown>;
-      const high = (topResults.high as Array<Record<string, unknown>>) ?? [];
-      const medium = (topResults.medium as Array<Record<string, unknown>>) ?? [];
-      const low = (topResults.low as Array<Record<string, unknown>>) ?? [];
-      const jdPreview = typeof data.jdPreview === "string" ? data.jdPreview : undefined;
-      const jdSummary = isRecord(data.jdSummary) ? data.jdSummary as Record<string, unknown> : {};
-      const scoreDist = isRecord(data.scoreDistribution) ? data.scoreDistribution as Record<string, unknown> : {};
-      const summary = stringValue(data.summary)
-        ?? `已匹配 ${typeof data.totalExperienceCount === "number" ? data.totalExperienceCount : data.totalCount} 条经历，暂无高匹配经历。`;
-      const jdActions = buildJDMatchActions(data);
-      const saveAction = jdActions.find((action) => action.type === "save_jd_from_text" && !action.payload?.generateAfterSave);
-      const rawMatches = Array.isArray(data.matches) ? data.matches as Array<Record<string, unknown>> : [...high, ...medium, ...low];
-      const sanitizedMatchResults = rawMatches.map(sanitizeMatchResult);
-      matchBlock = {
-        type: "experience_match_results",
-        title: "JD 匹配经历推荐",
-        data: sanitizeMetadataObject({
-          totalExperienceCount: typeof data.totalExperienceCount === "number" ? data.totalExperienceCount : data.totalCount,
-          totalCount: data.totalCount,
-          highMatches: typeof data.highMatches === "number" ? data.highMatches : high.length,
-          mediumMatches: typeof data.mediumMatches === "number" ? data.mediumMatches : medium.length,
-          lowMatches: typeof data.lowMatches === "number" ? data.lowMatches : low.length,
-          summary,
-          matchMethod: data.matchMethod,
-          jdSummary: sanitizeMetadataObject({
-            title: jdSummary.title,
-            company: jdSummary.company,
-            targetRole: jdSummary.targetRole,
-            preview: jdSummary.preview ?? jdPreview,
-          }),
-          jdPreview,
-          scoreDistribution: {
-            high: typeof scoreDist.high === "number" ? scoreDist.high : high.length,
-            medium: typeof scoreDist.medium === "number" ? scoreDist.medium : medium.length,
-            low: typeof scoreDist.low === "number" ? scoreDist.low : low.length,
-          },
-          topResults: {
-            high: high.slice(0, 5).map(sanitizeMatchResult),
-            medium: medium.slice(0, 5).map(sanitizeMatchResult),
-            low: low.slice(0, 5).map(sanitizeMatchResult),
-          },
-          matchResults: sanitizedMatchResults,
-          ...(saveAction ? { saveJDAction: saveAction } : {}),
-          ...(jdActions.length ? { actions: jdActions } : {}),
-          // Flat list for backward compat
-          allResults: [...high, ...medium, ...low].slice(0, 10).map(sanitizeMatchResult),
-        }) ?? {},
-      };
-      continue;
-    }
 
-    if (Array.isArray(data.items) && typeof data.count === "number") {
-      experienceList = {
-        type: "experience_list",
-        title: "Experience library",
-        data: {
-          count: data.count,
-          items: (data.items as Array<Record<string, unknown>>).slice(0, 3).map(sanitizeExperienceItem),
-        },
-      };
-      continue;
-    }
-    if (isRecord(data.experience)) {
-      experienceCard = {
-        type: "experience_card",
-        title: String((data.experience as Record<string, unknown>).title ?? "Experience"),
-        data: sanitizeExperienceItem(data.experience as Record<string, unknown>),
-      };
-      continue;
-    }
-    if (isRecord(data.currentRevision) || Array.isArray(data.revisions)) {
-      const experience = isRecord(data.experience) ? sanitizeExperienceItem(data.experience as Record<string, unknown>) : undefined;
-      detailBlock = {
-        type: "experience_detail",
-        title: typeof experience?.title === "string" ? experience.title : "Experience detail",
-        data: sanitizeMetadataObject({
-          experience,
-          currentRevision: isRecord(data.currentRevision) ? sanitizeRevision(data.currentRevision as Record<string, unknown>) : undefined,
-          revisionCount: Array.isArray(data.revisions) ? data.revisions.length : undefined,
-        }) ?? {},
-      };
-      continue;
-    }
-    if (isRecord(result.actionResult)) {
-      actionBlock = {
-        type: "action_result",
-        title: String((result.actionResult as Record<string, unknown>).actionType ?? "Action result"),
-        data: sanitizeMetadataObject(result.actionResult as Record<string, unknown>) ?? {},
-      };
-    }
-  }
-  // Match results have highest priority — they're the most actionable
-  if (matchBlock) return [matchBlock];
-  if (experienceCard) return [experienceCard];
-  if (detailBlock) return [detailBlock];
-  if (experienceList) return [experienceList];
-  if (actionBlock) return [actionBlock];
-  return [];
-}
 
-function sanitizeExperienceItem(item: Record<string, unknown>): Record<string, unknown> {
-  return sanitizeMetadataObject({
-    id: item.id,
-    category: item.category,
-    title: item.title,
-    organization: item.organization,
-    role: item.role,
-    startDate: item.startDate,
-    endDate: item.endDate,
-    tags: item.tags,
-    status: item.status,
-    currentRevisionId: item.currentRevisionId,
-    content: typeof item.content === "string" ? item.content.slice(0, 500) : undefined,
-    structured: isRecord(item.structured) ? item.structured : undefined,
-    updatedAt: item.updatedAt,
-  }) ?? {};
-}
 
-function sanitizeMatchResult(item: Record<string, unknown>): Record<string, unknown> {
-  return sanitizeMetadataObject({
-    experienceId: item.experienceId,
-    title: item.title,
-    category: item.category,
-    role: item.role,
-    organization: item.organization,
-    dateRange: item.dateRange,
-    matchScore: item.matchScore,
-    matchLevel: item.matchLevel,
-    reason: item.reason,
-    matchedRequirements: item.matchedRequirements,
-    missingRequirements: item.missingRequirements,
-    evidenceFromExperience: item.evidenceFromExperience,
-    suggestedUsage: item.suggestedUsage,
-    rewriteSuggestion: item.rewriteSuggestion,
-  }) ?? {};
-}
-
-function buildSaveJDAction(data: Record<string, unknown>): Record<string, unknown> | undefined {
-  if (typeof data.jdId === "string" && data.jdId.trim().length > 0) return undefined;
-  const rawText = stringValue(data.jdText);
-  if (!rawText) return undefined;
-  const jdHash = computeJDHash(rawText);
-  const jdSummary = isRecord(data.jdSummary) ? data.jdSummary as Record<string, unknown> : {};
-  return sanitizeMetadataObject({
-    id: `save-jd-${jdHash.slice(0, 12)}`,
-    type: "save_jd_from_text",
-    label: "保存该 JD 到 JD 库",
-    primary: false,
-    payload: {
-      jdText: rawText,
-      rawText,
-      title: stringValue(jdSummary.title),
-      company: stringValue(jdSummary.company),
-      targetRole: stringValue(jdSummary.targetRole),
-      jdHash,
-    },
-  });
-}
-
-function buildJDMatchActions(data: Record<string, unknown>): ProductAction[] {
-  const rawText = stringValue(data.jdText);
-  const jdId = stringValue(data.jdId);
-  const jdHash = rawText ? computeJDHash(rawText) : undefined;
-  const jdSummary = isRecord(data.jdSummary) ? data.jdSummary as Record<string, unknown> : {};
-  const title = stringValue(jdSummary.title);
-  const company = stringValue(jdSummary.company);
-  const targetRole = stringValue(jdSummary.targetRole);
-  const basePayload = sanitizeMetadataObject({
-    jdId,
-    jdText: rawText,
-    rawText,
-    title,
-    company,
-    targetRole,
-    jdHash,
-  }) ?? {};
-
-  const actions: ProductAction[] = [];
-  if (rawText && !jdId) {
-    actions.push({
-      id: `save-generate-jd-${jdHash?.slice(0, 12) ?? "draft"}`,
-      type: "save_jd_from_text",
-      label: "保存 JD 并生成简历",
-      description: "先保存到 JD 库，再基于保存后的 JD 发起简历生成。",
-      primary: true,
-      payload: { ...basePayload, generateAfterSave: true },
-    });
-  }
-
-  if (rawText || jdId) {
-    actions.push({
-      id: `generate-jd-${jdId || jdHash?.slice(0, 12) || "draft"}`,
-      type: "generate_from_jd",
-      label: jdId ? "基于该 JD 生成简历" : "不保存 JD，直接生成简历",
-      description: jdId ? "使用已保存 JD 生成简历版本。" : "不写入 JD 库，直接使用这份 JD 文本生成简历。",
-      primary: Boolean(jdId),
-      payload: basePayload,
-    });
-  }
-
-  const saveAction = buildSaveJDAction(data);
-  if (saveAction) {
-    actions.push(saveAction as ProductAction);
-  }
-
-  return actions;
-}
-
-function sanitizeRevision(item: Record<string, unknown>): Record<string, unknown> {
-  return sanitizeMetadataObject({
-    id: item.id,
-    source: item.source,
-    content: typeof item.content === "string" ? item.content.slice(0, 800) : undefined,
-    structured: isRecord(item.structured) ? item.structured : undefined,
-    createdAt: item.createdAt,
-  }) ?? {};
-}
 
 function buildWorkspaceSnapshot(workspace: CopilotWorkspace | null, patch: Record<string, unknown>): CopilotMessageMetadata["workspaceSnapshot"] {
   if (!workspace && Object.keys(patch).length === 0) return undefined;
@@ -2622,25 +2399,6 @@ const BLOCKED_METADATA_KEYS = new Set([
   "authorization",
 ]);
 
-function sanitizeMetadataObject(value: unknown): Record<string, unknown> | undefined {
-  if (!isRecord(value)) return undefined;
-  const sanitized: Record<string, unknown> = {};
-  for (const [key, raw] of Object.entries(value)) {
-    if (BLOCKED_METADATA_KEYS.has(key)) continue;
-    const next = sanitizeMetadataValue(raw);
-    if (next !== undefined) sanitized[key] = next;
-  }
-  return Object.keys(sanitized).length > 0 ? sanitized : undefined;
-}
-
-function sanitizeMetadataValue(value: unknown): unknown {
-  if (value === undefined || value === null) return undefined;
-  if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") return value;
-  if (Array.isArray(value)) return value.map(sanitizeMetadataValue).filter((item) => item !== undefined).slice(0, 40);
-  if (isRecord(value)) return sanitizeMetadataObject(value) ?? {};
-  return undefined;
-}
-
 function ensureToolResultVisibility(result: ToolResult, toolName?: string): ToolResult {
   return {
     ...result,
@@ -2683,31 +2441,6 @@ function timelineFor(results: ToolResult[], now: string, turnId: string): Produc
   }));
 }
 
-function confirmationSummary(toolName: string, locale: CopilotLocale, args?: Record<string, unknown>): string {
-  if (toolName === "save_jd_from_text") return "请确认是否将这份 JD 保存到 JD 库。";
-  if (toolName === "generate_resume_from_jd") {
-    if (locale === "zh-CN") {
-      const jdSaved = Boolean(args?.jdSaved) || Boolean(stringValue(args?.jdId));
-      return jdSaved ? "JD 已保存，现在确认生成简历。" : "我已准备好基于这份 JD 生成简历版本，请确认后开始。";
-    }
-    return "I am ready to generate resume variants from this JD. Please confirm to start.";
-  }
-  if (locale === "zh-CN") {
-    if (toolName === "save_experience_from_text") return "已准备好一条经历草稿，请确认后写入经历库。";
-    if (toolName === "update_experience") return "请确认是否更新这段经历。";
-    if (toolName === "delete_experience") return "请确认是否删除这段经历。";
-    if (toolName === "export_resume") return "请确认是否创建这份简历导出。";
-    if (toolName === "accept_generation_variant") return "请确认是否将此版本保存到简历库。";
-    return `请确认是否执行 ${toolName}。`;
-  }
-  if (toolName === "save_experience_from_text") return "Please confirm saving this experience to your library.";
-  if (toolName === "update_experience") return "Please confirm updating this experience.";
-  if (toolName === "delete_experience") return "Please confirm deleting this experience.";
-  if (toolName === "export_resume") return "Please confirm creating this resume export.";
-  if (toolName === "accept_generation_variant") return "Please confirm saving this variant to your resume.";
-  return `Please confirm ${toolName}.`;
-}
-
 function buildWorkspaceForHistory(
   workspace: CopilotWorkspace | null,
   patch: Record<string, unknown>,
@@ -2725,11 +2458,6 @@ function buildWorkspaceForHistory(
   } as CopilotWorkspace;
 }
 
-function confirmationTitle(toolName: string, locale: CopilotLocale, fallback?: string): string {
-  if (toolName === "save_jd_from_text") return "保存 JD 到 JD 库";
-  if (toolName === "save_experience_from_text") return locale === "zh-CN" ? "保存经历到经历库" : "Save experience";
-  return fallback && fallback.trim().length > 0 ? fallback : toolName.replace(/_/g, " ");
-}
 
 function maybeAugmentResumeGenerationPlan(plan: PlanStep[], context: AgentContext): PlanStep[] {
   const generateIndex = plan.findIndex((step) => step.toolName === "generate_resume_from_jd");
@@ -2966,52 +2694,6 @@ function legacyAffectedResourcesFor(toolName: string, args: Record<string, unkno
   return [];
 }
 
-function previewFor(toolName: string, args: Record<string, unknown>) {
-  // save_experience_from_text preview is now handled by getOrExecutePrepareSaveResult
-  // which calls prepare_save_experience_from_text (LLM) before creating the pending action.
-  // Rule-based preview is intentionally disabled for save_experience_from_text
-  // to prevent weak raw-text drafts from appearing in the confirmation UI.
-  if (toolName === "save_experience_from_text") {
-    return undefined;
-  }
-  if (toolName === "save_jd_from_text") {
-    const rawText = stringValue(args.text) ?? stringValue(args.jdText) ?? stringValue(args.rawText);
-    if (!rawText) return undefined;
-    const title = stringValue(args.title);
-    const company = stringValue(args.company);
-    const targetRole = stringValue(args.targetRole) ?? title;
-    const requirements = extractJDRequirements(rawText);
-    const jdDraft = {
-      rawText,
-      title,
-      company,
-      targetRole,
-      requirements,
-      preview: rawText.slice(0, 300),
-    };
-    return {
-      after: { jdDraft },
-      jdDraft,
-    };
-  }
-  if (toolName === "update_experience") {
-    const patch = sanitizeExperiencePatch(args.patch);
-    return { after: { experienceId: args.experienceId, contentPreview: typeof args.content === "string" ? args.content.slice(0, 200) : undefined, patchKeys: Object.keys(patch).slice(0, 10) } };
-  }
-  if (toolName === "delete_experience") return { before: args };
-  if (toolName === "export_resume") return { after: args };
-  return undefined;
-}
-
-function extractJDRequirements(jdText: string): string[] {
-  const lines = jdText
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter((line) => line.length > 0);
-  const requirementLines = lines.filter((line) => /要求|职责|技能|任职|资格|requirement|responsibilit|qualif|skill/i.test(line));
-  const source = requirementLines.length > 0 ? requirementLines : lines;
-  return source.slice(0, 8).map((line) => line.slice(0, 120));
-}
 
 function isString(value: unknown): value is string {
   return typeof value === "string" && value.trim().length > 0;

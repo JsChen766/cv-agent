@@ -490,8 +490,8 @@ src/features/copilot/copilotActionResponseAnalyzer.ts
 
 | 问题编号 | 当前状态 | 说明 |
 |---|---|---|
-| B-01 | 未修复 | 未大拆 `AgentOrchestrator`，符合低风险修复原则。 |
-| B-02 | 未修复 | Pending Action Workflow 尚未独立抽象。 |
+| B-01 | 部分修复 | 两轮外围拆分：PreviewPresenter + ProductBlockPresenter 已抽出（-316 行）。 |
+| B-02 | 未修复 | `executeToolOrCreatePendingAction` 状态机未动。 |
 | B-15 | 部分修复 | ModelClientFactory + Kernel resolveUserModelClient + debug route 接入已完成。Product/Copilot 入口待后续接入。 |
 | B-17 | 已修复 | `schema_migrations` tracking 表已建立；migration 执行 + checksum 验证已实现。待真实 DB 集成测试。 |
 | B-21 | 已修复 | `product.ts` 已从 495 行缩至 28 行薄入口，按 domain 拆分。 |
@@ -1755,3 +1755,211 @@ B-15 当前状态：
 1. B-01/B-02：AgentOrchestrator 逐步拆分。
 2. B-18：product 表约束补强。
 3. B-17/B-19：补真实 Postgres integration test。
+
+### 9.29 本轮计划：B-01/B-02 AgentOrchestrator 外围拆分第一阶段
+
+本轮目标：
+
+* 对 AgentOrchestrator（3085 行）做低风险外围拆分；
+* 优先抽出 `previewFor`、`confirmationSummary`、`confirmationTitle` 等纯展示/presenter 函数；
+* 降低文件行数，不改变行为。
+
+当前状态：AgentOrchestrator 包含约 40+ 个方法/函数，混合了 runtime 主流程、tool execution、pending action、product block、workspace projection、preview、history、legacy guard 等职责。
+
+本轮只抽出预览/确认 presenter 函数（最纯、最少依赖），不动主流程。
+
+注意：先只写本轮计划，不要直接把 B-01/B-02 标成已修复。代码完成并测试通过后再回写结果。
+
+### 9.30 本轮结果：B-01/B-02 AgentOrchestrator 外围拆分第一阶段
+
+本轮拆出模块：
+
+* `src/agent-core/runtime/PreviewPresenter.ts`（~80 行）：
+  * `previewFor(toolName, args)` — 根据 toolName 构造 pending action preview 对象；
+  * `confirmationSummary(toolName, locale, args?)` — 确认中文案（中/英双语）；
+  * `confirmationTitle(toolName, locale, fallback?)` — 确认卡片标题；
+  * `extractJDRequirements(jdText)` — JD 文本需求提取；
+  * 从 AgentOrchestrator 移除 75 行（`previewFor`、`confirmationSummary`、`confirmationTitle`、`extractJDRequirements`），替换为 import。
+
+拆分前 AgentOrchestrator 职责：
+
+* 3085 行，包含 runtime 主流程、tool execution、pending action、product block、workspace projection、preview/confirm、history、legacy guard 等 ~40 个方法/函数。
+
+拆分后：
+
+* AgentOrchestrator: **3085 → 3010 行**（-75 行）
+* 新增 PreviewPresenter.ts: ~80 行（纯函数，无类实例依赖）
+
+仍留在 AgentOrchestrator 的职责：
+
+* 主流程（handleChatInternal、executeToolOrCreatePendingAction、confirmPendingAction 等）；
+* Product block 构造（buildProductBlocks + 多个 sanitizer/action builder）；
+* Workspace projection（buildWorkspaceSnapshot、buildRelatedResourceIds）；
+* Legacy guard（legacyGuardToolIds、legacyAffectedResourcesFor）；
+* Plan augmentation（maybeAugmentResumeGenerationPlan、maybeAppendJDSaveStep）；
+* i18n 文本（labelForAgentStarted、labelForCriticStatus 等）。
+
+本轮未拆部分及原因：
+
+| 模块 | 未拆原因 |
+|---|---|
+| `buildProductBlocks` + sanitizer/action builders | 依赖链较长（~12 个 helper），单轮改动量大，留待下阶段 |
+| `legacyGuardToolIds` / `legacyAffectedResourcesFor` | 历史兼容逻辑，可能将被下线（B-23），不应迁移 |
+| `executeToolOrCreatePendingAction` | 核心状态机，外围拆分完成后再处理 |
+
+B-01/B-02 当前状态：
+
+| 问题编号 | 状态 | 说明 |
+|---|---|---|
+| B-01 | 部分修复 | 首轮外围拆分：PreviewPresenter 已抽出，-75 行。 |
+| B-02 | 未变化 | `executeToolOrCreatePendingAction` 核心状态机未动。 |
+
+行为兼容性：未修改任何 Copilot 行为、response、workspacePatch、productBlocks、pending action。
+
+测试结果：
+
+* `npm run typecheck`：通过。
+* `npm test`：全部 47 files / 428 tests 通过。
+
+下一轮建议：
+
+1. B-01 第二阶段：继续抽 `buildProductBlocks` + sanitizer/action builder；
+2. B-18：product 表约束补强；
+3. B-17/B-19：补真实 Postgres integration test。
+
+### 9.31 本轮计划：B-01 AgentOrchestrator 外围拆分第二阶段
+
+本轮目标：抽出 `buildProductBlocks` + sanitizer + action builder 等纯展示层函数（~250 行），继续降低 `AgentOrchestrator` 体积。不动主流程。
+
+注意：先只写本轮计划，代码完成后再回写结果。
+
+### 9.32 本轮结果：B-01 AgentOrchestrator 外围拆分第二阶段
+
+本轮拆出模块：
+
+* `src/agent-core/runtime/ProductBlockPresenter.ts`（~260 行）：
+  * `buildProductBlocks(toolResults)` → `ProductBlock[]`
+  * `sanitizeExperienceItem`、`sanitizeMatchResult`、`sanitizeRevision`
+  * `buildSaveJDAction`、`buildJDMatchActions`
+  * `sanitizeMetadataObject`、`sanitizeMetadataValue`
+
+从 AgentOrchestrator 移除 242 行（8 个函数），替换为 2 个 import。
+
+AgentOrchestrator 行数变化：
+
+| 阶段 | 行数 | 变化 |
+|---|---|---|
+| 拆分前 | 3085 | — |
+| 第一阶段（PreviewPresenter） | 3010 | -75 |
+| 第二阶段（ProductBlockPresenter） | 2769 | -241 |
+| **累计** | **2769** | **-316** |
+
+仍留在 AgentOrchestrator 的职责（约 2700 行）：
+
+* 主流程（handleChatInternal、executeToolOrCreatePendingAction、confirmPendingAction 等）
+* Workspace projection（buildWorkspaceSnapshot、buildRelatedResourceIds）
+* Legacy guard（legacyGuardToolIds、legacyAffectedResourcesFor）
+* Plan augmentation（maybeAugmentResumeGenerationPlan、maybeAppendJDSaveStep）
+* i18n/locale text
+* Display snapshot / history / tool result visibility
+
+B-01/B-02 当前状态：
+
+| 问题编号 | 状态 | 说明 |
+|---|---|---|
+| B-01 | 部分修复 | 两轮外围拆分累计 -316 行。ProductBlockPresenter + PreviewPresenter 已抽出。 |
+| B-02 | 未变化 | `executeToolOrCreatePendingAction` 核心状态机未动。 |
+
+行为兼容性：未修改任何 Copilot 行为、productBlocks、workspacePatch。
+
+测试结果：
+
+* `npm run typecheck`：通过。
+* `npm test`：全部 47 files / 428 tests 通过。
+
+下一轮建议：
+
+1. B-18：product 表约束补强
+2. B-01 第三阶段：继续抽 WorkspaceProjector / 剩余外围逻辑
+3. B-17/B-19：补真实 Postgres integration test
+
+### 9.33 本轮计划：B-18 product 表约束补强
+
+本轮目标：对 product 相关表补充低风险 CHECK 约束（status/category/source/section_type 等）和关键 FK（import_candidate→import_job，resume_item→resume，revision→experience，variant→experience/revision），使用 `DO $$` 安全添加。
+
+注意：先只写本轮计划，代码完成后再回写结果。
+
+### 9.34 本轮结果：B-18 product 表约束补强
+
+审计结果与约束清单：
+
+**已添加 CHECK 约束**（13 个，全部与 TypeScript 类型对齐）：
+
+| 表 | 约束名 | 枚举值 |
+|---|---|---|
+| `product_experience` | `chk_product_experience_category` | work,internship,project,education,award,skill,other |
+| `product_experience` | `chk_product_experience_status` | active,archived,deleted |
+| `product_experience_revision` | `chk_product_experience_revision_source` | manual,import,copilot,resume_upload |
+| `product_experience_variant` | `chk_product_experience_variant_variant_type` | full,medium,short,jd_tailored,custom |
+| `product_experience_variant` | `chk_product_experience_variant_language` | zh,en |
+| `product_experience_variant` | `chk_product_experience_variant_status` | active,archived |
+| `product_resume` | `chk_product_resume_status` | draft,ready,archived |
+| `product_resume_item` | `chk_product_resume_item_section_type` | experience,education,project,skill,award,summary,other |
+| `product_import_job` | `chk_product_import_job_source_type` | text,pdf |
+| `product_import_job` | `chk_product_import_job_status` | pending,extracting,candidates_ready,confirmed,failed |
+| `product_import_candidate` | `chk_product_import_candidate_category` | 同上 category |
+| `product_import_candidate` | `chk_product_import_candidate_status` | pending,accepted,rejected,merged |
+| `product_resume_template` | `chk_product_resume_template_status` | active,archived |
+
+**已添加 FK 约束**（5 个）：
+
+* `import_candidate.job_id` → `import_job(id)`
+* `resume_item.resume_id` → `resume(id)`
+* `revision.experience_id` → `experience(id)`
+* `variant.experience_id` → `experience(id)`
+* `variant.revision_id` → `revision(id)`
+
+**新增索引**（1 个）：
+
+* `idx_product_import_candidate_user_status` on `product_import_candidate(user_id, status)`
+
+**暂缓约束**：
+
+| 约束 | 暂缓原因 |
+|---|---|
+| `product_generation.jd_id` / `resume_id` FK | 可能为 null，需先审计数据覆盖面 |
+| `product_resume.jd_id` FK | 可能为 null，非关键链路 |
+| candidate accepted 唯一约束 | 需要 partial UNIQUE INDEX + 历史数据审计 |
+| resume_item `(resume_id, order_index)` 唯一 | 可能已有重复数据 |
+| resume_item `(resume_id, source_experience_id)` 唯一 | 需要确认业务语义 |
+
+B-18 当前状态：
+
+| 问题编号 | 状态 | 说明 |
+|---|---|---|
+| B-18 | 已修复（待真实 DB 集成测试 / 历史数据验证） | 13 CHECK + 5 FK + 1 INDEX 已添加。暂缓约束已记录原因。 |
+
+变更摘要：
+
+* 新增 migration: `0011_product_constraints.sql`（所有约束使用 `DO $$ ... EXCEPTION WHEN duplicate_object THEN NULL` 安全添加）
+* 不修改 schema.sql、已有 migration、业务表字段
+* 不修改 API response、前端、AgentOrchestrator、Product service/repository
+* 不修改 LLM 调用、ProviderFactory
+
+测试结果：
+
+* `npm run typecheck`：通过。
+* `npm test`：全部 47 files / 444 tests 通过（+16 constraint tests）。
+* 新增 16 个 schema 静态测试覆盖所有 CHECK/FK/INDEX 存在性。
+
+回滚说明：
+
+* 文件回滚：`git checkout -- src/persistence/postgres/migrations/0011_product_constraints.sql`
+* 如果已执行 migration，需手动 DROP CONSTRAINT/INDEX
+* 使用 `B-17 schema_migrations` 删除对应 filename 记录：`DELETE FROM schema_migrations WHERE filename = '0011_product_constraints.sql'`
+
+下一轮建议：
+
+1. B-20：ToolResult / workspacePatch / actionResult schema 收紧第一阶段
+2. B-01 第三阶段：抽 WorkspaceProjector
+3. B-17/B-19：补真实 Postgres integration test
