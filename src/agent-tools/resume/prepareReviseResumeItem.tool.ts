@@ -1,6 +1,9 @@
 import type { ToolDefinition } from "../../agent-core/tools/Tool.js";
+import { PromptRegistry } from "../../agent-core/prompts/PromptRegistry.js";
 import { ReviseResumeItemInputSchema, ToolResultSchema } from "../../agent-core/validation/ToolInputSchemas.js";
-import { PREPARE_REVISE_RESUME_ITEM_SYSTEM_PROMPT } from "./prompts.js";
+
+const PROMPTS = new PromptRegistry();
+const PREPARE_REVISE_RESUME_ITEM_SYSTEM_PROMPT = PROMPTS.get("tools.resume.prepareReviseResumeItem.system");
 
 export function createPrepareReviseResumeItemTool(): ToolDefinition {
   return {

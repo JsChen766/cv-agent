@@ -5,6 +5,7 @@ import { PromptRegistry } from "../src/agent-core/prompts/PromptRegistry.js";
 import { LLMExperienceExtractor } from "../src/product/LLMExperienceExtractor.js";
 import { LLMGenerationService } from "../src/product/LLMGenerationService.js";
 import { LLMRewriteService } from "../src/product/LLMRewriteService.js";
+import { createPrepareReviseResumeItemTool } from "../src/agent-tools/resume/prepareReviseResumeItem.tool.js";
 import type { ProductExperienceSummary } from "../src/product/types.js";
 
 describe("Product prompts in PromptRegistry", () => {
@@ -241,5 +242,45 @@ describe("Generation prompts in PromptRegistry", () => {
     const filled = repairPrompt.replace("{{errors}}", "some error detail");
     expect(filled).toContain("some error detail");
     expect(filled).not.toContain("{{errors}}");
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════
+// Resume tool prompts in PromptRegistry
+// ═══════════════════════════════════════════════════════════════
+
+describe("Resume tool prompts in PromptRegistry", () => {
+  it("loads the migrated resume tool prompt", () => {
+    const registry = new PromptRegistry();
+
+    const prompt = registry.get("tools.resume.prepareReviseResumeItem.system");
+
+    expect(prompt).toContain("You are a professional resume editor.");
+    expect(prompt).toContain("Rewrite a single resume bullet point based on the instruction.");
+    expect(prompt).toContain("Preserve all factual claims, metrics, and numbers.");
+    expect(prompt).toContain("Do NOT invent new metrics or facts.");
+    expect(prompt).toContain("Output ONLY the rewritten text. No markdown, no explanation.");
+    expect(prompt.endsWith("No markdown, no explanation.")).toBe(true);
+  });
+
+  it("throws a clear error for an unregistered resume tool prompt key", () => {
+    const registry = new PromptRegistry();
+
+    expect(() => registry.get("tools.resume.missing" as any)).toThrow(
+      "Prompt not registered: tools.resume.missing",
+    );
+  });
+
+  it("prepareReviseResumeItem tool factory returns a tool with correct id and schema", () => {
+    const tool = createPrepareReviseResumeItemTool();
+
+    expect(tool.name).toBe("prepare_revise_resume_item");
+    expect(tool.mutability).toBe("read");
+    expect(tool.requiresConfirmation).toBe(false);
+    expect(tool.riskLevel).toBe("low");
+    expect(tool.ownerAgent).toBe("architect");
+    // Input/output schemas are defined and non-null
+    expect(tool.inputSchema).toBeDefined();
+    expect(tool.outputSchema).toBeDefined();
   });
 });
