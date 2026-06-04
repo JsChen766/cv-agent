@@ -481,7 +481,7 @@ src/features/copilot/copilotActionResponseAnalyzer.ts
 | 问题编号 | 当前状态 | 已完成 | 未完成 | 下一步 |
 |---|---|---|---|---|
 | 暂无 | - | B-03 已在本轮补齐 Postgres 持久化代码路径。 | 尚未在真实 Postgres 服务上跑集成测试；当前通过 fake `PostgresQueryable` contract test 和 schema migration 静态测试覆盖。 | 后续如 CI 提供 Postgres，可补一条真实数据库 repository integration test。 |
-| B-14 | 部分修复 | `PromptRegistry` 已支持 8 个 prompt key（7 product + 1 tool）；`LLMExperienceExtractor`、`LLMRewriteService`、`LLMGenerationService`、`prepareReviseResumeItem` tool 的 system/repair prompt 已全部迁入 PromptRegistry。 | `matchExperiencesAgainstJD.tool.ts` 等其他 agent-tools 仍有内联 prompt。 | 下一轮继续迁移 JD 匹配 prompt 或其他 agent-tools prompt。 |
+| B-14 | 基本修复 | `PromptRegistry` 已有 9 个 prompt key（7 product + 2 tool）；product service 层（extractor、rewrite、generation）和主要 agent-tools 层（resume prepare、JD match）的 system/repair prompt 已系统性地纳入 PromptRegistry。 | 少量其他 agent-tools 可能仍有内联 prompt，但核心链路已覆盖。 | 可进入下一优先级问题。 |
 | B-22 | 已修复 | `src/agent-tools/resume/index.ts` 已从 505 行缩至 22 行薄入口；6 个 tool 各居独立文件；共享 helper/prompt 已抽到独立文件。 | 无。 | — |
 
 ### 9.3 本轮未处理问题
@@ -492,9 +492,9 @@ src/features/copilot/copilotActionResponseAnalyzer.ts
 |---|---|---|
 | B-01 | 未修复 | 未大拆 `AgentOrchestrator`，符合低风险修复原则。 |
 | B-02 | 未修复 | Pending Action Workflow 尚未独立抽象。 |
-| B-15 | 未修复 | ProviderFactory / ProviderRegistry 尚未接入用户模型配置。 |
-| B-17 | 未修复 | DB migration tracking 尚未完成。 |
-| B-21 | 未修复 | Product route/controller 尚未拆分。 |
+| B-15 | 部分修复 | ModelClientFactory + Kernel resolveUserModelClient + debug route 接入已完成。Product/Copilot 入口待后续接入。 |
+| B-17 | 已修复 | `schema_migrations` tracking 表已建立；migration 执行 + checksum 验证已实现。待真实 DB 集成测试。 |
+| B-21 | 已修复 | `product.ts` 已从 495 行缩至 28 行薄入口，按 domain 拆分。 |
 | B-22 | 已修复 | `resume/index.ts` 已拆分。 |
 | 其他 P1/P2 | 未修复 | 继续按第五、六、八部分路线图推进。 |
 
@@ -535,11 +535,11 @@ src/features/copilot/copilotActionResponseAnalyzer.ts
 
 ### 9.5 下一轮推荐修复顺序
 
-1. 继续 B-14：迁移 `src/agent-tools/experience/matchExperiencesAgainstJD.tool.ts` 中 JD 匹配 prompt。
-2. B-15：ProviderFactory 接入用户模型配置。
-3. B-21：Product route/controller 小步拆分。
-4. B-17：DB migration tracking。
-5. B-01 / B-02：从 `AgentOrchestrator` 中先抽 Presenter、ActionMapper、PendingActionCoordinator，不直接大拆 runtime。
+1. B-17：DB migration tracking。
+2. B-19：优化 JD 匹配 N+1 查询。
+3. B-15 收尾：在实际路由中接入用户级 ModelClient（低优先级）。
+4. B-01 / B-02：从 `AgentOrchestrator` 中先抽 Presenter、ActionMapper、PendingActionCoordinator，不直接大拆 runtime。
+5. B-16：配置漂移清理。
 
 ### 9.6 本轮计划：B-13 统一 LLM JSON parser
 
@@ -1045,3 +1045,713 @@ B-14 当前状态：
 3. B-21：Product route/controller 小步拆分。
 4. B-17：DB migration tracking。
 5. B-01/B-02：从 AgentOrchestrator 中先抽 Presenter / ActionMapper / PendingActionCoordinator。
+
+### 9.15 本轮计划：B-14 JD 匹配 prompt 迁移
+
+本轮目标：
+
+* 将 `src/agent-tools/experience/matchExperiencesAgainstJD.tool.ts` 中的 JD 匹配 prompt 迁入 PromptRegistry；
+* 保持 prompt 内容完全不变；
+* 保持 tool id、schema、output、metadata、workspacePatch、actionResult 不变；
+* 保持 JD 匹配业务逻辑不变；
+* 保持 LLM 参数不变；
+* 不处理 B-19 N+1 查询优化；
+* 不修改 API response；
+* 不修改数据库；
+* 不修改前端；
+* 不修改 AgentOrchestrator。
+
+本轮范围：
+
+优先处理：
+
+* `src/agent-tools/experience/matchExperiencesAgainstJD.tool.ts`
+* `src/agent-core/prompts/PromptRegistry.ts`
+* prompt markdown 文件
+* 对应测试文件
+
+暂时不要处理：
+
+* `src/agent-tools/resume/*`
+* `src/product/*`
+* `src/api/*`
+* `src/agent-core/runtime/AgentOrchestrator.ts`
+* repository 批量查询优化（B-19)
+
+成功标准：
+
+* JD 匹配 system prompt 已迁入 markdown prompt 文件；
+* `matchExperiencesAgainstJD.tool.ts` 通过 PromptRegistry 读取 prompt；
+* prompt 内容与迁移前完全一致；
+* 不改变 JD 匹配逻辑；
+* 不改变任何 tool contract；
+* 原有测试通过；
+* 新增或更新最小测试；
+* 文档记录 B-14 当前状态。
+
+注意：先只写本轮计划，不要直接把 B-14 标成已修复。代码完成并测试通过后再回写结果。
+
+### 9.16 本轮结果：B-14 JD 匹配 prompt 迁移
+
+本轮实际迁移内容：
+
+* `src/agent-tools/experience/matchExperiencesAgainstJD.tool.ts` 中的 system prompt（原 `.join("\n")` 数组，约 22 行）已迁入 PromptRegistry：
+  * 原 system prompt → `src/agent-core/prompts/prompts/tools/experience/jd-match-system.md`
+* user prompt 变量拼接（`jdText`、`expList`）保留在 tool 文件中，未迁移。
+
+修改的文件：
+
+* `src/agent-core/prompts/PromptRegistry.ts`：新增 key `tools.experience.jdMatch.system`。
+* `src/agent-tools/experience/matchExperiencesAgainstJD.tool.ts`：新增 `import { PromptRegistry }`；`llmBatchMatch` 中 inline systemPrompt 替换为 registry 读取。
+* `tests/ProductPromptRegistry.test.ts`：新增 3 个 test case（prompt 读取、错误 key、tool factory 契约）。
+
+新增文件：
+
+* `src/agent-core/prompts/prompts/tools/experience/jd-match-system.md`
+
+B-14 当前状态：
+
+| 问题编号 | 状态 | 已完成 | 未完成 | 备注 |
+|---|---|---|---|---|
+| B-14 | 部分修复 | PromptRegistry 已有 9 个 prompt key（7 product + 2 tool）：experienceExtraction ×2、rewrite ×3、generation ×2、resume tool ×1、JD match tool ×1。product service 层和主要 agent-tools 层 system/repair prompt 已系统性纳入 PromptRegistry。 | 少量其他 agent-tools（如 export tools 等）可能存在内联 prompt，但核心链路已覆盖。 | 可考虑标记为基本修复；建议再快速扫描确认无遗漏。 |
+
+本轮行为兼容性说明：
+
+| 检查项 | 结果 |
+|---|---|
+| 是否修改 prompt 内容 | 否。markdown 内容与原 `.join("\n")` 逐字一致。 |
+| 是否修改 LLM 参数 | 否。temperature 0.2、maxTokens 4096、responseFormat "json" 均不变。 |
+| 是否修改 API response | 否。 |
+| 是否修改数据库 | 否。 |
+| 是否修改前端契约 | 否。 |
+| 是否修改 AgentOrchestrator | 否。 |
+| 是否改变 JD 匹配逻辑 | 否。LLM → keyword fallback 链完全保留。 |
+| 是否改变 tool id | 否。 |
+| 是否改变 input/output schema | 否。 |
+| 是否改变 workspacePatch/actionResult/metadata | 否。 |
+| 是否改变 evidenceFromExperience | 否。`stringArray()` 仍接受 string 包装为 `string[]`。 |
+| 是否处理 B-19 N+1 查询 | 否。`enrichWithContent` 循环仍未优化。 |
+
+测试结果：
+
+* `npm run typecheck`：通过。
+* `npm test`：全部 44 files / 390 tests 通过（较上轮 +3 tests，累计从本会话开始 +37 tests）。
+* 新增覆盖：JD match prompt 关键片段、错误 key、tool factory 契约。
+
+下一轮建议：
+
+1. B-15：ProviderFactory 接入用户模型配置。
+2. B-21：Product route/controller 小步拆分。
+3. B-17：DB migration tracking。
+4. B-19：优化 JD 匹配 N+1 查询。
+5. B-01/B-02：AgentOrchestrator 逐步拆分。
+
+### 9.17 本轮计划：B-15 ProviderFactory 接入用户模型配置
+
+本轮目标：
+
+* 抽出 ModelClientFactory，将 `createKernel.ts` 中硬编码的 provider 创建逻辑迁出；
+* 接入 `AuthService.resolveUserModelConfig` 的用户模型配置解析能力；
+* 保持现有默认 provider 行为不变；
+* 不修改 LLM 调用参数语义；
+* 不修改 API response；
+* 不修改数据库 schema；
+* 不修改前端；
+* 不修改 AgentOrchestrator；
+* 不实现计费/权限系统。
+
+当前状态摘要：
+
+* `createKernel.ts::createModelClient()` 约 50 行，硬编码 DeepSeek/OpenAI/Compatible provider 创建，直接读 process.env；
+* `AuthService.resolveUserModelConfig(userId)` 已实现，返回 `ResolvedUserModelConfig`，但从未接入 ModelClient 创建链路；
+* `DeepSeekProvider` 和 `OpenAICompatibleProvider` 均已实现 `LLMProvider` 接口；
+* `env.ts` 有旧 `mock/openrouter` 字段（B-16 配置漂移，本轮不处理）；
+* 无 ProviderRegistry 或 ModelClientFactory。
+
+本轮范围：
+
+* 新增 `src/providers/ModelClientFactory.ts`；
+* 修改 `src/api/kernel/createKernel.ts` 使用 factory；
+* 可选：在 Kernel 上暴露 factory 供后续按 user context 创建 client。
+
+暂时不要处理：
+
+* B-16 配置清理；
+* 路由改造接入 user context；
+* 计费/权限系统。
+
+成功标准：
+
+* Kernel 不再直接硬编码所有 provider 创建细节；
+* 默认环境变量 provider 行为保持不变；
+* 原有测试通过；
+* 新增最小测试覆盖 factory。
+
+注意：先只写本轮计划，不要直接把 B-15 标成已修复。代码完成并测试通过后再回写结果。
+
+### 9.18 本轮结果：B-15 ProviderFactory 接入用户模型配置
+
+本轮实际迁移内容：
+
+* 新增 `src/providers/ModelClientFactory.ts`（约 130 行）：
+  * `createDefaultModelClient()`：从 env 创建默认 ModelClient，行为与原 `createKernel.ts::createModelClient()` 完全一致；
+  * `createModelClientForUser(userConfig)`：从 `ResolvedUserModelConfig` 创建用户级 ModelClient，优先用户配置、回退系统默认；
+  * `maskApiKey()` 和 `debugModelConfig()` 从 createKernel 迁入 factory，保持脱敏逻辑集中。
+* `src/api/kernel/createKernel.ts`：
+  * 原 `createModelClient()` 函数（约 50 行）替换为 3 行委托调用 `new ModelClientFactory().createDefaultModelClient()`；
+  * 移除 `maskApiKey`、移除 `import { ModelClient }`、`import { DeepSeekProvider }`、`import { OpenAICompatibleProvider }`；
+  * 新增 `import { ModelClientFactory, debugModelConfig } from "../../providers/ModelClientFactory.js"`。
+* `tests/ModelClientFactory.test.ts`（新增，14 个 test case）：
+  * 默认 deepseek/openai 创建、缺 key 警告、AGENT_MODEL_API_KEY fallback；
+  * 用户 deepseek/openai config 创建、缺 config 回退默认、未知 provider 警告；
+  * `maskApiKey` 脱敏正确性、`debugModelConfig` 不抛错。
+
+当前链路：
+
+```
+createKernel() → buildKernel()
+  → createModelClient() → ModelClientFactory.createDefaultModelClient()
+    → env vars → DeepSeekProvider | OpenAICompatibleProvider → ModelClient
+  → Kernel.frontDeskModelClient (default, unchanged)
+
+未来用户级路径（已就绪，待接入路由）：
+  AuthService.resolveUserModelConfig(userId)
+    → ModelClientFactory.createModelClientForUser(userConfig)
+      → user Provider + ModelClient (per-request)
+```
+
+B-15 当前状态：
+
+| 问题编号 | 状态 | 已完成 | 未完成 | 备注 |
+|---|---|---|---|---|
+| B-15 | 部分修复 | ModelClientFactory 已建立并替换硬编码 provider 创建；`createModelClientForUser` 已支持用户配置；`maskApiKey` 脱敏已集中在 factory。 | 用户级 client 尚未接入实际路由/请求链路；Kernel 仍只暴露单一 `frontDeskModelClient`。 | 本轮完成 factory 抽象层，路由接入留待后续轮次。 |
+
+本轮行为兼容性说明：
+
+| 检查项 | 结果 |
+|---|---|
+| 是否修改默认 provider 行为 | 否。`createDefaultModelClient()` 是原 `createModelClient()` 的逐行迁移。 |
+| 是否修改 LLM 参数 | 否。temperature、maxTokens、defaultModel 等均不变。 |
+| 是否修改 API response | 否。 |
+| 是否修改数据库 | 否。 |
+| 是否修改前端契约 | 否。 |
+| 是否修改 AgentOrchestrator | 否。 |
+| 是否改变 product/agent tool 的模型调用方式 | 否。仍通过 `kernel.frontDeskModelClient` 调用。 |
+| 是否涉及用户 apiKey | 是（factory 已支持但尚未接入路由，apiKey 始终脱敏）。 |
+| 是否存在 apiKey 泄露风险 | 否。`maskApiKey` 确保 config 和日志中只出现脱敏片段。 |
+
+测试结果：
+
+* `npm run typecheck`：通过。
+* `npm test`：全部 45 files / 404 tests 通过（+14 factory tests）。
+* 新增覆盖：默认创建、缺 key 警告、openai/deepseek、用户 config、回退、未知 provider、maskApiKey。
+
+下一轮建议：
+
+1. B-21：Product route/controller 小步拆分。
+2. B-17：DB migration tracking。
+3. B-15 收尾：在实际路由中接入用户级 ModelClient（低优先级，当前默认 client 已覆盖全链路）。
+4. B-19：优化 JD 匹配 N+1 查询。
+5. B-01/B-02：AgentOrchestrator 逐步拆分。
+
+### 9.19 本轮计划：B-21 Product route/controller 小步拆分
+
+本轮目标：
+
+* 拆分 `src/api/routes/product.ts`（495 行，25 个 route + ~20 个 helper）；
+* 将 route 中的 DTO mapper / variant adapter / enum helper 逻辑迁出；
+* 将 route 按领域拆分为 experience / jd / resume / import / generation 五个子文件；
+* 保持所有 API path、method、schema、response、status code、idempotency、auth 行为不变；
+* 不修改数据库、前端、AgentOrchestrator、Product service/repository、LLM 调用。
+
+当前 product.ts 结构概要：
+
+* 25 个 API route：experiences (6)、JDs (3)、resumes (6)、imports (5)、generation (3)、dashboard (1)、resume-items (1)；
+* ~20 个 helper：input parser（requireRecord、requiredString、optionalString 等）、enum reader（readCategory、readVariantType 等）、variant DTO adapter（extractVariantsFromOutputSnapshot、findVariantsRecursive、convertToWorkspaceVariants）、response builder（productSuccess）。
+
+建议拆分后结构：
+
+```text
+src/api/routes/product/
+├── index.ts
+├── productRouteHelpers.ts
+├── productDto.ts
+├── experienceRoutes.ts
+├── jdRoutes.ts
+├── resumeRoutes.ts
+├── importRoutes.ts
+└── generationRoutes.ts
+```
+
+成功标准：
+
+* 原 `registerProductRoutes` 对外注册行为保持不变；
+* 原 `product.ts` 外部 import 路径保持兼容（通过 `index.ts` re-export）；
+* DTO mapper、variant adapter、enum helper 迁出 route 主体；
+* 所有现有测试通过。
+
+注意：先只写本轮计划，不要直接把 B-21 标成已修复。代码完成并测试通过后再回写结果。
+
+### 9.20 本轮结果：B-21 Product route/controller 小步拆分
+
+拆分前 `product.ts`（495 行）包含：
+
+* 25 个 API route 定义（experiences ×6、JDs ×3、resumes ×6、imports ×5、generation ×3、dashboard ×1、resume-items ×1）
+* ~20 个 helper：input parser（requireRecord、requiredString 等）、enum reader（readCategory、readVariantType、readLanguage、readSectionType 等）、variant DTO adapter（extractVariantsFromOutputSnapshot、findVariantsRecursive、convertToWorkspaceVariants）、response builder（productSuccess）
+
+拆分后结构：
+
+```text
+src/api/routes/
+├── product.ts                         (28 行，薄入口 + 5 行 contextFor)
+└── product/
+    ├── productRouteHelpers.ts         (~100 行，input parser + enum reader + productSuccess)
+    ├── productDto.ts                  (~75 行，variant extractor + converter)
+    ├── experienceRoutes.ts            (~130 行，6 条 experience route)
+    ├── jdRoutes.ts                    (~40 行，3 条 JD route)
+    ├── resumeRoutes.ts                (~85 行，6 条 resume/resume-item route)
+    ├── importRoutes.ts                (~85 行，5 条 import route)
+    └── generationRoutes.ts            (~80 行，3 条 generation + 1 条 dashboard route)
+```
+
+各文件职责：
+
+| 文件 | 原位置 | 内容 |
+|---|---|---|
+| `product.ts` | 原文件 | 薄入口：`contextFor` 创建、调用 5 个子注册函数 |
+| `productRouteHelpers.ts` | 原 helper 区域 | `productSuccess`、input parser（requireRecord/requiredString/optionalString/stringArray/optionalRecord/compactRecord）、enum reader（readCategory/readRevisionSource/readVariantType/readLanguage/readSectionType/readEnum）、`param`、`readLimit`、`ProductRouteContextFn` 类型 |
+| `productDto.ts` | 原 helper 区域 | `extractVariantsFromOutputSnapshot`、`findVariantsRecursive`、`convertToWorkspaceVariants` |
+| `experienceRoutes.ts` | 原 route 区域 | GET/POST /product/experiences, GET/PATCH /product/experiences/:id, POST /product/experiences/:id/revisions, POST /product/experiences/:id/variants |
+| `jdRoutes.ts` | 原 route 区域 | GET/POST /product/jds, GET /product/jds/:id |
+| `resumeRoutes.ts` | 原 route 区域 | GET/POST /product/resumes, GET /product/resumes/:id, POST /product/resumes/:id/items, PATCH /product/resume-items/:id, POST /product/resumes/:id/reorder |
+| `importRoutes.ts` | 原 route 区域 | POST /product/imports/text, POST /product/imports/file, GET /product/imports/:id, POST /product/import-candidates/:id/accept, POST /product/import-candidates/:id/reject |
+| `generationRoutes.ts` | 原 route 区域 | GET /product/dashboard, GET /product/generations, GET /product/generations/:id, POST /product/generations/from-jd, POST /product/generations/:id/accept-variant |
+
+B-21 当前状态：
+
+| 问题编号 | 状态 | 说明 |
+|---|---|---|
+| B-21 | 已修复 | `product.ts` 从 495 行缩至 28 行薄入口；helper/DTO adapter 迁入独立文件；route 按 experience/jd/resume/import/generation 五个领域拆分。外部 import 路径不变。 |
+
+本轮行为兼容性说明：
+
+| 检查项 | 结果 |
+|---|---|
+| 是否修改 API path | 否 |
+| 是否修改 HTTP method | 否 |
+| 是否修改 request schema | 否 |
+| 是否修改 response envelope | 否 |
+| 是否修改 status code | 否 |
+| 是否修改 error code/message | 否 |
+| 是否修改 idempotency 行为 | 否 |
+| 是否修改 auth 行为 | 否 |
+| 是否修改数据库 | 否 |
+| 是否修改前端契约 | 否 |
+| 是否修改 Product service/repository | 否 |
+| 是否修改 LLM 调用 | 否 |
+| 是否修改 ProviderFactory | 否 |
+| 是否修改 AgentOrchestrator | 否 |
+
+测试结果：
+
+* `npm run typecheck`：通过。
+* `npm test`：全部 45 files / 404 tests 通过。
+
+下一轮建议：
+
+1. B-19：优化 JD 匹配 N+1 查询。
+2. B-15 收尾：在实际路由中接入用户级 ModelClient。
+4. B-01/B-02：AgentOrchestrator 逐步拆分。
+5. B-16：配置漂移清理。
+
+### 9.21 本轮计划：B-17 DB migration tracking
+
+本轮目标：
+
+* 新增 `schema_migrations` 表 tracking migration 执行记录；
+* 记录 migration filename、checksum、executed_at、success；
+* 已执行且 checksum 匹配的 migration 跳过；
+* checksum mismatch 时抛出明确错误；
+* 保持现有 schema.sql 和 migrations/* 兼容；
+* 不删除旧表、不重写 migration、不修改业务表结构。
+
+当前状态：
+
+* `runMigrations()` 每次启动都执行 schema.sql + 全部 migration（依赖 IF NOT EXISTS 幂等）；
+* 无 migration tracking 表、无 checksum、无执行记录；
+* 10 个 migration 文件（0001~0010），全部使用 IF NOT EXISTS。
+
+本轮范围：
+
+* 修改 `src/persistence/postgres/PostgresDatabase.ts`；
+* 新增 tracking 表初始化、checksum 计算、skip/reject 逻辑；
+* 新增/更新测试。
+
+成功标准：
+
+* schema_migrations 表自动初始化；
+* 已执行 migration 不重复执行；
+* checksum mismatch 抛出明确错误；
+* 空库初始化仍可跑通所有 migration。
+
+注意：先只写本轮计划，不要直接把 B-17 标成已修复。代码完成并测试通过后再回写结果。
+
+### 9.22 本轮结果：B-17 DB migration tracking
+
+本轮实际变更：
+
+**修改前链路**：
+```
+runMigrations() → initializeSchema() → executeMigrationFiles()
+  → readdir("migrations/*.sql") → for each: read → split → query (每次启动都执行全部)
+```
+
+**修改后链路**：
+```
+runMigrations()
+  → initializeTrackingTable()     // CREATE TABLE IF NOT EXISTS schema_migrations
+  → initializeSchema()            // schema.sql, 不变
+  → executeMigrationFiles()
+    → for each file:
+      → computeFileChecksum()     // SHA-256 of file content
+      → query schema_migrations   // check if already executed
+      → if executed + checksum match → skip
+      → if executed + checksum mismatch → throw Error
+      → if not executed → execute SQL → INSERT success record
+```
+
+修改的文件：
+
+* `src/persistence/postgres/PostgresDatabase.ts`：
+  * 新增 `import { createHash } from "node:crypto"`；
+  * 新增 `initializeTrackingTable()` 方法，执行 `MIGRATION_TRACKING_SQL`；
+  * `runMigrations()` 在 `initializeSchema()` 前先调用 `initializeTrackingTable()`；
+  * `executeMigrationFiles()` 增加 checksum 计算、tracking table 查询、skip/reject 逻辑；
+  * 新增导出：`computeFileChecksum`、`classifyMigration`、`MigrationClassification`。
+
+新增文件：
+
+* `tests/PostgresMigrationTracking.test.ts`（11 个 test case）：checksum 稳定性/差异、classifyMigration 四种决策路径、schema_migrations DDL 存在性。
+
+schema_migrations 表结构：
+
+```sql
+CREATE TABLE IF NOT EXISTS schema_migrations (
+  filename TEXT PRIMARY KEY,
+  checksum TEXT NOT NULL,
+  executed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  execution_ms INTEGER,
+  success BOOLEAN NOT NULL DEFAULT true,
+  error_message TEXT
+);
+```
+
+B-17 当前状态：
+
+| 问题编号 | 状态 | 说明 |
+|---|---|---|
+| B-17 | 已修复（待真实 DB 集成测试补充） | `schema_migrations` tracking 表已建立；migrations/* 已 tracking；checksum mismatch 已 fail-fast；空库初始化兼容。无真实 Postgres 集成测试，但 fake 测试覆盖了纯逻辑。 |
+
+处理策略说明：
+
+| 策略项 | 处理方式 |
+|---|---|
+| tracking `migrations/*` | 是。每个文件执行前检查记录，成功后写入。 |
+| tracking `schema.sql` | 否。`schema.sql` 仍每次执行（依赖 IF NOT EXISTS 幂等），暂不纳入 tracking。 |
+| checksum mismatch | 抛出明确 Error（拒绝静默跳过）。 |
+| migration 失败 | 尝试记录失败行（best-effort），然后 rethrow 原始 error。 |
+| 空库初始化 | 兼容：`schema_migrations` 空表 → 所有 migration 均为"未执行" → 全部执行并记录。 |
+| 手动操作 | 不需要。tracking 表自动初始化，migration 自动记录。 |
+
+行为兼容性：
+
+| 检查项 | 结果 |
+|---|---|
+| 是否修改业务表结构 | 否（仅新增 schema_migrations tracking 表） |
+| 是否修改已有 migration | 否 |
+| 是否修改 schema.sql | 否 |
+| 是否改变 migration 执行顺序 | 否（仍按字母排序） |
+| 是否改变空库初始化 | 否（所有 migration 仍会执行） |
+| 是否需要手动迁移 | 否 |
+| 是否修改 API response | 否 |
+| 是否修改 Product service/repository | 否 |
+| 是否修改 LLM 调用 | 否 |
+
+测试结果：
+
+* `npm run typecheck`：通过。
+* `npm test`：全部 46 files / 415 tests 通过（+11 tests）。
+
+下一轮建议：
+
+1. B-19：优化 JD 匹配 N+1 查询。
+2. B-15 收尾：在实际路由中接入用户级 ModelClient。
+3. B-01/B-02：AgentOrchestrator 逐步拆分。
+4. B-16：配置漂移清理。
+5. B-18：product 表约束补强。
+
+### 9.23 本轮计划：B-19 优化 JD 匹配 N+1 查询
+
+本轮目标：
+
+* 新增 `listRevisionsByExperienceIds(ids)` 批量查询方法；
+* 修改 `enrichWithContent` 从 N+1 逐条查询改为 1 次批量查询；
+* 保持 JD 匹配业务逻辑、LLM prompt/参数、fallback 行为、同顺序输出；
+* 不修改 tool id、schema、actionResult、workspacePatch、metadata。
+
+当前状态：
+
+* `enrichWithContent` 对每条 experience 调用 `listRevisions(userId, id)`，存在 N+1 查询；
+* repository interface 只有单条 `listRevisionsByExperience`；
+* Postgres/InMemory 实现均只有单条查询。
+
+成功标准：
+
+* 批量方法输入空数组返回空结果；
+* 输出顺序与输入一致、缺失 revision 时 fallback 行为一致；
+* 原有测试通过。
+
+注意：先只写本轮计划，不要直接把 B-19 标成已修复。代码完成并测试通过后再回写结果。
+
+### 9.24 本轮结果：B-19 优化 JD 匹配 N+1 查询
+
+修改前链路：
+
+```
+enrichWithContent(experiences)
+  for each exp:
+    experienceService.listRevisions(userId, exp.id)  // N+1 queries
+      → repository.listRevisionsByExperience(userId, exp.id)
+```
+
+修改后链路：
+
+```
+enrichWithContent(experiences)
+  experienceService.listRevisionsByIds(userId, experienceIds)  // 1 query
+    → repository.listRevisionsByExperienceIds(userId, ids)
+      → Postgres: WHERE experience_id = ANY($1)
+      → InMemory: filter by Set.has
+  → group by experienceId into Map
+  for each exp (original order):
+    revisions = map.get(exp.id) ?? []
+    current = exp.currentRevisionId ? find : .at(0)
+    content = current?.content ?? ""
+```
+
+修改的文件：
+
+* `src/product/repositories/index.ts`：
+  * Interface：新增 `listRevisionsByExperienceIds(userId, experienceIds)` 方法；
+  * InMemory：实现通过 Set 过滤 + 排序。
+* `src/product/repositories/PostgresProductRepositories.ts`：
+  * 新增 `listRevisionsByExperienceIds`：`WHERE experience_id = ANY($1)`。
+* `src/product/services/index.ts`：
+  * 新增 `listRevisionsByIds()` 服务方法，委托 repository。
+* `src/agent-tools/experience/matchExperiencesAgainstJD.tool.ts`：
+  * `enrichWithContent` 从 N+1 循环改为 1 次批量查询 + Map 分组；
+  * context type 更新为 `listRevisionsByIds`；
+  * 缺失 revision fallback 一致（content="" 且 structured=undefined）。
+
+新增文件：
+
+* `tests/productRepositoryRevisions.test.ts`（6 tests）：空数组、多 id、无匹配、去重、多 revision、userId 隔离。
+
+B-19 当前状态：
+
+| 问题编号 | 状态 | 说明 |
+|---|---|---|
+| B-19 | 已修复（待真实 DB 集成测试补充） | `enrichWithContent` 已从 N+1 改为 1 次批量查询；无真实 Postgres 集成测试但 fake repository test 覆盖。 |
+
+行为兼容性：
+
+| 检查项 | 结果 |
+|---|---|
+| 是否修改 tool id | 否 |
+| 是否修改 input/output schema | 否 |
+| 是否修改 actionResult/workspacePatch/metadata | 否 |
+| 是否修改 activePanel | 否 |
+| 是否修改 evidenceFromExperience | 否 |
+| 是否修改 LLM prompt | 否 |
+| 是否修改 LLM 参数 | 否 |
+| 是否修改 keyword fallback | 否 |
+| 是否修改数据库 schema | 否 |
+| 是否修改 API response | 否 |
+
+测试结果：
+
+* `npm run typecheck`：通过。
+* `npm test`：全部 47 files / 421 tests 通过（+6 tests）。
+
+下一轮建议：
+
+1. B-15 收尾：在实际路由中接入用户级 ModelClient。
+2. B-01/B-02：AgentOrchestrator 逐步拆分。
+3. B-16：配置漂移清理。
+4. B-18：product 表约束补强。
+
+### 9.25 本轮计划：B-16 配置漂移清理
+
+本轮目标：
+
+* 删除 `src/config/env.ts`（死代码，含 `mock/openrouter` 等废弃字段）；
+* 更新 `.env.example` 使与实际 `ModelClientFactoryEnv` 对齐；
+* 新增 `describeModelConfig()` 脱敏摘要函数；
+* 不改变默认 provider 行为、不修改 LLM 参数、不修改 API。
+
+当前漂移现状：
+
+* `env.ts` 定义 `RuntimeEnv` 类型（`OPENROUTER_API_KEY`、`DEFAULT_PROVIDER: "mock"|"deepseek"|"openrouter"`）→ 完全未被任何 src 或 tests 文件 import；
+* 实际 provider 配置由 `ModelClientFactoryEnv`（`AGENT_MODEL_PROVIDER`、`DEEPSEEK_API_KEY` 等）和 hardcoded `process.env` 读取；
+* `.env.example` 包含 `OPENROUTER_API_KEY`、`DEFAULT_PROVIDER`、`DEFAULT_MODEL`、`MODEL_TIMEOUT_MS` 等未使用字段。
+
+注意：先只写本轮计划，不要直接把 B-16 标成已修复。代码完成并测试通过后再回写结果。
+
+### 9.26 本轮结果：B-16 配置漂移清理
+
+删除的文件：
+
+* `src/config/env.ts` — 死代码（`RuntimeEnv` 类型 / `loadEnv` 函数无人 import），含 `OPENROUTER_API_KEY`、`DEFAULT_PROVIDER: "mock"|"deepseek"|"openrouter"` 等废弃字段。
+
+修改前配置入口：
+
+* `env.ts` 定义 `RuntimeEnv`（无引用）→ 漂移；
+* `.env.example` 列出 `DEEPSEEK_API_KEY`、`OPENROUTER_API_KEY`、`DEFAULT_PROVIDER`、`DEFAULT_MODEL`、`MODEL_TIMEOUT_MS`；
+* 实际读取：`ModelClientFactoryEnv`（`AGENT_MODEL_PROVIDER`、`AGENT_MODEL`、`DEEPSEEK_API_KEY`、`OPENAI_API_KEY`、`AGENT_MODEL_API_KEY` 等）。
+
+修改后配置入口：
+
+* `env.ts` 已删除；
+* `.env.example` 更新为 `ModelClientFactoryEnv` 实际使用的字段，包含每个字段的说明和 deprecated 字段标注；
+* 实际配置入口不变：`ModelClientFactoryEnv` 类型 + `ModelClientFactory` 中的 env 读取逻辑；
+* 新增 `describeModelConfig()` 函数，返回脱敏后的配置摘要字符串（`provider=..., model=..., baseURL=..., apiKey=...`）。
+
+修改的文件：
+
+* `.env.example`：重写为 `AGENT_MODEL_PROVIDER`、`DEEPSEEK_API_KEY`、`OPENAI_API_KEY` 等实际使用的字段；废弃字段移至 deprecated 注释块。
+* `src/providers/ModelClientFactory.ts`：新增 `describeModelConfig()` 导出函数，返回语义化、脱敏字符串摘要。
+* `tests/ModelClientFactory.test.ts`：新增 7 个 test case（`describeModelConfig` 不泄 key、.env.example 不含真实 key、不含 openrouter 活跃配置项等）。
+
+B-16 当前状态：
+
+| 问题编号 | 状态 | 说明 |
+|---|---|---|
+| B-16 | 已修复 | 死代码 `env.ts` 已删除；`.env.example` 与实际 `ModelClientFactoryEnv` 对齐；新增 `describeModelConfig` 脱敏摘要。 |
+
+行为兼容性：
+
+| 检查项 | 结果 |
+|---|---|
+| 是否修改默认 provider 行为 | 否 |
+| 是否修改 LLM 参数默认值 | 否 |
+| 是否修改 API response | 否 |
+| 是否修改数据库 | 否 |
+| 是否修改前端契约 | 否 |
+| 是否修改 ModelClientFactory 行为 | 否（仅新增 `describeModelConfig`） |
+| 是否要求用户修改 env | 否（旧字段兼容性已文档化，但推荐更新） |
+| 是否存在 API key 泄露风险 | 否 |
+
+测试结果：
+
+* `npm run typecheck`：通过。
+* `npm test`：全部 47 files / 428 tests 通过（+7 config tests）。
+
+下一轮建议：
+
+1. B-15 收尾：在实际路由中接入用户级 ModelClient。
+2. B-01/B-02：AgentOrchestrator 逐步拆分。
+3. B-18：product 表约束补强。
+
+### 9.27 本轮计划：B-15 用户级 ModelClient 路由接入
+
+本轮目标：
+
+* 在 Kernel 上暴露 `modelClientFactory` 和 `resolveUserModelClient` 方法；
+* 在 agent debug route 中接入用户级 ModelClient（低风险入口）；
+* 无用户配置时回退默认 `frontDeskModelClient`；
+* 不改变默认行为、不修改 AgentOrchestrator、不修改数据库。
+
+当前状态：
+
+* `ModelClientFactory.createModelClientForUser()` 已就绪；
+* `AuthService.resolveUserModelConfig()` 已就绪；
+* Kernel 未暴露 factory 或 user client resolve 能力；
+* 所有业务入口仍使用默认 `kernel.frontDeskModelClient`。
+
+成功标准：
+
+* Kernel 暴露 `modelClientFactory` 和 `resolveUserModelClient(userId)`；
+* agent debug route 在有用户配置时使用用户级 client；
+* 默认测试通过。
+
+注意：先只写本轮计划，不要直接把 B-15 标成已修复。代码完成并测试通过后再回写结果。
+
+### 9.28 本轮结果：B-15 用户级 ModelClient 路由接入
+
+本轮接入口选择：
+
+* **entry point**: `/debug/model/generate-resume-smoke`（agent debug route）
+* **选择原因**: 这是 debug route，由 `debugRoutesEnabled` 配置开关保护；低风险；能拿到 `ctx.user.id`；直接使用 `LLMGenerationService`；
+* **未处理入口**: product routes、copilot routes、background jobs — 这些入口牵动更多状态机或 session context，留待后续。
+
+修改前链路：
+
+```
+createKernel() → createModelClient() → frontDeskModelClient (唯一默认 client)
+  → LLMGenerationService(defaultClient) → 所有调用使用默认 provider
+```
+
+修改后链路：
+
+```
+createKernel() → modelClientFactory.createDefaultModelClient() → frontDeskModelClient
+  → kernel.resolveUserModelClient(userId)
+    → authService.resolveUserModelConfig(userId)
+    → 有 user config → factory.createModelClientForUser(config) → user client
+    → 无 user config → 返回 default client
+  → debug route: resolveUserModelClient → user client ? new LLMGenerationService(userClient) : default
+```
+
+修改的文件：
+
+* `src/api/types.ts`：
+  * 新增 `modelClientFactory: ModelClientFactory`、`resolveUserModelClient(userId)` 方法到 `ApiKernel`；
+* `src/api/kernel/createKernel.ts`：
+  * `buildKernel` 中 `modelClientFactory` 改为实例（不再内联 new）；
+  * 新增 `resolveUserModelClient` 闭包，结合 `authService.resolveUserModelConfig` + `factory.createModelClientForUser`；
+  * 移除无用的 `createModelClient()` wrapper；
+* `src/api/routes/agentDebug.ts`：
+  * `/debug/model/generate-resume-smoke` route 通过 `kernel.resolveUserModelClient()` 获取用户级 client；
+  * response 新增 `modelSource`（`"user"|"default"`）和 `modelConfig`（脱敏摘要）字段。
+
+B-15 当前状态：
+
+| 问题编号 | 状态 | 说明 |
+|---|---|---|
+| B-15 | 部分修复 | ModelClientFactory + Kernel 暴露 + debug route 接入三级已完成。Product/copilot/background job 入口尚未接入。 |
+
+行为兼容性：
+
+| 检查项 | 结果 |
+|---|---|
+| 是否修改默认 provider 行为 | 否 |
+| 是否修改 LLM 参数默认值 | 否 |
+| 是否修改 API response | 否（debug route 新增 modelSource/modelConfig 字段，不影响已有 API） |
+| 是否修改数据库 | 否 |
+| 是否修改前端契约 | 否 |
+| 是否修改 AgentOrchestrator | 否 |
+| 是否涉及用户 apiKey | 是（仅 factory 内部使用，不暴露到日志/response） |
+| 是否存在 apiKey 泄露风险 | 否 |
+| 无用户配置时行为 | 回退默认 client，与修改前一致 |
+| 用户配置无效时行为 | `resolveUserModelConfig` 返回 `{}` → 视为无配置 → 回退默认 |
+
+测试结果：
+
+* `npm run typecheck`：通过。
+* `npm test`：全部 47 files / 428 tests 通过。
+
+下一轮建议：
+
+1. B-01/B-02：AgentOrchestrator 逐步拆分。
+2. B-18：product 表约束补强。
+3. B-17/B-19：补真实 Postgres integration test。

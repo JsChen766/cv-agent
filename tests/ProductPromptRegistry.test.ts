@@ -6,6 +6,7 @@ import { LLMExperienceExtractor } from "../src/product/LLMExperienceExtractor.js
 import { LLMGenerationService } from "../src/product/LLMGenerationService.js";
 import { LLMRewriteService } from "../src/product/LLMRewriteService.js";
 import { createPrepareReviseResumeItemTool } from "../src/agent-tools/resume/prepareReviseResumeItem.tool.js";
+import { matchExperiencesAgainstJDTool } from "../src/agent-tools/experience/matchExperiencesAgainstJD.tool.js";
 import type { ProductExperienceSummary } from "../src/product/types.js";
 
 describe("Product prompts in PromptRegistry", () => {
@@ -280,6 +281,50 @@ describe("Resume tool prompts in PromptRegistry", () => {
     expect(tool.riskLevel).toBe("low");
     expect(tool.ownerAgent).toBe("architect");
     // Input/output schemas are defined and non-null
+    expect(tool.inputSchema).toBeDefined();
+    expect(tool.outputSchema).toBeDefined();
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════
+// JD match tool prompt in PromptRegistry
+// ═══════════════════════════════════════════════════════════════
+
+describe("JD match prompt in PromptRegistry", () => {
+  it("loads the migrated JD match system prompt", () => {
+    const registry = new PromptRegistry();
+
+    const prompt = registry.get("tools.experience.jdMatch.system");
+
+    expect(prompt).toContain("You are a resume-to-JD matching assistant.");
+    expect(prompt).toContain("experienceIndex");
+    expect(prompt).toContain("matchScore: 0.0-1.0");
+    expect(prompt).toContain("matchLevel: \"high\" | \"medium\" | \"low\"");
+    expect(prompt).toContain("matchedRequirements");
+    expect(prompt).toContain("missingRequirements");
+    expect(prompt).toContain("evidenceFromExperience");
+    expect(prompt).toContain("rewriteSuggestion");
+    expect(prompt).toContain("High >= 0.75, Medium >= 0.45, Low < 0.45");
+    expect(prompt).toContain("Output ONLY a valid JSON array. No markdown, no explanation.");
+    expect(prompt.endsWith("No markdown, no explanation.")).toBe(true);
+  });
+
+  it("throws a clear error for an unregistered JD match prompt key", () => {
+    const registry = new PromptRegistry();
+
+    expect(() => registry.get("tools.experience.missing" as any)).toThrow(
+      "Prompt not registered: tools.experience.missing",
+    );
+  });
+
+  it("matchExperiencesAgainstJDTool returns a tool with correct id, contract, and schema", () => {
+    const tool = matchExperiencesAgainstJDTool();
+
+    expect(tool.name).toBe("match_experiences_against_jd");
+    expect(tool.mutability).toBe("read");
+    expect(tool.requiresConfirmation).toBe(false);
+    expect(tool.riskLevel).toBe("low");
+    expect(tool.ownerAgent).toBe("experience_receiver");
     expect(tool.inputSchema).toBeDefined();
     expect(tool.outputSchema).toBeDefined();
   });

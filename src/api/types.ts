@@ -3,6 +3,7 @@ import type { ProductServices } from "../product/index.js";
 import type { LLMExperienceExtractor } from "../product/LLMExperienceExtractor.js";
 import type { LLMGenerationService } from "../product/LLMGenerationService.js";
 import type { LLMRewriteService } from "../product/LLMRewriteService.js";
+import type { ModelClientFactory } from "../providers/ModelClientFactory.js";
 import type { CopilotSessionService, CopilotWorkspaceService } from "../copilot/services/index.js";
 import type { PlatformServices } from "../platform/index.js";
 import type { AuthService } from "../auth/index.js";
@@ -36,6 +37,12 @@ export type ApiKernel = {
   jobRunner: JobRunner;
   pendingActions: PendingActionService;
   frontDeskModelClient?: ModelClient;
+  modelClientFactory: ModelClientFactory;
+  resolveUserModelClient(userId: string): Promise<{
+    client?: ModelClient;
+    source: "user" | "default" | "none";
+    configSummary?: string;
+  }>;
   llmExperienceExtractor?: LLMExperienceExtractor;
   llmGenerationService?: LLMGenerationService;
   llmRewriteService?: LLMRewriteService;

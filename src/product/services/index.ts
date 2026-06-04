@@ -140,6 +140,10 @@ export class ExperienceService {
     return this.repository.listRevisionsByExperience(userId, experienceId);
   }
 
+  public listRevisionsByIds(userId: string, experienceIds: string[]): Promise<ProductExperienceRevision[]> {
+    return this.repository.listRevisionsByExperienceIds(userId, experienceIds);
+  }
+
   public listVariants(userId: string, experienceId: string): Promise<ProductExperienceVariant[]> {
     return this.repository.listVariantsByExperience(userId, experienceId);
   }

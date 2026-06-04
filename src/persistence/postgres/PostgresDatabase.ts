@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -94,8 +95,13 @@ export class PostgresDatabase {
   }
 
   public async runMigrations(): Promise<void> {
+    await this.initializeTrackingTable();
     await this.initializeSchema();
     await this.executeMigrationFiles();
+  }
+
+  private async initializeTrackingTable(): Promise<void> {
+    await this.query(MIGRATION_TRACKING_SQL);
   }
 
   private async executeMigrationFiles(): Promise<void> {
@@ -105,7 +111,6 @@ export class PostgresDatabase {
       const fs = await import("node:fs/promises");
       entries = await fs.readdir(migrationsDir);
     } catch {
-      // migrations directory does not exist or cannot be read; skip
       return;
     }
     const sqlFiles = entries
@@ -115,9 +120,52 @@ export class PostgresDatabase {
       const filePath = join(migrationsDir, file);
       const content = readFileSync(filePath, "utf8").trim();
       if (content.length === 0) continue;
-      const statements = splitSqlStatements(content);
-      for (const stmt of statements) {
-        await this.query(stmt);
+
+      const checksum = computeFileChecksum(content);
+
+      // Check tracking table for previously executed migration
+      const existing = await this.query<{ filename: string; checksum: string }>(
+        "SELECT filename, checksum FROM schema_migrations WHERE filename = $1 AND success = true",
+        [file],
+      );
+
+      if (existing.rows.length > 0) {
+        const recordedChecksum = existing.rows[0].checksum;
+        if (recordedChecksum !== checksum) {
+          throw new Error(
+            `Migration "${file}" checksum mismatch. ` +
+            `Recorded: ${recordedChecksum.slice(0, 12)}..., ` +
+            `Current: ${checksum.slice(0, 12)}.... ` +
+            `The migration file has been modified since it was last executed.`,
+          );
+        }
+        continue;
+      }
+
+      // Execute migration and record result
+      const startMs = Date.now();
+      try {
+        const statements = splitSqlStatements(content);
+        for (const stmt of statements) {
+          await this.query(stmt);
+        }
+        const executionMs = Date.now() - startMs;
+        await this.query(
+          "INSERT INTO schema_migrations (filename, checksum, executed_at, execution_ms, success) VALUES ($1, $2, NOW(), $3, true)",
+          [file, checksum, executionMs],
+        );
+      } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        // Best-effort failure recording
+        try {
+          await this.query(
+            "INSERT INTO schema_migrations (filename, checksum, executed_at, success, error_message) VALUES ($1, $2, NOW(), false, $3)",
+            [file, checksum, errorMessage],
+          );
+        } catch {
+          // tracking table may not exist yet
+        }
+        throw error;
       }
     }
   }
@@ -128,3 +176,37 @@ export class PostgresDatabase {
 }
 
 const SCHEMA_SQL = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "schema.sql"), "utf8");
+
+const MIGRATION_TRACKING_SQL = `
+CREATE TABLE IF NOT EXISTS schema_migrations (
+  filename TEXT PRIMARY KEY,
+  checksum TEXT NOT NULL,
+  executed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  execution_ms INTEGER,
+  success BOOLEAN NOT NULL DEFAULT true,
+  error_message TEXT
+);
+`;
+
+export function computeFileChecksum(content: string): string {
+  return createHash("sha256").update(content).digest("hex");
+}
+
+export type MigrationClassification =
+  | { action: "execute" }
+  | { action: "skip" }
+  | { action: "error"; reason: string };
+
+export function classifyMigration(
+  filename: string,
+  checksum: string,
+  executedRows: Array<{ filename: string; checksum: string }>,
+): MigrationClassification {
+  const existing = executedRows.find((r) => r.filename === filename);
+  if (!existing) return { action: "execute" };
+  if (existing.checksum === checksum) return { action: "skip" };
+  return {
+    action: "error",
+    reason: `Migration "${filename}" checksum mismatch. Recorded: ${existing.checksum.slice(0, 12)}..., Current: ${checksum.slice(0, 12)}....`,
+  };
+}

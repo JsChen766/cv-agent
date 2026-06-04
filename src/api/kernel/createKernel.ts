@@ -50,9 +50,7 @@ import {
 import { readPlatformConfig } from "../../platform/config.js";
 import { JobRunner } from "../../jobs/index.js";
 import { PostgresDatabase } from "../../persistence/postgres/PostgresDatabase.js";
-import { ModelClient } from "../../agent-core/model/ModelClient.js";
-import { DeepSeekProvider } from "../../providers/DeepSeekProvider.js";
-import { OpenAICompatibleProvider } from "../../providers/OpenAICompatibleProvider.js";
+import { ModelClientFactory, debugModelConfig, describeModelConfig } from "../../providers/ModelClientFactory.js";
 import { LLMExperienceExtractor } from "../../product/LLMExperienceExtractor.js";
 import { LLMGenerationService } from "../../product/LLMGenerationService.js";
 import { LLMRewriteService } from "../../product/LLMRewriteService.js";
@@ -115,7 +113,8 @@ function buildKernel(input: BuildKernelInput): ApiKernel {
   const resumeService = new ResumeService(input.productResumeRepository);
 
   // LLM services
-  const model = createModelClient();
+  const modelClientFactory = new ModelClientFactory();
+  const model = modelClientFactory.createDefaultModelClient();
   debugModelConfig(model.config);
   const llmExperienceExtractor = model.client ? new LLMExperienceExtractor(model.client) : undefined;
   const llmGenerationService = model.client ? new LLMGenerationService(model.client) : undefined;
@@ -158,6 +157,19 @@ function buildKernel(input: BuildKernelInput): ApiKernel {
   );
   const warnings = [...(input.warnings ?? []), ...model.warnings];
 
+  const resolveUserModelClient = async (userId: string) => {
+    const userConfig = await input.authService.resolveUserModelConfig(userId);
+    if (userConfig.provider && userConfig.apiKey) {
+      const result = modelClientFactory.createModelClientForUser(userConfig);
+      return {
+        client: result.client,
+        source: "user" as const,
+        configSummary: result.client ? describeModelConfig(result.config) : undefined,
+      };
+    }
+    return { client: model.client, source: "default" as const };
+  };
+
   return {
     mode: input.mode,
     warnings,
@@ -170,6 +182,8 @@ function buildKernel(input: BuildKernelInput): ApiKernel {
     jobRunner,
     pendingActions,
     frontDeskModelClient: model.client,
+    modelClientFactory,
+    resolveUserModelClient,
     llmExperienceExtractor,
     llmGenerationService,
     llmRewriteService,
@@ -199,69 +213,4 @@ type BuildKernelInput = {
 function createFileStorage(): FileStorage {
   const provider = readPlatformConfig().fileStorageProvider;
   return provider === "memory" ? new InMemoryFileStorage() : new LocalFileStorage();
-}
-
-function createModelClient(): { client?: ModelClient; warnings: string[]; config: ModelRuntimeConfig } {
-  const provider = process.env.AGENT_MODEL_PROVIDER ?? process.env.AGENT_PROVIDER ?? "deepseek";
-  const model = process.env.AGENT_MODEL ?? process.env.DEEPSEEK_MODEL ?? "deepseek-chat";
-
-  if (provider === "openai" || provider === "compatible") {
-    const apiKey = process.env.OPENAI_API_KEY ?? process.env.AGENT_MODEL_API_KEY ?? process.env.AGENT_API_KEY;
-    const baseURL =
-      process.env.OPENAI_BASE_URL ??
-      process.env.AGENT_MODEL_BASE_URL ??
-      process.env.AGENT_BASE_URL ??
-      "https://api.openai.com/v1";
-    if (!apiKey) {
-      return {
-        config: { provider, model: process.env.OPENAI_MODEL ?? model, baseURL, apiKeyConfigured: false },
-        warnings: ["OPENAI_API_KEY, AGENT_MODEL_API_KEY, or AGENT_API_KEY is not set. Agent model calls are disabled."],
-      };
-    }
-    return {
-      client: new ModelClient({
-        provider: new OpenAICompatibleProvider({ name: provider, apiKey, baseURL }),
-        defaultModel: process.env.OPENAI_MODEL ?? model,
-      }),
-      config: { provider, model: process.env.OPENAI_MODEL ?? model, baseURL, apiKeyConfigured: true, apiKeyMasked: maskApiKey(apiKey) },
-      warnings: [],
-    };
-  }
-
-  const apiKey = process.env.DEEPSEEK_API_KEY ?? process.env.AGENT_MODEL_API_KEY ?? process.env.AGENT_API_KEY;
-  const baseURL = process.env.DEEPSEEK_BASE_URL ?? process.env.AGENT_MODEL_BASE_URL ?? process.env.AGENT_BASE_URL ?? "https://api.deepseek.com";
-  if (!apiKey) {
-    return {
-      config: { provider: "deepseek", model, baseURL, apiKeyConfigured: false },
-      warnings: ["DEEPSEEK_API_KEY, AGENT_MODEL_API_KEY, or AGENT_API_KEY is not set. Agent model calls are disabled."],
-    };
-  }
-  return {
-    client: new ModelClient({
-      provider: new DeepSeekProvider({
-        apiKey,
-        baseURL,
-      }),
-      defaultModel: model,
-    }),
-    config: { provider: "deepseek", model, baseURL, apiKeyConfigured: true, apiKeyMasked: maskApiKey(apiKey) },
-    warnings: [],
-  };
-}
-
-function maskApiKey(apiKey: string): string {
-  if (apiKey.length <= 8) return "****";
-  return `${apiKey.slice(0, 4)}...${apiKey.slice(-4)}`;
-}
-
-function debugModelConfig(config: ModelRuntimeConfig): void {
-  if (process.env.NODE_ENV !== "development" && process.env.DEBUG_LLM_CONFIG !== "true") return;
-  if (process.env.DEBUG_LLM_CONFIG === "false") return;
-  console.debug("[model] config", {
-    provider: config.provider,
-    model: config.model,
-    baseURL: config.baseURL,
-    apiKeyConfigured: config.apiKeyConfigured,
-    apiKeyMasked: config.apiKeyMasked,
-  });
 }

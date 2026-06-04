@@ -21,6 +21,7 @@ export interface ProductExperienceRepository {
   archiveExperience(userId: string, id: string): Promise<ProductExperience | null>;
   createRevision(record: ProductExperienceRevision): Promise<ProductExperienceRevision>;
   listRevisionsByExperience(userId: string, experienceId: string): Promise<ProductExperienceRevision[]>;
+  listRevisionsByExperienceIds(userId: string, experienceIds: string[]): Promise<ProductExperienceRevision[]>;
   getRevisionById(userId: string, revisionId: string): Promise<ProductExperienceRevision | null>;
   createVariant(record: ProductExperienceVariant): Promise<ProductExperienceVariant>;
   listVariantsByExperience(userId: string, experienceId: string): Promise<ProductExperienceVariant[]>;
@@ -126,6 +127,14 @@ export class InMemoryProductExperienceRepository implements ProductExperienceRep
   public async listRevisionsByExperience(userId: string, experienceId: string): Promise<ProductExperienceRevision[]> {
     return Array.from(this.revisions.values())
       .filter((item) => item.userId === userId && item.experienceId === experienceId)
+      .sort(descCreated);
+  }
+
+  public async listRevisionsByExperienceIds(userId: string, experienceIds: string[]): Promise<ProductExperienceRevision[]> {
+    if (experienceIds.length === 0) return [];
+    const ids = new Set(experienceIds);
+    return Array.from(this.revisions.values())
+      .filter((item) => item.userId === userId && ids.has(item.experienceId))
       .sort(descCreated);
   }
 

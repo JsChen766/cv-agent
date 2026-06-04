@@ -20,6 +20,7 @@ const PRODUCT_PROMPT_FILES = {
   "product.generation.resumeSystem": "product/generation-resume-system.md",
   "product.generation.resumeRepair": "product/generation-resume-repair.md",
   "tools.resume.prepareReviseResumeItem.system": "tools/resume/prepare-revise-resume-item-system.md",
+  "tools.experience.jdMatch.system": "tools/experience/jd-match-system.md",
 } as const;
 
 export type ProductPromptName = keyof typeof PRODUCT_PROMPT_FILES;

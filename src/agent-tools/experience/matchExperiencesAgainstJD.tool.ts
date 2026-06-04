@@ -1,6 +1,7 @@
 ﻿import { z } from "zod";
 import type { ToolDefinition } from "../../agent-core/tools/Tool.js";
 import type { ModelClientChatRequest } from "../../agent-core/model/types.js";
+import { PromptRegistry } from "../../agent-core/prompts/PromptRegistry.js";
 import { ToolResultSchema } from "../../agent-core/validation/ToolInputSchemas.js";
 import { isDeterministicFallbackAllowed, llmNotAvailableResult } from "../../product/deterministicFallbackGuard.js";
 
@@ -140,23 +141,44 @@ type EnrichedExperience = {
 };
 
 async function enrichWithContent(
-  context: { userId: string; kernel: { productServices: { experienceService: { listRevisions: (userId: string, experienceId: string) => Promise<Array<{ id: string; content: string; structured?: Record<string, unknown> }>> } } } },
+  context: {
+    userId: string;
+    kernel: {
+      productServices: {
+        experienceService: {
+          listRevisionsByIds: (userId: string, experienceIds: string[]) => Promise<Array<{ id: string; content: string; experienceId: string; structured?: Record<string, unknown> }>>;
+        };
+      };
+    };
+  },
   experiences: Array<{ id: string; title: string; organization?: string; role?: string; startDate?: string; endDate?: string; currentRevisionId?: string; category?: string; tags?: string[] }>,
 ): Promise<EnrichedExperience[]> {
+  const experienceIds = experiences.map((exp) => exp.id);
+  let revisionsByExpId: Map<string, Array<{ id: string; content: string; structured?: Record<string, unknown> }>>;
+  try {
+    const allRevisions = await context.kernel.productServices.experienceService.listRevisionsByIds(context.userId, experienceIds);
+    revisionsByExpId = new Map<string, Array<{ id: string; content: string; structured?: Record<string, unknown> }>>();
+    for (const rev of allRevisions) {
+      const list = revisionsByExpId.get(rev.experienceId);
+      if (list) {
+        list.push(rev);
+      } else {
+        revisionsByExpId.set(rev.experienceId, [rev]);
+      }
+    }
+  } catch {
+    // fallback: treat all as having no revisions
+    revisionsByExpId = new Map();
+  }
+
   const results: EnrichedExperience[] = [];
   for (const exp of experiences) {
-    let content = "";
-    let structured: Record<string, unknown> | undefined;
-    try {
-      const revisions = await context.kernel.productServices.experienceService.listRevisions(context.userId, exp.id);
-      const current = exp.currentRevisionId
-        ? revisions.find((r) => r.id === exp.currentRevisionId)
-        : revisions.at(0);
-      content = current?.content ?? "";
-      structured = current?.structured;
-    } catch {
-      // ignore — content will be empty
-    }
+    const revisions = revisionsByExpId.get(exp.id) ?? [];
+    const current = exp.currentRevisionId
+      ? revisions.find((r) => r.id === exp.currentRevisionId)
+      : revisions.at(0);
+    const content = current?.content ?? "";
+    const structured = current?.structured;
     results.push({
       id: exp.id,
       title: exp.title,
@@ -194,29 +216,8 @@ async function llmBatchMatch(
     return parts.join("\n");
   }).join("\n\n");
 
-  const systemPrompt = [
-    "You are a resume-to-JD matching assistant. Score each experience against the JD.",
-    "",
-    "For each experience, return a JSON object with:",
-    "- experienceIndex: number matching the list index",
-    "- matchScore: 0.0-1.0",
-    "- matchLevel: \"high\" | \"medium\" | \"low\"",
-    "- matchedRequirements: JD requirements/skills this experience fulfills (array of strings)",
-    "- missingRequirements: JD requirements this experience lacks (array of strings)",
-    "- evidenceFromExperience: specific text snippets from the experience that support the match (array of 1-2 strings)",
-    "- reason: one-sentence justification in Chinese",
-    "- suggestedUsage: how this experience should be positioned on a resume for this JD (in Chinese)",
-    "- rewriteSuggestion: a concrete suggestion for rewriting this experience to better fit the JD (in Chinese)",
-    "",
-    "Scoring rules:",
-    "- Score based on keyword overlap, role alignment, tech stack match, domain relevance, and seniority match.",
-    "- Match against the FULL experience content, not just the title.",
-    "- Even if an experience is not a perfect match, give partial credit for transferable skills.",
-    "- High >= 0.75, Medium >= 0.45, Low < 0.45.",
-    "- Be fair and nuanced: every experience has some value.",
-    "",
-    "Output ONLY a valid JSON array. No markdown, no explanation.",
-  ].join("\n");
+  const PROMPTS = new PromptRegistry();
+  const systemPrompt = PROMPTS.get("tools.experience.jdMatch.system");
 
   const userPrompt = [
     "JD:",

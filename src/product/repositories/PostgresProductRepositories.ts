@@ -107,6 +107,16 @@ export class PostgresProductExperienceRepository implements ProductExperienceRep
     return result.rows.map(toRevision);
   }
 
+  public async listRevisionsByExperienceIds(userId: string, experienceIds: string[]): Promise<ProductExperienceRevision[]> {
+    if (experienceIds.length === 0) return [];
+    const unique = Array.from(new Set(experienceIds));
+    const result = await this.database.query<PgRow>(
+      "SELECT * FROM product_experience_revision WHERE user_id = $1 AND experience_id = ANY($2) ORDER BY created_at DESC",
+      [userId, unique],
+    );
+    return result.rows.map(toRevision);
+  }
+
   public async getRevisionById(userId: string, revisionId: string): Promise<ProductExperienceRevision | null> {
     const result = await this.database.query<PgRow>(
       "SELECT * FROM product_experience_revision WHERE user_id = $1 AND id = $2 LIMIT 1",
