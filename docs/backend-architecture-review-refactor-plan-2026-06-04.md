@@ -490,7 +490,7 @@ src/features/copilot/copilotActionResponseAnalyzer.ts
 
 | 问题编号 | 当前状态 | 说明 |
 |---|---|---|
-| B-01 | 部分修复 | 两轮外围拆分：PreviewPresenter + ProductBlockPresenter 已抽出（-316 行）。 |
+| B-01 | 部分修复 | 三轮外围拆分 -450 行：PreviewPresenter + ProductBlockPresenter + WorkspaceProjector。 |
 | B-02 | 未修复 | `executeToolOrCreatePendingAction` 状态机未动。 |
 | B-15 | 部分修复 | ModelClientFactory + Kernel resolveUserModelClient + debug route 接入已完成。Product/Copilot 入口待后续接入。 |
 | B-17 | 已修复 | `schema_migrations` tracking 表已建立；migration 执行 + checksum 验证已实现。待真实 DB 集成测试。 |
@@ -1962,4 +1962,193 @@ B-18 当前状态：
 
 1. B-20：ToolResult / workspacePatch / actionResult schema 收紧第一阶段
 2. B-01 第三阶段：抽 WorkspaceProjector
+3. B-17/B-19：补真实 Postgres integration test
+
+### 9.35 本轮计划：B-20 ToolResult schema 收紧第一阶段
+
+本轮目标：盘点 ToolResult 结构，新增基础 output schema（BaseWorkspacePatch、BaseActionResult），为 `list_resumes`、`get_resume` 两个最简单工具创建 typed output schema。只在测试中 contract parse，不改运行时。
+
+当前状态：`ToolResultSchema` 对 `data`/`workspacePatch`/`actionResult` 使用 `z.unknown()` / `z.record(z.string(), z.unknown())`，缺少 typed contract。
+
+注意：先只写本轮计划，代码完成后再回写结果。
+
+### 9.36 本轮结果：B-20 ToolResult schema 收紧第一阶段
+
+本轮盘点结果：
+
+已审查所有工具（list_resumes, get_resume, generate_resume_from_jd, accept_generation_variant, prepare_revise_resume_item, revise_resume_item, match_experiences_against_jd, save_experience_from_text 等）。
+
+风险最高的宽松 schema 点：
+* `data: z.unknown()` — 8 个工具使用
+* `workspacePatch: z.record(z.string(), z.unknown())` — 全部工具
+* `actionResult: z.record(z.string(), z.unknown())` — 全部工具
+
+本轮收紧工具 (2 个):
+* `list_resumes` → `ListResumesOutputSchema`
+* `get_resume` → `GetResumeOutputSchema`
+
+暂缓工具及原因：
+
+| 工具 | 暂缓原因 |
+|---|---|
+| `generate_resume_from_jd` | 输出含 generation variants / workspacePatch complex structure |
+| `accept_generation_variant` | 输出含 activeResume / generation / resume item |
+| `prepare_revise_resume_item` | 输出含 revisionSuggestion (LLM preview) / actionResult 结构复杂 |
+| `revise_resume_item` | 输出含 confirm 固化逻辑 / rewrittenText |
+| `match_experiences_against_jd` | 输出含 matchResults / evidenceFromExperience / jdSummary |
+
+新增文件：
+
+* `src/agent-core/validation/ToolOutputSchemas.ts`（~100 行）：
+  * `BaseWorkspacePatchSchema` — 公共 workspacePatch 字段（passthrough 保留额外字段）
+  * `BaseActionResultSchema` — 公共 actionResult 字段
+  * `BaseToolResultSchema` — 基础 ToolResult shape
+  * `ListResumesOutputSchema` — `list_resumes` typed output
+  * `GetResumeOutputSchema` — `get_resume` typed output
+
+* `tests/ToolResultSchemas.test.ts`（15 个 test case）：
+  * BaseWorkspacePatch 接受典型 / 空 / 额外字段
+  * BaseActionResult 接受 success / needs_input / 额外字段
+  * BaseToolResult 接受 minimal / 完整 form / reject invalid status
+  * ListResumesOutput 接受典型 / 额外字段 / reject 缺失 count
+  * GetResumeOutput 接受成功 / 失败 / reject 错误 activePanel
+
+B-20 当前状态：
+
+| 问题编号 | 状态 | 说明 |
+|---|---|---|
+| B-20 | 部分修复 | 完成基础 schema + 2 个工具 typed output schema；15 个 contract test。剩余 6+ 工具待后续阶段。 |
+
+方案选择：方案 A（仅测试 contract parse）— 不修改任何工具运行时行为。
+
+行为兼容性：未修改工具输出、tool id、input/output schema runtime、ToolExecutor、workspacePatch、actionResult、metadata、API response。
+
+测试结果：
+
+* `npm run typecheck`：通过。
+* `npm test`：全部 48 files / 459 tests 通过（+15 schema contract tests）。
+
+下一轮建议：
+
+1. B-20 第二阶段：覆盖 `accept_generation_variant`、`prepare_revise_resume_item`、`revise_resume_item` 输出 schema
+2. B-01 第三阶段：抽 WorkspaceProjector
+3. B-17/B-19：补真实 Postgres integration test
+
+### 9.37 本轮计划：B-20 ToolResult schema 收紧第二阶段
+
+本轮目标：为 `accept_generation_variant`、`prepare_revise_resume_item`、`revise_resume_item` 建立 typed output schema。仅测试层 contract parse，不改运行时。
+
+注意：先只写本轮计划，代码完成后再回写结果。
+
+### 9.38 本轮结果：B-20 ToolResult schema 收紧第二阶段
+
+本轮新增 schema：
+
+| Schema | 覆盖工具 | 路径数 |
+|---|---|---|
+| `AcceptGenerationVariantOutputSchema` | `accept_generation_variant` | 1 (success only) |
+| `PrepareReviseResumeItemOutputSchema` | `prepare_revise_resume_item` | 5 (2 success + 3 needs_input) |
+| `ReviseResumeItemOutputSchema` | `revise_resume_item` | 6 (success / needs_input / failed) |
+
+每个工具锁住的字段：
+
+**accept_generation_variant**:
+- data: generation, resume, item, variant (均为 record)
+- workspacePatch: activePanel="resume_editor", resumeId, active, status="accepted"
+- actionResult: actionType="accept_generation_variant", variantId, metadata.generationId, metadata.resumeId
+- visibility: "user_summary"
+
+**prepare_revise_resume_item** (union):
+- success: data.rewrittenText (required), actionResult.revisionSuggestion (required: kind="resume_item", rewrittenText, usedModel)
+- needs_input: actionResult.reason ∈ {source_text_not_found, model_not_available, model_call_failed}
+- frozen rewrittenText 字段已锁住
+
+**revise_resume_item** (union):
+- success: data.item + data.rewrittenText, workspacePatch.activePanel="resume_editor", actionResult.actionType="optimize_resume_item", revisionSuggestion
+- needs_input: reason ∈ {source_text_not_found, no_rewritten_text}
+- failed: data.id
+
+仍保留宽松字段（passthrough）：
+
+| 字段 | 原因 |
+|---|---|
+| item content/fields | 动态 resume item 结构，随业务演进 |
+| generation/resume/variant sub-fields | 动态 product record 结构 |
+| changes array | LLM rewrite changes 结构不稳定 |
+| actionResult metadata sub-fields | 工具特定 metadata 扩展 |
+
+B-20 整体进度：
+
+| Phase | 已 typed | 状态 |
+|---|---|---|
+| Phase 1 | list_resumes, get_resume | 完成 |
+| Phase 2 | accept_generation_variant, prepare_revise_resume_item, revise_resume_item | 完成 |
+| Phase 3 | generate_resume_from_jd, match_experiences_against_jd 等 | 待定 |
+
+修改文件：
+
+* `src/agent-core/validation/ToolOutputSchemas.ts`：+~140 行（3 个新 schema + RevisionSuggestion helper）
+* `tests/ToolResultSchemas.test.ts`：+9 tests（accept ×2, prepare ×3, revise ×4）
+
+行为兼容性：未修改任何工具输出、runtime、ToolExecutor、AgentOrchestrator。
+
+测试结果：
+
+* `npm run typecheck`：通过。
+* `npm test`：全部 48 files / 468 tests 通过（+9 tests）。
+
+B-20 当前状态：**部分修复**（5/8+ 工具 typed，累计 24 schema tests）。
+
+下一轮建议：
+
+1. B-01 第三阶段：抽 WorkspaceProjector
+2. B-20 Phase 3：覆盖 generate_resume_from_jd、match_experiences_against_jd
+3. B-17/B-19：补真实 Postgres integration test
+
+### 9.39 本轮计划：B-01 第三阶段 WorkspaceProjector
+
+本轮目标：抽 8 个 workspace projection 纯函数到 WorkspaceProjector.ts。不动主流程。
+
+注意：先只写本轮计划，代码完成后再回写结果。
+
+### 9.40 本轮结果：B-01 第三阶段 WorkspaceProjector
+
+本轮拆出模块：
+
+* `src/agent-core/runtime/WorkspaceProjector.ts`（~160 行）：
+  * `mergeWorkspacePatch` — 合并 tool results 的 workspacePatch
+  * `buildWorkspaceSnapshot` — workspace snapshot 构造
+  * `buildRelatedResourceIds` — related resource IDs 提取
+  * `collectIdsFromUnknown` — 递归 id 采集
+  * `addId` / `hasRelatedResourceIds` — 工具函数
+  * `updatePendingStatusInProductBlocks` — product block 状态更新
+  * `buildWorkspaceForHistory` — 历史 workspace 构造
+
+AgentOrchestrator 行数变化：
+
+| 阶段 | 行数 | 累计减少 | 拆出模块 |
+|---|---|---|---|
+| 原始 | 3085 | — | — |
+| Phase 1 | 3010 | -75 | PreviewPresenter |
+| Phase 2 | 2769 | -316 | ProductBlockPresenter |
+| Phase 3 | 2635 | -450 | WorkspaceProjector |
+
+B-01/B-02 当前状态：
+
+| 问题编号 | 状态 | 说明 |
+|---|---|---|
+| B-01 | 部分修复 | 三轮外围拆分累计 -450 行（-15%）。三个 presenter 模块已抽出。 |
+| B-02 | 未变化 | core state machine untouched. |
+
+行为兼容性：全部未修改。
+
+测试结果：
+
+* `npm run typecheck`：通过。
+* `npm test`：全部 48 files / 468 tests 通过。
+
+下一轮建议：
+
+1. B-20 Phase 3：覆盖 generate_resume_from_jd、match_experiences_against_jd
+2. B-01 Phase 4：抽 ExplicitActionMapper
 3. B-17/B-19：补真实 Postgres integration test
