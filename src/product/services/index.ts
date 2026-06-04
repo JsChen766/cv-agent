@@ -35,6 +35,13 @@ export type ProductServices = {
   generationProductService: GenerationProductService;
 };
 
+export class ProductStateConflictError extends Error {
+  public constructor(message: string) {
+    super(message);
+    this.name = "ProductStateConflictError";
+  }
+}
+
 export class ExperienceService {
   public constructor(private readonly repository: ProductExperienceRepository) {}
 
@@ -51,34 +58,7 @@ export class ExperienceService {
     sourceDocumentId?: string;
     source?: ProductExperienceRevision["source"];
   }): Promise<{ experience: ProductExperience; revision: ProductExperienceRevision }> {
-    const now = new Date().toISOString();
-    const experienceId = `pexp-${randomUUID()}`;
-    const revisionId = `pexprev-${randomUUID()}`;
-    const experience: ProductExperience = {
-      id: experienceId,
-      userId,
-      category: input.category ?? "work",
-      title: nonEmpty(input.title, "Untitled experience"),
-      organization: optional(input.organization),
-      role: optional(input.role),
-      startDate: optional(input.startDate),
-      endDate: optional(input.endDate),
-      sourceDocumentId: optional(input.sourceDocumentId),
-      tags: input.tags ?? [],
-      status: "active",
-      currentRevisionId: revisionId,
-      createdAt: now,
-      updatedAt: now,
-    };
-    const revision: ProductExperienceRevision = {
-      id: revisionId,
-      experienceId,
-      userId,
-      content: input.content,
-      structured: input.structured,
-      source: input.source ?? "manual",
-      createdAt: now,
-    };
+    const { experience, revision } = buildExperienceRecords(userId, input);
     return this.repository.createExperienceWithRevision(experience, revision);
   }
 
@@ -281,6 +261,9 @@ export class ResumeService {
 }
 
 export class ImportService {
+  private readonly acceptingCandidates = new Set<string>();
+  private readonly acceptedResults = new Map<string, { candidate: ProductImportCandidate; experience: ProductExperience }>();
+
   public constructor(
     private readonly repository: ProductImportRepository,
     private readonly experienceService: ExperienceService,
@@ -382,7 +365,52 @@ export class ImportService {
   public async acceptCandidate(userId: string, candidateId: string): Promise<{ candidate: ProductImportCandidate; experience: ProductExperience }> {
     const candidate = await this.repository.getImportCandidate(userId, candidateId);
     if (!candidate) throw new Error("Import candidate not found.");
-    const { experience } = await this.experienceService.createExperience(userId, {
+    if (candidate.status === "accepted") {
+      const cached = this.acceptedResults.get(`${userId}:${candidateId}`);
+      if (cached) return cached;
+      throw new ProductStateConflictError("Import candidate has already been accepted.");
+    }
+    if (candidate.status !== "pending") {
+      throw new ProductStateConflictError(`Import candidate cannot be accepted from status ${candidate.status}.`);
+    }
+    const lockKey = `${userId}:${candidateId}`;
+    if (this.acceptingCandidates.has(lockKey)) {
+      throw new ProductStateConflictError("Import candidate is already being accepted.");
+    }
+    this.acceptingCandidates.add(lockKey);
+    try {
+      const records = buildExperienceRecords(userId, {
+        title: candidate.title,
+        category: candidate.category,
+        content: candidate.content,
+        organization: candidate.organization,
+        role: candidate.role,
+        startDate: candidate.startDate,
+        endDate: candidate.endDate,
+        structured: candidate.structured,
+        sourceDocumentId: candidate.sourceDocumentId,
+        source: "import",
+      });
+      if (this.repository.acceptCandidateWithExperience) {
+        const accepted = await this.repository.acceptCandidateWithExperience({
+          userId,
+          candidateId,
+          experience: records.experience,
+          revision: records.revision,
+        });
+        if (!accepted) throw new Error("Import candidate not found.");
+        if (accepted.outcome === "not_pending") {
+          if (accepted.candidate.status === "accepted") {
+            const cached = this.acceptedResults.get(lockKey);
+            if (cached) return cached;
+          }
+          throw new ProductStateConflictError(`Import candidate cannot be accepted from status ${accepted.candidate.status}.`);
+        }
+        const result = { candidate: accepted.candidate, experience: accepted.experience };
+        this.acceptedResults.set(lockKey, result);
+        return result;
+      }
+      const { experience } = await this.experienceService.createExperience(userId, {
       title: candidate.title,
       category: candidate.category,
       content: candidate.content,
@@ -393,9 +421,14 @@ export class ImportService {
       structured: candidate.structured,
       sourceDocumentId: candidate.sourceDocumentId,
       source: "import",
-    });
-    const updated = await this.repository.updateCandidateStatus(userId, candidateId, "accepted");
-    return { candidate: updated ?? candidate, experience };
+      });
+      const updated = await this.repository.updateCandidateStatus(userId, candidateId, "accepted");
+      const result = { candidate: updated ?? candidate, experience };
+      this.acceptedResults.set(lockKey, result);
+      return result;
+    } finally {
+      this.acceptingCandidates.delete(lockKey);
+    }
   }
 
   public async rejectCandidate(userId: string, candidateId: string): Promise<ProductImportCandidate> {
@@ -489,24 +522,47 @@ export class GenerationProductService {
     const resume = input.resumeId
       ? await this.resumeService.getResume(userId, input.resumeId)
       : null;
-    const targetResume = resume ?? await this.resumeService.createResume(userId, {
+    const targetResume = resume
+      ? resumeToRecord(resume)
+      : buildResumeRecord(userId, {
       targetRole: generation.targetRole,
       jdId: generation.jdId,
       title: generation.targetRole ? `${generation.targetRole} draft` : "Copilot resume draft",
     });
-    const item = await this.resumeService.addResumeItem(userId, targetResume.id, {
+    const item = buildResumeItemRecord(userId, targetResume.id, {
       sourceArtifactId: variant.id,
       sectionType: "experience",
       title: inferTitle(variant.content, "Accepted variant"),
       contentSnapshot: variant.content,
+      orderIndex: resume?.items.length ?? 0,
       metadata: { generationId: generation.id },
     });
     const selected = Array.from(new Set([...generation.selectedVariantIds, variant.id]));
-    // TODO(P10): move resume creation, item creation, and generation attachment into a
-    // product unit-of-work when product repositories share a transaction runner.
+    if (this.repository.saveAcceptedVariantToResume) {
+      const saved = await this.repository.saveAcceptedVariantToResume({
+        userId,
+        generationId: generation.id,
+        resume: targetResume,
+        item,
+        selectedVariantIds: selected,
+      });
+      if (saved) return { ...saved, variant };
+    }
+    const savedResume = resume ? targetResume : await this.resumeService.createResume(userId, {
+      targetRole: generation.targetRole,
+      jdId: generation.jdId,
+      title: targetResume.title,
+    });
+    const savedItem = await this.resumeService.addResumeItem(userId, savedResume.id, {
+      sourceArtifactId: variant.id,
+      sectionType: item.sectionType,
+      title: item.title,
+      contentSnapshot: item.contentSnapshot,
+      metadata: item.metadata,
+    });
     await this.repository.updateGenerationSelection(userId, generation.id, selected);
-    const attached = await this.repository.attachResume(userId, generation.id, targetResume.id);
-    return { generation: attached ?? generation, resume: targetResume, item, variant };
+    const attached = await this.repository.attachResume(userId, generation.id, savedResume.id);
+    return { generation: attached ?? generation, resume: savedResume, item: savedItem, variant };
   }
 
   public getGeneration(userId: string, id: string): Promise<ProductGeneration | null> {
@@ -516,6 +572,114 @@ export class GenerationProductService {
   public listGenerations(userId: string, limit?: number): Promise<ProductGeneration[]> {
     return this.repository.listGenerationsByUser(userId, { limit });
   }
+}
+
+function buildExperienceRecords(userId: string, input: {
+  title: string;
+  category?: ProductExperienceCategory;
+  content: string;
+  organization?: string;
+  role?: string;
+  startDate?: string;
+  endDate?: string;
+  tags?: string[];
+  structured?: Record<string, unknown>;
+  sourceDocumentId?: string;
+  source?: ProductExperienceRevision["source"];
+}): { experience: ProductExperience; revision: ProductExperienceRevision } {
+  const now = new Date().toISOString();
+  const experienceId = `pexp-${randomUUID()}`;
+  const revisionId = `pexprev-${randomUUID()}`;
+  const experience: ProductExperience = {
+    id: experienceId,
+    userId,
+    category: input.category ?? "work",
+    title: nonEmpty(input.title, "Untitled experience"),
+    organization: optional(input.organization),
+    role: optional(input.role),
+    startDate: optional(input.startDate),
+    endDate: optional(input.endDate),
+    sourceDocumentId: optional(input.sourceDocumentId),
+    tags: input.tags ?? [],
+    status: "active",
+    currentRevisionId: revisionId,
+    createdAt: now,
+    updatedAt: now,
+  };
+  const revision: ProductExperienceRevision = {
+    id: revisionId,
+    experienceId,
+    userId,
+    content: input.content,
+    structured: input.structured,
+    source: input.source ?? "manual",
+    createdAt: now,
+  };
+  return { experience, revision };
+}
+
+function buildResumeRecord(userId: string, input: {
+  title?: string;
+  targetRole?: string;
+  jdId?: string;
+  templateId?: string;
+}): ProductResume {
+  const now = new Date().toISOString();
+  return {
+    id: `pres-${randomUUID()}`,
+    userId,
+    title: nonEmpty(input.title, input.targetRole ? `${input.targetRole} resume` : "Untitled resume"),
+    targetRole: optional(input.targetRole),
+    jdId: optional(input.jdId),
+    templateId: input.templateId ?? "template-default",
+    status: "draft",
+    createdAt: now,
+    updatedAt: now,
+  };
+}
+
+function buildResumeItemRecord(userId: string, resumeId: string, input: {
+  sourceExperienceId?: string;
+  sourceVariantId?: string;
+  sourceArtifactId?: string;
+  sectionType?: ProductResumeItem["sectionType"];
+  title: string;
+  contentSnapshot: string;
+  orderIndex?: number;
+  metadata?: Record<string, unknown>;
+}): ProductResumeItem {
+  const now = new Date().toISOString();
+  return {
+    id: `presitem-${randomUUID()}`,
+    resumeId,
+    userId,
+    sourceExperienceId: optional(input.sourceExperienceId),
+    sourceVariantId: optional(input.sourceVariantId),
+    sourceArtifactId: optional(input.sourceArtifactId),
+    sectionType: input.sectionType ?? "experience",
+    title: nonEmpty(input.title, "Resume item"),
+    contentSnapshot: input.contentSnapshot,
+    orderIndex: input.orderIndex ?? 0,
+    hidden: false,
+    pinned: false,
+    metadata: input.metadata ?? {},
+    createdAt: now,
+    updatedAt: now,
+  };
+}
+
+function resumeToRecord(resume: ProductResume): ProductResume {
+  return {
+    id: resume.id,
+    userId: resume.userId,
+    title: resume.title,
+    targetRole: resume.targetRole,
+    jdId: resume.jdId,
+    templateId: resume.templateId,
+    status: resume.status,
+    createdAt: resume.createdAt,
+    updatedAt: resume.updatedAt,
+  };
 }
 
 function generationFailureError(error: unknown): Error {

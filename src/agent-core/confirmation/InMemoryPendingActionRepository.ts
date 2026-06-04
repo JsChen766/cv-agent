@@ -1,4 +1,4 @@
-import type { PendingAction } from "./PendingAction.js";
+import type { PendingAction, PendingActionStatus } from "./PendingAction.js";
 import type { PendingActionRepository } from "./PendingActionRepository.js";
 
 export class InMemoryPendingActionRepository implements PendingActionRepository {
@@ -24,5 +24,20 @@ export class InMemoryPendingActionRepository implements PendingActionRepository 
   public async update(action: PendingAction): Promise<PendingAction> {
     this.actions.set(action.id, action);
     return action;
+  }
+
+  public async updateStatusIfCurrent(
+    userId: string,
+    id: string,
+    currentStatus: PendingActionStatus,
+    patch: Partial<PendingAction> & { status: PendingActionStatus },
+  ): Promise<PendingAction | undefined> {
+    const current = this.actions.get(id);
+    if (!current || current.userId !== userId || current.status !== currentStatus) {
+      return undefined;
+    }
+    const next = { ...current, ...patch, id: current.id, userId: current.userId };
+    this.actions.set(id, next);
+    return next;
   }
 }

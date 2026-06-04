@@ -52,6 +52,16 @@ export interface ProductImportRepository {
   getImportCandidate(userId: string, id: string): Promise<ProductImportCandidate | null>;
   listCandidatesByJob(userId: string, jobId: string): Promise<ProductImportCandidate[]>;
   updateCandidateStatus(userId: string, id: string, status: ProductImportCandidate["status"]): Promise<ProductImportCandidate | null>;
+  acceptCandidateWithExperience?(input: {
+    userId: string;
+    candidateId: string;
+    experience: ProductExperience;
+    revision: ProductExperienceRevision;
+  }): Promise<
+    | { outcome: "accepted"; candidate: ProductImportCandidate; experience: ProductExperience; revision: ProductExperienceRevision }
+    | { outcome: "not_pending"; candidate: ProductImportCandidate }
+    | null
+  >;
 }
 
 export interface ProductGenerationRepository {
@@ -60,6 +70,13 @@ export interface ProductGenerationRepository {
   listGenerationsByUser(userId: string, options?: ListOptions): Promise<ProductGeneration[]>;
   updateGenerationSelection(userId: string, id: string, selectedVariantIds: string[]): Promise<ProductGeneration | null>;
   attachResume(userId: string, id: string, resumeId: string): Promise<ProductGeneration | null>;
+  saveAcceptedVariantToResume?(input: {
+    userId: string;
+    generationId: string;
+    resume: ProductResume;
+    item: ProductResumeItem;
+    selectedVariantIds: string[];
+  }): Promise<{ generation: ProductGeneration; resume: ProductResume; item: ProductResumeItem } | null>;
 }
 
 export class InMemoryProductExperienceRepository implements ProductExperienceRepository {

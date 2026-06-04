@@ -108,7 +108,7 @@ export class PendingActionService {
   }): Promise<{ action: PendingAction; result: ToolResult }> {
     const action = await this.get(input.userId, input.id);
     if (!action) throw new AgentError("PERMISSION_DENIED", "该操作不存在或已被清理。", { statusCode: 404 });
-    if (action.status === "executed" && action.lastResult) {
+    if ((action.status === "executed" || action.status === "confirmed") && action.lastResult) {
       return {
         action,
         result: {
@@ -162,15 +162,29 @@ export class PendingActionService {
       return { action: updated, result: confirmBlockedResult(action.toolName, "confirm_guard_blocked", scopeGuardResult.message) };
     }
 
-    await this.repository.update({ ...action, status: "confirmed" });
+    const claimed = await this.repository.updateStatusIfCurrent(input.userId, action.id, "pending", { status: "confirmed" });
+    if (!claimed) {
+      const latest = await this.get(input.userId, input.id);
+      if (!latest) throw new AgentError("PERMISSION_DENIED", "该操作不存在或已被清理。", { statusCode: 404 });
+      if ((latest.status === "executed" || latest.status === "confirmed") && latest.lastResult) {
+        return {
+          action: latest,
+          result: {
+            ...latest.lastResult,
+            message: latest.lastResult.message || "该操作已确认，无需重复提交。",
+          },
+        };
+      }
+      return { action: latest, result: nonPendingResult(latest) };
+    }
     try {
-      if (action.toolName === "generate_resume_from_jd") {
+      if (claimed.toolName === "generate_resume_from_jd") {
         const job = await input.context.kernel.platformServices.backgroundJobs.createJob({
           userId: input.context.userId,
           type: "long_generation",
           input: {
             actionType: "generate_resume_from_jd",
-            pendingActionId: action.id,
+            pendingActionId: claimed.id,
             sessionId: input.context.sessionId,
             toolArguments: parsed.data as Record<string, unknown>,
           },
@@ -182,7 +196,7 @@ export class PendingActionService {
           data: {
             jobId: job.id,
             jobStatus: job.status,
-            actionType: action.toolName,
+            actionType: claimed.toolName,
           },
           workspacePatch: {
             activePanel: "variants",
@@ -190,8 +204,8 @@ export class PendingActionService {
             summary: "正在生成 JD 简历版本…",
           },
           actionResult: {
-            actionType: action.toolName,
-            status: "success",
+              actionType: claimed.toolName,
+              status: "success",
             metadata: {
               jobId: job.id,
               jobStatus: job.status,
@@ -201,7 +215,7 @@ export class PendingActionService {
           visibility: "user_summary",
         };
         const updated = await this.repository.update({
-          ...action,
+          ...claimed,
           status: "confirmed",
           lastResult: result,
         });
@@ -209,13 +223,13 @@ export class PendingActionService {
       }
       const result = await input.executor.executeDefinition(tool, parsed.data as Record<string, unknown>, input.context);
       const updated = await this.repository.update({
-        ...action,
+        ...claimed,
         status: result.status === "success" ? "executed" : "failed",
         lastResult: result,
       });
       return { action: updated, result };
     } catch (error) {
-      await this.repository.update({ ...action, status: "failed" });
+      await this.repository.update({ ...claimed, status: "failed" });
       throw error;
     }
   }

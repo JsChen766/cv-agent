@@ -318,9 +318,24 @@ export function createResumeAgentTools(): ToolDefinition[] {
           };
         }
 
+        if (!rewrittenText) {
+          return {
+            status: "needs_input",
+            message: "Please preview the rewrite before confirming.",
+            data: { resumeItemId: itemId },
+            visibility: "error_user_visible",
+            actionResult: {
+              status: "needs_input",
+              actionType: "revise_resume_item",
+              reason: "no_rewritten_text",
+              message: "Please preview the rewrite before confirming.",
+            },
+          };
+        }
+
         // If rewrittenText is provided, use it; otherwise try LLM generation as fallback
         let finalText = rewrittenText;
-        let usedModel = false;
+        let usedModel = true;
 
         if (!finalText) {
           const llmRewrite = context.kernel.llmRewriteService;

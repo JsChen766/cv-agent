@@ -282,6 +282,45 @@ export class PostgresProductImportRepository implements ProductImportRepository 
     if (!current) return null;
     return this.createImportCandidate({ ...current, status, updatedAt: new Date().toISOString() });
   }
+
+  public async acceptCandidateWithExperience(input: {
+    userId: string;
+    candidateId: string;
+    experience: ProductExperience;
+    revision: ProductExperienceRevision;
+  }): Promise<
+    | { outcome: "accepted"; candidate: ProductImportCandidate; experience: ProductExperience; revision: ProductExperienceRevision }
+    | { outcome: "not_pending"; candidate: ProductImportCandidate }
+    | null
+  > {
+    if (!this.database.transaction) return null;
+    return this.database.transaction(async (client: PostgresQueryable) => {
+      const selected = await client.query<PgRow>(
+        "SELECT * FROM product_import_candidate WHERE user_id = $1 AND id = $2 LIMIT 1 FOR UPDATE",
+        [input.userId, input.candidateId],
+      );
+      const candidate = selected.rows[0] ? toImportCandidate(selected.rows[0]) : null;
+      if (!candidate) return null;
+      if (candidate.status !== "pending") return { outcome: "not_pending", candidate };
+
+      const experienceRepository = new PostgresProductExperienceRepository(client);
+      const saved = await experienceRepository.createExperienceWithRevision(input.experience, input.revision);
+      const updated = await client.query<PgRow>(
+        `UPDATE product_import_candidate
+         SET status = 'accepted', updated_at = $3
+         WHERE user_id = $1 AND id = $2 AND status = 'pending'
+         RETURNING *`,
+        [input.userId, input.candidateId, new Date().toISOString()],
+      );
+      const updatedCandidate = updated.rows[0] ? toImportCandidate(updated.rows[0]) : candidate;
+      return {
+        outcome: "accepted" as const,
+        candidate: updatedCandidate,
+        experience: saved.experience,
+        revision: saved.revision,
+      };
+    });
+  }
 }
 
 export class PostgresProductGenerationRepository implements ProductGenerationRepository {
@@ -316,6 +355,30 @@ export class PostgresProductGenerationRepository implements ProductGenerationRep
     const current = await this.getGeneration(userId, id);
     if (!current) return null;
     return this.createGeneration({ ...current, resumeId });
+  }
+
+  public async saveAcceptedVariantToResume(input: {
+    userId: string;
+    generationId: string;
+    resume: ProductResume;
+    item: ProductResumeItem;
+    selectedVariantIds: string[];
+  }): Promise<{ generation: ProductGeneration; resume: ProductResume; item: ProductResumeItem } | null> {
+    if (!this.database.transaction) return null;
+    return this.database.transaction(async (client: PostgresQueryable) => {
+      const generationRepository = new PostgresProductGenerationRepository(client);
+      const generation = await generationRepository.getGeneration(input.userId, input.generationId);
+      if (!generation) return null;
+      const resumeRepository = new PostgresProductResumeRepository(client);
+      const resume = await resumeRepository.createResume(input.resume);
+      const item = await resumeRepository.createResumeItem(input.item);
+      const attached = await generationRepository.createGeneration({
+        ...generation,
+        resumeId: resume.id,
+        selectedVariantIds: input.selectedVariantIds,
+      });
+      return { generation: attached, resume, item };
+    });
   }
 }
 

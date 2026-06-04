@@ -14,6 +14,7 @@ import type {
   ProductGeneration,
   ProductResumeItem,
 } from "../../product/types.js";
+import { ProductStateConflictError } from "../../product/index.js";
 import { toWorkspaceVariant } from "../../agent-tools/resume/index.js";
 
 export async function registerProductRoutes(
@@ -263,8 +264,16 @@ export async function registerProductRoutes(
 
   app.post("/product/import-candidates/:id/accept", async (request, reply) => {
     const ctx = await contextFor(request);
-    return withIdempotency(request, reply, kernel, ctx.user.id, async () =>
-      productSuccess(await kernel.productServices.importService.acceptCandidate(ctx.user.id, param(request, "id")), kernel, ctx));
+    return withIdempotency(request, reply, kernel, ctx.user.id, async () => {
+      try {
+        return productSuccess(await kernel.productServices.importService.acceptCandidate(ctx.user.id, param(request, "id")), kernel, ctx);
+      } catch (error) {
+        if (error instanceof ProductStateConflictError) {
+          throw new ApiError(ErrorCodes.CONFLICT, error.message, 409, { retryable: true });
+        }
+        throw error;
+      }
+    });
   });
 
   app.post("/product/import-candidates/:id/reject", async (request, reply) => {
@@ -367,7 +376,7 @@ function compactRecord<T extends Record<string, unknown>>(value: T): Partial<T> 
 }
 
 function readCategory(value: unknown): ProductExperienceCategory | undefined {
-  return readEnum(value, "category", ["work", "project", "education", "award", "skill", "other"]);
+  return readEnum(value, "category", ["work", "internship", "project", "education", "award", "skill", "other"]);
 }
 
 function readRevisionSource(value: unknown): ProductExperienceRevisionSource | undefined {

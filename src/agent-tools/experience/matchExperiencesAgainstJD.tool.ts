@@ -23,7 +23,7 @@ type MatchResult = {
   matchLevel: "high" | "medium" | "low";
   matchedRequirements: string[];
   missingRequirements: string[];
-  evidenceFromExperience: string;
+  evidenceFromExperience: string[];
   reason: string;
   suggestedUsage: string;
   rewriteSuggestion: string;
@@ -203,7 +203,7 @@ async function llmBatchMatch(
     "- matchLevel: \"high\" | \"medium\" | \"low\"",
     "- matchedRequirements: JD requirements/skills this experience fulfills (array of strings)",
     "- missingRequirements: JD requirements this experience lacks (array of strings)",
-    "- evidenceFromExperience: specific text from the experience that supports the match (1-2 sentences)",
+    "- evidenceFromExperience: specific text snippets from the experience that support the match (array of 1-2 strings)",
     "- reason: one-sentence justification in Chinese",
     "- suggestedUsage: how this experience should be positioned on a resume for this JD (in Chinese)",
     "- rewriteSuggestion: a concrete suggestion for rewriting this experience to better fit the JD (in Chinese)",
@@ -259,7 +259,7 @@ async function llmBatchMatch(
         : classifyLevel(score),
       matchedRequirements: stringArray(item.matchedRequirements),
       missingRequirements: stringArray(item.missingRequirements),
-      evidenceFromExperience: typeof item.evidenceFromExperience === "string" ? item.evidenceFromExperience : "",
+      evidenceFromExperience: stringArray(item.evidenceFromExperience),
       reason: typeof item.reason === "string" ? item.reason : buildDefaultReason(score),
       suggestedUsage: typeof item.suggestedUsage === "string" ? item.suggestedUsage : "可用于简历中相关经历部分。",
       rewriteSuggestion: typeof item.rewriteSuggestion === "string" ? item.rewriteSuggestion : "",
@@ -309,8 +309,8 @@ function keywordBatchMatch(
       matchedRequirements: matchedReqs.map((w) => `关键词: ${w}`),
       missingRequirements: missingReqs.map((w) => `未匹配: ${w}`),
       evidenceFromExperience: matchedReqs.length > 0
-        ? `匹配关键词: ${matchedReqs.join(", ")}`
-        : "未发现明显关键词匹配。",
+        ? [`匹配关键词: ${matchedReqs.join(", ")}`]
+        : ["未发现明显关键词匹配。"],
       reason: level === "high"
         ? "关键词高度匹配"
         : level === "medium"
@@ -465,6 +465,7 @@ function buildDefaultReason(score: number): string {
 }
 
 function stringArray(value: unknown): string[] {
+  if (typeof value === "string" && value.trim().length > 0) return [value.trim()];
   if (!Array.isArray(value)) return [];
   return value.filter((item): item is string => typeof item === "string" && item.trim().length > 0);
 }

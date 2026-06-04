@@ -7,6 +7,7 @@ import { ApiError, ErrorCodes } from "../errors.js";
 import { success } from "../response.js";
 import type { ApiKernel } from "../types.js";
 import { withIdempotency } from "../idempotency.js";
+import { withSessionLock } from "../sessionLock.js";
 import { applyRateLimit } from "../rateLimit.js";
 import { CopilotOrchestrator } from "../../copilot/CopilotOrchestrator.js";
 import type { CopilotActionRequest, CopilotChatRequest } from "../../copilot/types.js";
@@ -29,7 +30,7 @@ export async function registerCopilotRoutes(
     await applyRateLimit(kernel, ctx, request);
     const body = parseCopilotChatBody(request.body);
 
-    return withIdempotency(request, reply, kernel, ctx.user.id, async () => {
+    return withIdempotency(request, reply, kernel, ctx.user.id, async () => withSessionLock(kernel, ctx, body.sessionId, async () => {
       const response = await orchestrator.handleChat(ctx, body);
 
       return success(response, {
@@ -38,7 +39,7 @@ export async function registerCopilotRoutes(
         mode: kernel.mode,
         ...(kernel.warnings.length > 0 ? { warnings: kernel.warnings } : {}),
       });
-    });
+    }));
   });
 
   app.post("/copilot/actions", async (request, reply) => {
@@ -52,7 +53,7 @@ export async function registerCopilotRoutes(
       throw new ApiError(ErrorCodes.NOT_FOUND, "Session not found.", 404);
     }
 
-    return withIdempotency(request, reply, kernel, ctx.user.id, async () => {
+    return withIdempotency(request, reply, kernel, ctx.user.id, async () => withSessionLock(kernel, ctx, body.sessionId, async () => {
       const response = await orchestrator.handleAction(ctx, body);
 
       return success(response, {
@@ -60,7 +61,7 @@ export async function registerCopilotRoutes(
         traceId: ctx.request.traceId,
         mode: kernel.mode,
       });
-    });
+    }));
   });
 
   app.post("/copilot/chat/stream", async (request, reply) => {

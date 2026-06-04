@@ -1080,8 +1080,8 @@ export class AgentOrchestrator {
 
     // For save_experience_from_text: run prepare_save_experience_from_text first
     // to get LLM-structured data before creating the pending action preview.
-    let enrichedArgs = args;
-    let enrichedPreview = previewFor(tool.name, args);
+    let enrichedArgs: Record<string, unknown> = args;
+    let enrichedPreview: PendingAction["preview"] = previewFor(tool.name, args);
     if (tool.name === "save_experience_from_text") {
       // Dedup: if there's already a pending save_experience_from_text for this session
       // with the same text, don't create a duplicate card.
@@ -1223,6 +1223,24 @@ export class AgentOrchestrator {
             },
           };
         }
+      }
+    }
+
+    if (tool.name === "revise_resume_item" && !stringValue(enrichedArgs.rewrittenText)) {
+      const prepared = this.getPreparedResumeRewriteResult(run, enrichedArgs);
+      if (prepared) {
+        enrichedArgs = {
+          ...enrichedArgs,
+          rewrittenText: prepared.rewrittenText,
+          preparedRewrite: {
+            sourceTextPreview: prepared.sourceTextPreview,
+            changes: prepared.changes,
+          },
+        };
+        enrichedPreview = {
+          before: { sourceTextPreview: prepared.sourceTextPreview },
+          after: { rewrittenText: prepared.rewrittenText, changes: prepared.changes },
+        };
       }
     }
 
@@ -1390,6 +1408,28 @@ export class AgentOrchestrator {
       // prepare failed — fall through
     }
 
+    return undefined;
+  }
+
+  private getPreparedResumeRewriteResult(
+    run: RunState,
+    args: Record<string, unknown>,
+  ): { rewrittenText: string; sourceTextPreview?: string; changes?: unknown[] } | undefined {
+    const resumeItemId = stringValue(args.resumeItemId);
+    if (!resumeItemId) return undefined;
+    const observations = run.context.observations ?? [];
+    for (const obs of observations.slice().reverse()) {
+      if (obs.toolName !== "prepare_revise_resume_item" || obs.status !== "success") continue;
+      const data = obs.data as Record<string, unknown> | undefined;
+      if (!data || stringValue(data.resumeItemId) !== resumeItemId) continue;
+      const rewrittenText = stringValue(data.rewrittenText);
+      if (!rewrittenText) continue;
+      return {
+        rewrittenText,
+        sourceTextPreview: stringValue(data.sourceTextPreview),
+        changes: Array.isArray(data.changes) ? data.changes : undefined,
+      };
+    }
     return undefined;
   }
 
