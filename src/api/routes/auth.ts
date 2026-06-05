@@ -15,6 +15,11 @@ export async function registerAuthRoutes(app: FastifyInstance, kernel: ApiKernel
   app.get("/auth/me", async (request) => {
     const ctx = createKernelRequestContext(request, await authResolver.resolve(request));
     await applyRateLimit(kernel, ctx, request);
+    // In dev_header / disabled mode the user is defined by the header —
+    // no DB lookup needed. Return the resolved user info directly.
+    if (ctx.auth.mode === "dev_header" || ctx.auth.mode === "disabled") {
+      return success({ user: ctx.user }, meta(kernel, ctx));
+    }
     const user = await kernel.authService.getUserById(ctx.user.id);
     if (!user) throw new ApiError(ErrorCodes.NOT_FOUND, "User not found.", 404);
     return success({ user }, meta(kernel, ctx));

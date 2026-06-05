@@ -61,13 +61,41 @@ curl -H "x-user-id: dev-user" http://localhost:3000/product/experiences
 curl http://localhost:3000/product/experiences
 ```
 
-For frontend local integration, add `x-user-id: dev-user` in your API client default headers.
+### Frontend Integration (Recommended)
 
-Optional single-user local bypass (not default):
+For frontend local dev (H5), set these in `cv_agent_frontend/.env`:
 
-1. Set `AUTH_MODE=disabled` in `.env.docker`.
-2. Keep `ALLOW_INSECURE_AUTH=true`.
-3. Recreate API container: `docker compose up -d --force-recreate api`.
+```env
+VITE_API_BASE_URL=http://localhost:3000
+VITE_AUTH_MODE=dev_header
+VITE_AUTH_HEADER_NAME=x-user-id
+VITE_AUTH_HEADER_VALUE=dev-user
+VITE_ENABLE_DEV_LOGIN=false
+```
+
+With these settings:
+- Every API request automatically includes `x-user-id: dev-user` header.
+- The `/auth/dev-login` endpoint is **not** called — authentication happens via the header on every request.
+- No cookies or CORS `withCredentials` needed.
+
+### Troubleshooting Cookie / dev-login Mismatches
+
+If the frontend repeatedly shows "Dev login" button or you see `ERR_EMPTY_RESPONSE`:
+
+1. **Check API container logs**: `docker compose logs --tail=50 api`
+2. **Verify the API is listening**: `curl -i http://localhost:3000/health`
+3. **Verify auth mode**: Check `.env.docker` has `AUTH_MODE=dev_header`
+4. **Verify frontend config**: Check `.env` has `VITE_AUTH_MODE=dev_header` and `VITE_AUTH_HEADER_VALUE=dev-user`
+5. **Restart API after config changes**: `docker compose up -d --force-recreate api`
+
+### Common Pitfalls
+
+| Symptom | Likely Cause | Fix |
+|---|---|---|
+| `ERR_EMPTY_RESPONSE` | Backend container crashed on startup (e.g., migration error) | Check `docker compose logs api` for startup errors |
+| `401` on every request | `x-user-id` header not sent | Verify frontend `.env` has `VITE_AUTH_HEADER_VALUE=dev-user` |
+| Infinite "Dev login" redirect | Frontend in cookie mode but backend in dev_header mode | Set `VITE_AUTH_MODE=dev_header` and `VITE_ENABLE_DEV_LOGIN=false` in frontend |
+| Preflight OPTIONS fails with ERR_EMPTY_RESPONSE | Same as above — container not responding | Fix container startup first |
 
 ## Self-Check Commands
 

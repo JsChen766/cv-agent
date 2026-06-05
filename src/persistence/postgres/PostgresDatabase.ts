@@ -21,10 +21,136 @@ export type PostgresQueryable = {
 };
 
 export function splitSqlStatements(sql: string): string[] {
-  return sql
-    .split(";")
-    .map((s) => s.trim())
-    .filter((s) => s.length > 0);
+  const statements: string[] = [];
+  let current = "";
+  let i = 0;
+
+  const flush = () => {
+    const trimmed = current.trim();
+    if (trimmed.length > 0) {
+      statements.push(trimmed);
+    }
+    current = "";
+  };
+
+  while (i < sql.length) {
+    // Line comment: --
+    if (sql[i] === "-" && sql[i + 1] === "-") {
+      current += "--";
+      i += 2;
+      while (i < sql.length && sql[i] !== "\n") {
+        current += sql[i];
+        i++;
+      }
+      continue;
+    }
+
+    // Block comment: /* ... */
+    if (sql[i] === "/" && sql[i + 1] === "*") {
+      current += "/*";
+      i += 2;
+      while (i < sql.length) {
+        current += sql[i];
+        if (sql[i] === "*" && sql[i + 1] === "/") {
+          current += "/";
+          i += 2;
+          break;
+        }
+        i++;
+      }
+      continue;
+    }
+
+    // Single-quoted string: '...' ('' for escaped quote)
+    if (sql[i] === "'") {
+      current += "'";
+      i++;
+      while (i < sql.length) {
+        current += sql[i];
+        if (sql[i] === "'") {
+          i++;
+          if (i < sql.length && sql[i] === "'") {
+            current += "'";
+            i++;
+          } else {
+            break;
+          }
+        } else {
+          i++;
+        }
+      }
+      continue;
+    }
+
+    // Double-quoted identifier: "..." ("" for escaped quote)
+    if (sql[i] === '"') {
+      current += '"';
+      i++;
+      while (i < sql.length) {
+        current += sql[i];
+        if (sql[i] === '"') {
+          i++;
+          if (i < sql.length && sql[i] === '"') {
+            current += '"';
+            i++;
+          } else {
+            break;
+          }
+        } else {
+          i++;
+        }
+      }
+      continue;
+    }
+
+    // Dollar-quoted string: $$...$$ or $tag$...$tag$
+    if (sql[i] === "$") {
+      // Collect tag name (may be empty for $$)
+      let tagEnd = i + 1;
+      while (tagEnd < sql.length && sql[tagEnd] !== "$") {
+        tagEnd++;
+      }
+      if (tagEnd < sql.length) {
+        // Found closing $ of opening delimiter
+        const tag = sql.slice(i + 1, tagEnd);
+        const closeDelim = `$${tag}$`;
+        const openLen = closeDelim.length;
+        current += sql.slice(i, i + openLen);
+        i += openLen;
+        // Find closing delimiter in the rest
+        const rest = sql.slice(i);
+        const closeIdx = rest.indexOf(closeDelim);
+        if (closeIdx !== -1) {
+          current += rest.slice(0, closeIdx + closeDelim.length);
+          i += closeIdx + closeDelim.length;
+        } else {
+          // Unclosed dollar quote — add rest verbatim
+          current += rest;
+          i = sql.length;
+        }
+      } else {
+        current += sql[i];
+        i++;
+      }
+      continue;
+    }
+
+    // Semicolon in normal state = statement separator
+    if (sql[i] === ";") {
+      flush();
+      i++;
+      continue;
+    }
+
+    // Normal character
+    current += sql[i];
+    i++;
+  }
+
+  // Last statement (no trailing semicolon)
+  flush();
+
+  return statements;
 }
 
 export function normalizeQueryResult<Row extends pg.QueryResultRow>(
@@ -151,7 +277,14 @@ export class PostgresDatabase {
         }
         const executionMs = Date.now() - startMs;
         await this.query(
-          "INSERT INTO schema_migrations (filename, checksum, executed_at, execution_ms, success) VALUES ($1, $2, NOW(), $3, true)",
+          `INSERT INTO schema_migrations (filename, checksum, executed_at, execution_ms, success)
+           VALUES ($1, $2, NOW(), $3, true)
+           ON CONFLICT (filename) DO UPDATE SET
+             checksum = EXCLUDED.checksum,
+             executed_at = NOW(),
+             execution_ms = EXCLUDED.execution_ms,
+             success = true,
+             error_message = NULL`,
           [file, checksum, executionMs],
         );
       } catch (error) {
@@ -159,7 +292,13 @@ export class PostgresDatabase {
         // Best-effort failure recording
         try {
           await this.query(
-            "INSERT INTO schema_migrations (filename, checksum, executed_at, success, error_message) VALUES ($1, $2, NOW(), false, $3)",
+            `INSERT INTO schema_migrations (filename, checksum, executed_at, success, error_message)
+             VALUES ($1, $2, NOW(), false, $3)
+             ON CONFLICT (filename) DO UPDATE SET
+               checksum = EXCLUDED.checksum,
+               executed_at = NOW(),
+               success = false,
+               error_message = EXCLUDED.error_message`,
             [file, checksum, errorMessage],
           );
         } catch {
