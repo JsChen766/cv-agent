@@ -53,6 +53,7 @@ import type { AgentContext } from "./AgentContext.js";
 import { AgentError } from "./AgentError.js";
 import { AgentLoopController } from "./AgentLoopController.js";
 import { AgentMessageBus } from "./AgentMessageBus.js";
+import type { AgentMessageParticipant, AgentMessageType } from "./AgentMessage.js";
 import type { AgentObservation, AgentObservationStatus } from "./AgentObservation.js";
 import { AgentTraceRecorder } from "./AgentTrace.js";
 import type { AgentRuntimeEmitter, AgentStreamEventType } from "./AgentStreamEvent.js";
@@ -192,6 +193,14 @@ export class AgentOrchestrator {
           responseType: frontDeskDecision.responseType,
         },
       });
+      if (frontDeskDecision.routeTo) {
+        this.addPublicAgentMessage(run, {
+          from: "frontdesk",
+          type: "response",
+          content: formatText(localeFor(run), "routingTo", { agent: agentLabel(frontDeskDecision.routeTo, localeFor(run)) }),
+          payload: { eventType: "routing", routeTo: frontDeskDecision.routeTo },
+        });
+      }
       this.emit(run, "agent.reasoning.snapshot", "已完成任务意图判断", {
         agentName: "frontdesk",
         status: "completed",
@@ -727,6 +736,12 @@ export class AgentOrchestrator {
       });
       const decision = await specialist.decide({ context: run.context, routeHint });
       lastAssistantMessage = decision.assistantMessage || lastAssistantMessage;
+      this.addPublicAgentMessage(run, {
+        from: specialist.name,
+        type: "response",
+        content: formatText(localeFor(run), "agentStarted", { agent: agentLabel(specialist.name, localeFor(run)) }),
+        payload: { eventType: "announcement", planSize: decision.plan.length },
+      });
       this.emit(run, "agent.plan.snapshot", "已生成执行计划", {
         agentName: specialist.name,
         status: "completed",
@@ -808,6 +823,12 @@ export class AgentOrchestrator {
 
       const willReview = shouldEmitCriticReview(executed.executions);
       if (willReview) {
+        this.addPublicAgentMessage(run, {
+          from: "critic",
+          type: "critique",
+          content: t(run, "criticReviewing"),
+          payload: { eventType: "announcement" },
+        });
         this.emit(run, "agent.critic.started", "正在审查结果…", {
           agentName: "critic",
           status: "running",
@@ -819,6 +840,12 @@ export class AgentOrchestrator {
         sourceAgent: specialist.name,
       });
       if (willReview) {
+        this.addPublicAgentMessage(run, {
+          from: "critic",
+          type: "critique",
+          content: gateResult.status === "pass" ? t(run, "criticPassed") : t(run, "criticNeedsRevision"),
+          payload: { eventType: "announcement", status: gateResult.status, verdict: gateResult.review?.verdict },
+        });
         this.emit(run, "agent.critic.completed", labelForCriticStatus(gateResult.status), {
           agentName: "critic",
           status: gateResult.status,
@@ -898,6 +925,12 @@ export class AgentOrchestrator {
       toolResults.push(result.result);
       executions.push({ step, result: result.result });
       this.addObservation(run, step, result.result);
+      this.addPublicAgentMessage(run, {
+        from: "orchestrator",
+        type: "observation",
+        content: result.result.message ?? formatText(localeFor(run), "toolCompleted", { tool: step.toolName ?? "tool" }),
+        payload: { eventType: "tool_result", toolName: step.toolName, status: result.result.status },
+      });
       if (result.pendingAction) pendingActions.push(result.pendingAction);
       if (result.result.status === "needs_input" || result.result.status === "failed") break;
     }
@@ -1334,6 +1367,25 @@ export class AgentOrchestrator {
     run.context.agentMessages = run.messageBus.list();
   }
 
+  private addPublicAgentMessage(
+    run: RunState,
+    message: {
+      from: AgentMessageParticipant;
+      type: AgentMessageType;
+      content: string;
+      payload?: unknown;
+    },
+  ): void {
+    run.messageBus.add({
+      from: message.from,
+      to: "all",
+      type: message.type,
+      content: message.content,
+      payload: message.payload,
+    });
+    run.context.agentMessages = run.messageBus.list();
+  }
+
   private syncLoopState(run: RunState): void {
     run.loopController.state.observations = run.context.observations ?? [];
     run.context.loopState = run.loopController.state;
@@ -1752,15 +1804,41 @@ export class AgentOrchestrator {
       context: run.context,
       fallbackText: input.assistantText,
     });
-    const assistantText = sanitized.invalidCount > 0 ? t(run, "invalidConfirmation") : composed.assistantText;
+    const isGenericResponse = sanitized.invalidCount > 0
+      ? false
+      : composed.assistantText === t(run, "done") || composed.assistantText === t(run, "productIntro");
+    let finalAssistantText = composed.assistantText;
+    if (
+      isGenericResponse
+      && input.assistantText
+      && input.assistantText.trim()
+      && input.assistantText !== composed.assistantText
+      && !isBlockedToolLog(input.assistantText)
+    ) {
+      finalAssistantText = input.assistantText;
+    }
+    const assistantText = sanitized.invalidCount > 0 ? t(run, "invalidConfirmation") : finalAssistantText;
     const workspacePatch = sanitized.invalidCount > 0 ? {} : input.workspacePatch;
+    const hasPublicAgentMessages = (run.context.agentMessages ?? []).some((message) => (
+      message.to === "all" || message.to === "orchestrator"
+    ));
+    if (hasPublicAgentMessages && !sanitized.toolResults.some((result) => result.status === "failed")) {
+      this.addPublicAgentMessage(run, {
+        from: "frontdesk",
+        type: "response",
+        content: t(run, "completed"),
+        payload: { eventType: "announcement" },
+      });
+    }
     const agentRoomEvents = projectAgentRoomEvents({
       productBlocks: buildProductBlocks(sanitized.toolResults),
       toolResults: sanitized.toolResults,
       pendingActionIds: input.pendingActions.map((pa) => pa.id),
+      pendingActions: input.pendingActions,
       workspacePatch,
       sessionId: run.context.sessionId,
       turnId: run.context.turnId,
+      agentMessages: run.context.agentMessages,
     });
     const assistantMessageMetadata = buildAssistantMessageMetadata({
       toolResults: sanitized.toolResults,
@@ -1939,7 +2017,14 @@ type RuntimeTextKey =
   | "missingInput"
   | "missingRequiredWithFields"
   | "missingFields"
-  | "invalidConfirmation";
+  | "invalidConfirmation"
+  | "routingTo"
+  | "agentStarted"
+  | "toolCompleted"
+  | "criticReviewing"
+  | "criticPassed"
+  | "criticNeedsRevision"
+  | "completed";
 
 const RUNTIME_TEXT: Record<CopilotLocale, Record<RuntimeTextKey, string>> = {
   "zh-CN": {
@@ -1959,6 +2044,13 @@ const RUNTIME_TEXT: Record<CopilotLocale, Record<RuntimeTextKey, string>> = {
     missingRequiredWithFields: "这个操作缺少必填信息：{fields}。",
     missingFields: "缺少：{fields}",
     invalidConfirmation: "确认操作缺少确认 ID，请重新发起或稍后重试。",
+    routingTo: "正在转交给 {agent} 处理。",
+    agentStarted: "{agent} 已开始处理。",
+    toolCompleted: "工具 {tool} 执行完成。",
+    criticReviewing: "正在审查生成结果…",
+    criticPassed: "审查通过。",
+    criticNeedsRevision: "需要修改。",
+    completed: "处理完成。",
   },
   en: {
     productIntro: "I am your resume Copilot. I can help organize experiences, analyze JDs, and generate or revise resumes. What would you like to do?",
@@ -1977,8 +2069,27 @@ const RUNTIME_TEXT: Record<CopilotLocale, Record<RuntimeTextKey, string>> = {
     missingRequiredWithFields: "This action is missing required information: {fields}.",
     missingFields: "Missing: {fields}",
     invalidConfirmation: "The confirmation action is missing a confirmation ID. Please start it again or retry later.",
+    routingTo: "Routing to {agent}.",
+    agentStarted: "{agent} has started.",
+    toolCompleted: "Tool {tool} completed.",
+    criticReviewing: "Reviewing the generated result…",
+    criticPassed: "Review passed.",
+    criticNeedsRevision: "Revision needed.",
+    completed: "Processing complete.",
   },
 };
+
+const AGENT_LABELS: Record<AgentName, Record<CopilotLocale, string>> = {
+  frontdesk: { "zh-CN": "前台接待 Agent", en: "Front Desk Agent" },
+  experience_receiver: { "zh-CN": "经历编目员 Agent", en: "Experience Cataloger Agent" },
+  strategist: { "zh-CN": "JD 分析师 Agent", en: "JD Analyst Agent" },
+  architect: { "zh-CN": "简历改写 Agent", en: "Resume Architect Agent" },
+  critic: { "zh-CN": "证据审查 Agent", en: "Evidence Reviewer Agent" },
+};
+
+function agentLabel(agentName: AgentName, locale: CopilotLocale = "zh-CN"): string {
+  return AGENT_LABELS[agentName]?.[locale] ?? "Agent";
+}
 
 function localeFor(run: RunState): CopilotLocale {
   return detectLocale(run.context.userMessage, run.context.clientState);
@@ -2637,4 +2748,3 @@ function numberValue(value: unknown): number | undefined {
   }
   return undefined;
 }
-

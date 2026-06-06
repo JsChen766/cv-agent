@@ -1,6 +1,6 @@
 import type { AgentName } from "../validation/AgentOutputSchemas.js";
 
-export type AgentMessageParticipant = AgentName | "orchestrator";
+export type AgentMessageParticipant = AgentName | "orchestrator" | "all";
 
 export type AgentMessageType =
   | "request"

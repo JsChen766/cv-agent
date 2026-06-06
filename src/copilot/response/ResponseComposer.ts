@@ -126,6 +126,32 @@ export class ResponseComposer {
     if (input.criticReview?.userVisibleSummary) return { assistantText: input.criticReview.userVisibleSummary };
 
     if (fallback && !isBlockedToolLog(fallback)) return { assistantText: fallback };
+
+    const hasFilteredInternalResults = input.toolResults.some((result) =>
+      result.visibility === "internal"
+      && result.data !== undefined
+      && typeof result.data === "object"
+      && result.data !== null
+      && Object.keys(result.data).length > 0
+    );
+    if (fallback && hasFilteredInternalResults && fallback.trim() && !isBlockedToolLog(fallback)) {
+      return { assistantText: fallback };
+    }
+
+    const hasSubstantiveResults = input.toolResults.some((result) =>
+      result.data !== undefined
+      && typeof result.data === "object"
+      && result.data !== null
+      && Object.keys(result.data).length > 0
+    );
+    if (hasSubstantiveResults && !fallback?.trim()) {
+      return {
+        assistantText: en
+          ? "I've found some results. You can explore them in the workspace."
+          : "已完成处理，结果可在工作台查看。",
+      };
+    }
+
     return { assistantText: en ? "Done." : "已完成。" };
   }
 }

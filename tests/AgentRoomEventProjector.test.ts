@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { projectAgentRoomEvents, reprojectAgentRoomEvents } from "../src/agent-core/events/AgentRoomEventProjector.js";
 import type { ProductBlock, CopilotMessageMetadata } from "../src/copilot/types.js";
+import type { PendingAction } from "../src/agent-core/confirmation/PendingAction.js";
 
 describe("AgentRoomEventProjector", () => {
   it("projects experience_match_results block as special_info event", () => {
@@ -72,6 +73,44 @@ describe("AgentRoomEventProjector", () => {
       }],
     });
     expect(events).toHaveLength(0);
+  });
+
+  it("projects pending experience action with structured draft as decision_panel", () => {
+    const pendingAction: PendingAction = {
+      id: "pa-1",
+      userId: "user-1",
+      sessionId: "session-1",
+      turnId: "turn-1",
+      toolName: "save_experience_from_text",
+      toolArguments: { text: "Intern at Acme" },
+      status: "pending",
+      title: "Save experience",
+      summary: "Please confirm saving this experience.",
+      riskLevel: "medium",
+      affectedResources: [],
+      preview: {
+        after: {
+          experienceDraft: {
+            category: "internship",
+            title: "Acme AI Intern",
+            organization: "Acme",
+            role: "AI Intern",
+            startDate: "2025-02",
+            endDate: "2025-06",
+          },
+        },
+      },
+      createdAt: "2026-01-01T00:00:00Z",
+      expiresAt: "2026-01-02T00:00:00Z",
+    };
+    const events = projectAgentRoomEvents({ pendingActions: [pendingAction] });
+    expect(events).toHaveLength(1);
+    expect(events[0].agentName).toBe("experience_receiver");
+    expect(events[0].eventKind).toBe("pending_action");
+    expect(events[0].specialInfo?.kind).toBe("decision_panel");
+    expect((events[0].specialInfo?.data?.pendingAction as Record<string, unknown>).id).toBe("pa-1");
+    const action = events[0].specialInfo?.data?.pendingAction as { preview?: { after?: { experienceDraft?: Record<string, unknown> } } };
+    expect(action.preview?.after?.experienceDraft?.category).toBe("internship");
   });
 
   it("projects workspace patch activePanel as asset_capsule system event", () => {
