@@ -19,6 +19,81 @@ describe("JD match orchestration", () => {
     await kernel.close();
   });
 
+  it("analyzes pasted JD through strategist tool and persists jd_analysis_result special info", async () => {
+    await seedExperiences(kernel);
+
+    const jdText = [
+      "Job Title: Frontend Engineer",
+      "Company: Coolto",
+      "Location: Shenzhen",
+      "Requirements:",
+      "- Must have Vue3 and TypeScript experience",
+      "- Bachelor degree preferred",
+      "Responsibilities:",
+      "- Build product UI and data visualization dashboards",
+    ].join("\n");
+
+    const chat = await server.inject({
+      method: "POST",
+      url: "/copilot/chat",
+      headers: { "x-user-id": "user-1" },
+      payload: { message: `Analyze this JD and requirements:\n${jdText}` },
+    });
+
+    expect(chat.statusCode).toBe(200);
+    const body = chat.json() as ApiSuccess<CopilotChatResponse>;
+    expect(JSON.stringify(body.data.raw.actionResults ?? [])).not.toContain("unsupported_action");
+
+    const toolResults = body.data.raw.toolResults as Array<Record<string, unknown>> | undefined;
+    const analysisResult = toolResults?.find((item) => {
+      const ar = item.actionResult as Record<string, unknown> | undefined;
+      return ar?.actionType === "analyze_jd";
+    });
+    expect(analysisResult).toBeTruthy();
+
+    const resultData = analysisResult?.data as Record<string, unknown> | undefined;
+    expect(String(resultData?.jdTitle).toLowerCase()).toBe("frontend engineer");
+    expect(String(resultData?.company).toLowerCase()).toBe("coolto");
+    expect(Array.isArray(resultData?.requirements)).toBe(true);
+    expect((resultData?.requirements as Array<Record<string, unknown>>).some((item) => String(item.text).includes("vue3 and typescript"))).toBe(true);
+    expect(Array.isArray(resultData?.matchedExperiences)).toBe(true);
+    expect(Array.isArray(resultData?.nextActions)).toBe(true);
+
+    const metadata = body.data.assistantMessage.metadata as Record<string, unknown> | undefined;
+    const blocks = metadata?.productBlocks as Array<{ type: string; data?: Record<string, unknown> }> | undefined;
+    const analysisBlock = blocks?.find((item) => item.type === "jd_analysis_result");
+    expect(analysisBlock).toBeTruthy();
+    expect(analysisBlock?.data?.summary).toBeTruthy();
+
+    const agentRoomEvents = metadata?.agentRoomEvents as Array<Record<string, unknown>> | undefined;
+    const specialInfoEvent = agentRoomEvents?.find((event) => {
+      const specialInfo = event.specialInfo as Record<string, unknown> | undefined;
+      return event.eventKind === "special_info" && specialInfo?.kind === "jd_analysis_result";
+    });
+    expect(specialInfoEvent?.agentName).toBe("strategist");
+
+    const toolCallEvent = agentRoomEvents?.find((event) => event.eventKind === "tool_call" && event.relatedToolName === "analyze_jd");
+    expect(toolCallEvent?.visibility).toBe("visible");
+
+    const displaySnapshot = metadata?.displaySnapshot as Record<string, unknown> | undefined;
+    const snapshotBlocks = displaySnapshot?.productBlocks as Array<{ type: string }> | undefined;
+    expect(snapshotBlocks?.some((item) => item.type === "jd_analysis_result")).toBe(true);
+
+    const detail = await server.inject({
+      method: "GET",
+      url: `/copilot/sessions/${body.data.sessionId}`,
+      headers: { "x-user-id": "user-1" },
+    });
+    expect(detail.statusCode).toBe(200);
+    const detailBody = detail.json() as ApiSuccess<{ messages: Array<{ role: string; metadata?: Record<string, unknown> }> }>;
+    const assistant = detailBody.data.messages.find((item) => item.role === "assistant");
+    const persistedEvents = assistant?.metadata?.agentRoomEvents as Array<Record<string, unknown>> | undefined;
+    expect(persistedEvents?.some((event) => {
+      const specialInfo = event.specialInfo as Record<string, unknown> | undefined;
+      return specialInfo?.kind === "jd_analysis_result";
+    })).toBe(true);
+  });
+
   it("matches JD with structured block, short assistant text, save action, and no auto-save", async () => {
     await seedExperiences(kernel);
     const jdBefore = await kernel.productServices.jdService.listJDs("user-1", 20);

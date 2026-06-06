@@ -41,7 +41,7 @@ export type CopilotTurn = {
 };
 
 export type ProductBlock = {
-  type: "experience_list" | "experience_card" | "experience_detail" | "experience_candidate_form" | "action_result" | "experience_match_results" | "jd_match_results";
+  type: "experience_list" | "experience_card" | "experience_detail" | "experience_candidate_form" | "jd_analysis_result" | "action_result" | "experience_match_results" | "jd_match_results";
   title?: string;
   data: Record<string, unknown>;
 };
@@ -254,6 +254,7 @@ export type ProductActionType =
   | "list_experiences"
   | "search_experiences"
   | "get_experience"
+  | "analyze_jd"
   | "save_experience_from_text"
   | "save_experience_candidate"
   | "reject_experience_candidate"

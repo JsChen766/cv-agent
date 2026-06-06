@@ -211,15 +211,6 @@ export class AgentOrchestrator {
         },
       });
 
-      if (normalizedHandoff.handoff.intent === "jd.intake" && normalizedHandoff.handoff.next === "handoff") {
-        return this.finishRun(ctx.user.id, run, {
-          assistantText: frontDeskDecision.assistantMessage,
-          toolResults: [],
-          pendingActions: [],
-          workspacePatch: {},
-        });
-      }
-
       if (frontDeskDecision.responseType === "final") {
         return this.finishRun(ctx.user.id, run, {
           assistantText: frontDeskDecision.assistantMessage || t(run, "productIntro"),
@@ -902,6 +893,18 @@ export class AgentOrchestrator {
           criticReview,
         };
       }
+
+      if (executed.toolResults.some(isTerminalDisplayToolResult)) {
+        run.loopController.stop("final");
+        this.syncLoopState(run);
+        return {
+          assistantText: assistantFromResults(toolResults, lastAssistantMessage || t(run, "done")),
+          toolResults,
+          pendingActions,
+          workspacePatch: mergeWorkspacePatch(toolResults),
+          criticReview,
+        };
+      }
     }
 
     run.loopController.stop("max_steps");
@@ -1575,6 +1578,18 @@ export class AgentOrchestrator {
         };
       }
 
+      case "analyze_jd": {
+        const jdText =
+          stringValue(payload.jdText)
+          ?? stringValue(payload.rawText)
+          ?? stringValue(payload.text)
+          ?? resolve.jdText();
+        if (!jdText) {
+          return { kind: "needs_input", missingInputs: ["jdText"], message: "Please provide JD text to analyze." };
+        }
+        return { kind: "step", step: explicitStep("strategist", "analyze_jd", { text: jdText }, "Analyze JD and recommend next actions.") };
+      }
+
       case "update_experience": {
         const experienceId = resolve.experienceId();
         if (!experienceId) {
@@ -2212,6 +2227,16 @@ function firstStopStatus(results: ToolResult[]): "needs_input" | "needs_confirma
     if (status === "needs_confirmation" || status === "needs_input" || status === "failed") return status;
   }
   return undefined;
+}
+
+function isTerminalDisplayToolResult(result: ToolResult): boolean {
+  if (result.status !== "success" || result.visibility === "internal") return false;
+  const actionType = result.actionResult?.actionType;
+  return actionType === "analyze_jd"
+    || actionType === "import_experience_candidates_from_text"
+    || actionType === "list_experiences"
+    || actionType === "search_experiences"
+    || actionType === "match_experiences_against_jd";
 }
 
 function decisionTraceMeta(decision: unknown): Record<string, unknown> | undefined {

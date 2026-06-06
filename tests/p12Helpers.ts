@@ -52,15 +52,25 @@ class P12TestProvider implements LLMProvider {
     if (agentName === "agent-core:experience_receiver") return json(this.experience(message));
     if (agentName === "agent-core:architect") return json(this.architect(message, payload));
     if (agentName === "agent-core:critic") return json(review("pass", "low", "Critic pass."));
-    if (agentName === "agent-core:strategist") return json(plan("strategist", "list_experiences", {}, "List experiences."));
+    if (agentName === "agent-core:strategist") return json(this.strategist(message));
     return json({ agentName: "frontdesk", responseType: "ask_clarification", assistantMessage: "Please clarify.", plan: [], missingInputs: ["intent"], confidence: 0.5 });
   }
 
   private frontdesk(message: string): Record<string, unknown> {
+    if ((message.includes("jd") || message.includes("job"))
+        && (message.includes("analyze") || message.includes("analyse") || message.includes("analysis") || message.includes("requirement"))
+        && !message.includes("generate")) {
+      return { agentName: "frontdesk", responseType: "route", routeTo: "strategist", assistantMessage: "", plan: [], missingInputs: [], confidence: 0.9 };
+    }
     // Experience queries (English + Chinese keywords)
     if (message.includes("experience") || message.includes("library") || message.includes("save") || message.includes("delete")
         || message.includes("经历")) {
       return { agentName: "frontdesk", responseType: "route", routeTo: "experience_receiver", assistantMessage: "", plan: [], missingInputs: [], confidence: 0.9 };
+    }
+    if ((message.includes("jd") || message.includes("job"))
+        && (message.includes("analyze") || message.includes("analyse") || message.includes("analysis") || message.includes("requirement"))
+        && !message.includes("generate")) {
+      return { agentName: "frontdesk", responseType: "route", routeTo: "strategist", assistantMessage: "", plan: [], missingInputs: [], confidence: 0.9 };
     }
     // JD-only queries route to architect for generation
     if ((message.includes("jd") || message.includes("岗位"))
@@ -104,6 +114,13 @@ class P12TestProvider implements LLMProvider {
     const clientState = typeof payload.clientState === "object" && payload.clientState !== null ? payload.clientState as Record<string, unknown> : {};
     if (message.includes("export")) return plan("architect", "export_resume", { resumeId: clientState.activeResumeId ?? "resume-1", format: "html" }, "Export resume after confirmation.");
     return plan("architect", "generate_resume_from_jd", { jdText: message || "JD", targetRole: "Target Role" }, "Generate resume after confirmation.");
+  }
+
+  private strategist(message: string): Record<string, unknown> {
+    if (message.includes("jd") || message.includes("job") || message.includes("requirement")) {
+      return plan("strategist", "analyze_jd", { text: message }, "Analyze JD and match available experiences.");
+    }
+    return plan("strategist", "list_experiences", {}, "List experiences.");
   }
 }
 

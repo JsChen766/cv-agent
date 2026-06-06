@@ -9,7 +9,7 @@ export function importExperienceCandidatesFromTextTool(): ToolDefinition {
     ownerAgent: "experience_receiver",
     inputSchema: TextInputSchema,
     outputSchema: ToolResultSchema,
-    mutability: "write",
+    mutability: "read",
     requiresConfirmation: false,
     riskLevel: "low",
     execute: async (input, context) => {

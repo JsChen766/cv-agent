@@ -60,6 +60,32 @@ describe("AgentRoomEventProjector", () => {
     expect((events[0].specialInfo?.data?.candidates as Array<Record<string, unknown>>)[0].category).toBe("education");
   });
 
+  it("projects jd_analysis_result block as visible special info for JD analyst", () => {
+    const block: ProductBlock = {
+      type: "jd_analysis_result",
+      title: "JD analysis result",
+      data: {
+        jdTitle: "Frontend Engineer",
+        company: "Coolto",
+        roleType: "full_time",
+        requirements: [{ type: "tool", text: "Vue3 and TypeScript", importance: "must_have" }],
+        responsibilities: ["Build product UI"],
+        resumeGaps: [],
+        matchedExperiences: [],
+        nextActions: [{ id: "generate_resume", actionType: "generate_resume", label: "Generate resume" }],
+        summary: "Good partial fit.",
+      },
+    };
+    const events = projectAgentRoomEvents({ productBlocks: [block] });
+    expect(events).toHaveLength(1);
+    expect(events[0].agentName).toBe("strategist");
+    expect(events[0].agentRoleLabel).toBe("JD Analyst");
+    expect(events[0].eventKind).toBe("special_info");
+    expect(events[0].visibility).toBe("visible");
+    expect(events[0].specialInfo?.kind).toBe("jd_analysis_result");
+    expect(events[0].specialInfo?.data?.jdTitle).toBe("Frontend Engineer");
+  });
+
   it("projects action_result block as decision_panel", () => {
     const block: ProductBlock = {
       type: "action_result",

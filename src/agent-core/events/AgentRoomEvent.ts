@@ -38,6 +38,7 @@ export type SpecialInfoKind =
   | "agent_activity_timeline"
   | "asset_capsule"
   | "experience_candidate_form"
+  | "jd_analysis_result"
   | "diff_block"
   | "metric_ribbon"
   | "export_receipt"

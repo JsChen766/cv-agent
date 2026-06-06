@@ -6,6 +6,7 @@ export function buildProductBlocks(toolResults: ToolResult[]): ProductBlock[] {
   let experienceList: ProductBlock | null = null;
   let experienceCard: ProductBlock | null = null;
   let experienceCandidateForm: ProductBlock | null = null;
+  let jdAnalysisBlock: ProductBlock | null = null;
   let detailBlock: ProductBlock | null = null;
   let actionBlock: ProductBlock | null = null;
   let matchBlock: ProductBlock | null = null;
@@ -93,6 +94,26 @@ export function buildProductBlocks(toolResults: ToolResult[]): ProductBlock[] {
       };
       continue;
     }
+    if (data.jdAnalysisResult === true || (Array.isArray(data.requirements) && Array.isArray(data.nextActions) && typeof data.summary === "string")) {
+      jdAnalysisBlock = {
+        type: "jd_analysis_result",
+        title: "JD analysis result",
+        data: sanitizeMetadataObject({
+          jdTitle: data.jdTitle,
+          company: data.company,
+          roleType: data.roleType,
+          location: data.location,
+          requirements: data.requirements,
+          responsibilities: data.responsibilities,
+          resumeGaps: data.resumeGaps,
+          matchedExperiences: data.matchedExperiences,
+          nextActions: data.nextActions,
+          summary: data.summary,
+          rawText: data.rawText,
+        }) ?? {},
+      };
+      continue;
+    }
     if (isRecord(data.experience)) {
       experienceCard = {
         type: "experience_card",
@@ -124,6 +145,7 @@ export function buildProductBlocks(toolResults: ToolResult[]): ProductBlock[] {
   }
   // Match results have highest priority — they're the most actionable
   if (matchBlock) return [matchBlock];
+  if (jdAnalysisBlock) return [jdAnalysisBlock];
   if (experienceCandidateForm) return [experienceCandidateForm];
   if (experienceCard) return [experienceCard];
   if (detailBlock) return [detailBlock];

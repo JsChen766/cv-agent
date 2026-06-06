@@ -60,7 +60,7 @@ export function fallbackAgentDecision(
     case "experience_receiver":
       return experienceReceiverFallback(input.userMessage ?? "");
     case "strategist":
-      return strategistFallback();
+      return strategistFallback(input.userMessage ?? "");
     case "architect":
       return architectFallback(msg, input.clientState ?? {});
     case "critic":
@@ -74,6 +74,14 @@ export function fallbackAgentDecision(
 // Only 4 paths: experience, resume, JD, or friendly intro.
 
 function frontDeskFallback(msg: string): AgentDecision {
+  // JD text often contains words like "experience", "company", or "internship";
+  // classify explicit JD/job requests before generic experience intake.
+  if (containsAny(msg, ["jd", "岗位", "job"]) && containsAny(msg, ["match", "匹配", "符合", "适合", "哪些经历", "经历库"])) {
+    return dec("frontdesk", "route", "我来对比你的经历库和这份 JD。", { routeTo: "experience_receiver", confidence: 0.85 });
+  }
+  if (containsAny(msg, ["jd", "岗位", "job"])) {
+    return dec("frontdesk", "route", "我来分析这个岗位描述。", { routeTo: "strategist", confidence: 0.8 });
+  }
   if (containsAny(msg, [
     "experience",
     "经历",
@@ -93,13 +101,6 @@ function frontDeskFallback(msg: string): AgentDecision {
   }
   if (containsAny(msg, ["resume", "简历", "export", "导出", "cv"])) {
     return dec("frontdesk", "route", "我来准备简历操作。", { routeTo: "architect", confidence: 0.8 });
-  }
-  // JD + experience matching intent → route to experience_receiver
-  if (containsAny(msg, ["jd", "岗位", "job"]) && containsAny(msg, ["match", "匹配", "符合", "适合", "哪些经历", "经历库"])) {
-    return dec("frontdesk", "route", "我来对比你的经历库和这份 JD。", { routeTo: "experience_receiver", confidence: 0.85 });
-  }
-  if (containsAny(msg, ["jd", "岗位", "job"])) {
-    return dec("frontdesk", "route", "我来分析这个岗位描述。", { routeTo: "strategist", confidence: 0.8 });
   }
   return dec("frontdesk", "final", PRODUCT_INTRO, { confidence: 0.7 });
 }
@@ -156,7 +157,20 @@ function experienceReceiverFallback(rawMessage: string): AgentDecision {
 // ── Strategist ───────────────────────────────────────────
 // Single safe path: list experiences.
 
-function strategistFallback(): AgentDecision {
+function strategistFallback(rawMessage: string): AgentDecision {
+  if (rawMessage.trim().length > 20) {
+    return dec(
+      "strategist",
+      "plan",
+      "我来分析这份 JD 并匹配你的经历库。",
+      {
+        plan: [
+          step("step-1", "strategist", "analyze_jd", { text: rawMessage }, "Analyze JD and match available experiences."),
+        ],
+        confidence: 0.85,
+      },
+    );
+  }
   return dec(
     "strategist",
     "plan",

@@ -39,16 +39,18 @@ export function projectAgentRoomEvents(input: {
   // 2. Tool results -> tool_result events
   for (const result of input.toolResults ?? []) {
     if (result.visibility === "internal") continue;
+    const toolName = typeof result.actionResult?.actionType === "string" ? result.actionResult.actionType : undefined;
+    const agentName = toolName ? agentNameForToolName(toolName) : "system";
     events.push({
       id: `evt-${randomUUID()}`,
       sessionId: input.sessionId,
       turnId: input.turnId,
-      agentName: "system",
-      agentRoleLabel: "System",
+      agentName,
+      agentRoleLabel: agentLabel(agentName, locale),
       eventKind: result.status === "failed" ? "error" : "tool_result",
       visibility: result.status === "failed" ? "error_visible" : "visible",
       content: result.message ?? (result.status === "success" ? "Tool completed." : "Tool needs input."),
-      relatedToolName: typeof result.actionResult?.actionType === "string" ? result.actionResult.actionType : undefined,
+      relatedToolName: toolName,
       createdAt: now,
     });
   }
@@ -193,6 +195,10 @@ function agentLabel(participant: AgentMessageParticipant | AgentRoomAgentName, l
 }
 
 function agentNameForPendingAction(toolName: string): AgentRoomAgentName {
+  return agentNameForToolName(toolName);
+}
+
+function agentNameForToolName(toolName: string): AgentRoomAgentName {
   if (toolName.includes("experience")) return "experience_receiver";
   if (toolName.includes("jd") || toolName.includes("match")) return "strategist";
   if (toolName.includes("resume") || toolName.includes("variant")) return "architect";
@@ -286,6 +292,12 @@ const BLOCK_MAP: Record<string, BlockProjection> = {
     roleLabel: "Experience Cataloger",
     specialKind: "experience_candidate_form",
     defaultTitle: "Experience candidates",
+  },
+  jd_analysis_result: {
+    agentName: "strategist",
+    roleLabel: "JD Analyst",
+    specialKind: "jd_analysis_result",
+    defaultTitle: "JD analysis result",
   },
   action_result: {
     agentName: "system",

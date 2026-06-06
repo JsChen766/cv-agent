@@ -276,6 +276,9 @@ class KernelRefactorProvider implements LLMProvider {
     if (agentName === "agent-core:architect") {
       return json(plan("architect", "generate_resume_from_jd", {}, "Generate resume from JD."));
     }
+    if (agentName === "agent-core:strategist") {
+      return json(plan("strategist", "analyze_jd", { text: message }, "Analyze JD."));
+    }
     if (agentName === "agent-core:experience_receiver") {
       return json(plan("experience_receiver", "update_experience", { content: "优化后的经历内容" }, "Rewrite experience."));
     }
@@ -297,7 +300,7 @@ class KernelRefactorProvider implements LLMProvider {
         },
       });
     }
-    return json(plan("strategist", "list_jds", {}, "List JDs."));
+    return json(plan("strategist", "analyze_jd", { text: message }, "Analyze JD."));
   }
 }
 
