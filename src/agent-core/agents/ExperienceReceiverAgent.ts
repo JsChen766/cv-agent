@@ -10,6 +10,7 @@ export class ExperienceReceiverAgent extends BaseAgent {
     "match_experiences_against_jd",
     "search_experiences",
     "get_experience",
+    "import_experience_candidates_from_text",
     "prepare_save_experience_from_text",
     "save_experience_from_text",
     "prepare_save_jd_from_text",

@@ -154,6 +154,7 @@ function mapMessageTypeToEventKind(type: string): AgentRoomEventKind {
     tool_result: "tool_result",
     review_request: "system",
     observation: "tool_result",
+    tool_call: "tool_call",
     revision_request: "system",
     response: "agent_text",
     critique: "agent_text",
@@ -279,6 +280,12 @@ const BLOCK_MAP: Record<string, BlockProjection> = {
     roleLabel: "Experience Cataloger",
     specialKind: "asset_capsule",
     defaultTitle: "Experience Detail",
+  },
+  experience_candidate_form: {
+    agentName: "experience_receiver",
+    roleLabel: "Experience Cataloger",
+    specialKind: "experience_candidate_form",
+    defaultTitle: "Experience candidates",
   },
   action_result: {
     agentName: "system",

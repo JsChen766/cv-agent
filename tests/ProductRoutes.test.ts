@@ -93,6 +93,36 @@ describe("Product API routes", () => {
     expect(accept.statusCode).toBe(200);
   });
 
+  it("accepts an import candidate with edited fields", async () => {
+    const importResponse = await server.inject({
+      method: "POST",
+      url: "/product/imports/text",
+      headers: { "x-user-id": "user-1" },
+      payload: { rawText: "WEEX Data Analyst Intern. Built SQL dashboards." },
+    });
+    const data = (importResponse.json() as ApiSuccess<{ candidates: Array<{ id: string }> }>).data;
+    const accept = await server.inject({
+      method: "POST",
+      url: `/product/import-candidates/${data.candidates[0]!.id}/accept`,
+      headers: { "x-user-id": "user-1" },
+      payload: {
+        title: "Edited Internship",
+        category: "internship",
+        organization: "Edited Company",
+        role: "Data Analyst Intern",
+        startDate: "2025-01",
+        endDate: "2025-04",
+        content: "Edited work content.",
+        structured: { company: "Edited Company", highlights: ["Edited work content."] },
+      },
+    });
+    expect(accept.statusCode).toBe(200);
+    const accepted = (accept.json() as ApiSuccess<{ candidate: { status: string }; experience: { id: string; title: string; organization?: string } }>).data;
+    expect(accepted.candidate.status).toBe("accepted");
+    expect(accepted.experience.title).toBe("Edited Internship");
+    expect(accepted.experience.organization).toBe("Edited Company");
+  });
+
   it("generates variants from JD and creates a product generation", async () => {
     const response = await server.inject({
       method: "POST",

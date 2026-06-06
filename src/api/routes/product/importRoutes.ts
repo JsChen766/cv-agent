@@ -4,6 +4,7 @@ import type { ApiKernel } from "../../types.js";
 import type { AuthResolver } from "../../auth/index.js";
 import { withIdempotency } from "../../idempotency.js";
 import { ProductStateConflictError } from "../../../product/index.js";
+import type { ProductExperienceCategory } from "../../../product/types.js";
 import {
   productSuccess,
   requireRecord,
@@ -61,9 +62,12 @@ export function registerImportRoutes(
 
   app.post("/product/import-candidates/:id/accept", async (request, reply) => {
     const ctx = await contextFor(request);
+    const body = request.body && typeof request.body === "object" && !Array.isArray(request.body)
+      ? request.body as Record<string, unknown>
+      : {};
     return withIdempotency(request, reply, kernel, ctx.user.id, async () => {
       try {
-        return productSuccess(await kernel.productServices.importService.acceptCandidate(ctx.user.id, param(request, "id")), kernel, ctx);
+        return productSuccess(await kernel.productServices.importService.acceptCandidate(ctx.user.id, param(request, "id"), sanitizeAcceptCandidatePatch(body)), kernel, ctx);
       } catch (error) {
         if (error instanceof ProductStateConflictError) {
           throw new ApiError(ErrorCodes.CONFLICT, error.message, 409, { retryable: true });
@@ -78,4 +82,36 @@ export function registerImportRoutes(
     return withIdempotency(request, reply, kernel, ctx.user.id, async () =>
       productSuccess(await kernel.productServices.importService.rejectCandidate(ctx.user.id, param(request, "id")), kernel, ctx));
   });
+}
+
+function sanitizeAcceptCandidatePatch(body: Record<string, unknown>) {
+  const structured = body.structured && typeof body.structured === "object" && !Array.isArray(body.structured)
+    ? body.structured as Record<string, unknown>
+    : undefined;
+  return {
+    title: optionalString(body.title),
+    category: optionalCategory(body.category),
+    organization: optionalString(body.organization),
+    role: optionalString(body.role),
+    startDate: optionalString(body.startDate),
+    endDate: optionalString(body.endDate),
+    content: optionalString(body.content),
+    structured,
+  };
+}
+
+function optionalString(value: unknown): string | undefined {
+  return typeof value === "string" ? value : undefined;
+}
+
+function optionalCategory(value: unknown): ProductExperienceCategory | undefined {
+  return value === "work"
+    || value === "internship"
+    || value === "project"
+    || value === "education"
+    || value === "award"
+    || value === "skill"
+    || value === "other"
+    ? value
+    : undefined;
 }

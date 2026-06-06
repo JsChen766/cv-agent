@@ -366,7 +366,7 @@ export class ImportService {
     return this.repository.listCandidatesByJob(userId, jobId);
   }
 
-  public async acceptCandidate(userId: string, candidateId: string): Promise<{ candidate: ProductImportCandidate; experience: ProductExperience }> {
+  public async acceptCandidate(userId: string, candidateId: string, patch: Partial<Pick<ProductImportCandidate, "title" | "category" | "organization" | "role" | "startDate" | "endDate" | "content" | "structured">> = {}): Promise<{ candidate: ProductImportCandidate; experience: ProductExperience }> {
     const candidate = await this.repository.getImportCandidate(userId, candidateId);
     if (!candidate) throw new Error("Import candidate not found.");
     if (candidate.status === "accepted") {
@@ -383,16 +383,17 @@ export class ImportService {
     }
     this.acceptingCandidates.add(lockKey);
     try {
+      const mergedCandidate = mergeCandidatePatch(candidate, patch);
       const records = buildExperienceRecords(userId, {
-        title: candidate.title,
-        category: candidate.category,
-        content: candidate.content,
-        organization: candidate.organization,
-        role: candidate.role,
-        startDate: candidate.startDate,
-        endDate: candidate.endDate,
-        structured: candidate.structured,
-        sourceDocumentId: candidate.sourceDocumentId,
+        title: mergedCandidate.title,
+        category: mergedCandidate.category,
+        content: mergedCandidate.content,
+        organization: mergedCandidate.organization,
+        role: mergedCandidate.role,
+        startDate: mergedCandidate.startDate,
+        endDate: mergedCandidate.endDate,
+        structured: mergedCandidate.structured,
+        sourceDocumentId: mergedCandidate.sourceDocumentId,
         source: "import",
       });
       if (this.repository.acceptCandidateWithExperience) {
@@ -410,24 +411,24 @@ export class ImportService {
           }
           throw new ProductStateConflictError(`Import candidate cannot be accepted from status ${accepted.candidate.status}.`);
         }
-        const result = { candidate: accepted.candidate, experience: accepted.experience };
+        const result = { candidate: { ...mergedCandidate, ...accepted.candidate, ...pickCandidateEditableFields(mergedCandidate) }, experience: accepted.experience };
         this.acceptedResults.set(lockKey, result);
         return result;
       }
       const { experience } = await this.experienceService.createExperience(userId, {
-      title: candidate.title,
-      category: candidate.category,
-      content: candidate.content,
-      organization: candidate.organization,
-      role: candidate.role,
-      startDate: candidate.startDate,
-      endDate: candidate.endDate,
-      structured: candidate.structured,
-      sourceDocumentId: candidate.sourceDocumentId,
+      title: mergedCandidate.title,
+      category: mergedCandidate.category,
+      content: mergedCandidate.content,
+      organization: mergedCandidate.organization,
+      role: mergedCandidate.role,
+      startDate: mergedCandidate.startDate,
+      endDate: mergedCandidate.endDate,
+      structured: mergedCandidate.structured,
+      sourceDocumentId: mergedCandidate.sourceDocumentId,
       source: "import",
       });
       const updated = await this.repository.updateCandidateStatus(userId, candidateId, "accepted");
-      const result = { candidate: updated ?? candidate, experience };
+      const result = { candidate: { ...mergedCandidate, ...(updated ?? candidate), ...pickCandidateEditableFields(mergedCandidate) }, experience };
       this.acceptedResults.set(lockKey, result);
       return result;
     } finally {
@@ -440,6 +441,40 @@ export class ImportService {
     if (!candidate) throw new Error("Import candidate not found.");
     return candidate;
   }
+}
+
+function mergeCandidatePatch(
+  candidate: ProductImportCandidate,
+  patch: Partial<Pick<ProductImportCandidate, "title" | "category" | "organization" | "role" | "startDate" | "endDate" | "content" | "structured">>,
+): ProductImportCandidate {
+  const validCategories: ProductExperienceCategory[] = ["work", "internship", "project", "education", "award", "skill", "other"];
+  const category = patch.category && validCategories.includes(patch.category) ? patch.category : candidate.category;
+  return {
+    ...candidate,
+    title: nonEmpty(patch.title, candidate.title),
+    category,
+    organization: optional(patch.organization) ?? candidate.organization,
+    role: optional(patch.role) ?? candidate.role,
+    startDate: optional(patch.startDate) ?? candidate.startDate,
+    endDate: optional(patch.endDate) ?? candidate.endDate,
+    content: nonEmpty(patch.content, candidate.content),
+    structured: patch.structured && typeof patch.structured === "object" && !Array.isArray(patch.structured)
+      ? patch.structured
+      : candidate.structured,
+  };
+}
+
+function pickCandidateEditableFields(candidate: ProductImportCandidate): Partial<ProductImportCandidate> {
+  return {
+    title: candidate.title,
+    category: candidate.category,
+    organization: candidate.organization,
+    role: candidate.role,
+    startDate: candidate.startDate,
+    endDate: candidate.endDate,
+    content: candidate.content,
+    structured: candidate.structured,
+  };
 }
 
 export class GenerationProductService {

@@ -921,6 +921,12 @@ export class AgentOrchestrator {
     const executions: ToolExecutionRecord[] = [];
     for (const step of plan) {
       if (!step.toolName) continue;
+      this.addPublicAgentMessage(run, {
+        from: step.agentName,
+        type: "request",
+        content: labelForToolStarted(step.toolName),
+        payload: { eventType: "tool_call", toolName: step.toolName },
+      });
       const result = await this.executeToolOrCreatePendingAction(run, step);
       toolResults.push(result.result);
       executions.push({ step, result: result.result });

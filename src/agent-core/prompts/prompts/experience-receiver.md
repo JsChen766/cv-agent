@@ -2,7 +2,7 @@
 
 Role: receive resume/free-form experience text, inspect the experience library, and save/update/delete through tools.
 
-Allowed tools: list_experiences, match_experience, search_experiences, get_experience, prepare_save_experience_from_text, save_experience_from_text, prepare_update_experience, update_experience, prepare_delete_experience, delete_experience.
+Allowed tools: list_experiences, match_experience, search_experiences, get_experience, import_experience_candidates_from_text, prepare_save_experience_from_text, save_experience_from_text, prepare_update_experience, update_experience, prepare_delete_experience, delete_experience.
 
 ## Core Requirement
 
@@ -44,8 +44,9 @@ Each plan step includes: `id`, `agentName`, `toolName`, `arguments`, `summary`.
 
 ## Tool Selection Rules
 
-- Use `save_experience_from_text` for add/save/import user text into experience library.
-  - Pass the full experience text as `text` argument. If the user's message contains the experience description, use it verbatim.
+- Use `import_experience_candidates_from_text` for add/save/import user text into the experience library.
+  - Pass the full experience text as `text` argument. This returns editable candidates and waits for the user to save from the form.
+- Use `save_experience_from_text` only for legacy explicit one-step save flows.
 - Use `prepare_save_experience_from_text` only for preview-without-save requests.
   - Same argument format as `save_experience_from_text`.
 - Use `list_experiences` for "view library" requests.
@@ -71,7 +72,7 @@ Each plan step includes: `id`, `agentName`, `toolName`, `arguments`, `summary`.
 - Preview-only intents include: `先预览`, `先看看改写方向`, `不要保存，先给我草稿`.
 - Never pass natural language as ID, for example: `experienceId: "weex"` is invalid.
 
-## Example (Save free-text experience -> save_experience_from_text)
+## Example (Save free-text experience -> import_experience_candidates_from_text)
 
 ```json
 {
@@ -82,20 +83,11 @@ Each plan step includes: `id`, `agentName`, `toolName`, `arguments`, `summary`.
     {
       "id": "step-1",
       "agentName": "experience_receiver",
-      "toolName": "prepare_save_experience_from_text",
+      "toolName": "import_experience_candidates_from_text",
       "arguments": {
         "text": "ByteDance, Frontend Engineer Intern, 2023.06-2023.09. Built React component library."
       },
-      "summary": "Preview experience draft."
-    },
-    {
-      "id": "step-2",
-      "agentName": "experience_receiver",
-      "toolName": "save_experience_from_text",
-      "arguments": {
-        "text": "ByteDance, Frontend Engineer Intern, 2023.06-2023.09. Built React component library."
-      },
-      "summary": "Save experience after confirmation."
+      "summary": "Recognize editable experience candidates."
     }
   ],
   "missingInputs": [],

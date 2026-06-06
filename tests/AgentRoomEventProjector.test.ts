@@ -29,6 +29,37 @@ describe("AgentRoomEventProjector", () => {
     expect(events[0].specialInfo?.kind).toBe("asset_capsule");
   });
 
+  it("projects experience_candidate_form block as editable special info for experience receiver", () => {
+    const block: ProductBlock = {
+      type: "experience_candidate_form",
+      title: "待确认的经历候选",
+      data: {
+        job: { id: "pimp-1", status: "candidates_ready" },
+        candidates: [{
+          id: "pimpcand-1",
+          category: "education",
+          title: "Sun Yat-sen University",
+          organization: "Sun Yat-sen University",
+          role: "Computer Science",
+          startDate: "2022-09",
+          endDate: "2026-06",
+          content: "Bachelor in Computer Science.",
+          structured: { school: "Sun Yat-sen University" },
+          status: "pending",
+        }],
+        formSchemaVersion: 1,
+        saveMode: "accept_candidate",
+      },
+    };
+    const events = projectAgentRoomEvents({ productBlocks: [block] });
+    expect(events).toHaveLength(1);
+    expect(events[0].agentName).toBe("experience_receiver");
+    expect(events[0].eventKind).toBe("special_info");
+    expect(events[0].visibility).toBe("visible");
+    expect(events[0].specialInfo?.kind).toBe("experience_candidate_form");
+    expect((events[0].specialInfo?.data?.candidates as Array<Record<string, unknown>>)[0].category).toBe("education");
+  });
+
   it("projects action_result block as decision_panel", () => {
     const block: ProductBlock = {
       type: "action_result",

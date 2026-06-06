@@ -1,6 +1,7 @@
 import type { ToolDefinition } from "../../agent-core/tools/Tool.js";
 import { deleteExperienceTool } from "./deleteExperience.tool.js";
 import { getExperienceTool } from "./getExperience.tool.js";
+import { importExperienceCandidatesFromTextTool } from "./importExperienceCandidatesFromText.tool.js";
 import { listExperiencesTool } from "./listExperiences.tool.js";
 import { matchExperienceTool } from "./matchExperience.tool.js";
 import { matchExperiencesAgainstJDTool } from "./matchExperiencesAgainstJD.tool.js";
@@ -18,6 +19,7 @@ export function createExperienceAgentTools(): ToolDefinition[] {
     matchExperiencesAgainstJDTool(),
     searchExperiencesTool(),
     getExperienceTool(),
+    importExperienceCandidatesFromTextTool(),
     prepareSaveExperienceFromTextTool(),
     saveExperienceFromTextTool(),
     prepareUpdateExperienceTool(),

@@ -74,8 +74,22 @@ export function fallbackAgentDecision(
 // Only 4 paths: experience, resume, JD, or friendly intro.
 
 function frontDeskFallback(msg: string): AgentDecision {
-  if (containsAny(msg, ["experience", "经历"])) {
-    return dec("frontdesk", "route", "我来查看你的经历库。", { routeTo: "experience_receiver", confidence: 0.8 });
+  if (containsAny(msg, [
+    "experience",
+    "经历",
+    "university",
+    "college",
+    "bachelor",
+    "master",
+    "gpa",
+    "intern",
+    "internship",
+    "project",
+    "award",
+    "skill",
+    "company",
+  ])) {
+    return dec("frontdesk", "route", "我来转交给经历编目员整理这段经历。", { routeTo: "experience_receiver", confidence: 0.8 });
   }
   if (containsAny(msg, ["resume", "简历", "export", "导出", "cv"])) {
     return dec("frontdesk", "route", "我来准备简历操作。", { routeTo: "architect", confidence: 0.8 });
@@ -120,7 +134,7 @@ function experienceReceiverFallback(rawMessage: string): AgentDecision {
       "我先整理一下这段经历，然后需要你确认保存。",
       {
         plan: [
-          step("step-1", "experience_receiver", "save_experience_from_text", { text: rawMessage }, "Save experience from user text after confirmation."),
+          step("step-1", "experience_receiver", "import_experience_candidates_from_text", { text: rawMessage }, "Recognize experience candidates from user text."),
         ],
         confidence: 0.8,
       },

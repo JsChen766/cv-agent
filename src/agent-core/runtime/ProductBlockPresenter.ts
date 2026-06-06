@@ -5,6 +5,7 @@ import type { ToolResult } from "../tools/ToolResult.js";
 export function buildProductBlocks(toolResults: ToolResult[]): ProductBlock[] {
   let experienceList: ProductBlock | null = null;
   let experienceCard: ProductBlock | null = null;
+  let experienceCandidateForm: ProductBlock | null = null;
   let detailBlock: ProductBlock | null = null;
   let actionBlock: ProductBlock | null = null;
   let matchBlock: ProductBlock | null = null;
@@ -77,6 +78,21 @@ export function buildProductBlocks(toolResults: ToolResult[]): ProductBlock[] {
       };
       continue;
     }
+    if (Array.isArray(data.candidates) && isRecord(data.job) && data.formSchemaVersion === 1) {
+      const candidates = (data.candidates as Array<Record<string, unknown>>).map(sanitizeImportCandidate);
+      experienceCandidateForm = {
+        type: "experience_candidate_form",
+        title: "待确认的经历候选",
+        data: sanitizeMetadataObject({
+          job: data.job,
+          candidates,
+          formSchemaVersion: 1,
+          saveMode: data.saveMode ?? "accept_candidate",
+          actions: Array.isArray(data.actions) ? data.actions : defaultExperienceCandidateActions(),
+        }) ?? {},
+      };
+      continue;
+    }
     if (isRecord(data.experience)) {
       experienceCard = {
         type: "experience_card",
@@ -108,11 +124,48 @@ export function buildProductBlocks(toolResults: ToolResult[]): ProductBlock[] {
   }
   // Match results have highest priority — they're the most actionable
   if (matchBlock) return [matchBlock];
+  if (experienceCandidateForm) return [experienceCandidateForm];
   if (experienceCard) return [experienceCard];
   if (detailBlock) return [detailBlock];
   if (experienceList) return [experienceList];
   if (actionBlock) return [actionBlock];
   return [];
+}
+
+export function sanitizeImportCandidate(item: Record<string, unknown>): Record<string, unknown> {
+  return sanitizeMetadataObject({
+    id: item.id,
+    jobId: item.jobId,
+    category: item.category,
+    title: item.title,
+    organization: item.organization,
+    role: item.role,
+    startDate: item.startDate,
+    endDate: item.endDate,
+    sourceDocumentId: item.sourceDocumentId,
+    content: typeof item.content === "string" ? item.content.slice(0, 2000) : undefined,
+    structured: isRecord(item.structured) ? item.structured : undefined,
+    status: item.status,
+    createdAt: item.createdAt,
+    updatedAt: item.updatedAt,
+  }) ?? {};
+}
+
+function defaultExperienceCandidateActions(): ProductAction[] {
+  return [
+    {
+      id: "save",
+      type: "save_experience_candidate",
+      label: "保存到经历库",
+      primary: true,
+    },
+    {
+      id: "reject",
+      type: "reject_experience_candidate",
+      label: "忽略",
+      primary: false,
+    },
+  ];
 }
 
 export function sanitizeExperienceItem(item: Record<string, unknown>): Record<string, unknown> {

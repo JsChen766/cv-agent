@@ -98,6 +98,28 @@ describe("P12 experience tools", () => {
     await kernel.close();
   });
 
+  it("imports editable education candidates from text without saving immediately", async () => {
+    const kernel = await createP12Kernel();
+    const registry = new ToolRegistry();
+    registry.registerMany(createExperienceAgentTools());
+    const context = testContext(kernel, registry.list());
+    const executor = new ToolExecutor(registry, new AgentTraceRecorder());
+
+    const result = await executor.execute("import_experience_candidates_from_text", {
+      text: "Sun Yat-sen University\nBachelor in Computer Science, GPA 3.8/4.0\nMajor: Computer Science",
+    }, context);
+
+    expect(result.status).toBe("success");
+    const data = result.data as { candidates: Array<{ id: string; category: string; structured?: Record<string, unknown> }>; formSchemaVersion: number; saveMode: string };
+    expect(data.formSchemaVersion).toBe(1);
+    expect(data.saveMode).toBe("accept_candidate");
+    expect(data.candidates[0].id).toMatch(/^pimpcand-/);
+    expect(data.candidates[0].category).toBe("education");
+    expect(data.candidates[0].structured?.school).toBeDefined();
+    expect((await kernel.productServices.experienceService.listExperiences("user-1")).length).toBe(0);
+    await kernel.close();
+  });
+
   it("extracts project structure and tech stack from save_experience_from_text", async () => {
     const kernel = await createP12Kernel();
     const registry = new ToolRegistry();
