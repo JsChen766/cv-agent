@@ -18,6 +18,7 @@ import { extractExperienceDraftFromText } from "../experienceDraft.js";
 import type { LLMExperienceExtractor } from "../LLMExperienceExtractor.js";
 import { extractedCandidateToDraft } from "../LLMExperienceExtractor.js";
 import { LLMGenerationError, type LLMGenerationService } from "../LLMGenerationService.js";
+import type { EvidenceRAGService, EvidencePack } from "../../rag/evidence/index.js";
 import { isDeterministicFallbackAllowed } from "../deterministicFallbackGuard.js";
 import type {
   ProductExperienceRepository,
@@ -33,6 +34,7 @@ export type ProductServices = {
   resumeService: ResumeService;
   importService: ImportService;
   generationProductService: GenerationProductService;
+  evidenceRAGService?: EvidenceRAGService;
 };
 
 export class ProductStateConflictError extends Error {
@@ -484,6 +486,7 @@ export class GenerationProductService {
     private readonly resumeService: ResumeService,
     private readonly experienceService: ExperienceService,
     private readonly llmGenerationService?: LLMGenerationService,
+    private readonly evidenceRAGService?: EvidenceRAGService,
   ) {}
 
   public async generateResumeFromJD(input: {
@@ -503,17 +506,41 @@ export class GenerationProductService {
           targetRole: input.targetRole,
         });
     if (!jd) throw new Error("JD not found.");
-    const experiences = await this.experienceService.listExperiences(input.userId, { limit: 10, status: "active" });
+    const targetRole = input.targetRole ?? jd.targetRole;
+    const evidencePack = this.evidenceRAGService
+      ? await this.evidenceRAGService.buildEvidencePack({
+          userId: input.userId,
+          jdText: jd.rawText,
+          targetRole,
+          limit: 12,
+        })
+      : undefined;
+    const experiences = evidencePack
+      ? await this.experienceService.listExperiences(input.userId, {
+          limit: 100,
+          status: "active",
+        }).then((items) => filterExperiencesByEvidencePack(items, evidencePack).slice(0, 12))
+      : await this.experienceService.listExperiences(input.userId, { limit: 10, status: "active" });
 
     let variants: ProductGeneratedVariant[];
     if (this.llmGenerationService) {
       try {
-        variants = await this.llmGenerationService.generateVariants(
-          input.userId,
-          jd.rawText,
-          input.targetRole ?? jd.targetRole,
-          experiences,
-        );
+        variants = evidencePack
+          ? await this.llmGenerationService.generateVariantsWithEvidenceContext({
+              userId: input.userId,
+              jdText: jd.rawText,
+              targetRole,
+              evidencePack,
+            })
+          : await this.llmGenerationService.generateVariants(
+              input.userId,
+              jd.rawText,
+              targetRole,
+              experiences,
+            );
+        if (evidencePack && this.evidenceRAGService) {
+          variants = this.evidenceRAGService.verifyGeneratedVariants(variants, evidencePack);
+        }
       } catch (error) {
         throw generationFailureError(error);
       }
@@ -524,7 +551,10 @@ export class GenerationProductService {
       throw new Error("LLM_PROVIDER_NOT_CONFIGURED: No AI model provider is configured. Set DEEPSEEK_API_KEY or AGENT_API_KEY to enable intelligent resume generation.");
     } else {
       // No LLM service available, use template fallback (test mode only)
-      variants = buildDraftVariants(input.userId, jd.rawText, input.targetRole ?? jd.targetRole, experiences);
+      variants = buildDraftVariants(input.userId, jd.rawText, targetRole, experiences);
+      if (evidencePack && this.evidenceRAGService) {
+        variants = this.evidenceRAGService.verifyGeneratedVariants(variants, evidencePack);
+      }
     }
 
     const generation: ProductGeneration = {
@@ -532,11 +562,12 @@ export class GenerationProductService {
       userId: input.userId,
       sessionId: input.sessionId,
       jdId: jd.id,
-      targetRole: input.targetRole ?? jd.targetRole,
+      targetRole,
       inputSnapshot: {
         jdId: jd.id,
-        targetRole: input.targetRole ?? jd.targetRole,
+        targetRole,
         sourceExperienceIds: experiences.map((item) => item.id),
+        ...(evidencePack ? { evidencePack } : {}),
       },
       outputSnapshot: {
         variants,
@@ -611,6 +642,14 @@ export class GenerationProductService {
   public listGenerations(userId: string, limit?: number): Promise<ProductGeneration[]> {
     return this.repository.listGenerationsByUser(userId, { limit });
   }
+}
+
+function filterExperiencesByEvidencePack<T extends ProductExperienceSummary>(experiences: T[], evidencePack: EvidencePack): T[] {
+  const rankedIds = evidencePack.retrievalTrace.map((item) => item.experienceId);
+  const rank = new Map(rankedIds.map((id, index) => [id, index]));
+  return experiences
+    .filter((item) => rank.has(item.id))
+    .sort((a, b) => (rank.get(a.id) ?? Number.MAX_SAFE_INTEGER) - (rank.get(b.id) ?? Number.MAX_SAFE_INTEGER));
 }
 
 function buildExperienceRecords(userId: string, input: {

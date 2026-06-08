@@ -54,6 +54,7 @@ import { ModelClientFactory, debugModelConfig, describeModelConfig } from "../..
 import { LLMExperienceExtractor } from "../../product/LLMExperienceExtractor.js";
 import { LLMGenerationService } from "../../product/LLMGenerationService.js";
 import { LLMRewriteService } from "../../product/LLMRewriteService.js";
+import { EvidenceRAGService, LLMEvidenceService } from "../../rag/evidence/index.js";
 import { InMemoryPendingActionRepository } from "../../agent-core/confirmation/InMemoryPendingActionRepository.js";
 import { PendingActionService } from "../../agent-core/confirmation/PendingActionService.js";
 import { PostgresPendingActionRepository } from "../../agent-core/confirmation/PostgresPendingActionRepository.js";
@@ -119,6 +120,8 @@ function buildKernel(input: BuildKernelInput): ApiKernel {
   const llmExperienceExtractor = model.client ? new LLMExperienceExtractor(model.client) : undefined;
   const llmGenerationService = model.client ? new LLMGenerationService(model.client) : undefined;
   const llmRewriteService = model.client ? new LLMRewriteService(model.client) : undefined;
+  const llmEvidenceService = model.client ? new LLMEvidenceService(model.client) : undefined;
+  const evidenceRAGService = new EvidenceRAGService({ experienceService, llmEvidenceService });
 
   const importService = new ImportService(input.productImportRepository, experienceService, llmExperienceExtractor);
   const generationProductService = new GenerationProductService(
@@ -127,6 +130,7 @@ function buildKernel(input: BuildKernelInput): ApiKernel {
     resumeService,
     experienceService,
     llmGenerationService,
+    evidenceRAGService,
   );
   const productServices = {
     experienceService,
@@ -134,6 +138,7 @@ function buildKernel(input: BuildKernelInput): ApiKernel {
     resumeService,
     importService,
     generationProductService,
+    evidenceRAGService,
   };
   const copilotServices = {
     sessionService: new CopilotSessionService(input.copilotPersistence),

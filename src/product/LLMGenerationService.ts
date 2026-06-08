@@ -4,6 +4,7 @@ import type { ModelClient } from "../agent-core/model/ModelClient.js";
 import { PromptRegistry } from "../agent-core/prompts/PromptRegistry.js";
 import { extractJsonCandidates } from "../infrastructure/llm/JsonOutputParser.js";
 import type { ProductExperienceSummary, ProductGeneratedVariant } from "./types.js";
+import type { EvidencePack } from "../rag/evidence/index.js";
 
 export type LLMGenerationErrorPhase =
   | "initial"
@@ -305,6 +306,65 @@ function buildUserPrompt(
 
 const REPAIR_PROMPT = PROMPTS.get("product.generation.resumeRepair");
 
+function buildEvidenceGroundedUserPrompt(input: {
+  jdText: string;
+  targetRole?: string;
+  evidencePack: EvidencePack;
+}): string {
+  const requirements = input.evidencePack.jdRequirements.map((requirement) => [
+    `- [${requirement.id}] ${requirement.text}`,
+    `  category=${requirement.category}; importance=${requirement.importance}; policies=${requirement.retrievalPolicies.join(",")}`,
+  ].join("\n")).join("\n");
+
+  const allowedClaims = input.evidencePack.allowedClaims.length > 0
+    ? input.evidencePack.allowedClaims.map((claim) => [
+        `- [${claim.id}] ${claim.claim}`,
+        `  sourceExperienceId=${claim.experienceId}; confidence=${claim.confidence}; risk=${claim.riskLevel}`,
+        `  evidence: ${claim.evidenceText}`,
+      ].join("\n")).join("\n")
+    : "NO ALLOWED CLAIMS AVAILABLE. Do not write unsupported factual claims.";
+
+  const missing = input.evidencePack.missingRequirements.length > 0
+    ? input.evidencePack.missingRequirements.map((item) => `- [${item.requirementId}] ${item.requirementText} (${item.recommendedAction}): ${item.reason}`).join("\n")
+    : "No missing requirements detected by Evidence RAG.";
+
+  const trace = input.evidencePack.retrievalTrace.slice(0, 12).map((item) => [
+    `- ${item.title} [${item.experienceId}] score=${item.score}`,
+    `  matched=${item.matchedTerms.join(", ") || "none"}; reason=${item.reason}`,
+  ].join("\n")).join("\n");
+
+  return [
+    input.targetRole ? `Target role: ${input.targetRole}` : "",
+    "",
+    "Job Description:",
+    input.jdText.slice(0, 4000),
+    "",
+    "Evidence RAG Version:",
+    input.evidencePack.version,
+    "",
+    "JD Requirements:",
+    requirements || "No structured JD requirements were extracted.",
+    "",
+    "Allowed Claims:",
+    allowedClaims,
+    "",
+    "Missing or Weakly Supported Requirements:",
+    missing,
+    "",
+    "Retrieval Trace:",
+    trace || "No matching experiences retrieved.",
+    "",
+    "Hard factual boundary:",
+    "- You may rephrase, prioritize, and package only the Allowed Claims.",
+    "- Do NOT invent companies, roles, project names, metrics, skills, users, revenue, launches, leadership, or outcomes.",
+    "- If a JD requirement has no allowed claim, list it in missingInfo or mark it as needing confirmation. Do not force it into the resume.",
+    "- For each variant, sourceExperienceIds should refer only to experiences in the Evidence Pack.",
+    "- Provide evidenceSummary and riskSummary based on the Evidence Pack.",
+    "",
+    "Generate resume content variants. Return a JSON object with a 'variants' array.",
+  ].join("\n");
+}
+
 // ═══════════════════════════════════════════════════════════════
 // Service
 // ═══════════════════════════════════════════════════════════════
@@ -319,8 +379,45 @@ export class LLMGenerationService {
     experiences: ProductExperienceSummary[],
   ): Promise<ProductGeneratedVariant[]> {
     const result = await this.tryGenerate(jdText, targetRole, experiences);
+    return this.toGeneratedVariants(userId, result.variants);
+  }
+
+  public async generateVariantsWithEvidenceContext(input: {
+    userId: string;
+    jdText: string;
+    targetRole?: string;
+    evidencePack: EvidencePack;
+  }): Promise<ProductGeneratedVariant[]> {
+    const userPrompt = buildEvidenceGroundedUserPrompt({
+      jdText: input.jdText,
+      targetRole: input.targetRole,
+      evidencePack: input.evidencePack,
+    });
+    const result = await this.tryGenerateFromPrompt(userPrompt, {
+      evidenceClaimCount: input.evidencePack.allowedClaims.length,
+      missingRequirementCount: input.evidencePack.missingRequirements.length,
+      targetRole: input.targetRole,
+    });
+    const variants = this.toGeneratedVariants(input.userId, result.variants);
+    const fallbackExperienceIds = Array.from(new Set(input.evidencePack.allowedClaims.map((claim) => claim.experienceId))).slice(0, 12);
+    const fallbackEvidenceIds = input.evidencePack.allowedClaims.map((claim) => claim.id).slice(0, 20);
+    return variants.map((variant) => ({
+      ...variant,
+      sourceExperienceIds: variant.sourceExperienceIds && variant.sourceExperienceIds.length > 0
+        ? variant.sourceExperienceIds
+        : fallbackExperienceIds,
+      sourceEvidenceIds: variant.sourceEvidenceIds && variant.sourceEvidenceIds.length > 0
+        ? variant.sourceEvidenceIds
+        : fallbackEvidenceIds,
+      evidenceSummary: variant.evidenceSummary ?? buildDefaultEvidenceSummary(input.evidencePack),
+      riskSummary: variant.riskSummary ?? buildDefaultRiskSummary(input.evidencePack),
+      missingInfo: variant.missingInfo ?? input.evidencePack.missingRequirements.map((item) => `Confirm or add evidence for: ${item.requirementText}`).slice(0, 8),
+    }));
+  }
+
+  private toGeneratedVariants(userId: string, variants: NormalizedVariant[]): ProductGeneratedVariant[] {
     const now = new Date().toISOString();
-    return result.variants.map((variant) => ({
+    return variants.map((variant) => ({
       id: `pvar-${randomUUID()}`,
       userId,
       content: variant.content,
@@ -346,13 +443,23 @@ export class LLMGenerationService {
     targetRole: string | undefined,
     experiences: ProductExperienceSummary[],
   ): Promise<z.infer<typeof NormalizedGenerationResultSchema>> {
-    debugGeneration("initial start", { experienceCount: experiences.length, targetRole });
+    return this.tryGenerateFromPrompt(buildUserPrompt(jdText, targetRole, experiences), {
+      experienceCount: experiences.length,
+      targetRole,
+    });
+  }
+
+  private async tryGenerateFromPrompt(
+    userPrompt: string,
+    debugPayload: Record<string, unknown>,
+  ): Promise<z.infer<typeof NormalizedGenerationResultSchema>> {
+    debugGeneration("initial start", debugPayload);
     let responseContent = "";
     try {
       const response = await this.modelClient.chat({
         messages: [
           { role: "system", content: SYSTEM_PROMPT },
-          { role: "user", content: buildUserPrompt(jdText, targetRole, experiences) },
+          { role: "user", content: userPrompt },
         ],
         temperature: 0.4,
         maxTokens: 8192,
@@ -376,7 +483,7 @@ export class LLMGenerationService {
       parsed = parseJson(responseContent, "initial");
     } catch (error) {
       // JSON parse failed — try repair immediately
-      return this.repairGeneration(jdText, targetRole, experiences, "json_parse", responseContent);
+      return this.repairGenerationFromPrompt(userPrompt, "json_parse", responseContent);
     }
 
     // Normalize (lenient) then validate (strict)
@@ -395,15 +502,13 @@ export class LLMGenerationService {
     }
 
     // No valid variants after normalization — try repair
-    return this.repairGeneration(jdText, targetRole, experiences, "schema_validation", responseContent, normalized.variants.length === 0
+    return this.repairGenerationFromPrompt(userPrompt, "schema_validation", responseContent, normalized.variants.length === 0
       ? ["no variants with non-empty content"]
       : formatIssues(NormalizedGenerationResultSchema.safeParse(normalized).error?.issues ?? []));
   }
 
-  private async repairGeneration(
-    jdText: string,
-    targetRole: string | undefined,
-    experiences: ProductExperienceSummary[],
+  private async repairGenerationFromPrompt(
+    userPrompt: string,
     reason: "json_parse" | "schema_validation",
     previousContent: string,
     schemaIssues?: string[],
@@ -417,7 +522,7 @@ export class LLMGenerationService {
       const response = await this.modelClient.chat({
         messages: [
           { role: "system", content: SYSTEM_PROMPT },
-          { role: "user", content: buildUserPrompt(jdText, targetRole, experiences) },
+          { role: "user", content: userPrompt },
           { role: "assistant", content: "[previous output had schema errors]" },
           { role: "user", content: REPAIR_PROMPT.replace("{{errors}}", errorSummary) },
         ],
@@ -468,6 +573,31 @@ export class LLMGenerationService {
       { phase: "schema_validation", rawContentPreview: preview(responseContent), schemaIssues: ["0 variants with non-empty content after repair"] },
     );
   }
+}
+
+
+function buildDefaultEvidenceSummary(evidencePack: EvidencePack): ProductGeneratedVariant["evidenceSummary"] {
+  return {
+    coverageLabel: evidencePack.missingRequirements.length > 0
+      ? `Evidence Pack covers ${Math.max(0, evidencePack.jdRequirements.length - evidencePack.missingRequirements.length)} of ${evidencePack.jdRequirements.length} JD requirements.`
+      : "Evidence Pack provides verified claims for the JD requirements.",
+    items: evidencePack.allowedClaims.slice(0, 6).map((claim) => ({
+      id: claim.id,
+      title: claim.claim.slice(0, 80),
+      explanation: `Supported by ${claim.experienceId}: ${claim.evidenceText}`,
+      confidence: claim.confidence,
+    })),
+  };
+}
+
+function buildDefaultRiskSummary(evidencePack: EvidencePack): ProductGeneratedVariant["riskSummary"] {
+  const weakSignals = evidencePack.qualitySignals.filter((signal) => signal.quality === "weak" || signal.quality === "missing");
+  return {
+    level: evidencePack.missingRequirements.length > 0 ? "medium" : "low",
+    unsupportedClaims: [],
+    missingEvidence: evidencePack.missingRequirements.map((item) => item.requirementText).slice(0, 8),
+    warnings: weakSignals.map((signal) => signal.reason).slice(0, 6),
+  };
 }
 
 // ═══════════════════════════════════════════════════════════════
