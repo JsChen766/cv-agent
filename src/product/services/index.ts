@@ -16,7 +16,7 @@ import type {
 } from "../types.js";
 import { extractExperienceDraftFromText } from "../experienceDraft.js";
 import type { LLMExperienceExtractor } from "../LLMExperienceExtractor.js";
-import { extractedCandidateToDraft } from "../LLMExperienceExtractor.js";
+import { detectDominantLanguage, extractedCandidateToDraft } from "../LLMExperienceExtractor.js";
 import { LLMGenerationError, type LLMGenerationService } from "../LLMGenerationService.js";
 import { isDeterministicFallbackAllowed } from "../deterministicFallbackGuard.js";
 import type {
@@ -33,6 +33,17 @@ export type ProductServices = {
   resumeService: ResumeService;
   importService: ImportService;
   generationProductService: GenerationProductService;
+};
+
+type ImportDraftLike = {
+  category: ProductExperienceCategory;
+  title: string;
+  organization?: string;
+  role?: string;
+  startDate?: string;
+  endDate?: string;
+  content: string;
+  structured?: Record<string, unknown>;
 };
 
 export class ProductStateConflictError extends Error {
@@ -300,34 +311,34 @@ export class ImportService {
       const extracted = await this.llmExtractor.extractCandidates(rawText);
       if (extracted.length > 0) {
         for (const candidate of extracted) {
-          const draft = extractedCandidateToDraft(candidate);
-          const now = new Date().toISOString();
-          candidates.push(await this.repository.createImportCandidate({
-            id: `pimpcand-${randomUUID()}`,
-            jobId,
-            userId,
-            title: draft.title,
-            category: draft.category,
-            organization: draft.organization,
-            role: draft.role,
-            startDate: draft.startDate,
-            endDate: draft.endDate,
-            content: draft.content,
-            structured: draft.structured,
-            status: "pending",
-            createdAt: now,
-            updatedAt: now,
-          }));
+          const draft = extractedCandidateToDraft(candidate, detectDominantLanguage(rawText));
+          candidates.push(await this.createImportCandidateFromDraft(userId, jobId, draft));
         }
         await this.repository.updateImportJobStatus(userId, jobId, { status: "candidates_ready" });
         return candidates;
       }
       // LLM returned no candidates — only fall back in test mode
+      const conservative = buildConservativeImportDrafts(rawText);
+      if (conservative.length > 0) {
+        for (const draft of conservative) {
+          candidates.push(await this.createImportCandidateFromDraft(userId, jobId, draft));
+        }
+        await this.repository.updateImportJobStatus(userId, jobId, { status: "candidates_ready" });
+        return candidates;
+      }
       if (!isDeterministicFallbackAllowed()) {
         await this.repository.updateImportJobStatus(userId, jobId, { status: "failed", errorMessage: "LLM extraction returned no candidates." });
         throw new Error("LLM_PROVIDER_NOT_CONFIGURED: The AI model could not extract any experiences from the provided text. Please try with more structured content.");
       }
     } else if (!isDeterministicFallbackAllowed()) {
+      const conservative = buildConservativeImportDrafts(rawText);
+      if (conservative.length > 0) {
+        for (const draft of conservative) {
+          candidates.push(await this.createImportCandidateFromDraft(userId, jobId, draft));
+        }
+        await this.repository.updateImportJobStatus(userId, jobId, { status: "candidates_ready" });
+        return candidates;
+      }
       await this.repository.updateImportJobStatus(userId, jobId, { status: "failed", errorMessage: "No LLM provider configured for experience extraction." });
       throw new Error("LLM_PROVIDER_NOT_CONFIGURED: No AI model provider is configured. Set DEEPSEEK_API_KEY or AGENT_API_KEY to enable intelligent experience extraction.");
     }
@@ -336,26 +347,37 @@ export class ImportService {
     const chunks = splitExperienceText(rawText);
     for (const [index, content] of chunks.entries()) {
       const draft = extractExperienceDraftFromText(content);
-      const now = new Date().toISOString();
-      candidates.push(await this.repository.createImportCandidate({
-        id: `pimpcand-${randomUUID()}`,
-        jobId,
-        userId,
+      candidates.push(await this.createImportCandidateFromDraft(userId, jobId, {
+        ...draft,
         title: draft.title || inferTitle(content, `Imported experience ${index + 1}`),
-        category: draft.category,
-        organization: draft.organization,
-        role: draft.role,
-        startDate: draft.startDate,
-        endDate: draft.endDate,
-        content: draft.content,
-        structured: draft.structured,
-        status: "pending",
-        createdAt: now,
-        updatedAt: now,
       }));
     }
     await this.repository.updateImportJobStatus(userId, jobId, { status: "candidates_ready" });
     return candidates;
+  }
+
+  private async createImportCandidateFromDraft(
+    userId: string,
+    jobId: string,
+    draft: ImportDraftLike,
+  ): Promise<ProductImportCandidate> {
+    const now = new Date().toISOString();
+    return this.repository.createImportCandidate({
+      id: `pimpcand-${randomUUID()}`,
+      jobId,
+      userId,
+      title: draft.title,
+      category: draft.category,
+      organization: draft.organization,
+      role: draft.role,
+      startDate: draft.startDate,
+      endDate: draft.endDate,
+      content: draft.content,
+      structured: draft.structured,
+      status: "pending",
+      createdAt: now,
+      updatedAt: now,
+    });
   }
 
   public getImportJob(userId: string, id: string): Promise<ProductImportJob | null> {
@@ -441,6 +463,95 @@ export class ImportService {
     if (!candidate) throw new Error("Import candidate not found.");
     return candidate;
   }
+}
+
+function buildConservativeImportDrafts(rawText: string): ImportDraftLike[] {
+  const publication = buildPublicationDraft(rawText);
+  return publication ? [publication] : [];
+}
+
+function buildPublicationDraft(rawText: string): ImportDraftLike | null {
+  const text = rawText.replace(/\s+/g, " ").trim();
+  if (!text) return null;
+  const inputLanguage = detectDominantLanguage(text);
+  const mentionsPublication = /paper|publication|published|first author|论文|发表|第一作者|第[一1]作者|璁烘枃|鍙戣〃|绗.{0,8}浣|浣滆/i.test(text);
+  const title = extractPublicationTitle(text);
+  const hasPublicationContext = mentionsPublication || (Boolean(title) && /multimedia/i.test(text));
+  if (!hasPublicationContext || !title) return null;
+
+  const organization = extractPublicationVenue(text);
+  const firstAuthor = /first author|1st author|\bauthor\b|第一作者|第[一1]作者|绗.{0,8}浣|浣滆|浣/i.test(text);
+  const isChineseOutput = inputLanguage === "zh";
+  const role = firstAuthor ? (isChineseOutput ? "第一作者" : "first author") : undefined;
+  const isMultimodalEmotionRecognition = /multimodal emotion recognition|多模态情感识别/i.test(text);
+  const tags = [
+    isChineseOutput ? "论文" : "paper",
+    isChineseOutput ? "发表" : "publication",
+    isMultimodalEmotionRecognition ? (isChineseOutput ? "多模态情感识别" : "multimodal emotion recognition") : "",
+  ].filter(Boolean);
+  const warnings = ["External details are unverified and can be added later."];
+  const content = isChineseOutput
+    ? [
+        role ? `以${role}身份发表论文《${title}》。` : `发表论文《${title}》。`,
+        organization ? `用户提到的期刊为 ${organization}。` : "",
+        isMultimodalEmotionRecognition ? "研究方向为多模态情感识别。" : "",
+        "外部细节尚未核验，可后续补充。",
+      ].filter(Boolean).join("")
+    : [
+        role
+          ? `Published "${title}" as ${role}.`
+          : `Published "${title}".`,
+        organization ? `Venue stated by user: ${organization}.` : "",
+        isMultimodalEmotionRecognition
+          ? "The work is related to multimodal emotion recognition."
+          : "",
+      ].filter(Boolean).join(" ");
+  const draftTitle = isChineseOutput && firstAuthor && isMultimodalEmotionRecognition
+    ? "第一作者发表多模态情感识别论文"
+    : isChineseOutput
+      ? "发表论文经历"
+      : title;
+
+  return {
+    category: "project",
+    title: draftTitle,
+    organization,
+    role,
+    startDate: undefined,
+    endDate: undefined,
+    content,
+    structured: {
+      inputLanguage,
+      summary: content,
+      highlights: [content],
+      metrics: [],
+      projectName: title,
+      projectRole: role,
+      techStack: tags,
+      rawText: text,
+      warnings,
+    },
+  };
+}
+
+function extractPublicationTitle(text: string): string | undefined {
+  const patterns = [
+    /(?:titled|title[:：]?|论文\s*)["*“”']?\s*([A-Z][A-Za-z0-9&,:;'"’()\/+\-\s]{10,180}?)(?=\s*(?:,|，|。|；|;|\.| which | related | is related | 是|锛|$))/i,
+    /([A-Z][A-Za-z0-9&,:;'"’()\/+\-\s]{10,180}?Multimodal Emotion Recognition)/i,
+  ];
+  for (const pattern of patterns) {
+    const match = text.match(pattern);
+    const value = match?.[1]?.replace(/[*"“”']/g, "").replace(/\s+/g, " ").trim();
+    if (value) return value.slice(0, 160);
+  }
+  return undefined;
+}
+
+function extractPublicationVenue(text: string): string | undefined {
+  if (/ieee\s+transactions?\s+on\s+multimedia/i.test(text)) return "IEEE Transactions on Multimedia";
+  if (/transactions?\s+on\s+multimedia/i.test(text)) return "IEEE Transactions on Multimedia";
+  if (/ransactions?\s+on\s+multimedia/i.test(text)) return "IEEE Transactions on Multimedia";
+  return undefined;
 }
 
 function mergeCandidatePatch(

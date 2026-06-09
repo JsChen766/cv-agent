@@ -569,6 +569,15 @@ describe("Copilot routes on agent-core runtime", () => {
       headers: { "x-user-id": "user-1" },
     });
     expect(confirmResponse.statusCode).toBe(200);
+    expect(await kernel.productServices.experienceService.listExperiences("user-1")).toHaveLength(1);
+
+    const repeatedConfirmResponse = await server.inject({
+      method: "POST",
+      url: `/copilot/pending-actions/${pendingId}/confirm`,
+      headers: { "x-user-id": "user-1" },
+    });
+    expect(repeatedConfirmResponse.statusCode).toBe(200);
+    expect(await kernel.productServices.experienceService.listExperiences("user-1")).toHaveLength(1);
 
     // 4. Re-read history — pending action status should be "executed", preview still present
     const detailAfter = await server.inject({

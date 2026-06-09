@@ -5,6 +5,17 @@ export const ListInputSchema = z.object({ limit: z.number().int().positive().max
 export const IdInputSchema = z.object({ id: z.string().min(1) }).passthrough();
 export const SearchInputSchema = z.object({ query: z.string().min(1), limit: z.number().int().positive().max(50).optional() }).passthrough();
 export const TextInputSchema = z.object({ text: z.string().min(1) }).passthrough();
+export const SaveExperienceFromTextInputSchema = z.object({
+  text: z.string().optional(),
+  candidate: z.unknown().optional(),
+  experienceDraft: z.unknown().optional(),
+}).passthrough().refine((value) => {
+  if (typeof value.text === "string" && value.text.trim().length > 0) return true;
+  return value.candidate !== undefined || value.experienceDraft !== undefined;
+}, {
+  message: "text or candidate is required",
+  path: ["text"],
+});
 export const UpdateExperienceInputSchema = z.object({
   experienceId: z.string().min(1),
   patch: z.unknown().optional().default({}),

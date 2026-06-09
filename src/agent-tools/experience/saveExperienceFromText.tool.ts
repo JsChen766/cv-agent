@@ -1,7 +1,7 @@
 import type { ToolDefinition } from "../../agent-core/tools/Tool.js";
-import { TextInputSchema, ToolResultSchema } from "../../agent-core/validation/ToolInputSchemas.js";
+import { SaveExperienceFromTextInputSchema, ToolResultSchema } from "../../agent-core/validation/ToolInputSchemas.js";
 import { extractExperienceDraftFromText } from "./helpers.js";
-import { extractedCandidateToDraft } from "../../product/LLMExperienceExtractor.js";
+import { detectDominantLanguage, extractedCandidateToDraft } from "../../product/LLMExperienceExtractor.js";
 import { buildNormalizedExperiencePreview } from "../../product/experiencePreview.js";
 import type { ProductExperienceCategory } from "../../product/types.js";
 import { isDeterministicFallbackAllowed, llmNotAvailableResult } from "../../product/deterministicFallbackGuard.js";
@@ -108,20 +108,30 @@ export function saveExperienceFromTextTool(): ToolDefinition {
     name: "save_experience_from_text",
     description: "Save a new experience to the real product experience library. Uses AI to extract structured experience from free text.",
     ownerAgent: "experience_receiver",
-    inputSchema: TextInputSchema,
+    inputSchema: SaveExperienceFromTextInputSchema,
     outputSchema: ToolResultSchema,
     mutability: "write",
     requiresConfirmation: true,
     riskLevel: "medium",
     execute: async (input, context) => {
-      const text = String(input.text);
+      const text = typeof input.text === "string" ? input.text.trim() : "";
+      const inputLanguage = text ? detectDominantLanguage(text) : undefined;
 
       // If a structured candidate was passed from the prepare phase, use it directly.
       // This avoids re-extracting from raw text and ensures the confirmed data
       // matches the LLM-structured preview the user saw.
-      const candidate = isRecord(input.candidate) ? candidateToDraftLike(input.candidate) : null;
+      const candidateSource = isRecord(input.candidate)
+        ? input.candidate
+        : isRecord(input.experienceDraft)
+          ? input.experienceDraft
+          : null;
+      const candidate = candidateSource ? withExternalLookupWarning(candidateToDraftLike(candidateSource), text) : null;
       if (candidate) {
         return saveExperience(candidate, context);
+      }
+
+      if (!text) {
+        return needsExperienceInputResult("Please provide experience text or a complete experience draft before saving.");
       }
 
       const llmExtractor = context.kernel.llmExperienceExtractor;
@@ -130,7 +140,7 @@ export function saveExperienceFromTextTool(): ToolDefinition {
       if (llmExtractor) {
         const candidates = await llmExtractor.extractCandidates(text);
         if (candidates.length > 0) {
-          const draft = extractedCandidateToDraft(candidates[0]);
+          const draft = extractedCandidateToDraft(candidates[0], inputLanguage);
           const draftLike: DraftLike = {
             category: draft.category,
             title: draft.title,
@@ -142,7 +152,7 @@ export function saveExperienceFromTextTool(): ToolDefinition {
             tags: draft.tags,
             structured: draft.structured as DraftLike["structured"],
             confidence: draft.confidence,
-            warnings: draft.warnings,
+            warnings: withExternalLookupWarningText(draft.warnings, text),
           };
           return saveExperience(draftLike, context);
         }
@@ -158,7 +168,10 @@ export function saveExperienceFromTextTool(): ToolDefinition {
       }
 
       // Deterministic fallback: rule-based extraction (test mode only)
-      return saveExperience(extractExperienceDraftFromText(text), context);
+      const extractedFallback = extractExperienceDraftFromText(text);
+      extractedFallback.structured = { ...(extractedFallback.structured as Record<string, unknown>), inputLanguage: inputLanguage ?? detectDominantLanguage(text) } as unknown as DraftLike["structured"];
+      const fallbackDraft = withExternalLookupWarning(extractedFallback, text);
+      return fallbackDraft ? saveExperience(fallbackDraft, context) : needsExperienceInputResult("Please provide experience text or a complete experience draft before saving.");
     },
   };
 }
@@ -173,8 +186,12 @@ function isRecord(value: unknown): value is Record<string, unknown> {
  */
 function candidateToDraftLike(candidate: Record<string, unknown>): DraftLike | null {
   const title = typeof candidate.title === "string" ? candidate.title : "";
-  const content = typeof candidate.content === "string" ? candidate.content : "";
+  const content = firstString(candidate.content, candidate.description, candidate.rawText);
   if (!title || !content) return null;
+  const structured = (isRecord(candidate.structured) ? candidate.structured : { rawText: content }) as DraftLike["structured"];
+  const inputLanguage = typeof candidate.inputLanguage === "string"
+    ? candidate.inputLanguage
+    : undefined;
 
   return {
     category: (typeof candidate.category === "string" ? candidate.category : "other") as DraftLike["category"],
@@ -185,8 +202,53 @@ function candidateToDraftLike(candidate: Record<string, unknown>): DraftLike | n
     endDate: typeof candidate.endDate === "string" ? candidate.endDate : undefined,
     content,
     tags: Array.isArray(candidate.tags) ? candidate.tags.filter((t): t is string => typeof t === "string") : [],
-    structured: (isRecord(candidate.structured) ? candidate.structured : { rawText: content }) as DraftLike["structured"],
+    structured: inputLanguage ? { ...structured, inputLanguage } as DraftLike["structured"] : structured,
     confidence: typeof candidate.confidence === "number" ? candidate.confidence : 0.5,
-    warnings: Array.isArray(candidate.warnings) ? candidate.warnings.filter((w): w is string => typeof w === "string") : [],
+    warnings: Array.isArray(candidate.warnings)
+      ? candidate.warnings.filter((w): w is string => typeof w === "string")
+      : Array.isArray(candidate.missingFields)
+        ? candidate.missingFields.filter((w): w is string => typeof w === "string")
+        : [],
   };
+}
+
+function firstString(...values: unknown[]): string {
+  for (const value of values) {
+    if (typeof value === "string" && value.trim()) return value.trim();
+  }
+  return "";
+}
+
+function needsExperienceInputResult(message: string): ToolResult {
+  return {
+    status: "needs_input",
+    message,
+    visibility: "error_user_visible",
+    actionResult: {
+      status: "needs_input",
+      actionType: "save_experience_from_text",
+      reason: "missing_experience_input",
+      missingInputs: ["text", "candidate"],
+      message,
+    },
+  };
+}
+
+function withExternalLookupWarning(draft: DraftLike | null, text: string): DraftLike | null {
+  if (!draft) return null;
+  return {
+    ...draft,
+    warnings: withExternalLookupWarningText(draft.warnings, text),
+  };
+}
+
+function withExternalLookupWarningText(warnings: string[] | undefined, text: string): string[] {
+  const base = warnings ?? [];
+  if (!mentionsExternalLookup(text)) return base;
+  const warning = "External details are unverified and can be added later.";
+  return base.includes(warning) ? base : [...base, warning];
+}
+
+function mentionsExternalLookup(text: string): boolean {
+  return /online|web|internet|search|google|find more|learn more|more details|上网|网上|联网|搜索|更多细节|了解.*细节/i.test(text);
 }

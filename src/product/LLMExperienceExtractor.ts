@@ -88,14 +88,38 @@ const ExtractionResultSchema = z.object({
 
 export type ExtractedCandidate = z.infer<typeof ExtractedCandidateSchema>;
 type ExtractionResult = z.infer<typeof ExtractionResultSchema>;
+export type DominantLanguage = "zh" | "en" | "mixed";
 
 const PROMPTS = new PromptRegistry();
 const SYSTEM_PROMPT = PROMPTS.get("product.experienceExtraction.system");
 
-function buildUserPrompt(text: string): string {
+export function detectDominantLanguage(text: string): DominantLanguage {
+  const cjkCount = (text.match(/[\u3400-\u9fff]/g) ?? []).length;
+  const asciiLetterCount = (text.match(/[A-Za-z]/g) ?? []).length;
+  const chinesePunctuationCount = (text.match(/[，。！？、；：“”‘’《》（）]/g) ?? []).length;
+  const significantCjk = cjkCount >= 4 || (cjkCount > 0 && chinesePunctuationCount > 0);
+
+  if (significantCjk && asciiLetterCount > 0) {
+    return cjkCount + chinesePunctuationCount >= Math.max(4, asciiLetterCount * 0.18) ? "zh" : "mixed";
+  }
+  if (significantCjk || cjkCount > 0) return "zh";
+  if (asciiLetterCount > 0) return "en";
+  return "mixed";
+}
+
+export function buildUserPrompt(text: string): string {
   const truncated = text.length > 8000 ? text.slice(0, 8000) + "\n...[truncated]" : text;
+  const inputLanguage = detectDominantLanguage(text);
   return [
     "Extract all experiences from the following text. Return a JSON object with a 'candidates' array.",
+    `Detected input language: ${inputLanguage}.`,
+    "",
+    "Language requirement:",
+    "- Use the dominant language of the input text for all user-facing output fields.",
+    "- Do not translate the user's experience into another language unless explicitly requested.",
+    "- Keep proper nouns, paper titles, journal names, company names, school names, product names, model names, and technical terms in their original language.",
+    "- If the detected language is zh, write explanatory resume text in Chinese while preserving English proper nouns.",
+    "- If the detected language is en, write explanatory resume text in English.",
     "",
     "```text",
     truncated,
@@ -205,6 +229,7 @@ export class LLMExperienceExtractor {
 
 export function extractedCandidateToDraft(
   candidate: ExtractedCandidate,
+  inputLanguage?: DominantLanguage,
 ): {
   category: ProductExperienceCategory;
   title: string;
@@ -223,6 +248,7 @@ export function extractedCandidateToDraft(
     confidence: candidate.confidence ?? 0.5,
     warnings,
   };
+  const languageMeta = inputLanguage ? { inputLanguage } : {};
 
   switch (candidate.type) {
     case "work":
@@ -239,6 +265,7 @@ export function extractedCandidateToDraft(
         content: candidate.content,
         tags: candidate.skills ?? [],
         structured: {
+          ...languageMeta,
           summary: candidate.content.slice(0, 200),
           highlights: candidate.achievements ?? [],
           metrics: candidate.metrics ?? [],
@@ -263,6 +290,7 @@ export function extractedCandidateToDraft(
         content: candidate.content,
         tags: candidate.techStack ?? [],
         structured: {
+          ...languageMeta,
           summary: candidate.content.slice(0, 200),
           highlights: [...(candidate.responsibilities ?? []), ...(candidate.outcomes ?? [])],
           metrics: candidate.metrics ?? [],
@@ -290,6 +318,7 @@ export function extractedCandidateToDraft(
         content: candidate.content,
         tags: [],
         structured: {
+          ...languageMeta,
           summary: candidate.content.slice(0, 200),
           highlights: [],
           metrics: [],
@@ -316,6 +345,7 @@ export function extractedCandidateToDraft(
         content: candidate.content,
         tags: [],
         structured: {
+          ...languageMeta,
           summary: candidate.content.slice(0, 200),
           highlights: [],
           metrics: [],
@@ -339,6 +369,7 @@ export function extractedCandidateToDraft(
         content: candidate.content,
         tags: candidate.skills ?? [],
         structured: {
+          ...languageMeta,
           summary: candidate.content.slice(0, 200),
           highlights: [],
           metrics: [],
@@ -358,7 +389,7 @@ export function extractedCandidateToDraft(
         title: c.title,
         content: c.content,
         tags: [],
-        structured: { rawText: c.content },
+        structured: { ...languageMeta, rawText: c.content },
       };
     }
   }

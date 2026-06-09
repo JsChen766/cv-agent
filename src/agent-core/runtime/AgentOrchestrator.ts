@@ -90,6 +90,8 @@ type LoopRunResult = {
   criticReview?: CriticReview;
 };
 
+type ExperienceDraftLike = ReturnType<typeof extractExperienceDraftFromText>;
+
 export class AgentOrchestrator {
   public readonly pendingActions: PendingActionService;
   public readonly tools: ToolRegistry;
@@ -1146,8 +1148,10 @@ export class AgentOrchestrator {
 
       const prepared = await this.getOrExecutePrepareSaveResult(run, args);
       if (prepared) {
+        const textFallback = stringValue(args.text) ?? buildExperienceTextFallback(prepared.draft);
         enrichedArgs = {
           ...args,
+          ...(textFallback ? { text: textFallback } : {}),
           candidate: prepared.draft,
           experienceDraft: prepared.experienceDraft,
         };
@@ -1156,6 +1160,23 @@ export class AgentOrchestrator {
             experienceDraft: prepared.experienceDraft,
           },
         };
+      } else {
+        const draft = draftFromSaveExperienceArgs(args);
+        if (draft) {
+          const experienceDraft = buildNormalizedExperiencePreview(draft, { missingFields: draft.warnings });
+          const textFallback = stringValue(args.text) ?? buildExperienceTextFallback(draft);
+          enrichedArgs = {
+            ...args,
+            ...(textFallback ? { text: textFallback } : {}),
+            candidate: draft,
+            experienceDraft,
+          };
+          enrichedPreview = {
+            after: {
+              experienceDraft,
+            },
+          };
+        }
       }
     }
 
@@ -2707,6 +2728,52 @@ function legacyAffectedResourcesFor(toolName: string, args: Record<string, unkno
   }
   if (toolName.includes("export")) return [{ type: "export" as const }];
   return [];
+}
+
+function draftFromSaveExperienceArgs(args: Record<string, unknown>): ExperienceDraftLike | undefined {
+  const source = isRecord(args.candidate)
+    ? args.candidate
+    : isRecord(args.experienceDraft)
+      ? args.experienceDraft
+      : undefined;
+  if (!source) return undefined;
+
+  const title = stringValue(source.title);
+  const content = stringValue(source.content) ?? stringValue(source.description) ?? stringValue(source.rawText);
+  if (!title || !content) return undefined;
+
+  return {
+    category: (stringValue(source.category) ?? "other") as ExperienceDraftLike["category"],
+    title,
+    organization: stringValue(source.organization),
+    role: stringValue(source.role),
+    startDate: stringValue(source.startDate),
+    endDate: stringValue(source.endDate),
+    content,
+    tags: Array.isArray(source.tags)
+      ? source.tags.filter((item): item is string => typeof item === "string" && item.trim().length > 0)
+      : Array.isArray(source.skills)
+        ? source.skills.filter((item): item is string => typeof item === "string" && item.trim().length > 0)
+        : [],
+    structured: (isRecord(source.structured) ? source.structured : { rawText: content }) as ExperienceDraftLike["structured"],
+    confidence: numberValue(source.confidence) ?? 0.5,
+    warnings: Array.isArray(source.warnings)
+      ? source.warnings.filter((item): item is string => typeof item === "string" && item.trim().length > 0)
+      : Array.isArray(source.missingFields)
+        ? source.missingFields.filter((item): item is string => typeof item === "string" && item.trim().length > 0)
+        : [],
+  };
+}
+
+function buildExperienceTextFallback(draft: Record<string, unknown>): string | undefined {
+  const parts = [
+    stringValue(draft.title),
+    stringValue(draft.organization),
+    stringValue(draft.role),
+    [stringValue(draft.startDate), stringValue(draft.endDate)].filter(Boolean).join(" - "),
+    stringValue(draft.content) ?? stringValue(draft.description) ?? stringValue(draft.rawText),
+  ].filter((item): item is string => Boolean(item));
+  return parts.length > 0 ? parts.join("\n") : undefined;
 }
 
 
