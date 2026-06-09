@@ -1,10 +1,32 @@
-import type { EvidenceRetrievalTrace, EvidenceUsageTrace, JDRequirement, RetrievedExperience, AllowedClaim } from "./types.js";
+import type {
+  AllowedClaim,
+  EvidenceRetrievalTrace,
+  EvidenceUsageTrace,
+  JDRequirement,
+  RetrievedExperience,
+  RetrievedPersistentClaim,
+} from "./types.js";
 
 export class EvidenceTraceBuilder {
   public retrievalTrace(retrieved: RetrievedExperience[]): EvidenceRetrievalTrace[] {
     return retrieved.map((item) => ({
+      source: "raw_experience",
       experienceId: item.experience.id,
       title: item.experience.title,
+      score: item.score,
+      matchedTerms: item.matchedTerms,
+      matchedRequirementIds: item.matchedRequirementIds,
+      reason: item.reason,
+    }));
+  }
+
+  public persistentClaimTrace(retrieved: RetrievedPersistentClaim[]): EvidenceRetrievalTrace[] {
+    return retrieved.map((item) => ({
+      source: "persistent_claim",
+      experienceId: item.claim.experienceId,
+      claimId: item.claim.id,
+      graphEdgeIds: item.graphEdgeIds,
+      title: item.claim.claim.slice(0, 90),
       score: item.score,
       matchedTerms: item.matchedTerms,
       matchedRequirementIds: item.matchedRequirementIds,
@@ -23,7 +45,7 @@ export class EvidenceTraceBuilder {
       }
       return {
         requirementId: requirement.id,
-        claimId: claim.id,
+        claimId: claim.claimId ?? claim.id,
         experienceId: claim.experienceId,
         evidenceText: claim.evidenceText,
         status: "available",

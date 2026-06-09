@@ -1,4 +1,9 @@
 export * from "./types.js";
+export * from "./ClaimGraphRepository.js";
+export * from "./PostgresClaimGraphRepository.js";
+export * from "./ClaimGraphIndexer.js";
+export * from "./PersistentClaimRetriever.js";
+export * from "./EvidenceRAGService.js";
 export * from "./LLMEvidenceService.js";
 export * from "./JDRequirementParser.js";
 export * from "./RequirementPolicyRouter.js";
@@ -9,4 +14,3 @@ export * from "./EvidenceGraphBuilder.js";
 export * from "./EvidenceTraceBuilder.js";
 export * from "./EvidencePackBuilder.js";
 export * from "./ClaimSupportVerifier.js";
-export * from "./EvidenceRAGService.js";

@@ -19,13 +19,13 @@ export class EvidenceGraphBuilder {
         sourceId: claim.experienceId,
         relation: "supports",
         targetType: "claim",
-        targetId: claim.id,
+        targetId: claim.claimId ?? claim.id,
         confidence: claim.confidence,
       });
       for (const requirementId of claim.requirementIds) {
         links.push({
           sourceType: "claim",
-          sourceId: claim.id,
+          sourceId: claim.claimId ?? claim.id,
           relation: claim.confidence >= 0.7 ? "covers" : "partially_covers",
           targetType: "requirement",
           targetId: requirementId,
@@ -37,7 +37,7 @@ export class EvidenceGraphBuilder {
         const skillId = `skill-${normalizeText(skill).replace(/\s+/g, "-")}`;
         links.push({
           sourceType: "claim",
-          sourceId: claim.id,
+          sourceId: claim.claimId ?? claim.id,
           relation: "demonstrates",
           targetType: "skill",
           targetId: skillId,

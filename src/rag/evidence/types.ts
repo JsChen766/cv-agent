@@ -55,6 +55,16 @@ export type RetrievedExperience = {
 };
 
 export type ClaimRiskLevel = "low" | "medium" | "high";
+export type ClaimStatus = "active" | "stale" | "superseded" | "archived";
+export type PersistentGraphNodeType = "experience" | "claim" | "skill" | "requirement";
+
+export type PersistentGraphRelation =
+  | "supports"
+  | "demonstrates"
+  | "covers"
+  | "partially_covers"
+  | "requires"
+  | "derived_from";
 
 export type ExperienceClaim = {
   id: string;
@@ -67,8 +77,43 @@ export type ExperienceClaim = {
   riskLevel: ClaimRiskLevel;
 };
 
+export type ProductExperienceClaim = ExperienceClaim & {
+  userId: string;
+  claimType: "achievement" | "responsibility" | "skill" | "education" | "award" | "general";
+  status: ClaimStatus;
+  metadata: Record<string, unknown>;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type ProductEvidenceGraphEdge = {
+  id: string;
+  userId: string;
+  sourceType: PersistentGraphNodeType;
+  sourceId: string;
+  relation: PersistentGraphRelation;
+  targetType: PersistentGraphNodeType;
+  targetId: string;
+  confidence: number;
+  metadata: Record<string, unknown>;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type RetrievedPersistentClaim = {
+  claim: ProductExperienceClaim;
+  score: number;
+  matchedTerms: string[];
+  matchedRequirementIds: string[];
+  reason: string;
+  graphEdgeIds?: string[];
+};
+
 export type EvidenceItem = {
   id: string;
+  claimId?: string;
+  claimStatus?: ClaimStatus;
+  graphEdgeIds?: string[];
   experienceId: string;
   revisionId?: string;
   title: string;
@@ -82,6 +127,9 @@ export type EvidenceItem = {
 
 export type AllowedClaim = {
   id: string;
+  claimId?: string;
+  claimStatus?: ClaimStatus;
+  graphEdgeIds?: string[];
   claim: string;
   requirementIds: string[];
   experienceId: string;
@@ -99,22 +147,19 @@ export type EvidenceQualitySignal = {
 };
 
 export type EvidenceGraphLink = {
-  sourceType: "experience" | "claim" | "skill" | "requirement";
+  sourceType: PersistentGraphNodeType;
   sourceId: string;
-  relation:
-    | "supports"
-    | "demonstrates"
-    | "covers"
-    | "partially_covers"
-    | "requires"
-    | "derived_from";
-  targetType: "experience" | "claim" | "skill" | "requirement";
+  relation: PersistentGraphRelation;
+  targetType: PersistentGraphNodeType;
   targetId: string;
   confidence: number;
 };
 
 export type EvidenceRetrievalTrace = {
+  source: "raw_experience" | "persistent_claim";
   experienceId: string;
+  claimId?: string;
+  graphEdgeIds?: string[];
   title: string;
   score: number;
   matchedTerms: string[];
@@ -132,7 +177,7 @@ export type EvidenceUsageTrace = {
 };
 
 export type EvidencePack = {
-  version: "evidence-rag-v1.5";
+  version: "evidence-rag-v1.5" | "evidence-rag-v2";
   jdRequirements: JDRequirement[];
   matchedEvidence: Array<{
     requirementId: string;

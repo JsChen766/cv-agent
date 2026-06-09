@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+﻿import { randomUUID } from "node:crypto";
 import type {
   ProductExperience,
   ProductExperienceCategory,
@@ -18,7 +18,7 @@ import { extractExperienceDraftFromText } from "../experienceDraft.js";
 import type { LLMExperienceExtractor } from "../LLMExperienceExtractor.js";
 import { extractedCandidateToDraft } from "../LLMExperienceExtractor.js";
 import { LLMGenerationError, type LLMGenerationService } from "../LLMGenerationService.js";
-import type { EvidenceRAGService, EvidencePack } from "../../rag/evidence/index.js";
+import type { EvidenceRAGService, EvidencePack, ClaimGraphIndexer } from "../../rag/evidence/index.js";
 import { isDeterministicFallbackAllowed } from "../deterministicFallbackGuard.js";
 import type {
   ProductExperienceRepository,
@@ -45,7 +45,10 @@ export class ProductStateConflictError extends Error {
 }
 
 export class ExperienceService {
-  public constructor(private readonly repository: ProductExperienceRepository) {}
+  public constructor(
+    private readonly repository: ProductExperienceRepository,
+    private readonly claimGraphIndexer?: ClaimGraphIndexer,
+  ) {}
 
   public async createExperience(userId: string, input: {
     title: string;
@@ -61,7 +64,9 @@ export class ExperienceService {
     source?: ProductExperienceRevision["source"];
   }): Promise<{ experience: ProductExperience; revision: ProductExperienceRevision }> {
     const { experience, revision } = buildExperienceRecords(userId, input);
-    return this.repository.createExperienceWithRevision(experience, revision);
+    const result = await this.repository.createExperienceWithRevision(experience, revision);
+    await this.indexExperienceBestEffort(userId, result.experience, result.revision);
+    return result;
   }
 
   public async listExperiences(userId: string, filters: { limit?: number; status?: ProductExperience["status"] } = {}): Promise<Array<ProductExperience & { content?: string; structured?: Record<string, unknown> }>> {
@@ -106,11 +111,25 @@ export class ExperienceService {
       createdAt: new Date().toISOString(),
     };
     await this.repository.createRevision(revision);
-    await this.repository.updateExperience(userId, experienceId, {
+    const updatedExperience = await this.repository.updateExperience(userId, experienceId, {
       currentRevisionId: revision.id,
       updatedAt: new Date().toISOString(),
     });
+    if (updatedExperience) await this.indexExperienceBestEffort(userId, updatedExperience, revision);
     return revision;
+  }
+
+  public async indexExperienceBestEffort(userId: string, experience: ProductExperience, revision: ProductExperienceRevision): Promise<void> {
+    if (!this.claimGraphIndexer) return;
+    try {
+      await this.claimGraphIndexer.indexExperience({ userId, experience, revision });
+    } catch (error) {
+      console.error("[ClaimGraphIndexer] failed to index experience", {
+        experienceId: experience.id,
+        revisionId: revision.id,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
   }
 
   public createVariant(userId: string, experienceId: string, revisionId: string, input: {
@@ -274,6 +293,7 @@ export class ImportService {
     private readonly repository: ProductImportRepository,
     private readonly experienceService: ExperienceService,
     private readonly llmExtractor?: LLMExperienceExtractor,
+    private readonly claimGraphIndexer?: ClaimGraphIndexer,
   ) {}
 
   public createTextImportJob(userId: string, rawText: string): Promise<ProductImportJob> {
@@ -414,6 +434,7 @@ export class ImportService {
           throw new ProductStateConflictError(`Import candidate cannot be accepted from status ${accepted.candidate.status}.`);
         }
         const result = { candidate: { ...mergedCandidate, ...accepted.candidate, ...pickCandidateEditableFields(mergedCandidate) }, experience: accepted.experience };
+        await this.indexAcceptedExperienceBestEffort(userId, accepted.experience, accepted.revision);
         this.acceptedResults.set(lockKey, result);
         return result;
       }
@@ -435,6 +456,19 @@ export class ImportService {
       return result;
     } finally {
       this.acceptingCandidates.delete(lockKey);
+    }
+  }
+
+  private async indexAcceptedExperienceBestEffort(userId: string, experience: ProductExperience, revision: ProductExperienceRevision): Promise<void> {
+    if (!this.claimGraphIndexer) return;
+    try {
+      await this.claimGraphIndexer.indexExperience({ userId, experience, revision });
+    } catch (error) {
+      console.error("[ClaimGraphIndexer] failed to index accepted import candidate", {
+        experienceId: experience.id,
+        revisionId: revision.id,
+        error: error instanceof Error ? error.message : String(error),
+      });
     }
   }
 

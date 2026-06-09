@@ -54,7 +54,14 @@ import { ModelClientFactory, debugModelConfig, describeModelConfig } from "../..
 import { LLMExperienceExtractor } from "../../product/LLMExperienceExtractor.js";
 import { LLMGenerationService } from "../../product/LLMGenerationService.js";
 import { LLMRewriteService } from "../../product/LLMRewriteService.js";
-import { EvidenceRAGService, LLMEvidenceService } from "../../rag/evidence/index.js";
+import {
+  ClaimGraphIndexer,
+  EvidenceRAGService,
+  InMemoryClaimGraphRepository,
+  LLMEvidenceService,
+  PostgresClaimGraphRepository,
+  type ClaimGraphRepository,
+} from "../../rag/evidence/index.js";
 import { InMemoryPendingActionRepository } from "../../agent-core/confirmation/InMemoryPendingActionRepository.js";
 import { PendingActionService } from "../../agent-core/confirmation/PendingActionService.js";
 import { PostgresPendingActionRepository } from "../../agent-core/confirmation/PostgresPendingActionRepository.js";
@@ -77,6 +84,7 @@ async function createPostgresKernel(databaseUrl: string): Promise<ApiKernel> {
     productResumeRepository: new PostgresProductResumeRepository(database),
     productImportRepository: new PostgresProductImportRepository(database),
     productGenerationRepository: new PostgresProductGenerationRepository(database),
+    claimGraphRepository: new PostgresClaimGraphRepository(database),
     copilotPersistence: new PostgresCopilotPersistence(database),
     platformServices: new PostgresPlatformServices(database),
     authService: new AuthService(new PostgresAuthRepository(database)),
@@ -97,6 +105,7 @@ function createInMemoryKernel(): ApiKernel {
     productResumeRepository: new InMemoryProductResumeRepository(),
     productImportRepository: new InMemoryProductImportRepository(),
     productGenerationRepository: new InMemoryProductGenerationRepository(),
+    claimGraphRepository: new InMemoryClaimGraphRepository(),
     copilotPersistence: new InMemoryCopilotPersistence(),
     platformServices: new InMemoryPlatformServices(),
     authService: new AuthService(new InMemoryAuthRepository()),
@@ -109,10 +118,6 @@ function createInMemoryKernel(): ApiKernel {
 }
 
 function buildKernel(input: BuildKernelInput): ApiKernel {
-  const experienceService = new ExperienceService(input.productExperienceRepository);
-  const jdService = new JDService(input.productJDRepository);
-  const resumeService = new ResumeService(input.productResumeRepository);
-
   // LLM services
   const modelClientFactory = new ModelClientFactory();
   const model = modelClientFactory.createDefaultModelClient();
@@ -121,9 +126,20 @@ function buildKernel(input: BuildKernelInput): ApiKernel {
   const llmGenerationService = model.client ? new LLMGenerationService(model.client) : undefined;
   const llmRewriteService = model.client ? new LLMRewriteService(model.client) : undefined;
   const llmEvidenceService = model.client ? new LLMEvidenceService(model.client) : undefined;
-  const evidenceRAGService = new EvidenceRAGService({ experienceService, llmEvidenceService });
+  const claimGraphIndexer = input.claimGraphRepository
+    ? new ClaimGraphIndexer(input.claimGraphRepository, llmEvidenceService)
+    : undefined;
 
-  const importService = new ImportService(input.productImportRepository, experienceService, llmExperienceExtractor);
+  const experienceService = new ExperienceService(input.productExperienceRepository, claimGraphIndexer);
+  const jdService = new JDService(input.productJDRepository);
+  const resumeService = new ResumeService(input.productResumeRepository);
+  const evidenceRAGService = new EvidenceRAGService({
+    experienceService,
+    llmEvidenceService,
+    claimGraphRepository: input.claimGraphRepository,
+  });
+
+  const importService = new ImportService(input.productImportRepository, experienceService, llmExperienceExtractor, claimGraphIndexer);
   const generationProductService = new GenerationProductService(
     input.productGenerationRepository,
     jdService,
@@ -205,6 +221,7 @@ type BuildKernelInput = {
   productResumeRepository: ProductResumeRepository;
   productImportRepository: ProductImportRepository;
   productGenerationRepository: ProductGenerationRepository;
+  claimGraphRepository?: ClaimGraphRepository;
   copilotPersistence: CopilotPersistence;
   platformServices: PlatformServices;
   authService: AuthService;
