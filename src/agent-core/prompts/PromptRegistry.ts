@@ -21,6 +21,8 @@ const PRODUCT_PROMPT_FILES = {
   "product.generation.resumeRepair": "product/generation-resume-repair.md",
   "product.evidence.jdRequirementSystem": "product/evidence-jd-requirement-system.md",
   "product.evidence.claimExtractionSystem": "product/evidence-claim-extraction-system.md",
+  "product.guideline.roleAnalysisSystem": "product/guideline-role-analysis-system.md",
+  "product.guideline.instructionSystem": "product/guideline-instruction-system.md",
   "tools.resume.prepareReviseResumeItem.system": "tools/resume/prepare-revise-resume-item-system.md",
   "tools.experience.jdMatch.system": "tools/experience/jd-match-system.md",
 } as const;

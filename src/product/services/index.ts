@@ -19,6 +19,7 @@ import type { LLMExperienceExtractor } from "../LLMExperienceExtractor.js";
 import { extractedCandidateToDraft } from "../LLMExperienceExtractor.js";
 import { LLMGenerationError, type LLMGenerationService } from "../LLMGenerationService.js";
 import type { EvidenceRAGService, EvidencePack, ClaimGraphIndexer } from "../../rag/evidence/index.js";
+import type { GuidelineRAGService, InstructionPack } from "../../rag/guideline/index.js";
 import { isDeterministicFallbackAllowed } from "../deterministicFallbackGuard.js";
 import type {
   ProductExperienceRepository,
@@ -35,6 +36,7 @@ export type ProductServices = {
   importService: ImportService;
   generationProductService: GenerationProductService;
   evidenceRAGService?: EvidenceRAGService;
+  guidelineRAGService?: GuidelineRAGService;
 };
 
 export class ProductStateConflictError extends Error {
@@ -521,6 +523,7 @@ export class GenerationProductService {
     private readonly experienceService: ExperienceService,
     private readonly llmGenerationService?: LLMGenerationService,
     private readonly evidenceRAGService?: EvidenceRAGService,
+    private readonly guidelineRAGService?: GuidelineRAGService,
   ) {}
 
   public async generateResumeFromJD(input: {
@@ -541,11 +544,20 @@ export class GenerationProductService {
         });
     if (!jd) throw new Error("JD not found.");
     const targetRole = input.targetRole ?? jd.targetRole;
+    const instructionPack = this.guidelineRAGService
+      ? await this.guidelineRAGService.buildInstructionPack({
+          userId: input.userId,
+          jdText: jd.rawText,
+          targetRole,
+          limit: 8,
+        })
+      : undefined;
     const evidencePack = this.evidenceRAGService
       ? await this.evidenceRAGService.buildEvidencePack({
           userId: input.userId,
           jdText: jd.rawText,
           targetRole,
+          roleFamily: instructionPack?.roleFamily,
           limit: 12,
         })
       : undefined;
@@ -559,12 +571,13 @@ export class GenerationProductService {
     let variants: ProductGeneratedVariant[];
     if (this.llmGenerationService) {
       try {
-        variants = evidencePack
-          ? await this.llmGenerationService.generateVariantsWithEvidenceContext({
+        variants = evidencePack || instructionPack
+          ? await this.llmGenerationService.generateVariantsWithGroundingContext({
               userId: input.userId,
               jdText: jd.rawText,
               targetRole,
               evidencePack,
+              instructionPack,
             })
           : await this.llmGenerationService.generateVariants(
               input.userId,
@@ -601,6 +614,7 @@ export class GenerationProductService {
         jdId: jd.id,
         targetRole,
         sourceExperienceIds: experiences.map((item) => item.id),
+        ...(instructionPack ? { instructionPack } : {}),
         ...(evidencePack ? { evidencePack } : {}),
       },
       outputSnapshot: {
@@ -610,6 +624,17 @@ export class GenerationProductService {
       createdAt: new Date().toISOString(),
     };
     await this.repository.createGeneration(generation);
+    if (this.evidenceRAGService && evidencePack) {
+      await this.evidenceRAGService.recordGenerationUsage({
+        userId: input.userId,
+        generationId: generation.id,
+        jdId: jd.id,
+        targetRole,
+        roleFamily: instructionPack?.roleFamily,
+        evidencePack,
+        variants,
+      });
+    }
     return { generation, jd, variants };
   }
 
@@ -650,7 +675,10 @@ export class GenerationProductService {
         item,
         selectedVariantIds: selected,
       });
-      if (saved) return { ...saved, variant };
+      if (saved) {
+        await this.recordAcceptedVariantEvidence(userId, generation.id, variant, item.contentSnapshot);
+        return { ...saved, variant };
+      }
     }
     const savedResume = resume ? targetResume : await this.resumeService.createResume(userId, {
       targetRole: generation.targetRole,
@@ -666,7 +694,21 @@ export class GenerationProductService {
     });
     await this.repository.updateGenerationSelection(userId, generation.id, selected);
     const attached = await this.repository.attachResume(userId, generation.id, savedResume.id);
+    await this.recordAcceptedVariantEvidence(userId, generation.id, variant, savedItem.contentSnapshot);
     return { generation: attached ?? generation, resume: savedResume, item: savedItem, variant };
+  }
+
+  private async recordAcceptedVariantEvidence(userId: string, generationId: string, variant: ProductGeneratedVariant, finalText: string): Promise<void> {
+    if (!this.evidenceRAGService) return;
+    await this.evidenceRAGService.recordVariantDecision({
+      userId,
+      generationId,
+      variantId: variant.id,
+      action: "accepted",
+      finalText,
+      claimIds: variant.sourceEvidenceIds,
+      metadata: { source: "saveAcceptedVariantToResume" },
+    });
   }
 
   public getGeneration(userId: string, id: string): Promise<ProductGeneration | null> {

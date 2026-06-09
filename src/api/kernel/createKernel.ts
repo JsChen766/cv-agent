@@ -62,6 +62,13 @@ import {
   PostgresClaimGraphRepository,
   type ClaimGraphRepository,
 } from "../../rag/evidence/index.js";
+import {
+  GuidelineRAGService,
+  InMemoryGuidelineRepository,
+  LLMGuidelineService,
+  PostgresGuidelineRepository,
+  type GuidelineRepository,
+} from "../../rag/guideline/index.js";
 import { InMemoryPendingActionRepository } from "../../agent-core/confirmation/InMemoryPendingActionRepository.js";
 import { PendingActionService } from "../../agent-core/confirmation/PendingActionService.js";
 import { PostgresPendingActionRepository } from "../../agent-core/confirmation/PostgresPendingActionRepository.js";
@@ -85,6 +92,7 @@ async function createPostgresKernel(databaseUrl: string): Promise<ApiKernel> {
     productImportRepository: new PostgresProductImportRepository(database),
     productGenerationRepository: new PostgresProductGenerationRepository(database),
     claimGraphRepository: new PostgresClaimGraphRepository(database),
+    guidelineRepository: new PostgresGuidelineRepository(database),
     copilotPersistence: new PostgresCopilotPersistence(database),
     platformServices: new PostgresPlatformServices(database),
     authService: new AuthService(new PostgresAuthRepository(database)),
@@ -106,6 +114,7 @@ function createInMemoryKernel(): ApiKernel {
     productImportRepository: new InMemoryProductImportRepository(),
     productGenerationRepository: new InMemoryProductGenerationRepository(),
     claimGraphRepository: new InMemoryClaimGraphRepository(),
+    guidelineRepository: new InMemoryGuidelineRepository(),
     copilotPersistence: new InMemoryCopilotPersistence(),
     platformServices: new InMemoryPlatformServices(),
     authService: new AuthService(new InMemoryAuthRepository()),
@@ -126,6 +135,7 @@ function buildKernel(input: BuildKernelInput): ApiKernel {
   const llmGenerationService = model.client ? new LLMGenerationService(model.client) : undefined;
   const llmRewriteService = model.client ? new LLMRewriteService(model.client) : undefined;
   const llmEvidenceService = model.client ? new LLMEvidenceService(model.client) : undefined;
+  const llmGuidelineService = model.client ? new LLMGuidelineService(model.client) : undefined;
   const claimGraphIndexer = input.claimGraphRepository
     ? new ClaimGraphIndexer(input.claimGraphRepository, llmEvidenceService)
     : undefined;
@@ -138,6 +148,12 @@ function buildKernel(input: BuildKernelInput): ApiKernel {
     llmEvidenceService,
     claimGraphRepository: input.claimGraphRepository,
   });
+  const guidelineRAGService = input.guidelineRepository
+    ? new GuidelineRAGService({
+        repository: input.guidelineRepository,
+        llmGuidelineService,
+      })
+    : undefined;
 
   const importService = new ImportService(input.productImportRepository, experienceService, llmExperienceExtractor, claimGraphIndexer);
   const generationProductService = new GenerationProductService(
@@ -147,6 +163,7 @@ function buildKernel(input: BuildKernelInput): ApiKernel {
     experienceService,
     llmGenerationService,
     evidenceRAGService,
+    guidelineRAGService,
   );
   const productServices = {
     experienceService,
@@ -155,6 +172,7 @@ function buildKernel(input: BuildKernelInput): ApiKernel {
     importService,
     generationProductService,
     evidenceRAGService,
+    guidelineRAGService,
   };
   const copilotServices = {
     sessionService: new CopilotSessionService(input.copilotPersistence),
@@ -222,6 +240,7 @@ type BuildKernelInput = {
   productImportRepository: ProductImportRepository;
   productGenerationRepository: ProductGenerationRepository;
   claimGraphRepository?: ClaimGraphRepository;
+  guidelineRepository?: GuidelineRepository;
   copilotPersistence: CopilotPersistence;
   platformServices: PlatformServices;
   authService: AuthService;

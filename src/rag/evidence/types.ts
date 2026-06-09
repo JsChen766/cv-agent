@@ -177,7 +177,7 @@ export type EvidenceUsageTrace = {
 };
 
 export type EvidencePack = {
-  version: "evidence-rag-v1.5" | "evidence-rag-v2";
+  version: "evidence-rag-v1.5" | "evidence-rag-v2" | "evidence-rag-v4";
   jdRequirements: JDRequirement[];
   matchedEvidence: Array<{
     requirementId: string;
@@ -196,4 +196,74 @@ export type EvidencePack = {
   qualitySignals: EvidenceQualitySignal[];
   graphLinks: EvidenceGraphLink[];
   usageTrace: EvidenceUsageTrace[];
+  longTermMemory?: EvidenceLongTermMemory;
+};
+
+export type EvidenceMemoryAction = "generated" | "accepted" | "edited" | "rejected" | "ignored" | "outcome_feedback";
+
+export type EvidenceUsageRecord = {
+  id: string;
+  userId: string;
+  generationId?: string;
+  variantId?: string;
+  resumeId?: string;
+  jdId?: string;
+  targetRole?: string;
+  roleFamily?: string;
+  requirementId: string;
+  claimId?: string;
+  experienceId?: string;
+  evidenceText?: string;
+  generatedText?: string;
+  finalText?: string;
+  action: EvidenceMemoryAction;
+  metadata: Record<string, unknown>;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type ClaimUsageStats = {
+  claimId: string;
+  experienceId?: string;
+  generatedCount: number;
+  acceptedCount: number;
+  editedCount: number;
+  rejectedCount: number;
+  ignoredCount: number;
+  acceptanceRate: number;
+  editRate: number;
+  lastUsedAt?: string;
+};
+
+export type RoleSpecificClaimEffectiveness = {
+  roleFamily: string;
+  claimId: string;
+  experienceId?: string;
+  generatedCount: number;
+  acceptedCount: number;
+  editedCount: number;
+  outcomePositiveCount: number;
+  effectivenessScore: number;
+};
+
+export type EvidenceOutcomeFeedback = {
+  id: string;
+  userId: string;
+  generationId?: string;
+  resumeId?: string;
+  jdId?: string;
+  targetRole?: string;
+  roleFamily?: string;
+  outcome: "interview" | "rejection" | "offer" | "no_response" | "other";
+  notes?: string;
+  relatedClaimIds: string[];
+  relatedExperienceIds: string[];
+  metadata: Record<string, unknown>;
+  createdAt: string;
+};
+
+export type EvidenceLongTermMemory = {
+  claimUsageStats: ClaimUsageStats[];
+  roleSpecificEffectiveness: RoleSpecificClaimEffectiveness[];
+  outcomeFeedback: EvidenceOutcomeFeedback[];
 };

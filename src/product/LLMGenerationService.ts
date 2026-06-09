@@ -5,6 +5,7 @@ import { PromptRegistry } from "../agent-core/prompts/PromptRegistry.js";
 import { extractJsonCandidates } from "../infrastructure/llm/JsonOutputParser.js";
 import type { ProductExperienceSummary, ProductGeneratedVariant } from "./types.js";
 import type { EvidencePack } from "../rag/evidence/index.js";
+import type { InstructionPack } from "../rag/guideline/index.js";
 
 export type LLMGenerationErrorPhase =
   | "initial"
@@ -310,6 +311,7 @@ function buildEvidenceGroundedUserPrompt(input: {
   jdText: string;
   targetRole?: string;
   evidencePack: EvidencePack;
+  instructionPack?: InstructionPack;
 }): string {
   const requirements = input.evidencePack.jdRequirements.map((requirement) => [
     `- [${requirement.id}] ${requirement.text}`,
@@ -333,11 +335,45 @@ function buildEvidenceGroundedUserPrompt(input: {
     `  matched=${item.matchedTerms.join(", ") || "none"}; reason=${item.reason}`,
   ].join("\n")).join("\n");
 
+  const longTermMemory = input.evidencePack.longTermMemory ? [
+    "Claim Usage Stats:",
+    input.evidencePack.longTermMemory.claimUsageStats.slice(0, 12).map((item) => `- ${item.claimId}: accepted=${item.acceptedCount}, edited=${item.editedCount}, rejected=${item.rejectedCount}, acceptanceRate=${item.acceptanceRate.toFixed(2)}`).join("\n") || "No prior claim usage stats.",
+    "",
+    "Role-specific Effectiveness:",
+    input.evidencePack.longTermMemory.roleSpecificEffectiveness.slice(0, 12).map((item) => `- ${item.roleFamily}/${item.claimId}: score=${item.effectivenessScore}, accepted=${item.acceptedCount}, outcomes=${item.outcomePositiveCount}`).join("\n") || "No role-specific effectiveness data.",
+  ].join("\n") : "No long-term evidence memory yet.";
+
+  const instruction = input.instructionPack ? [
+    "Instruction Pack Version:",
+    input.instructionPack.version,
+    "",
+    "Target Positioning:",
+    input.instructionPack.targetPositioning,
+    "",
+    "Role-aware Priority Requirements:",
+    input.instructionPack.priorityRequirements.length > 0 ? input.instructionPack.priorityRequirements.map((item) => `- ${item}`).join("\n") : "No guideline priority requirements.",
+    "",
+    "Section Strategy:",
+    Object.entries(input.instructionPack.sectionStrategy).filter(([, value]) => Boolean(value)).map(([key, value]) => `- ${key}: ${value}`).join("\n") || "No section strategy provided.",
+    "",
+    "Writing Rules:",
+    input.instructionPack.writingRules.map((item) => `- ${item}`).join("\n") || "No extra writing rules.",
+    "",
+    "Negative Constraints:",
+    input.instructionPack.negativeConstraints.map((item) => `- ${item}`).join("\n") || "No extra negative constraints.",
+    "",
+    "Example Patterns:",
+    input.instructionPack.examplePatterns.slice(0, 6).map((item) => `- ${item.useCase}: ${item.pattern}`).join("\n") || "No example patterns.",
+  ].join("\n") : "No Instruction Pack available. Use only general resume-writing rules and the Evidence Pack.";
+
   return [
     input.targetRole ? `Target role: ${input.targetRole}` : "",
     "",
     "Job Description:",
     input.jdText.slice(0, 4000),
+    "",
+    "Guideline / Instruction Context:",
+    instruction,
     "",
     "Evidence RAG Version:",
     input.evidencePack.version,
@@ -354,7 +390,12 @@ function buildEvidenceGroundedUserPrompt(input: {
     "Retrieval Trace:",
     trace || "No matching experiences retrieved.",
     "",
-    "Hard factual boundary:",
+    "Long-Term Evidence Memory:",
+    longTermMemory,
+    "",
+    "Grounding policy:",
+    "- Follow the Instruction Pack for writing strategy, role positioning, and style.",
+    "- Treat the Evidence Pack as the factual boundary.",
     "- You may rephrase, prioritize, and package only the Allowed Claims.",
     "- Do NOT invent companies, roles, project names, metrics, skills, users, revenue, launches, leadership, or outcomes.",
     "- If a JD requirement has no allowed claim, list it in missingInfo or mark it as needing confirmation. Do not force it into the resume.",
@@ -388,19 +429,39 @@ export class LLMGenerationService {
     targetRole?: string;
     evidencePack: EvidencePack;
   }): Promise<ProductGeneratedVariant[]> {
+    return this.generateVariantsWithGroundingContext(input);
+  }
+
+  public async generateVariantsWithGroundingContext(input: {
+    userId: string;
+    jdText: string;
+    targetRole?: string;
+    evidencePack?: EvidencePack;
+    instructionPack?: InstructionPack;
+  }): Promise<ProductGeneratedVariant[]> {
+    if (!input.evidencePack) {
+      const result = await this.tryGenerateFromPrompt(buildUserPrompt(input.jdText, input.targetRole, []), {
+        targetRole: input.targetRole,
+        guidelineOnly: Boolean(input.instructionPack),
+      });
+      return this.toGeneratedVariants(input.userId, result.variants);
+    }
+    const evidencePack = input.evidencePack;
     const userPrompt = buildEvidenceGroundedUserPrompt({
       jdText: input.jdText,
       targetRole: input.targetRole,
-      evidencePack: input.evidencePack,
+      evidencePack,
+      instructionPack: input.instructionPack,
     });
     const result = await this.tryGenerateFromPrompt(userPrompt, {
-      evidenceClaimCount: input.evidencePack.allowedClaims.length,
-      missingRequirementCount: input.evidencePack.missingRequirements.length,
+      evidenceClaimCount: evidencePack.allowedClaims.length,
+      missingRequirementCount: evidencePack.missingRequirements.length,
+      guidelineRuleCount: input.instructionPack?.writingRules.length ?? 0,
       targetRole: input.targetRole,
     });
     const variants = this.toGeneratedVariants(input.userId, result.variants);
-    const fallbackExperienceIds = Array.from(new Set(input.evidencePack.allowedClaims.map((claim) => claim.experienceId))).slice(0, 12);
-    const fallbackEvidenceIds = input.evidencePack.allowedClaims.map((claim) => claim.id).slice(0, 20);
+    const fallbackExperienceIds = Array.from(new Set(evidencePack.allowedClaims.map((claim) => claim.experienceId))).slice(0, 12);
+    const fallbackEvidenceIds = evidencePack.allowedClaims.map((claim) => claim.id).slice(0, 20);
     return variants.map((variant) => ({
       ...variant,
       sourceExperienceIds: variant.sourceExperienceIds && variant.sourceExperienceIds.length > 0
@@ -409,9 +470,9 @@ export class LLMGenerationService {
       sourceEvidenceIds: variant.sourceEvidenceIds && variant.sourceEvidenceIds.length > 0
         ? variant.sourceEvidenceIds
         : fallbackEvidenceIds,
-      evidenceSummary: variant.evidenceSummary ?? buildDefaultEvidenceSummary(input.evidencePack),
-      riskSummary: variant.riskSummary ?? buildDefaultRiskSummary(input.evidencePack),
-      missingInfo: variant.missingInfo ?? input.evidencePack.missingRequirements.map((item) => `Confirm or add evidence for: ${item.requirementText}`).slice(0, 8),
+      evidenceSummary: variant.evidenceSummary ?? buildDefaultEvidenceSummary(evidencePack),
+      riskSummary: variant.riskSummary ?? buildDefaultRiskSummary(evidencePack),
+      missingInfo: variant.missingInfo ?? evidencePack.missingRequirements.map((item) => `Confirm or add evidence for: ${item.requirementText}`).slice(0, 8),
     }));
   }
 
