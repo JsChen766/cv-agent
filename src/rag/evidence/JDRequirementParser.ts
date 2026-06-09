@@ -9,18 +9,20 @@ export class JDRequirementParser {
   public constructor(private readonly llmEvidenceService?: LLMEvidenceService) {}
 
   public async parse(input: { jdText: string; targetRole?: string }): Promise<JDRequirement[]> {
+    const deterministic = this.parseDeterministic(input.jdText, input.targetRole);
     if (this.llmEvidenceService) {
       try {
         const parsed = await this.llmEvidenceService.parseJDRequirements(input);
         const normalized = parsed
-          .map((item, index) => normalizeRequirement(item, index))
+          .flatMap((item, index) => normalizeRequirementOrSplit(item, index))
           .filter((item): item is Omit<JDRequirement, "retrievalPolicies" | "keywords"> => Boolean(item));
-        if (normalized.length > 0) return this.router.enrich(normalized).slice(0, 24);
+        const merged = uniqueByText([...normalized, ...deterministic.map(stripRetrievalFields)]);
+        if (hasUsefulRequirementSet(merged)) return this.router.enrich(merged).slice(0, 28);
       } catch {
         // Fall through to deterministic parsing. Evidence RAG should never block generation only because JD parsing failed.
       }
     }
-    return this.parseDeterministic(input.jdText, input.targetRole);
+    return deterministic;
   }
 
   private parseDeterministic(jdText: string, targetRole?: string): JDRequirement[] {
@@ -49,16 +51,29 @@ export class JDRequirementParser {
       : undefined;
 
     const base = uniqueByText([roleRequirement, ...extracted, ...skills].filter((item): item is Omit<JDRequirement, "retrievalPolicies" | "keywords"> => Boolean(item)));
-    return this.router.enrich(base).slice(0, 24);
+    return this.router.enrich(base).slice(0, 28);
   }
 }
 
+function normalizeRequirementOrSplit(item: Partial<JDRequirement>, index: number): Array<Omit<JDRequirement, "retrievalPolicies" | "keywords"> | null> {
+  const text = item.text?.trim() ?? "";
+  if (text.length > 220 || looksLikeFullJD(text)) {
+    return splitRequirementChunks(text).map((chunk, offset) => normalizeRequirement({
+      text: chunk,
+      category: item.category ?? inferCategory(chunk),
+      importance: item.importance ?? inferImportance(chunk),
+      evidenceType: item.evidenceType ?? inferEvidenceType(chunk),
+    }, index + offset));
+  }
+  return [normalizeRequirement(item, index)];
+}
+
 function normalizeRequirement(item: Partial<JDRequirement>, index: number): Omit<JDRequirement, "retrievalPolicies" | "keywords"> | null {
-  const text = item.text?.trim();
+  const text = cleanupRequirementText(item.text);
   if (!text || text.length < 2) return null;
   return {
     id: item.id?.trim() || `req-${index + 1}`,
-    text: text.slice(0, 300),
+    text: text.slice(0, 220),
     category: normalizeCategory(item.category, text),
     importance: normalizeImportance(item.importance, text),
     evidenceType: normalizeEvidenceType(item.evidenceType, text),
@@ -66,40 +81,65 @@ function normalizeRequirement(item: Partial<JDRequirement>, index: number): Omit
 }
 
 function splitRequirementChunks(jdText: string): string[] {
-  const lines = jdText
-    .split(/\r?\n|[。；;]+/)
+  const normalized = (jdText ?? "")
+    .replace(/[🎯💡🌟🔥✅●]/g, " ")
+    .replace(/(职位详情|核心工作职责|业务落地与优化|技术创新|任职要求|代码及算法能力|科研\/竞赛背景|专属福利|招聘绿色通道)[:：]/g, "\n$1：")
+    .replace(/([。；;])\s*/g, "$1\n");
+  const lines = normalized
+    .split(/\r?\n/)
+    .flatMap((line) => splitLongClause(line))
     .map((line) => line.replace(/^\s*[-*•\d.)、]+\s*/, "").trim())
-    .filter((line) => line.length >= 6 && line.length <= 320);
-  return unique(lines).slice(0, 18);
+    .filter((line) => line.length >= 4 && line.length <= 260)
+    .filter((line) => extractKeywords(line, 8).length > 0);
+  return unique(lines).slice(0, 22);
+}
+
+function splitLongClause(line: string): string[] {
+  const trimmed = line.trim();
+  if (trimmed.length <= 220) return [trimmed];
+  const chunks = trimmed.split(/[，,]/).map((item) => item.trim()).filter(Boolean);
+  const merged: string[] = [];
+  let buffer = "";
+  for (const chunk of chunks) {
+    const next = buffer ? `${buffer}，${chunk}` : chunk;
+    if (next.length > 180 && buffer) {
+      merged.push(buffer);
+      buffer = chunk;
+    } else {
+      buffer = next;
+    }
+  }
+  if (buffer) merged.push(buffer);
+  return merged.length > 0 ? merged : [trimmed.slice(0, 220)];
 }
 
 function extractSkillRequirements(jdText: string): string[] {
-  const keywords = extractKeywords(jdText, 40);
-  const hardSkills = keywords.filter((keyword) => /^(python|java|javascript|typescript|react|vue|sql|excel|tableau|pytorch|tensorflow|llm|rag|agent|api|docker|github|figma)$/i.test(keyword));
-  return hardSkills.map((skill) => `Skill requirement: ${skill}`);
+  const keywords = extractKeywords(jdText, 80);
+  const hardSkills = keywords.filter((keyword) => /^(python|java|c\+\+|javascript|typescript|react|vue|sql|excel|tableau|pytorch|tensorflow|llm|large language model|vqa|cv|computer vision|rlhf|aigc|rag|agent|ai agent|api|docker|github|transformer|diffusion|fine-tuning|finetuning|prompt engineering|cvpr|iccv|neurips|iclr|kaggle|kdd cup|大语言模型|大模型|多模态|计算机视觉|视觉问答|强化学习|生成式ai|智能体|扩散模型|微调|提示词|算法|模型|机器学习|深度学习|论文)$/i.test(keyword));
+  return unique(hardSkills).map((skill) => `Skill requirement: ${skill}`);
 }
 
 function inferCategory(text: string): JDRequirementCategory {
   const normalized = normalizeText(text);
-  if (containsAny(normalized, ["responsibilities", "responsibility", "负责", "职责", "工作内容"])) return "responsibility";
-  if (containsAny(normalized, ["qualification", "required", "requirement", "must", "要求", "必须", "具备"])) return "qualification";
-  if (containsAny(normalized, ["skill", "python", "sql", "react", "技能", "熟悉"])) return "skill";
-  if (containsAny(normalized, ["preferred", "nice", "plus", "优先", "加分"])) return "nice_to_have";
+  if (containsAny(normalized, ["responsibilities", "responsibility", "负责", "职责", "工作内容", "核心工作"])) return "responsibility";
+  if (containsAny(normalized, ["qualification", "required", "requirement", "must", "要求", "必须", "具备", "任职"])) return "qualification";
+  if (containsAny(normalized, ["skill", "python", "sql", "react", "pytorch", "tensorflow", "技能", "熟悉", "掌握", "代码", "算法"])) return "skill";
+  if (containsAny(normalized, ["preferred", "nice", "plus", "优先", "加分", "福利", "绿色通道"])) return "nice_to_have";
   return "keyword";
 }
 
 function inferImportance(text: string): JDRequirementImportance {
   const normalized = normalizeText(text);
-  if (containsAny(normalized, ["must", "required", "必须", "至少", "核心", "critical"])) return "critical";
-  if (containsAny(normalized, ["responsible", "qualification", "熟悉", "负责", "要求", "highly"])) return "high";
-  if (containsAny(normalized, ["preferred", "nice", "plus", "优先", "加分"])) return "medium";
+  if (containsAny(normalized, ["must", "required", "必须", "至少", "核心", "critical", "重点"])) return "critical";
+  if (containsAny(normalized, ["responsible", "qualification", "熟悉", "负责", "要求", "highly", "具备", "算法", "模型"])) return "high";
+  if (containsAny(normalized, ["preferred", "nice", "plus", "优先", "加分", "福利"])) return "medium";
   return "medium";
 }
 
 function inferEvidenceType(text: string): JDRequirementEvidenceType {
   const normalized = normalizeText(text);
-  if (containsAny(normalized, ["python", "sql", "react", "excel", "技能", "熟悉"])) return "keyword_presence";
-  if (containsAny(normalized, ["lead", "own", "metric", "increase", "提升", "主导", "指标"])) return "need_user_confirmation";
+  if (containsAny(normalized, ["python", "sql", "react", "excel", "pytorch", "tensorflow", "llm", "vqa", "rlhf", "技能", "熟悉", "算法", "模型"])) return "keyword_presence";
+  if (containsAny(normalized, ["lead", "own", "metric", "increase", "提升", "主导", "指标", "负责"])) return "need_user_confirmation";
   return "experience_analogy";
 }
 
@@ -132,4 +172,32 @@ function uniqueByText<T extends { text: string }>(items: T[]): T[] {
 
 function containsAny(text: string, terms: string[]): boolean {
   return terms.some((term) => text.includes(normalizeText(term)));
+}
+
+function cleanupRequirementText(value: string | undefined): string {
+  return (value ?? "")
+    .replace(/[🎯💡🌟🔥✅●]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function looksLikeFullJD(text: string): boolean {
+  const normalized = normalizeText(text);
+  const markers = ["职位详情", "核心工作职责", "任职要求", "科研", "招聘", "福利", "job description", "responsibilities", "requirements"];
+  return text.length > 320 || markers.filter((marker) => normalized.includes(normalizeText(marker))).length >= 2;
+}
+
+function hasUsefulRequirementSet(items: Array<Omit<JDRequirement, "retrievalPolicies" | "keywords">>): boolean {
+  if (items.length >= 3) return true;
+  return items.some((item) => item.text.length < 220 && extractKeywords(item.text, 8).length >= 2);
+}
+
+function stripRetrievalFields(requirement: JDRequirement): Omit<JDRequirement, "retrievalPolicies" | "keywords"> {
+  return {
+    id: requirement.id,
+    text: requirement.text,
+    category: requirement.category,
+    importance: requirement.importance,
+    evidenceType: requirement.evidenceType,
+  };
 }

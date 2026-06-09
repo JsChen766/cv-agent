@@ -111,7 +111,7 @@ function inferSkills(text: string, structured: Record<string, unknown>): string[
     ...arrayOfStrings(structured.techStack),
     ...arrayOfStrings(structured.courses),
   ];
-  const keywords = extractKeywords(text, 12).filter((keyword) => /^(python|java|javascript|typescript|react|vue|sql|excel|tableau|pytorch|tensorflow|llm|rag|agent|api|figma|research|analysis|调研|分析|沟通|协作)$/i.test(keyword));
+  const keywords = extractKeywords(text, 18).filter((keyword) => /^(python|java|c\+\+|javascript|typescript|react|vue|sql|excel|tableau|pytorch|tensorflow|llm|large language model|vqa|cv|computer vision|rlhf|aigc|rag|agent|ai agent|api|figma|research|analysis|transformer|diffusion|fine-tuning|finetuning|prompt engineering|cvpr|iccv|neurips|iclr|kaggle|kdd cup|调研|分析|沟通|协作|大语言模型|大模型|多模态|计算机视觉|视觉问答|强化学习|生成式ai|智能体|扩散模型|微调|提示词|算法|模型|机器学习|深度学习|论文)$/i.test(keyword));
   return unique([...structuredSkills, ...keywords]).slice(0, 12);
 }
 

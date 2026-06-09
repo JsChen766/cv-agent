@@ -1,6 +1,8 @@
 import type { ClaimGraphRepository } from "./ClaimGraphRepository.js";
 import type { JDRequirement, ProductEvidenceGraphEdge, RetrievedPersistentClaim } from "./types.js";
-import { clamp, scoreTextOverlap, unique } from "./textUtils.js";
+import { clamp, scoreTextOverlap, termWeight, unique } from "./textUtils.js";
+
+const MIN_PERSISTENT_SCORE = 0.055;
 
 export class PersistentClaimRetriever {
   public constructor(private readonly repository: ClaimGraphRepository) {}
@@ -19,26 +21,28 @@ export class PersistentClaimRetriever {
       const matchedRequirementIds: string[] = [];
       const searchable = [claim.claim, claim.evidenceText, claim.skills.join(" "), claim.claimType].join("\n");
       for (const requirement of input.requirements) {
-        const { score, matchedTerms: terms } = scoreTextOverlap(requirement.keywords.length > 0 ? requirement.keywords : [requirement.text], searchable);
-        if (score > 0) {
+        const terms = requirement.keywords.length > 0 ? requirement.keywords : [requirement.text];
+        const { score, matchedTerms: termsMatched } = scoreTextOverlap(terms, searchable);
+        if (score > 0 && strongTermCount(termsMatched) > 0) {
           rawScore += score * importanceWeight(requirement.importance) * policyWeight(requirement.retrievalPolicies) * riskWeight(claim.riskLevel);
-          matchedTerms.push(...terms);
+          matchedTerms.push(...termsMatched);
           matchedRequirementIds.push(requirement.id);
         }
       }
+      const uniqueTerms = unique(matchedTerms).sort((a, b) => termWeight(b) - termWeight(a));
       return {
         claim,
-        score: clamp(rawScore / Math.max(1, input.requirements.length) + claim.confidence * 0.08),
-        matchedTerms: unique(matchedTerms).slice(0, 16),
+        score: clamp(rawScore / Math.max(1, Math.min(input.requirements.length, 10)) + claim.confidence * 0.05),
+        matchedTerms: uniqueTerms.slice(0, 16),
         matchedRequirementIds: unique(matchedRequirementIds),
-        reason: matchedTerms.length > 0
-          ? `Persistent claim matched JD terms: ${unique(matchedTerms).slice(0, 8).join(", ")}`
+        reason: uniqueTerms.length > 0
+          ? `Persistent claim matched JD-specific terms: ${uniqueTerms.slice(0, 8).join(", ")}`
           : "Persistent claim available but weakly matched.",
       } satisfies RetrievedPersistentClaim;
     });
 
     const selected = scored
-      .filter((item) => item.score > 0.04 && item.matchedRequirementIds.length > 0)
+      .filter((item) => item.score >= MIN_PERSISTENT_SCORE && item.matchedRequirementIds.length > 0 && strongTermCount(item.matchedTerms) > 0)
       .sort((a, b) => b.score - a.score || b.claim.confidence - a.claim.confidence)
       .slice(0, input.limit ?? 30);
 
@@ -61,6 +65,10 @@ function groupEdgesByClaim(edges: ProductEvidenceGraphEdge[]): Map<string, strin
     }
   }
   return result;
+}
+
+function strongTermCount(terms: string[]): number {
+  return terms.filter((term) => termWeight(term) >= 0.8).length;
 }
 
 function importanceWeight(value: JDRequirement["importance"]): number {
