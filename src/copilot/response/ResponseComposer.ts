@@ -51,6 +51,26 @@ export class ResponseComposer {
 
     const fallback = input.fallbackText?.trim();
 
+    const accepted = input.toolResults.find((result) => result.actionResult?.actionType === "accept_generation_variant" && result.status === "success");
+    if (accepted) {
+      const acceptedMessage = visibleMessage(accepted);
+      const metadata = accepted.actionResult?.metadata as Record<string, unknown> | undefined;
+      const resumeId = stringValue(metadata?.resumeId);
+      return {
+        assistantText: acceptedMessage ?? (en
+          ? "The variant has been saved to your resume. You can now export it."
+          : "已将选中的版本保存到简历，你可以导出文件了。"),
+        nextActions: resumeId ? [{
+          id: "export_resume",
+          type: "export_resume" as const,
+          label: en ? "Export resume" : "导出简历",
+          description: en ? "Download your resume as HTML or PDF." : "将简历导出为 HTML 或 PDF 文件。",
+          payload: { resumeId },
+          primary: true,
+        }] : undefined,
+      };
+    }
+
     const generated = input.toolResults.find((result) => result.actionResult?.actionType === "generate_resume_from_jd" || hasVariants(result));
     const exported = input.toolResults.find((result) => result.actionResult?.actionType === "export_resume" && result.status === "success");
     if (exported) {

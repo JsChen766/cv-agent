@@ -58,13 +58,20 @@ export function toWorkspaceVariant(
       evidenceStrength: score.evidenceStrength,
       quantifiedImpact: score.quantifiedImpact,
     },
-    badges: [
-      { label: "JD 生成", tone: "positive" },
-      {
+    badges: (() => {
+      const result: Array<{ label: string; tone: "positive" | "neutral" | "warning" }> = [];
+      result.push(index === 0
+        ? { label: "最推荐", tone: "positive" }
+        : { label: "备选方案", tone: "neutral" });
+      if ((score.quantifiedImpact ?? 0) >= 80) result.push({ label: "数据驱动", tone: "positive" });
+      if ((score.clarity ?? 0) >= 85) result.push({ label: "更清晰", tone: "positive" });
+      result.push({
         label: hasExperiences ? "已引用经历" : "待补充经历",
         tone: hasExperiences ? "neutral" : "warning",
-      },
-    ],
+      });
+      result.push({ label: "JD 生成", tone: "neutral" });
+      return result;
+    })(),
     reason: variant.reason ?? (hasExperiences
       ? "已结合 JD 与经历库素材生成，可继续核对事实和指标。"
       : "当前主要基于 JD 生成，建议补充经历库后再做精修。"),

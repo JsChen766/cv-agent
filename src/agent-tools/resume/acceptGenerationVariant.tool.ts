@@ -47,6 +47,8 @@ export function createAcceptGenerationVariantTool(): ToolDefinition {
           metadata: {
             generationId: String(input.generationId),
             resumeId: result.resume.id,
+            variantId: String(input.variantId),
+            nextAction: "export_resume",
           },
         },
         visibility: "user_summary",

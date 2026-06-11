@@ -61,6 +61,16 @@ import { CriticGate, shouldReviewTool, type ToolExecutionRecord } from "./Critic
 
 export { guardToolIds } from "../security/ToolIdGuard.js";
 
+/**
+ * Maximum number of automatic critic-revision retries inside a single
+ * specialist run. Each retry feeds the critic feedback back to the specialist
+ * (via revision_request in the message bus) and lets it replan
+ * match_experiences_against_jd → generate_resume_from_jd → critic review.
+ * Only after this many consecutive needs_revision verdicts does the
+ * orchestrator surface critic_needs_revision to the user.
+ */
+const MAX_REVISION_ATTEMPTS = 3;
+
 export type AgentOrchestratorDeps = {
   kernel: ApiKernel;
   pendingActions?: PendingActionService;
@@ -74,6 +84,7 @@ type RunState = {
   messageBus: AgentMessageBus;
   loopController: AgentLoopController;
   streamEmitter?: AgentRuntimeEmitter;
+  autoRevisionContext?: AutoRevisionContext;
 };
 
 type ExecutedPlan = {
@@ -88,6 +99,12 @@ type LoopRunResult = {
   pendingActions: PendingAction[];
   workspacePatch: Record<string, unknown>;
   criticReview?: CriticReview;
+};
+
+type AutoRevisionContext = {
+  autoRevisionAuthorized: true;
+  toolName: "generate_resume_from_jd";
+  sourcePendingActionId?: string;
 };
 
 type ExperienceDraftLike = ReturnType<typeof extractExperienceDraftFromText>;
@@ -405,14 +422,13 @@ export class AgentOrchestrator {
       elapsedMs: Date.now() - confirmStartedAt,
     });
 
-    if (shouldReviewTool(confirmedAction.toolName)) {
+    if (shouldReviewTool(confirmedAction.toolName) && !isGenerationQueuedResult(result)) {
       // Skip critic gate review for save_experience_from_text confirmations.
       // The critic already reviewed the draft during the planning phase (prepare_save_experience_from_text).
       // Re-reviewing on confirmation would create a confusing UX loop where the experience is
       // already saved but the user sees "needs revision" — which can trigger an infinite cycle of
       // confirm → review → suggestions → rewrite → confirm → review → ...
       const skipCriticForConfirm = confirmedAction.toolName === "save_experience_from_text"
-        || confirmedAction.toolName === "generate_resume_from_jd"
         || confirmedAction.toolName === "save_jd_from_text";
       if (!skipCriticForConfirm) {
         this.emit(run, "agent.critic.started", "正在审查结果…", {
@@ -454,22 +470,49 @@ export class AgentOrchestrator {
         }
 
         if (gateResult.status === "needs_revision") {
-          const revision = run.messageBus.requestRevision("critic", step.agentName, { review: criticReview });
-          run.context.agentMessages = run.messageBus.list();
-          run.trace.add({
-            agentName: "AgentOrchestrator",
-            type: "reason",
-            summary: "Recorded critic revision request for confirmed action.",
-            status: "success",
-            completedAt: new Date().toISOString(),
-            metadata: { messageId: revision.id },
-          });
+          const revisionAttemptCount = 1;
+          this.recordRevisionRequest(run, step.agentName, criticReview, revisionAttemptCount, "Recorded critic revision request for confirmed action.");
+          if (confirmedAction.toolName === "generate_resume_from_jd" && revisionAttemptCount < MAX_REVISION_ATTEMPTS) {
+            this.addPublicAgentMessage(run, {
+              from: "critic",
+              type: "critique",
+              content: revisionRetryAnnouncement(criticReview, revisionAttemptCount, MAX_REVISION_ATTEMPTS, localeFor(run)),
+              payload: {
+                eventType: "announcement",
+                status: "needs_revision",
+                revisionAttempt: revisionAttemptCount,
+                maxAttempts: MAX_REVISION_ATTEMPTS,
+                suggestedFixes: criticReview?.suggestedFixes,
+              },
+            });
+            run.autoRevisionContext = {
+              autoRevisionAuthorized: true,
+              toolName: "generate_resume_from_jd",
+              sourcePendingActionId: confirmedAction.id,
+            };
+            const revised = await this.runSpecialistLoop(run, this.agents[step.agentName], step.agentName, {
+              initialRevisionAttemptCount: revisionAttemptCount,
+            });
+            return this.finishRun(ctx.user.id, run, {
+              assistantText: revised.assistantText,
+              toolResults: [...toolResultsForResponse, ...gateResult.criticToolResults, ...revised.toolResults],
+              pendingActions: revised.pendingActions,
+              workspacePatch: {
+                ...mergeWorkspacePatch(toolResultsForResponse),
+                ...revised.workspacePatch,
+              },
+              criticReview: revised.criticReview ?? criticReview,
+            });
+          }
           run.loopController.stop("critic_needs_revision");
           this.syncLoopState(run);
           const message = criticRevisionMessage(criticReview, localeFor(run));
           return this.finishRun(ctx.user.id, run, {
             assistantText: message,
-            toolResults: [...toolResultsForResponse, ...gateResult.criticToolResults, needsRevisionResult(message)],
+            toolResults: [...toolResultsForResponse, ...gateResult.criticToolResults, needsRevisionResult(message, criticReview, {
+              attempts: revisionAttemptCount,
+              maxAttempts: MAX_REVISION_ATTEMPTS,
+            })],
             pendingActions: [],
             workspacePatch: mergeWorkspacePatch(toolResultsForResponse),
             criticReview,
@@ -706,11 +749,21 @@ export class AgentOrchestrator {
     });
   }
 
-  private async runSpecialistLoop(run: RunState, specialist: Agent, routeHint: AgentName): Promise<LoopRunResult> {
+  private async runSpecialistLoop(
+    run: RunState,
+    specialist: Agent,
+    routeHint: AgentName,
+    options: { initialRevisionAttemptCount?: number } = {},
+  ): Promise<LoopRunResult> {
     const toolResults: ToolResult[] = [];
     const pendingActions: PendingAction[] = [];
     let lastAssistantMessage = "";
     let criticReview: CriticReview | undefined;
+    // Critic auto-revision loop: count consecutive needs_revision verdicts in
+    // this specialist run. We retry up to MAX_REVISION_ATTEMPTS times by
+    // feeding the critic feedback back to the specialist through the message
+    // bus (revision_request) and letting it replan match → generate → review.
+    let revisionAttemptCount = options.initialRevisionAttemptCount ?? 0;
 
     while (run.loopController.canContinue()) {
       run.loopController.markStep();
@@ -873,25 +926,72 @@ export class AgentOrchestrator {
       }
 
       if (gateResult.status === "needs_revision") {
-        const revision = run.messageBus.requestRevision("critic", specialist.name, { review: gateResult.review });
-        run.context.agentMessages = run.messageBus.list();
-        run.trace.add({
-          agentName: "AgentOrchestrator",
-          type: "reason",
-          summary: "Requested specialist revision from critic feedback.",
-          status: "success",
-          completedAt: new Date().toISOString(),
-          metadata: { messageId: revision.id },
-        });
+        revisionAttemptCount += 1;
+        // Always record a revision_request so the next specialist.decide()
+        // sees the critic feedback (review.suggestedFixes / unsupportedClaims /
+        // missingEvidence) in agentMessages and can replan accordingly.
+        this.recordRevisionRequest(
+          run,
+          specialist.name,
+          gateResult.review,
+          revisionAttemptCount,
+          revisionAttemptCount < MAX_REVISION_ATTEMPTS
+            ? `Critic requested revision (attempt ${revisionAttemptCount}/${MAX_REVISION_ATTEMPTS}). Continuing automatic loop.`
+            : `Critic requested revision (attempt ${revisionAttemptCount}/${MAX_REVISION_ATTEMPTS}). Reached the automatic retry cap; surfacing to user.`,
+        );
+
+        if (revisionAttemptCount < MAX_REVISION_ATTEMPTS) {
+          // Make the auto-revision visible in the AgentRoom: the user sees that
+          // the critic flagged issues and the agent is automatically rerunning
+          // JD matching + resume generation, rather than the conversation
+          // appearing to stall silently.
+          this.addPublicAgentMessage(run, {
+            from: "critic",
+            type: "critique",
+            content: revisionRetryAnnouncement(gateResult.review, revisionAttemptCount, MAX_REVISION_ATTEMPTS, localeFor(run)),
+            payload: {
+              eventType: "announcement",
+              status: "needs_revision",
+              revisionAttempt: revisionAttemptCount,
+              maxAttempts: MAX_REVISION_ATTEMPTS,
+              suggestedFixes: gateResult.review?.suggestedFixes,
+            },
+          });
+          // Make sure the loop has budget for at least one more specialist
+          // iteration. The base maxSteps is sized for the happy path; each
+          // automatic revision retry needs at least one additional slot to
+          // re-plan + re-execute + re-review, so extend by one when we're
+          // about to exceed the current cap.
+          if (run.loopController.state.stepCount + 1 >= run.loopController.state.maxSteps) {
+            run.loopController.state.maxSteps += 1;
+          }
+          this.syncLoopState(run);
+          // Loop back: specialist.decide() will see the new revision_request
+          // and replan generate_resume_from_jd (and match_experiences_against_jd
+          // via maybeAugmentResumeGenerationPlan) for another round.
+          continue;
+        }
+
+        // Reached the retry cap: stop and surface critic_needs_revision to the
+        // user with the latest suggested fixes / unsupported claims / missing
+        // evidence, plus the attempts counter so the UI can show "tried 3/3".
         run.loopController.stop("critic_needs_revision");
         this.syncLoopState(run);
         const message = criticRevisionMessage(gateResult.review, localeFor(run));
-        toolResults.push(needsRevisionResult(message));
+        const revisionWorkspacePatch = {
+          ...mergeWorkspacePatch(toolResults),
+          status: "revision_needed",
+          summary: gateResult.review?.userVisibleSummary ?? message,
+        };
+        toolResults.push(needsRevisionResult(message, gateResult.review, {
+          attempts: revisionAttemptCount,
+          maxAttempts: MAX_REVISION_ATTEMPTS,
+        }));
         return {
           assistantText: message,
           toolResults,
           pendingActions,
-          workspacePatch: {},
+          workspacePatch: revisionWorkspacePatch,
           criticReview,
         };
       }
@@ -1078,7 +1178,22 @@ export class AgentOrchestrator {
       toolName: tool.name,
       status: "running",
     });
-    if (!tool.requiresConfirmation) {
+    const autoRevisionAuthorized = isAutoRevisionAuthorized(run, tool.name);
+    if (!tool.requiresConfirmation || autoRevisionAuthorized) {
+      if (autoRevisionAuthorized) {
+        run.trace.add({
+          agentName: "AgentOrchestrator",
+          type: "reason",
+          summary: `Using internal auto-revision authorization for ${tool.name}.`,
+          toolName: tool.name,
+          status: "success",
+          completedAt: new Date().toISOString(),
+          metadata: {
+            autoRevisionAuthorized: true,
+            sourcePendingActionId: run.autoRevisionContext?.sourcePendingActionId,
+          },
+        });
+      }
       try {
         const rawResult = await run.executor.executeDefinition(tool, args, run.context);
         const patched = sanitizeReadToolConfirmationResult(rawResult, tool.name);
@@ -1414,6 +1529,36 @@ export class AgentOrchestrator {
       payload: message.payload,
     });
     run.context.agentMessages = run.messageBus.list();
+  }
+
+  private recordRevisionRequest(
+    run: RunState,
+    targetAgent: AgentName,
+    review: CriticReview | undefined,
+    attempt: number,
+    summary: string,
+  ): ReturnType<AgentMessageBus["requestRevision"]> {
+    const revision = run.messageBus.requestRevision("critic", targetAgent, {
+      review,
+      attempt,
+      maxAttempts: MAX_REVISION_ATTEMPTS,
+      autoRevisionAuthorized: run.autoRevisionContext?.autoRevisionAuthorized === true,
+    });
+    run.context.agentMessages = run.messageBus.list();
+    run.trace.add({
+      agentName: "AgentOrchestrator",
+      type: "reason",
+      summary,
+      status: "success",
+      completedAt: new Date().toISOString(),
+      metadata: {
+        messageId: revision.id,
+        revisionAttemptCount: attempt,
+        maxRevisionAttempts: MAX_REVISION_ATTEMPTS,
+        autoRevisionAuthorized: run.autoRevisionContext?.autoRevisionAuthorized === true,
+      },
+    });
+    return revision;
   }
 
   private syncLoopState(run: RunState): void {
@@ -2183,6 +2328,12 @@ function shouldEmitCriticReview(executions: ToolExecutionRecord[]): boolean {
   return executions.some((execution) => execution.result.status === "success" && Boolean(execution.step.toolName && shouldReviewTool(execution.step.toolName)));
 }
 
+function isAutoRevisionAuthorized(run: RunState, toolName: string): boolean {
+  return run.autoRevisionContext?.autoRevisionAuthorized === true
+    && run.autoRevisionContext.toolName === toolName
+    && toolName === "generate_resume_from_jd";
+}
+
 function confirmedActionStep(action: PendingAction, agentName: AgentName): PlanStep {
   return {
     id: `confirm-${action.id}`,
@@ -2219,12 +2370,34 @@ function needsConfirmationResult(message: string): ToolResult {
   };
 }
 
-function needsRevisionResult(message: string): ToolResult {
+function needsRevisionResult(
+  message: string,
+  review?: CriticReview,
+  retryInfo?: { attempts: number; maxAttempts: number },
+): ToolResult {
   return {
     status: "needs_input",
     message,
     visibility: "action_required",
-    actionResult: { actionType: "critic_gate", status: "needs_input", message, reason: "critic_needs_revision" },
+    actionResult: {
+      actionType: "critic_gate",
+      status: "needs_input",
+      message,
+      reason: "critic_needs_revision",
+      metadata: review || retryInfo ? {
+        ...(review ? {
+          verdict: review.verdict,
+          riskLevel: review.riskLevel,
+          unsupportedClaims: review.unsupportedClaims,
+          missingEvidence: review.missingEvidence,
+          suggestedFixes: review.suggestedFixes,
+        } : {}),
+        ...(retryInfo ? {
+          attempts: retryInfo.attempts,
+          maxAttempts: retryInfo.maxAttempts,
+        } : {}),
+      } : undefined,
+    },
   };
 }
 
@@ -2234,6 +2407,21 @@ function criticRevisionMessage(review: CriticReview | undefined, locale: Copilot
   if (fixes.length === 0) return summary;
   const label = locale === "zh-CN" ? "建议修改：" : "Suggested fixes:";
   return `${summary}\n${label}\n${fixes.map((fix) => `- ${fix}`).join("\n")}`;
+}
+
+function revisionRetryAnnouncement(
+  review: CriticReview | undefined,
+  attempt: number,
+  maxAttempts: number,
+  locale: CopilotLocale,
+): string {
+  const fixes = (review?.suggestedFixes ?? []).filter(Boolean).slice(0, 3);
+  if (locale === "zh-CN") {
+    const head = `审查发现需要修改（第 ${attempt}/${maxAttempts} 次），正在自动重新匹配并重写。`;
+    return fixes.length ? `${head}\n建议修改：\n${fixes.map((fix) => `- ${fix}`).join("\n")}` : head;
+  }
+  const head = `Critic flagged revisions (attempt ${attempt}/${maxAttempts}). Re-running JD match and resume generation automatically.`;
+  return fixes.length ? `${head}\nSuggested fixes:\n${fixes.map((fix) => `- ${fix}`).join("\n")}` : head;
 }
 
 function observationStatus(result: ToolResult): AgentObservationStatus {

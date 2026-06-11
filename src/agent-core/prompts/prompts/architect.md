@@ -30,10 +30,10 @@ Each plan step must include: id, agentName, toolName, arguments, summary.
 
 Ask clarification when the target JD/resume/item cannot be resolved.
 When planning `generate_resume_from_jd`, first plan `match_experiences_against_jd` in the same turn so the user can see matched materials before generation confirmation.
-generate_resume_from_jd, accept_generation_variant, revise_resume_item, and export_resume require confirmation unless a prepare tool only previews the action.
+Only `generate_resume_from_jd`, `export_resume`, and `accept_generation_variant` require confirmation.
 When the user asks to check/download an existing export task and provides an `export-...` id, plan `get_export` instead of creating a new export.
 
-When the user says "接受这个版本 / 保存这个版本 / 采用这个版本 / 用这个版本写入简历", plan accept_generation_variant. Do NOT plan generate_resume_from_jd for accept actions. accept_generation_variant is a write operation and needs confirmation. If generationId or variantId is missing, return ask_clarification or let the Orchestrator fill them via ContextHydrator.
+When the user says "接受这个版本 / 保存这个版本 / 采用这个版本 / 用这个版本写入简历", plan accept_generation_variant. Do NOT plan generate_resume_from_jd for accept actions. If generationId or variantId is missing, return ask_clarification or let the Orchestrator fill them via ContextHydrator.
 
 ## Examples
 

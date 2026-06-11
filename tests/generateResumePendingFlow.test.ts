@@ -278,4 +278,157 @@ describe("generate resume pending-action flow", () => {
     expect(job?.output?.generationId).toEqual(expect.any(String));
     expect(job?.output?.variantCount).toBeGreaterThan(0);
   });
+
+  it("after long_generation job completes, GET /copilot/sessions/:id returns persisted productGenerationId, variants, activeVariantId and non-generating status", async () => {
+    vi.spyOn(kernel.exportService, "renderExportJob").mockImplementation(() => new Promise(() => undefined));
+
+    const bootstrap = await server.inject({
+      method: "POST",
+      url: "/copilot/chat",
+      headers: { "x-user-id": "user-1" },
+      payload: { message: "start" },
+    });
+    const sessionId = (bootstrap.json() as ApiSuccess<CopilotChatResponse>).data.sessionId;
+
+    const actionResponse = await server.inject({
+      method: "POST",
+      url: "/copilot/actions",
+      headers: { "x-user-id": "user-1" },
+      payload: {
+        sessionId,
+        action: {
+          type: "generate_from_jd",
+          payload: {
+            jdText: "Frontend JD with Vue3 + TypeScript and dashboard delivery.",
+            targetRole: "Frontend Engineer",
+          },
+        },
+      },
+    });
+    const actionBody = actionResponse.json() as ApiSuccess<CopilotChatResponse>;
+    const pendingId = (actionBody.data.raw.pendingActions as Array<{ id: string }> | undefined)?.[0]?.id;
+    expect(pendingId).toBeTruthy();
+
+    const confirm = await server.inject({
+      method: "POST",
+      url: `/copilot/pending-actions/${pendingId}/confirm`,
+      headers: { "x-user-id": "user-1" },
+    });
+    expect(confirm.statusCode).toBe(200);
+    const confirmBody = confirm.json() as ApiSuccess<CopilotChatResponse>;
+    expect(confirmBody.data.workspace.status).toBe("generating");
+    expect(confirmBody.data.workspace.variants).toHaveLength(0);
+    const jobId = confirmBody.data.raw.actionResults
+      ?.find((item) => item.actionType === "generate_resume_from_jd" && item.status === "success")
+      ?.metadata?.jobId;
+    expect(typeof jobId).toBe("string");
+
+    // Pre-completion: session GET reports stuck "generating" state with no variants
+    const beforeDetail = await server.inject({
+      method: "GET",
+      url: `/copilot/sessions/${sessionId}`,
+      headers: { "x-user-id": "user-1" },
+    });
+    expect(beforeDetail.statusCode).toBe(200);
+    const beforeBody = beforeDetail.json() as ApiSuccess<{ workspace: Record<string, unknown> | null }>;
+    const beforeWorkspace = beforeBody.data.workspace;
+    expect(beforeWorkspace?.status).toBe("generating");
+    expect(beforeWorkspace?.productGenerationId ?? null).toBeNull();
+    expect((beforeWorkspace?.variants as unknown[] | undefined) ?? []).toHaveLength(0);
+
+    // Run the background job
+    await kernel.jobRunner.runJob(String(jobId), "user-1");
+
+    const job = await kernel.platformServices.backgroundJobs.getJob("user-1", String(jobId));
+    expect(job?.status).toBe("completed");
+    const completedGenerationId = (job?.output as Record<string, unknown> | undefined)?.generationId;
+    expect(typeof completedGenerationId).toBe("string");
+
+    // /jobs/:jobId still exposes completed output (existing API preserved)
+    expect((job?.output as Record<string, unknown>).variantCount).toBeGreaterThan(0);
+    // /product/generations/:generationId still resolves the generation detail
+    const generation = await kernel.productServices.generationProductService.getGeneration("user-1", String(completedGenerationId));
+    expect(generation?.id).toBe(completedGenerationId);
+    expect(generation?.outputSnapshot?.variants?.length ?? 0).toBeGreaterThan(0);
+
+    // Post-completion: session GET reflects persisted workspace (refresh/restore works)
+    const afterDetail = await server.inject({
+      method: "GET",
+      url: `/copilot/sessions/${sessionId}`,
+      headers: { "x-user-id": "user-1" },
+    });
+    expect(afterDetail.statusCode).toBe(200);
+    const afterBody = afterDetail.json() as ApiSuccess<{ workspace: Record<string, unknown> | null }>;
+    const afterWorkspace = afterBody.data.workspace;
+    expect(afterWorkspace).toBeTruthy();
+    expect(afterWorkspace?.status).not.toBe("generating");
+    expect(afterWorkspace?.status).toBe("ready");
+    expect(afterWorkspace?.productGenerationId).toBe(completedGenerationId);
+    const persistedVariants = afterWorkspace?.variants as Array<{ id: string }> | undefined;
+    expect(persistedVariants && persistedVariants.length).toBeGreaterThan(0);
+    expect(typeof afterWorkspace?.activeVariantId).toBe("string");
+    expect(persistedVariants?.[0]?.id).toBe(afterWorkspace?.activeVariantId);
+  });
+
+  it("accept_generation_variant still works after job completion and does not auto-export", async () => {
+    vi.spyOn(kernel.exportService, "renderExportJob").mockImplementation(() => new Promise(() => undefined));
+    const createExportSpy = vi.spyOn(kernel.exportService, "createExport");
+
+    const bootstrap = await server.inject({
+      method: "POST",
+      url: "/copilot/chat",
+      headers: { "x-user-id": "user-1" },
+      payload: { message: "start" },
+    });
+    const sessionId = (bootstrap.json() as ApiSuccess<CopilotChatResponse>).data.sessionId;
+
+    const actionResponse = await server.inject({
+      method: "POST",
+      url: "/copilot/actions",
+      headers: { "x-user-id": "user-1" },
+      payload: {
+        sessionId,
+        action: {
+          type: "generate_from_jd",
+          payload: {
+            jdText: "Frontend JD with Vue3 + TypeScript and dashboard delivery.",
+            targetRole: "Frontend Engineer",
+          },
+        },
+      },
+    });
+    const pendingId = ((actionResponse.json() as ApiSuccess<CopilotChatResponse>).data.raw.pendingActions as Array<{ id: string }> | undefined)?.[0]?.id;
+    expect(pendingId).toBeTruthy();
+
+    const confirm = await server.inject({
+      method: "POST",
+      url: `/copilot/pending-actions/${pendingId}/confirm`,
+      headers: { "x-user-id": "user-1" },
+    });
+    const jobId = (confirm.json() as ApiSuccess<CopilotChatResponse>).data.raw.actionResults
+      ?.find((item) => item.actionType === "generate_resume_from_jd" && item.status === "success")
+      ?.metadata?.jobId;
+
+    await kernel.jobRunner.runJob(String(jobId), "user-1");
+    expect(createExportSpy).not.toHaveBeenCalled();
+
+    const detail = await server.inject({
+      method: "GET",
+      url: `/copilot/sessions/${sessionId}`,
+      headers: { "x-user-id": "user-1" },
+    });
+    const workspace = (detail.json() as ApiSuccess<{ workspace: Record<string, unknown> }>).data.workspace;
+    const variantId = (workspace.variants as Array<{ id: string }>)[0]?.id;
+    const generationId = workspace.productGenerationId as string;
+    expect(variantId).toBeTruthy();
+    expect(generationId).toBeTruthy();
+
+    // Explicit accept_generation_variant via product service contract (no auto export)
+    const acceptResult = await kernel.productServices.generationProductService.saveAcceptedVariantToResume("user-1", {
+      generationId,
+      variantId,
+    });
+    expect(acceptResult.resume.id).toBeTruthy();
+    expect(createExportSpy).not.toHaveBeenCalled();
+  });
 });

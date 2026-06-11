@@ -67,6 +67,10 @@ export async function registerExportRoutes(app: FastifyInstance, kernel: ApiKern
     const result = await kernel.exportService.readDownload(ctx.user.id, param(request, "id"));
     const contentType = result.exportRecord.format === "pdf" ? "application/pdf" : "text/html; charset=utf-8";
     reply.header("content-type", contentType);
+    if (result.exportRecord.format === "pdf" && result.fileBuffer) {
+      reply.header("content-disposition", `attachment; filename="${encodeURIComponent(result.exportRecord.resumeId)}.pdf"`);
+      return result.fileBuffer;
+    }
     return result.fileText;
   });
 

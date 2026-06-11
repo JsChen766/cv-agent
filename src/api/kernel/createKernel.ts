@@ -147,6 +147,7 @@ function buildKernel(input: BuildKernelInput): ApiKernel {
     fileService,
     productServices,
     pendingActions,
+    copilotServices,
     getExportService: () => exportService,
   });
   exportService = new ResumeExportService(

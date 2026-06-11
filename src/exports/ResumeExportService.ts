@@ -1,4 +1,5 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
+import { chromium } from "playwright";
 import type { FileService } from "../files/index.js";
 import type { PlatformServices } from "../platform/index.js";
 import { readPlatformConfig } from "../platform/config.js";
@@ -7,6 +8,9 @@ import { ApiError, ErrorCodes } from "../api/errors.js";
 import type { ResumeExportRepository } from "./ResumeExportRepository.js";
 import { ResumeHtmlRenderer } from "./ResumeHtmlRenderer.js";
 import type { ResumeExport, ResumeExportFormat } from "./types.js";
+
+const PDF_RENDERER_NONE = "none";
+const PDF_RENDERER_PLAYWRIGHT = "playwright";
 
 export class ResumeExportService {
   private readonly renderer = new ResumeHtmlRenderer();
@@ -77,17 +81,50 @@ export class ResumeExportService {
     if (!record) throw new ApiError(ErrorCodes.NOT_FOUND, "Export not found.", 404);
     console.debug("[exports] renderExportJob start", { exportId, resumeId: record.resumeId, status: record.status });
     try {
-      if (record.format === "pdf" && readPlatformConfig().pdfRenderer === "none") {
+      if (record.format === "pdf" && readPlatformConfig().pdfRenderer === PDF_RENDERER_NONE) {
         throw new ApiError(ErrorCodes.INTERNAL_ERROR, "PDF renderer is not configured.", 503);
       }
       const resume = await this.resumeService.getResume(userId, record.resumeId);
       if (!resume) throw new ApiError(ErrorCodes.NOT_FOUND, "Resume not found.", 404);
       await this.repository.updateExport(userId, exportId, { status: "rendering" });
       const html = this.renderer.render(resume, record.templateId);
+
+      let fileBuffer: Buffer;
+      let originalName: string;
+      let mimeType: string;
+
+      if (record.format === "pdf" && readPlatformConfig().pdfRenderer === PDF_RENDERER_PLAYWRIGHT) {
+        // Use Playwright to convert HTML to PDF
+        const browser = await chromium.launch({
+          headless: true,
+          args: ["--no-sandbox", "--disable-setuid-sandbox"],
+        });
+        try {
+          const page = await browser.newPage();
+          await page.setContent(html, { waitUntil: "networkidle" });
+          const pdfBuffer = await page.pdf({
+            format: "A4",
+            printBackground: true,
+            margin: { top: "20mm", right: "15mm", bottom: "20mm", left: "15mm" },
+          });
+          fileBuffer = Buffer.from(pdfBuffer);
+          originalName = `${resume.title || "resume"}.pdf`;
+          mimeType = "application/pdf";
+          await page.close();
+        } finally {
+          await browser.close();
+        }
+      } else {
+        // HTML export
+        fileBuffer = Buffer.from(html, "utf8");
+        originalName = `${resume.title || "resume"}.html`;
+        mimeType = "text/plain";
+      }
+
       const file = await this.fileService.uploadFile(userId, {
-        originalName: `${resume.title || "resume"}.html`,
-        mimeType: "text/plain",
-        buffer: Buffer.from(html, "utf8"),
+        originalName,
+        mimeType,
+        buffer: fileBuffer,
       });
       const token = `dl_${randomBytes(24).toString("base64url")}`;
       const completed = await this.repository.updateExport(userId, exportId, {
@@ -102,6 +139,7 @@ export class ResumeExportService {
         exportId,
         resumeId: finalRecord.resumeId,
         fileId: finalRecord.fileId,
+        format: finalRecord.format,
         status: finalRecord.status,
       });
       return finalRecord;
@@ -121,10 +159,14 @@ export class ResumeExportService {
     });
   }
 
-  public async readDownload(userId: string, id: string): Promise<{ exportRecord: ResumeExport; fileText: string }> {
+  public async readDownload(userId: string, id: string): Promise<{ exportRecord: ResumeExport; fileText: string; fileBuffer?: Buffer }> {
     const record = await this.repository.getExport(userId, id);
     if (!record || record.status !== "completed" || !record.fileId) {
       throw new ApiError(ErrorCodes.NOT_FOUND, "Export is not ready.", 404);
+    }
+    if (record.format === "pdf") {
+      const buffer = await this.fileService.getRawBuffer(userId, record.fileId);
+      return { exportRecord: record, fileText: "", fileBuffer: buffer };
     }
     const parsed = await this.fileService.getParsedDocumentByFileId(userId, record.fileId);
     if (parsed) return { exportRecord: record, fileText: parsed.text };

@@ -4,7 +4,16 @@ import type { BackgroundJob, PlatformServices } from "../platform/index.js";
 import type { ProductServices } from "../product/index.js";
 import type { PendingActionService } from "../agent-core/confirmation/PendingActionService.js";
 import type { ToolResult } from "../agent-core/tools/ToolResult.js";
+import type { CopilotSessionService, CopilotWorkspaceService } from "../copilot/services/index.js";
+import type { CopilotWorkspace, ProductVariant } from "../copilot/types.js";
+import type { ProductGeneratedVariant, ProductJDRecord } from "../product/types.js";
+import { toWorkspaceVariant } from "../agent-tools/resume/helpers.js";
 import { JobRegistry } from "./JobRegistry.js";
+
+export type JobRunnerCopilotServices = {
+  sessionService: CopilotSessionService;
+  workspaceService: CopilotWorkspaceService;
+};
 
 export type JobRunnerDeps = {
   platformServices: PlatformServices;
@@ -12,6 +21,7 @@ export type JobRunnerDeps = {
   productServices: ProductServices;
   pendingActions: PendingActionService;
   getExportService(): ResumeExportService;
+  copilotServices?: JobRunnerCopilotServices;
 };
 
 export class JobRunner {
@@ -37,14 +47,26 @@ export class JobRunner {
         throw new Error(`Unsupported long_generation actionType ${actionType}.`);
       }
       const toolArguments = recordInput(job.input, "toolArguments");
+      const sessionId = stringInputOrUndefined(job.input, "sessionId");
       const result = await this.deps.productServices.generationProductService.generateResumeFromJD({
         userId: job.userId,
-        sessionId: stringInputOrUndefined(job.input, "sessionId"),
+        sessionId,
         jdId: stringInputOrUndefined(toolArguments, "jdId"),
         jdText: stringInputOrUndefined(toolArguments, "jdText"),
         targetRole: stringInputOrUndefined(toolArguments, "targetRole"),
       });
-      const activeVariantId = result.variants[0]?.id;
+      const workspaceVariants = result.variants.map(
+        (variant, index) => toWorkspaceVariant(variant, result.jd, result.generation.id, index),
+      );
+      const activeVariantId = workspaceVariants[0]?.id;
+      // Persist generation result back into the copilot session workspace so that
+      // GET /copilot/sessions/:id reflects completed state after refresh.
+      await this.persistGenerationWorkspace(job.userId, sessionId, {
+        generationId: result.generation.id,
+        jdId: result.jd.id,
+        activeVariantId,
+        variants: workspaceVariants,
+      });
       const output = {
         actionType,
         generationId: result.generation.id,
@@ -59,7 +81,8 @@ export class JobRunner {
           generationId: result.generation.id,
           jdId: result.jd.id,
           activeVariantId,
-          variants: result.variants,
+          variants: workspaceVariants,
+          rawVariants: result.variants,
           jd: result.jd,
           generation: result.generation,
         }));
@@ -175,14 +198,61 @@ export class JobRunner {
       });
     }
   }
+
+  private async persistGenerationWorkspace(userId: string, sessionId: string | undefined, input: {
+    generationId: string;
+    jdId: string;
+    activeVariantId: string | undefined;
+    variants: ProductVariant[];
+  }): Promise<void> {
+    if (!sessionId) return;
+    const copilotServices = this.deps.copilotServices;
+    if (!copilotServices) return;
+    try {
+      const existing = await copilotServices.workspaceService.getWorkspace(userId, sessionId);
+      const now = new Date().toISOString();
+      const base: CopilotWorkspace = existing ?? {
+        id: `ws-${sessionId}`,
+        sessionId,
+        variants: [],
+        status: "empty",
+        updatedAt: now,
+      };
+      const merged: CopilotWorkspace = {
+        ...base,
+        activePanel: "variants",
+        productGenerationId: input.generationId,
+        jdId: input.jdId,
+        activeVariantId: input.activeVariantId ?? null,
+        variants: input.variants,
+        status: "ready",
+        summary: `已生成 ${input.variants.length} 个简历版本，请选择一个版本保存为简历。`,
+        active: {
+          ...(base.active ?? {}),
+          jdId: input.jdId,
+          variantId: input.activeVariantId,
+        },
+        updatedAt: now,
+      };
+      await copilotServices.workspaceService.saveWorkspace(userId, merged);
+    } catch (error) {
+      console.error("[jobs] persist generation workspace failed", {
+        userId,
+        sessionId,
+        generationId: input.generationId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
 }
 
 function buildGenerationSuccessResult(input: {
   generationId: string;
   jdId: string;
   activeVariantId?: string;
-  variants: unknown[];
-  jd: unknown;
+  variants: ProductVariant[];
+  rawVariants: ProductGeneratedVariant[];
+  jd: ProductJDRecord;
   generation: unknown;
 }): ToolResult {
   return {

@@ -53,7 +53,7 @@ describe("agent runtime loop and critic gate", () => {
     await kernel.close();
   });
 
-  it("records revision_request and stops for manual revision guidance", async () => {
+  it("auto-loops after critic needs_revision and finishes when specialist revises", async () => {
     const { kernel, orchestrator } = await setupRuntime("critic-revision");
     registerUnconfirmedGenerateTool(orchestrator);
     const ctx = createTestKernelContext({ user: { id: "revision-user" }, request: { requestId: "req-revision", traceId: "trace-revision" } });
@@ -61,13 +61,102 @@ describe("agent runtime loop and critic gate", () => {
     const response = await orchestrator.handleChat(ctx, { message: "resume critic revision" });
     const metadata = response.raw.metadata as RuntimeMetadata;
 
-    expect(response.assistantMessage.content).toContain("Please make this more conservative.");
-    expect(response.assistantMessage.content).toContain("Use conservative wording.");
-    expect(response.assistantMessage.content).not.toContain("revised after critic");
-    expect(metadata.loop.stopReason).toBe("critic_needs_revision");
+    // After the first needs_revision the orchestrator must NOT terminate the
+    // response with critic_needs_revision. Instead it records the revision
+    // request, re-runs the specialist, and the architect's second decide()
+    // sees the revision_request in agentMessages and produces a final reply.
+    expect(metadata.loop.stopReason).toBe("final");
     expect(metadata.criticReview?.verdict).toBe("needs_revision");
     expect(metadata.agentMessages.some((message) => message.type === "review_request")).toBe(true);
     expect(metadata.agentMessages.some((message) => message.type === "revision_request")).toBe(true);
+    // No critic_needs_revision needs_input is surfaced to the user on the first
+    // automatic retry — that only happens after MAX_REVISION_ATTEMPTS (=3).
+    expect(response.raw.actionResults?.some((item) => item.reason === "critic_needs_revision")).toBe(false);
+    // Workspace must not be flipped into the user-facing "revision_needed" state
+    // when the agent auto-recovered within the retry budget.
+    expect(response.workspace.status).not.toBe("revision_needed");
+    await kernel.close();
+  });
+
+  it("returns the generated result when critic eventually passes within 3 attempts", async () => {
+    const { kernel, orchestrator, provider } = await setupRuntime("critic-revision-then-pass");
+    registerUnconfirmedGenerateTool(orchestrator);
+    const ctx = createTestKernelContext({ user: { id: "revision-then-pass" }, request: { requestId: "req-rtp", traceId: "trace-rtp" } });
+
+    const response = await orchestrator.handleChat(ctx, { message: "resume critic revision then pass" });
+    const metadata = response.raw.metadata as RuntimeMetadata;
+
+    // Critic was called once per specialist iteration: 2 needs_revision +
+    // 1 pass = 3 total calls. Stop reason must be the final, not the retry cap.
+    expect(provider.criticCalls).toBe(3);
+    expect(metadata.loop.stopReason).toBe("final");
+    expect(metadata.criticReview?.verdict).toBe("pass");
+    expect(response.raw.actionResults?.some((item) => item.reason === "critic_needs_revision")).toBe(false);
+    // Each automatic retry recorded a revision_request and an announcement.
+    const revisionRequests = metadata.agentMessages.filter((message) => message.type === "revision_request");
+    expect(revisionRequests.length).toBe(2);
+    await kernel.close();
+  });
+
+  it("uses the first generate confirmation to authorize critic revisions without new pending actions", async () => {
+    const { kernel, orchestrator, provider } = await setupRuntime("confirm-revision-then-pass");
+    const ctx = createTestKernelContext({ user: { id: "confirm-revision-then-pass-user" }, request: { requestId: "req-crtp", traceId: "trace-crtp" } });
+
+    const pending = await orchestrator.handleChat(ctx, { message: "resume confirm revision then pass" });
+    const initialPendingActions = pending.raw.pendingActions ?? [];
+    expect(initialPendingActions).toHaveLength(1);
+    expect(initialPendingActions[0]).toMatchObject({ toolName: "generate_resume_from_jd" });
+    expect(provider.criticCalls).toBe(0);
+
+    const pendingId = (initialPendingActions[0] as { id: string }).id;
+    const queued = await orchestrator.confirmPendingAction(ctx, pendingId);
+    const jobId = queued.raw.actionResults
+      ?.find((item) => item.actionType === "generate_resume_from_jd")
+      ?.metadata?.jobId;
+    expect(typeof jobId).toBe("string");
+    expect(queued.raw.pendingActions ?? []).toHaveLength(0);
+    expect(provider.criticCalls).toBe(0);
+
+    await kernel.jobRunner.runJob(String(jobId), ctx.user.id);
+    const response = await orchestrator.confirmPendingAction(ctx, pendingId);
+    const metadata = response.raw.metadata as RuntimeMetadata;
+
+    expect(provider.criticCalls).toBe(3);
+    expect(metadata.loop.stopReason).toBe("final");
+    expect(metadata.criticReview?.verdict).toBe("pass");
+    expect(response.raw.pendingActions ?? []).toHaveLength(0);
+    expect(response.raw.actionResults?.some((item) => item.status === "needs_confirmation")).not.toBe(true);
+    expect(response.workspace.status).toBe("ready");
+    expect((response.workspace.variants ?? []).length).toBeGreaterThan(0);
+    expect((response.workspace as unknown as { activePanel?: string }).activePanel).toBe("variants");
+    const revisionRequests = metadata.agentMessages.filter((message) => message.type === "revision_request");
+    expect(revisionRequests.length).toBe(2);
+    await kernel.close();
+  });
+
+  it("stops with critic_needs_revision after 3 consecutive needs_revision verdicts", async () => {
+    const { kernel, orchestrator, provider } = await setupRuntime("critic-revision-exhausted");
+    registerUnconfirmedGenerateTool(orchestrator);
+    const ctx = createTestKernelContext({ user: { id: "exhausted-user" }, request: { requestId: "req-exh", traceId: "trace-exh" } });
+
+    const response = await orchestrator.handleChat(ctx, { message: "resume critic exhausted" });
+    const metadata = response.raw.metadata as RuntimeMetadata;
+
+    expect(provider.criticCalls).toBe(3);
+    expect(metadata.loop.stopReason).toBe("critic_needs_revision");
+    expect(metadata.criticReview?.verdict).toBe("needs_revision");
+    const criticAction = response.raw.actionResults?.find((item) => item.reason === "critic_needs_revision");
+    expect(criticAction?.actionType).toBe("critic_gate");
+    expect((criticAction?.metadata as Record<string, unknown> | undefined)?.attempts).toBe(3);
+    expect((criticAction?.metadata as Record<string, unknown> | undefined)?.maxAttempts).toBe(3);
+    expect(Array.isArray((criticAction?.metadata as Record<string, unknown> | undefined)?.suggestedFixes)).toBe(true);
+    // Suggested fixes are exposed to the user only on the final stop, not on
+    // earlier auto-retries.
+    expect(response.assistantMessage.content).toContain("Use conservative wording.");
+    expect(response.workspace.status).toBe("revision_needed");
+    // Revision_request was recorded for each of the 3 needs_revision verdicts.
+    const revisionRequests = metadata.agentMessages.filter((message) => message.type === "revision_request");
+    expect(revisionRequests.length).toBe(3);
     await kernel.close();
   });
 
@@ -206,7 +295,7 @@ async function setupRuntime(scenario: Scenario): Promise<{ kernel: ApiKernel; or
     provider,
     defaultModel: "runtime-test",
   });
-  return { kernel, orchestrator: new AgentOrchestrator({ kernel }), provider };
+  return { kernel, orchestrator: new AgentOrchestrator({ kernel, pendingActions: kernel.pendingActions }), provider };
 }
 
 function registerUnconfirmedGenerateTool(orchestrator: AgentOrchestrator): void {
@@ -290,6 +379,9 @@ type Scenario =
   | "max-steps"
   | "critic-pass"
   | "critic-revision"
+  | "critic-revision-then-pass"
+  | "critic-revision-exhausted"
+  | "confirm-revision-then-pass"
   | "critic-blocked"
   | "critic-parse-failed"
   | "confirm-pass"
@@ -327,6 +419,11 @@ class RuntimeTestProvider implements LLMProvider {
     if (this.scenario === "invalid-confirmation") {
       return plan("architect", "prepare_export_resume", { resumeId, format: "html" }, "Prepare invalid confirmation.");
     }
+    if (this.scenario === "confirm-revision-then-pass") {
+      const generateObsCount = observations.filter((item) => isObservationFor(item, "generate_resume_from_jd")).length;
+      if (generateObsCount >= 3) return final("architect", "confirmed generated passed after revisions");
+      return plan("architect", "generate_resume_from_jd", { jdText: "JD", targetRole: "Engineer" }, "Generate resume.");
+    }
     if (this.scenario.startsWith("confirm-")) {
       return plan("architect", "generate_resume_from_jd", { jdText: "JD", targetRole: "Engineer" }, "Generate resume.");
     }
@@ -337,6 +434,19 @@ class RuntimeTestProvider implements LLMProvider {
     if (this.scenario === "critic-revision" && messages.some((message) => message.type === "revision_request")) {
       return final("architect", "revised after critic feedback");
     }
+    // critic-revision-then-pass / critic-revision-exhausted: each iteration
+    // re-plans generate_resume_from_jd so the critic can keep reviewing the
+    // (mock) regenerated output until it passes or the retry cap is reached.
+    if (this.scenario === "critic-revision-then-pass") {
+      // After 3 generate observations (1 initial + 2 revisions), the critic
+      // has passed on the most recent run — finalise so the loop terminates.
+      const generateObsCount = observations.filter((item) => isObservationFor(item, "generate_resume_from_jd")).length;
+      if (generateObsCount >= 3) return final("architect", "generated passed after revisions");
+      return plan("architect", "generate_resume_from_jd", { jdText: "JD", targetRole: "Engineer" }, "Generate resume.");
+    }
+    if (this.scenario === "critic-revision-exhausted") {
+      return plan("architect", "generate_resume_from_jd", { jdText: "JD", targetRole: "Engineer" }, "Generate resume.");
+    }
     if (observations.some((item) => isObservationFor(item, "generate_resume_from_jd"))) {
       return final("architect", "generated passed critic review");
     }
@@ -344,6 +454,15 @@ class RuntimeTestProvider implements LLMProvider {
   }
 
   private critic(_payload: Record<string, unknown>): Record<string, unknown> {
+    if (this.scenario === "critic-revision-then-pass" || this.scenario === "confirm-revision-then-pass") {
+      // criticCalls was already incremented for this call.
+      return this.criticCalls >= 3
+        ? review("pass", "low", "Critic pass after revisions.")
+        : review("needs_revision", "medium", "Please make this more conservative.");
+    }
+    if (this.scenario === "critic-revision-exhausted") {
+      return review("needs_revision", "medium", "Please make this more conservative.");
+    }
     if (this.scenario === "critic-revision" || this.scenario === "confirm-revision") return review("needs_revision", "medium", "Please make this more conservative.");
     if (this.scenario === "critic-blocked" || this.scenario === "confirm-blocked") return review("blocked", "high", "Cannot use this generated content because it includes unsupported claims.");
     if (this.scenario === "critic-parse-failed") return final("critic", "Unstructured critic response.");

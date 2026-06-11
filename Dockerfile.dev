@@ -2,11 +2,25 @@ FROM node:20-alpine
 
 WORKDIR /app
 
+# Install Playwright dependencies for Chromium (PDF rendering)
+RUN apk add --no-cache \
+  chromium \
+  nss \
+  freetype \
+  harfbuzz \
+  ca-certificates \
+  ttf-freefont
+
+ENV PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=/usr/bin/chromium-browser
+
 # Copy package manifest(s) first for better layer caching.
 COPY package*.json ./
 
 # Prefer reproducible install when lockfile exists, fallback when it does not.
 RUN if [ -f package-lock.json ]; then npm ci; else npm install; fi
+
+# Install Playwright (npm package only, reuse system chromium)
+RUN npx playwright install --with-deps chromium 2>/dev/null || true
 
 EXPOSE 3000
 

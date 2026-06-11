@@ -79,6 +79,12 @@ export class FileService {
   public getParsedDocumentByFileId(userId: string, fileId: string): Promise<ParsedDocument | null> {
     return this.repository.getParsedDocumentByFileId(userId, fileId);
   }
+
+  public async getRawBuffer(userId: string, fileId: string): Promise<Buffer> {
+    const file = await this.repository.getFile(userId, fileId);
+    if (!file) throw new Error("File not found.");
+    return this.storage.read(file.storageKey);
+  }
 }
 
 async function extractText(fileName: string, mimeType: string, buffer: Buffer): Promise<{ text: string; metadata: Record<string, unknown> }> {

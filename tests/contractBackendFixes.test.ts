@@ -678,6 +678,67 @@ describe("Contract: product generation API shapes", () => {
     expect(data.item).toBeTruthy();
     expect(data.variant).toBeTruthy();
   });
+
+  it("accept_generation_variant tool result includes resumeId + nextAction in metadata", async () => {
+    const created = await server.inject({
+      method: "POST",
+      url: "/product/generations/from-jd",
+      headers: { "x-user-id": "user-1" },
+      payload: { jdText: "React developer role.", targetRole: "FE" },
+    });
+    const { generationId, variants } = (created.json() as ApiSuccess<{ generationId: string; variants: Array<{ id: string }> }>).data;
+
+    const accept = await server.inject({
+      method: "POST",
+      url: `/product/generations/${generationId}/accept-variant`,
+      headers: { "x-user-id": "user-1" },
+      payload: { variantId: variants[0]!.id },
+    });
+    expect(accept.statusCode).toBe(200);
+    const data = (accept.json() as ApiSuccess<{ generation: unknown; resume: { id: string }; item: unknown; variant: unknown }>).data;
+    expect(data.resume.id).toBeTruthy();
+  });
+
+  it("accept_generation_variant via copilot confirm returns nextActions with export_resume", async () => {
+    const kernel2 = await createP12Kernel();
+    const runtime = new AgentOrchestrator({ kernel: kernel2 });
+    const ctx = createTestKernelContext({ user: { id: "user-1" }, request: { requestId: "req-1", traceId: "trace-1" } });
+    const session = await kernel2.copilotServices.sessionService.getOrCreateSession("user-1", {});
+    const generated = await kernel2.productServices.generationProductService.generateResumeFromJD({
+      userId: "user-1",
+      sessionId: session.id,
+      jdText: "Frontend engineer JD",
+      targetRole: "Frontend Engineer",
+    });
+    const variantId = generated.variants[0]!.id;
+
+    const acceptResult = await runtime.handleExplicitAction(ctx, {
+      sessionId: session.id,
+      action: { type: "accept", variantId, payload: { generationId: generated.generation.id } },
+    });
+    const acceptPendingId = (acceptResult.raw.pendingActions as Array<{ id: string }> | undefined)?.[0]?.id;
+    expect(acceptPendingId).toBeTruthy();
+
+    const confirmResult = await runtime.confirmPendingAction(ctx, acceptPendingId!);
+    expect(confirmResult.workspace.resumeId).toBeTruthy();
+
+    const acceptAction = confirmResult.raw.actionResults?.find(
+      (item) => item.actionType === "accept_generation_variant",
+    );
+    expect(acceptAction).toBeTruthy();
+    expect(acceptAction?.metadata?.resumeId).toBeTruthy();
+    expect(acceptAction?.metadata?.generationId).toBeTruthy();
+    expect(acceptAction?.metadata?.variantId).toBeTruthy();
+    expect(acceptAction?.metadata?.nextAction).toBe("export_resume");
+
+    const nextActions = confirmResult.nextActions ?? [];
+    const exportAction = nextActions.find((item) => item.type === "export_resume");
+    expect(exportAction).toBeTruthy();
+    expect(exportAction?.payload?.resumeId).toBeTruthy();
+    expect(exportAction?.primary).toBe(true);
+
+    await kernel2.close();
+  });
 });
 
 describe("Contract: SSE completed event", () => {
