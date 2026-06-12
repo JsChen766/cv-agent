@@ -5,7 +5,17 @@ import type { CopilotWorkspace } from "../types.js";
 import type { CopilotActivity, CopilotActivityType, CopilotPersistence } from "../persistence/index.js";
 
 export type CopilotSidebarReadModel = {
-  recentSessions: Array<{ id: string; title?: string | null; updatedAt: string; targetRole?: string | null; status?: string }>;
+  recentSessions: Array<{
+    id: string;
+    title?: string | null;
+    updatedAt: string;
+    targetRole?: string | null;
+    status?: string;
+    displayTitle?: string | null;
+    displaySubtitle?: string | null;
+    sessionType?: string | null;
+    displayStatus?: string | null;
+  }>;
   recentResumes: Awaited<ReturnType<ProductServices["resumeService"]["listResumes"]>>;
   recentJDs: Awaited<ReturnType<ProductServices["jdService"]["listJDs"]>>;
   recentExperiences: Awaited<ReturnType<ProductServices["experienceService"]["listExperiences"]>>;
@@ -79,6 +89,10 @@ export class CopilotWorkspaceService {
         updatedAt: session.updatedAt,
         targetRole: session.targetRole,
         status: session.status,
+        displayTitle: session.displayTitle ?? null,
+        displaySubtitle: session.displaySubtitle ?? null,
+        sessionType: session.sessionType ?? null,
+        displayStatus: session.displayStatus ?? null,
       })),
       recentResumes,
       recentJDs,

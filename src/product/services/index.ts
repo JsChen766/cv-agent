@@ -13,6 +13,7 @@ import type {
   ProductResume,
   ProductResumeDetail,
   ProductResumeItem,
+  VariantComparisonMatrixRow,
 } from "../types.js";
 import { extractExperienceDraftFromText } from "../experienceDraft.js";
 import type { LLMExperienceExtractor } from "../LLMExperienceExtractor.js";
@@ -603,7 +604,13 @@ export class GenerationProductService {
     jdId?: string;
     jdText?: string;
     targetRole?: string;
-  }): Promise<{ generation: ProductGeneration; jd: ProductJDRecord; variants: ProductGeneratedVariant[] }> {
+  }): Promise<{
+    generation: ProductGeneration;
+    jd: ProductJDRecord;
+    variants: ProductGeneratedVariant[];
+    recommendedVariantId?: string;
+    comparisonMatrix?: VariantComparisonMatrixRow[];
+  }> {
     if (!input.jdId && !input.jdText?.trim()) {
       throw new Error("JD text or jdId is required.");
     }
@@ -617,14 +624,19 @@ export class GenerationProductService {
     const experiences = await this.experienceService.listExperiences(input.userId, { limit: 10, status: "active" });
 
     let variants: ProductGeneratedVariant[];
+    let recommendedVariantId: string | undefined;
+    let comparisonMatrix: VariantComparisonMatrixRow[] | undefined;
     if (this.llmGenerationService) {
       try {
-        variants = await this.llmGenerationService.generateVariants(
+        const llmResult = await this.llmGenerationService.generateVariants(
           input.userId,
           jd.rawText,
           input.targetRole ?? jd.targetRole,
           experiences,
         );
+        variants = llmResult.variants;
+        recommendedVariantId = llmResult.recommendedVariantId;
+        comparisonMatrix = llmResult.comparisonMatrix;
       } catch (error) {
         throw generationFailureError(error);
       }
@@ -651,12 +663,14 @@ export class GenerationProductService {
       },
       outputSnapshot: {
         variants,
+        recommendedVariantId,
+        comparisonMatrix,
       },
       selectedVariantIds: [],
       createdAt: new Date().toISOString(),
     };
     await this.repository.createGeneration(generation);
-    return { generation, jd, variants };
+    return { generation, jd, variants, recommendedVariantId, comparisonMatrix };
   }
 
   public async saveAcceptedVariantToResume(userId: string, input: {

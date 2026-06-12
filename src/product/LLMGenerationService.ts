@@ -3,7 +3,7 @@ import { z } from "zod";
 import type { ModelClient } from "../agent-core/model/ModelClient.js";
 import { PromptRegistry } from "../agent-core/prompts/PromptRegistry.js";
 import { extractJsonCandidates } from "../infrastructure/llm/JsonOutputParser.js";
-import type { ProductExperienceSummary, ProductGeneratedVariant } from "./types.js";
+import type { ProductExperienceSummary, ProductGeneratedVariant, VariantComparisonMatrixRow } from "./types.js";
 
 export type LLMGenerationErrorPhase =
   | "initial"
@@ -142,6 +142,63 @@ function normalizeMissingInfo(raw: unknown): string[] | undefined {
   return items.length > 0 ? items : undefined;
 }
 
+function normalizeStringArray(raw: unknown, max: number, perItemMax: number): string[] | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  const items = raw
+    .filter((v): v is string => typeof v === "string")
+    .map((v) => v.trim())
+    .filter(Boolean)
+    .slice(0, max)
+    .map((v) => (v.length > perItemMax ? `${v.slice(0, perItemMax - 1).trimEnd()}…` : v));
+  return items.length > 0 ? items : undefined;
+}
+
+function normalizeShortString(raw: unknown, max: number): string | undefined {
+  if (typeof raw !== "string") return undefined;
+  const trimmed = raw.trim();
+  if (!trimmed) return undefined;
+  return trimmed.length > max ? `${trimmed.slice(0, max - 1).trimEnd()}…` : trimmed;
+}
+
+function normalizeBool(raw: unknown): boolean | undefined {
+  if (typeof raw === "boolean") return raw;
+  if (typeof raw === "string") {
+    const lower = raw.trim().toLowerCase();
+    if (lower === "true" || lower === "yes" || lower === "1") return true;
+    if (lower === "false" || lower === "no" || lower === "0") return false;
+  }
+  return undefined;
+}
+
+function normalizeRank(raw: unknown): number | undefined {
+  if (typeof raw === "number" && Number.isFinite(raw) && raw > 0) return Math.floor(raw);
+  if (typeof raw === "string") {
+    const parsed = Number(raw);
+    if (Number.isFinite(parsed) && parsed > 0) return Math.floor(parsed);
+  }
+  return undefined;
+}
+
+function normalizeComparisonMatrix(raw: unknown): VariantComparisonMatrixRow[] | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  const rows: VariantComparisonMatrixRow[] = [];
+  for (const entry of raw) {
+    if (!isRecord(entry)) continue;
+    const dimension = typeof entry.dimension === "string" ? entry.dimension.trim() : "";
+    if (!dimension) continue;
+    const valuesRaw = entry.values;
+    if (!isRecord(valuesRaw)) continue;
+    const values: Record<string, string> = {};
+    for (const [key, value] of Object.entries(valuesRaw)) {
+      if (typeof value === "string") values[key] = value.trim();
+      else if (typeof value === "number") values[key] = String(value);
+    }
+    if (Object.keys(values).length === 0) continue;
+    rows.push({ dimension: dimension.length > 12 ? `${dimension.slice(0, 11)}…` : dimension, values });
+  }
+  return rows.length > 0 ? rows.slice(0, 8) : undefined;
+}
+
 function normalizeSourceExperienceIds(raw: unknown): string[] {
   if (!Array.isArray(raw)) return [];
   return raw.filter((v): v is string => typeof v === "string" && v.trim().length > 0);
@@ -170,11 +227,20 @@ function normalizeVariant(raw: unknown, index: number): NormalizedVariant | null
     evidenceSummary: normalizeEvidenceSummary(raw.evidenceSummary),
     riskSummary: normalizeRiskSummary(raw.riskSummary),
     missingInfo: normalizeMissingInfo(raw.missingInfo),
+    variantName: normalizeShortString(raw.variantName ?? raw.name, 12),
+    summary: normalizeShortString(raw.summary ?? raw.summaryLine, 32),
+    scenario: normalizeShortString(raw.scenario ?? raw.position, 14),
+    advantages: normalizeStringArray(raw.advantages ?? raw.strengths ?? raw.pros, 4, 14),
+    risks: normalizeStringArray(raw.risks ?? raw.cautions ?? raw.cons, 3, 18),
+    recommended: normalizeBool(raw.recommended ?? raw.preferred ?? raw.isRecommended),
+    rank: normalizeRank(raw.rank),
   };
 }
 
 function normalizeGenerationResult(raw: unknown): {
   variants: NormalizedVariant[];
+  recommendedVariantKey?: string;
+  comparisonMatrix?: VariantComparisonMatrixRow[];
 } {
   if (Array.isArray(raw)) {
     return { variants: normalizeVariantList(raw) };
@@ -183,7 +249,11 @@ function normalizeGenerationResult(raw: unknown): {
     const variants = Array.isArray(raw.variants)
       ? normalizeVariantList(raw.variants)
       : [];
-    return { variants };
+    const recommendedVariantKey = typeof raw.recommendedVariantId === "string"
+      ? raw.recommendedVariantId.trim() || undefined
+      : undefined;
+    const comparisonMatrix = normalizeComparisonMatrix(raw.comparisonMatrix);
+    return { variants, recommendedVariantKey, comparisonMatrix };
   }
   return { variants: [] };
 }
@@ -223,6 +293,13 @@ type NormalizedVariant = {
     warnings?: string[];
   };
   missingInfo?: string[];
+  variantName?: string;
+  summary?: string;
+  scenario?: string;
+  advantages?: string[];
+  risks?: string[];
+  recommended?: boolean;
+  rank?: number;
 };
 
 // ═══════════════════════════════════════════════════════════════
@@ -258,10 +335,24 @@ const NormalizedVariantSchema = z.object({
     warnings: z.array(z.string()).optional(),
   }).optional(),
   missingInfo: z.array(z.string()).optional(),
+  variantName: z.string().optional(),
+  summary: z.string().optional(),
+  scenario: z.string().optional(),
+  advantages: z.array(z.string()).optional(),
+  risks: z.array(z.string()).optional(),
+  recommended: z.boolean().optional(),
+  rank: z.number().int().positive().optional(),
+});
+
+const ComparisonMatrixRowSchema = z.object({
+  dimension: z.string(),
+  values: z.record(z.string(), z.string()),
 });
 
 const NormalizedGenerationResultSchema = z.object({
   variants: z.array(NormalizedVariantSchema).min(1).max(5),
+  recommendedVariantKey: z.string().optional(),
+  comparisonMatrix: z.array(ComparisonMatrixRowSchema).optional(),
 });
 
 // ═══════════════════════════════════════════════════════════════
@@ -317,10 +408,19 @@ export class LLMGenerationService {
     jdText: string,
     targetRole: string | undefined,
     experiences: ProductExperienceSummary[],
-  ): Promise<ProductGeneratedVariant[]> {
+  ): Promise<{
+    variants: ProductGeneratedVariant[];
+    recommendedVariantId?: string;
+    comparisonMatrix?: VariantComparisonMatrixRow[];
+  }> {
     const result = await this.tryGenerate(jdText, targetRole, experiences);
     const now = new Date().toISOString();
-    return result.variants.map((variant) => ({
+    // The LLM may reference variants by either positional key ("v0",
+    // "v1", ...) or by an opaque id it invented. We assign the real
+    // variant id at this layer and rewrite both `recommendedVariantId`
+    // and the per-row matrix `values` keys in one pass so downstream
+    // (the tool, the workspace, the frontend) only sees real ids.
+    const variants: ProductGeneratedVariant[] = result.variants.map((variant, index) => ({
       id: `pvar-${randomUUID()}`,
       userId,
       content: variant.content,
@@ -337,8 +437,69 @@ export class LLMGenerationService {
       evidenceSummary: variant.evidenceSummary,
       riskSummary: variant.riskSummary,
       missingInfo: variant.missingInfo,
+      variantName: variant.variantName,
+      summary: variant.summary,
+      scenario: variant.scenario,
+      advantages: variant.advantages,
+      risks: variant.risks,
+      recommended: variant.recommended,
+      rank: variant.rank,
       createdAt: now,
     }));
+
+    // Build a positional → real id map ("v0" → variants[0].id, ...).
+    const idByKey = new Map<string, string>();
+    variants.forEach((v, i) => {
+      idByKey.set(`v${i}`, v.id);
+      idByKey.set(String(i), v.id);
+      idByKey.set(v.id, v.id);
+    });
+
+    const recommendedFromLlm = result.recommendedVariantKey
+      ? idByKey.get(result.recommendedVariantKey)
+      : undefined;
+    const recommendedFromFlag = variants.find((v) => v.recommended)?.id;
+    const recommendedByScore = (() => {
+      if (variants.length === 0) return undefined;
+      let best = variants[0];
+      for (const v of variants) {
+        if ((v.scores?.overall ?? 0) > (best.scores?.overall ?? 0)) best = v;
+      }
+      return best.id;
+    })();
+    const recommendedVariantId = recommendedFromLlm ?? recommendedFromFlag ?? recommendedByScore;
+
+    // Mark the chosen variant as recommended; clear the flag on the
+    // others so exactly one survives. Matches the prompt contract.
+    if (recommendedVariantId) {
+      for (const v of variants) v.recommended = v.id === recommendedVariantId;
+    }
+    // Backfill rank if absent (1 = top).
+    const ranked = [...variants].sort((a, b) => {
+      if (a.id === recommendedVariantId) return -1;
+      if (b.id === recommendedVariantId) return 1;
+      return (b.scores?.overall ?? 0) - (a.scores?.overall ?? 0);
+    });
+    ranked.forEach((v, i) => {
+      if (v.rank == null) v.rank = i + 1;
+    });
+
+    const comparisonMatrix = result.comparisonMatrix
+      ?.map((row) => ({
+        dimension: row.dimension,
+        values: Object.fromEntries(
+          Object.entries(row.values)
+            .map(([key, value]) => [idByKey.get(key) ?? key, value])
+            .filter(([key]) => variants.some((v) => v.id === key)),
+        ),
+      }))
+      .filter((row) => Object.keys(row.values).length > 0);
+
+    return {
+      variants,
+      recommendedVariantId,
+      comparisonMatrix: comparisonMatrix && comparisonMatrix.length > 0 ? comparisonMatrix : undefined,
+    };
   }
 
   private async tryGenerate(

@@ -73,17 +73,17 @@ describe("LLMGenerationService — lenient schema normalization", () => {
     const service = new LLMGenerationService(fakeModelClient(rawOutput));
     const result = await service.generateVariants("user-1", jdText, targetRole, fakeExperiences());
 
-    expect(result.length).toBe(1);
-    expect(result[0].content).toContain("Experienced frontend");
-    expect(result[0].evidenceSummary).toBeDefined();
-    expect(result[0].evidenceSummary!.items.length).toBe(2);
+    expect(result.variants.length).toBe(1);
+    expect(result.variants[0].content).toContain("Experienced frontend");
+    expect(result.variants[0].evidenceSummary).toBeDefined();
+    expect(result.variants[0].evidenceSummary!.items.length).toBe(2);
     // First string item normalized to object
-    expect(result[0].evidenceSummary!.items[0].id).toBe("evidence-1");
-    expect(result[0].evidenceSummary!.items[0].title).toBe("React expertise from Acme project");
-    expect(result[0].evidenceSummary!.items[0].explanation).toBe("React expertise from Acme project");
-    expect(result[0].evidenceSummary!.items[0].confidence).toBe(0.6);
+    expect(result.variants[0].evidenceSummary!.items[0].id).toBe("evidence-1");
+    expect(result.variants[0].evidenceSummary!.items[0].title).toBe("React expertise from Acme project");
+    expect(result.variants[0].evidenceSummary!.items[0].explanation).toBe("React expertise from Acme project");
+    expect(result.variants[0].evidenceSummary!.items[0].confidence).toBe(0.6);
     // Second string item
-    expect(result[0].evidenceSummary!.items[1].id).toBe("evidence-2");
+    expect(result.variants[0].evidenceSummary!.items[1].id).toBe("evidence-2");
   });
 
   it("normalizes score=85 to 0.85 (scale 0-100 → 0-1)", async () => {
@@ -99,10 +99,10 @@ describe("LLMGenerationService — lenient schema normalization", () => {
     const service = new LLMGenerationService(fakeModelClient(rawOutput));
     const result = await service.generateVariants("user-1", jdText, targetRole, fakeExperiences());
 
-    expect(result.length).toBe(1);
-    expect(result[0].scores?.overall).toBe(0.85);
-    expect(result[0].scores?.relevance).toBe(0.9);
-    expect(result[0].scores?.evidenceStrength).toBe(0.7);
+    expect(result.variants.length).toBe(1);
+    expect(result.variants[0].scores?.overall).toBe(0.85);
+    expect(result.variants[0].scores?.relevance).toBe(0.9);
+    expect(result.variants[0].scores?.evidenceStrength).toBe(0.7);
   });
 
   it("normalizes score='0.8' string to 0.8", async () => {
@@ -118,10 +118,10 @@ describe("LLMGenerationService — lenient schema normalization", () => {
     const service = new LLMGenerationService(fakeModelClient(rawOutput));
     const result = await service.generateVariants("user-1", jdText, targetRole, fakeExperiences());
 
-    expect(result.length).toBe(1);
-    expect(result[0].scores?.overall).toBe(0.8);
-    expect(result[0].scores?.relevance).toBe(0.85);
-    expect(result[0].scores?.evidenceStrength).toBe(0.75);
+    expect(result.variants.length).toBe(1);
+    expect(result.variants[0].scores?.overall).toBe(0.8);
+    expect(result.variants[0].scores?.relevance).toBe(0.85);
+    expect(result.variants[0].scores?.evidenceStrength).toBe(0.75);
   });
 
   it("fills default reason when missing", async () => {
@@ -136,8 +136,8 @@ describe("LLMGenerationService — lenient schema normalization", () => {
     const service = new LLMGenerationService(fakeModelClient(rawOutput));
     const result = await service.generateVariants("user-1", jdText, targetRole, fakeExperiences());
 
-    expect(result.length).toBe(1);
-    expect(result[0].reason).toBe("Generated based on JD and experience library.");
+    expect(result.variants.length).toBe(1);
+    expect(result.variants[0].reason).toBe("Generated based on JD and experience library.");
   });
 
   it("fills default scores when score object is missing", async () => {
@@ -152,10 +152,10 @@ describe("LLMGenerationService — lenient schema normalization", () => {
     const service = new LLMGenerationService(fakeModelClient(rawOutput));
     const result = await service.generateVariants("user-1", jdText, targetRole, fakeExperiences());
 
-    expect(result.length).toBe(1);
-    expect(result[0].scores?.overall).toBe(0.7);
-    expect(result[0].scores?.relevance).toBe(0.7);
-    expect(result[0].scores?.evidenceStrength).toBe(0.5);
+    expect(result.variants.length).toBe(1);
+    expect(result.variants[0].scores?.overall).toBe(0.7);
+    expect(result.variants[0].scores?.relevance).toBe(0.7);
+    expect(result.variants[0].scores?.evidenceStrength).toBe(0.5);
   });
 
   it("keeps good variants and discards empty-content variants", async () => {
@@ -171,9 +171,9 @@ describe("LLMGenerationService — lenient schema normalization", () => {
     const service = new LLMGenerationService(fakeModelClient(rawOutput));
     const result = await service.generateVariants("user-1", jdText, targetRole, fakeExperiences());
 
-    expect(result.length).toBe(2);
-    expect(result[0].content).toBe("Valid content here.");
-    expect(result[1].content).toBe("Another valid one.");
+    expect(result.variants.length).toBe(2);
+    expect(result.variants[0].content).toBe("Valid content here.");
+    expect(result.variants[1].content).toBe("Another valid one.");
   });
 
   it("also works when evidenceSummary.items has incomplete object fields", async () => {
@@ -197,9 +197,9 @@ describe("LLMGenerationService — lenient schema normalization", () => {
     const service = new LLMGenerationService(fakeModelClient(rawOutput));
     const result = await service.generateVariants("user-1", jdText, targetRole, fakeExperiences());
 
-    expect(result.length).toBe(1);
-    expect(result[0].evidenceSummary).toBeDefined();
-    const items = result[0].evidenceSummary!.items;
+    expect(result.variants.length).toBe(1);
+    expect(result.variants[0].evidenceSummary).toBeDefined();
+    const items = result.variants[0].evidenceSummary!.items;
     expect(items.length).toBe(3);
     // All items should have the required fields
     for (const item of items) {
@@ -235,7 +235,7 @@ describe("LLMGenerationService — lenient schema normalization", () => {
     const service = new LLMGenerationService(fakeModelClient(rawOutput));
     const result = await service.generateVariants("user-1", jdText, targetRole, fakeExperiences());
 
-    expect(result.length).toBe(1);
-    expect(result[0].content).toBe("Direct array variant.");
+    expect(result.variants.length).toBe(1);
+    expect(result.variants[0].content).toBe("Direct array variant.");
   });
 });

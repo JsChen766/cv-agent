@@ -2,6 +2,7 @@ import type { ToolDefinition } from "../../agent-core/tools/Tool.js";
 import { IdInputSchema, JDInputSchema, ListInputSchema, TextInputSchema, ToolResultSchema } from "../../agent-core/validation/ToolInputSchemas.js";
 import { computeJDHash } from "../../product/jdHash.js";
 import { normalizeDraftContext } from "../../copilot/context/DraftContext.js";
+import { isDefaultTitle } from "../../copilot/SessionDisplayProjector.js";
 
 export function createJDAgentTools(): ToolDefinition[] {
   return [
@@ -152,6 +153,13 @@ export function createJDAgentTools(): ToolDefinition[] {
           company: typeof input.company === "string" ? input.company : undefined,
           targetRole: typeof input.targetRole === "string" ? input.targetRole : undefined,
         });
+        // Back-write the resolved targetRole onto the session so the
+        // sidebar projector can derive a real display title instead of
+        // leaving it on the literal "New Copilot chat" the orchestrator
+        // assigned at session creation. Existing user-renamed titles are
+        // never overwritten — `isDefaultTitle` only matches the
+        // well-known placeholders.
+        await maybeBackwriteSessionTitle(context, { targetRole: jd.targetRole ?? jd.title });
         return {
           status: "success",
           message: `Saved JD "${jd.title}".`,
@@ -176,6 +184,29 @@ export function createJDAgentTools(): ToolDefinition[] {
       },
     },
   ];
+}
+
+async function maybeBackwriteSessionTitle(
+  context: { userId: string; sessionId: string; kernel: { copilotServices: { sessionService: { getSession: (u: string, s: string) => Promise<{ title?: string | null; targetRole?: string | null } | null>; updateSession: (u: string, s: string, p: Record<string, unknown>) => Promise<unknown> } } } },
+  patch: { targetRole?: string | null },
+): Promise<void> {
+  if (!context.sessionId) return;
+  const targetRole = (patch.targetRole ?? "").trim();
+  if (!targetRole) return;
+  try {
+    const session = await context.kernel.copilotServices.sessionService.getSession(context.userId, context.sessionId);
+    if (!session) return;
+    const sessionTitle = (session.title ?? "").trim();
+    const update: Record<string, unknown> = {};
+    // Only rewrite targetRole when missing — never clobber a user-renamed
+    // session role from a different JD save.
+    if (!session.targetRole) update.targetRole = targetRole;
+    if (isDefaultTitle(sessionTitle)) update.title = null;
+    if (Object.keys(update).length === 0) return;
+    await context.kernel.copilotServices.sessionService.updateSession(context.userId, context.sessionId, update);
+  } catch {
+    // Title back-write is a UX nicety; never fail the saveJD flow on it.
+  }
 }
 
 type JDRequirement = {

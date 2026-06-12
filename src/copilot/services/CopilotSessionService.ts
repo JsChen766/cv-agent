@@ -28,7 +28,11 @@ export class CopilotSessionService {
     return this.persistence.sessions.createSession({
       id: `cs-${randomUUID()}`,
       userId,
-      title: input.targetRole ? `${input.targetRole} conversation` : "New Copilot chat",
+      // Leave title null at create time; SessionDisplayProjector turns
+      // (targetRole, status, updatedAt) into a real display title
+      // ("Frontend Engineer · JD 匹配", "新的对话 · 刚刚", ...). The
+      // sidebar reads displayTitle/displaySubtitle, never raw title.
+      title: input.targetRole ? input.targetRole : null,
       targetRole: input.targetRole ?? null,
       resumeText: input.resumeText ?? null,
       jdText: input.jdText ?? null,
