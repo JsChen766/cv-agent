@@ -1015,6 +1015,29 @@ const executed = await this.planExecutionService.executePlan(run, decision.plan)
 请把 AgentOrchestrator 中的 plan/tool/pending action 执行逻辑抽离到 PlanExecutionService，保持所有 tool execution、requiresConfirmation、pending action preview、ID guard、scope guard、hydration、ToolResult 行为完全不变。不要改 ToolDefinition、ToolResult、AgentDecisionSchema、API 或 ProductBlock。完成后运行 typecheck 和 tests。
 ```
 
+## Phase 6 完成情况
+
+### 已完成
+
+- 新增 `src/agent-core/runtime/PlanExecutionService.ts`，承接 plan step 执行、tool execution、hydration、ID guard、scope guard、`requiresConfirmation` 判断、pending action 创建、pending action preview、ToolResult visibility 归一与 `ExecutedPlan` 返回。
+- 新增 `src/agent-core/runtime/ToolExecutionPolicy.ts`，以现有 `requiresConfirmation` 与内部 auto-revision 授权规则为唯一判断来源，不引入新的执行策略。
+- `AgentOrchestrator.executePlan()` 已改为委托 `PlanExecutionService.executePlan()`，`AgentOrchestrator` 不再保留 plan/tool/pending action 执行主体逻辑。
+- 保留 `AgentOrchestrator` 现有 observation、public agent message、prepare save experience、prepared resume rewrite 等内部协作点，通过回调注入 `PlanExecutionService`，保证上下文写入和 pending action preview 行为不变。
+- `sanitizeReadToolConfirmationResult` 与 `ensureToolResultVisibility` 迁入 runtime service 层，其中 `sanitizeReadToolConfirmationResult` 继续从 `AgentOrchestrator` re-export，保持现有测试/内部引用兼容。
+
+### 验证结果
+
+- `npm run typecheck` 通过。
+- `npx vitest run tests/agentContractFreeze.test.ts tests/copilotExplicitActions.test.ts tests/generateResumePendingFlow.test.ts tests/prepareUpdateExperienceFix.test.ts tests/securityFollowup.test.ts tests/agentRuntimeLoopAndCritic.test.ts` 通过：6 test files passed，57 tests passed。
+- `npm test` 通过：56 test files passed，541 tests passed。
+
+### 变更范围确认
+
+- 未修改 `ToolDefinition`、`ToolResult`、`AgentDecisionSchema`、API route/request/response envelope 或 `ProductBlock`。
+- 未改变 tool execution、`requiresConfirmation`、pending action preview、ID guard、scope guard、hydration、ToolResult visibility 或失败时 break 的既有语义。
+- 未接入新的外部数据源、持久化或真实检索逻辑。
+- 已检查非测试代码中本阶段新增/触达文件没有引入测试替身形式或测试替身命名。
+
 ---
 
 # Phase 7：拆分 Agent Decision Runner 与 Review Pipeline
@@ -1088,6 +1111,32 @@ src/agent-core/evaluation/ReviewPolicy.ts
 ```text
 请新增 AgentDecisionRunner 和 ReviewPipeline，把 agent.decide 调用与 CriticGate review 从 AgentOrchestrator 中抽离出来。ReviewPolicy 初期必须完全等价于现有 shouldReviewTool 规则。不要改变 AgentDecisionSchema、CriticReviewSchema、critic 行为、revision loop、API 或 ProductBlock。完成后运行 typecheck 和 tests。
 ```
+
+## Phase 7 完成情况
+
+### 已完成
+
+- 新增 `src/agent-core/runtime/AgentDecisionRunner.ts`，统一封装 `agent.decide()` 调用、`routeHint` / `task` 透传、decision meta 读取与 decision trace completion。
+- 新增 `src/agent-core/runtime/ReviewPipeline.ts`，包装当前 `CriticGate` review 调用，并预留 evaluation hook 与 learning event recorder 接入点。
+- 新增 `src/agent-core/evaluation/ReviewPolicy.ts`，以现有 critic review 工具集合为唯一规则来源；`CriticGate.shouldReviewTool()` 继续作为兼容导出并委托 `defaultReviewPolicy`。
+- `AgentOrchestrator` 中 frontdesk/specialist 的直接 `agent.decide()` 调用已改为 `AgentDecisionRunner`，原 trace/event 写入位置和 metadata 内容保持不变。
+- `AgentOrchestrator` 中 specialist loop 与 pending action confirmation 的 critic review 调用已改为 `ReviewPipeline.review()`，revision loop、retry 上限、blocked / needs_user_confirmation / needs_revision / pass 分支保持不变。
+- `CriticGate` 内部 critic agent 的两次 `decide()` 调用已改为通过 `AgentDecisionRunner`，critic prompt、`CriticReviewSchema` 解析与 conservative fallback 行为保持不变。
+- `Planner` 改为可注入并默认使用 `AgentDecisionRunner`，保持返回已验证 plan 的行为不变。
+- `LearningEvent` 内部类型补充 `critic.needs_user_confirmation`，供 `ReviewPipeline` 未来记录使用；默认 Noop/空 recorder 不改变业务行为。
+
+### 验证结果
+
+- `npm run typecheck` 通过。
+- `npx vitest run tests/agentRuntimeLoopAndCritic.test.ts tests/agentContractFreeze.test.ts tests/copilotConfirmContract.test.ts tests/generateResumePendingFlow.test.ts tests/agentDecisionReliability.test.ts tests/agentPromptContract.test.ts` 通过：6 test files passed，55 tests passed。
+- `npm test` 通过：56 test files passed，541 tests passed。
+
+### 变更范围确认
+
+- 未修改 `AgentDecisionSchema`、`CriticReviewSchema`、critic prompt、revision loop 最大次数、API route/request/response envelope 或 `ProductBlock`。
+- ReviewPolicy 初期规则与原 `shouldReviewTool()` 等价：仅 review `generate_resume_from_jd`、`revise_resume_item`、`save_experience_from_text`、`update_experience`。
+- 默认 evaluation/reflection 接入点不产生新的持久化、外部调用或用户可见行为。
+- 已检查非测试代码中本阶段新增/触达文件没有引入测试替身内容或测试替身命名。
 
 ---
 

@@ -1,11 +1,8 @@
 ﻿import { randomUUID } from "node:crypto";
 import type { ApiKernel } from "../../api/types.js";
 import type { ActiveAssetContext } from "../../copilot/ActiveAssetContextBuilder.js";
-import { ContextHydrator, toolNeedsInputMessage, toolNeedsInputMessageForFields } from "../../copilot/context/ContextHydrator.js";
 import { applyHandoffToDrafts, mostRecentJDDraft } from "../../copilot/context/DraftContext.js";
 import { normalizeFrontDeskHandoff } from "../../copilot/handoff/HandoffNormalizer.js";
-import { extractExperienceDraftFromText } from "../../product/experienceDraft.js";
-import { buildNormalizedExperiencePreview } from "../../product/experiencePreview.js";
 import { computeJDHash } from "../../product/jdHash.js";
 import type { FrontDeskHandoff } from "../../copilot/handoff/FrontDeskHandoff.js";
 import type {
@@ -25,27 +22,23 @@ import { detectLocale, type CopilotLocale } from "../../copilot/locale.js";
 import { ResponseComposer } from "../../copilot/response/ResponseComposer.js";
 import { isBlockedToolLog } from "../../copilot/response/ProductReplyTemplates.js";
 import { isCanonicalExperienceId, isCanonicalGenerationId, isCanonicalJDId, isCanonicalResumeId, isCanonicalVariantId } from "../../copilot/context/IdGuards.js";
-import { defaultToolResultVisibility } from "../../copilot/response/ToolResultVisibility.js";
-import { affectedResourcesFor } from "../security/ToolAffectedResources.js";
-import { guardToolIds, stripInternalToolArgs } from "../security/ToolIdGuard.js";
 import { sanitizeExperiencePatch } from "../security/ToolPatchSanitizer.js";
-import { previewFor, confirmationSummary, confirmationTitle } from "./PreviewPresenter.js";
 import { buildProductBlocks, sanitizeMetadataObject } from "./ProductBlockPresenter.js";
 import { mergeWorkspacePatch, buildWorkspaceSnapshot, buildRelatedResourceIds, hasRelatedResourceIds, updatePendingStatusInProductBlocks, buildWorkspaceForHistory } from "./WorkspaceProjector.js";
 import { projectAgentRoomEvents } from "../events/AgentRoomEventProjector.js";
-import { guardToolScope } from "../security/ToolScopeGuard.js";
 import { tasksFromHandoff } from "../../copilot/tasks/TaskStateReducer.js";
 import { createAgentTools } from "../../agent-tools/index.js";
 import type { PendingAction } from "../confirmation/PendingAction.js";
 import { PendingActionService } from "../confirmation/PendingActionService.js";
-import { getAgentDecisionMeta, type Agent } from "../agents/BaseAgent.js";
+import type { Agent } from "../agents/BaseAgent.js";
 import { AgentDomainRegistry } from "../domain/AgentDomainRegistry.js";
+import { ReviewPolicy } from "../evaluation/ReviewPolicy.js";
 import { careerDomain } from "../../agent-domains/career/index.js";
 import { PromptRegistry } from "../prompts/PromptRegistry.js";
 import { AgentCapabilityRegistry } from "../capabilities/AgentCapabilityRegistry.js";
 import { createDefaultCapabilities } from "../capabilities/defaultCapabilities.js";
 import { ContextAssemblyPipeline } from "../context/ContextAssemblyPipeline.js";
-import type { ToolDefinition } from "../tools/Tool.js";
+import { LearningEventRecorder } from "../reflection/LearningEventRecorder.js";
 import { ToolRegistry } from "../tools/ToolRegistry.js";
 import type { ToolResult } from "../tools/ToolResult.js";
 import type { AgentName, CriticReview, PlanStep } from "../validation/AgentOutputSchemas.js";
@@ -56,11 +49,15 @@ import type { AgentMessageBus } from "./AgentMessageBus.js";
 import type { AgentMessageParticipant, AgentMessageType } from "./AgentMessage.js";
 import type { AgentObservation, AgentObservationStatus } from "./AgentObservation.js";
 import type { AgentRuntimeEmitter, AgentStreamEventType } from "./AgentStreamEvent.js";
-import { CriticGate, shouldReviewTool, type ToolExecutionRecord } from "./CriticGate.js";
+import { CriticGate, type ToolExecutionRecord } from "./CriticGate.js";
+import { AgentDecisionRunner } from "./AgentDecisionRunner.js";
+import { PlanExecutionService, ensureToolResultVisibility } from "./PlanExecutionService.js";
+import { ReviewPipeline } from "./ReviewPipeline.js";
 import type { ExecutedPlan, LoopRunResult } from "./RunResult.js";
 import type { AutoRevisionContext, RunState } from "./RunState.js";
 
 export { guardToolIds } from "../security/ToolIdGuard.js";
+export { sanitizeReadToolConfirmationResult } from "./PlanExecutionService.js";
 
 /**
  * Maximum number of automatic critic-revision retries inside a single
@@ -77,15 +74,15 @@ export type AgentOrchestratorDeps = {
   pendingActions?: PendingActionService;
 };
 
-type ExperienceDraftLike = ReturnType<typeof extractExperienceDraftFromText>;
-
 export class AgentOrchestrator {
   public readonly pendingActions: PendingActionService;
   public readonly tools: ToolRegistry;
-  private readonly contextHydrator = new ContextHydrator();
   private readonly responseComposer = new ResponseComposer();
   private readonly capabilityRegistry: AgentCapabilityRegistry;
   private readonly contextAssemblyPipeline: ContextAssemblyPipeline;
+  private readonly planExecutionService: PlanExecutionService;
+  private readonly decisionRunner = new AgentDecisionRunner();
+  private readonly reviewPolicy = new ReviewPolicy();
   private readonly agents: Record<AgentName, Agent>;
 
   public constructor(private readonly deps: AgentOrchestratorDeps) {
@@ -98,6 +95,17 @@ export class AgentOrchestrator {
       kernel: deps.kernel,
       tools: this.tools,
       capabilityRegistry: this.capabilityRegistry,
+    });
+    this.planExecutionService = new PlanExecutionService({
+      tools: this.tools,
+      pendingActions: this.pendingActions,
+      localeFor,
+      toolCompletedMessage: (run, toolName) => formatText(localeFor(run), "toolCompleted", { tool: toolName }),
+      emit: (run, type, label, extra) => this.emit(run, type, label, extra),
+      addObservation: (run, step, result) => this.addObservation(run, step, result),
+      addPublicAgentMessage: (run, message) => this.addPublicAgentMessage(run, message),
+      getOrExecutePrepareSaveResult: (run, args) => this.getOrExecutePrepareSaveResult(run, args),
+      getPreparedResumeRewriteResult: (run, args) => this.getPreparedResumeRewriteResult(run, args),
     });
     const modelClient = deps.kernel.frontDeskModelClient;
     const domainRegistry = new AgentDomainRegistry([careerDomain]);
@@ -158,7 +166,7 @@ export class AgentOrchestrator {
         summary: "Classifying and routing the user request.",
         status: "running",
       });
-      const frontDeskDecision = await this.agents.frontdesk.decide({ context: run.context });
+      const frontDeskDecision = await this.decisionRunner.decide({ agent: this.agents.frontdesk, context: run.context });
       const normalizedHandoff = normalizeFrontDeskHandoff({
         raw: frontDeskDecision.handoff,
         sessionId: run.context.sessionId,
@@ -172,11 +180,15 @@ export class AgentOrchestrator {
         workspace: run.workspace,
       });
       this.applyHandoff(run, normalizedHandoff.handoff, normalizedHandoff.repaired ? normalizedHandoff.reason : undefined);
-      run.trace.complete(frontDeskStep, "success", {
-        routeTo: frontDeskDecision.routeTo,
-        responseType: frontDeskDecision.responseType,
-        handoff: normalizedHandoff.handoff,
-        decision: decisionTraceMeta(frontDeskDecision),
+      this.decisionRunner.completeDecisionTrace({
+        trace: run.trace,
+        step: frontDeskStep,
+        decision: frontDeskDecision,
+        metadata: {
+          routeTo: frontDeskDecision.routeTo,
+          responseType: frontDeskDecision.responseType,
+          handoff: normalizedHandoff.handoff,
+        },
       });
       this.emit(run, "agent.route.completed", "任务类型判断完成", {
         agentName: "frontdesk",
@@ -396,7 +408,8 @@ export class AgentOrchestrator {
       elapsedMs: Date.now() - confirmStartedAt,
     });
 
-    if (shouldReviewTool(confirmedAction.toolName) && !isGenerationQueuedResult(result)) {
+    const confirmReviewPipeline = this.createReviewPipeline(run);
+    if (confirmReviewPipeline.shouldReviewTool(confirmedAction.toolName) && !isGenerationQueuedResult(result)) {
       // Skip critic gate review for save_experience_from_text confirmations.
       // The critic already reviewed the draft during the planning phase (prepare_save_experience_from_text).
       // Re-reviewing on confirmation would create a confusing UX loop where the experience is
@@ -409,7 +422,7 @@ export class AgentOrchestrator {
           agentName: "critic",
           status: "running",
         });
-        const gateResult = await this.createCriticGate(run).review({
+        const gateResult = await confirmReviewPipeline.review({
           context: run.context,
           toolExecutions: [execution],
           sourceAgent: step.agentName,
@@ -697,7 +710,7 @@ export class AgentOrchestrator {
         status: "running",
         payload: { loopStep: run.loopController.state.stepCount },
       });
-      const decision = await specialist.decide({ context: run.context, routeHint });
+      const decision = await this.decisionRunner.decide({ agent: specialist, context: run.context, routeHint });
       lastAssistantMessage = decision.assistantMessage || lastAssistantMessage;
       this.addPublicAgentMessage(run, {
         from: specialist.name,
@@ -714,11 +727,15 @@ export class AgentOrchestrator {
           tools: decision.plan.map((item) => item.toolName).filter(Boolean).slice(0, 8),
         },
       });
-      run.trace.complete(planStep, "success", {
-        responseType: decision.responseType,
-        stepCount: decision.plan.length,
-        loopStep: run.loopController.state.stepCount,
-        decision: decisionTraceMeta(decision),
+      this.decisionRunner.completeDecisionTrace({
+        trace: run.trace,
+        step: planStep,
+        decision,
+        metadata: {
+          responseType: decision.responseType,
+          stepCount: decision.plan.length,
+          loopStep: run.loopController.state.stepCount,
+        },
       });
       this.emit(run, "agent.agent.completed", "阶段处理完成", {
         agentName: specialist.name,
@@ -784,7 +801,8 @@ export class AgentOrchestrator {
         };
       }
 
-      const willReview = shouldEmitCriticReview(executed.executions);
+      const reviewPipeline = this.createReviewPipeline(run);
+      const willReview = reviewPipeline.shouldReviewExecutions(executed.executions);
       if (willReview) {
         this.addPublicAgentMessage(run, {
           from: "critic",
@@ -797,7 +815,7 @@ export class AgentOrchestrator {
           status: "running",
         });
       }
-      const gateResult = await this.createCriticGate(run).review({
+      const gateResult = await reviewPipeline.review({
         context: run.context,
         toolExecutions: executed.executions,
         sourceAgent: specialist.name,
@@ -938,31 +956,7 @@ export class AgentOrchestrator {
   }
 
   private async executePlan(run: RunState, plan: PlanStep[]): Promise<ExecutedPlan> {
-    const toolResults: ToolResult[] = [];
-    const pendingActions: PendingAction[] = [];
-    const executions: ToolExecutionRecord[] = [];
-    for (const step of plan) {
-      if (!step.toolName) continue;
-      this.addPublicAgentMessage(run, {
-        from: step.agentName,
-        type: "request",
-        content: labelForToolStarted(step.toolName),
-        payload: { eventType: "tool_call", toolName: step.toolName },
-      });
-      const result = await this.executeToolOrCreatePendingAction(run, step);
-      toolResults.push(result.result);
-      executions.push({ step, result: result.result });
-      this.addObservation(run, step, result.result);
-      this.addPublicAgentMessage(run, {
-        from: "orchestrator",
-        type: "observation",
-        content: result.result.message ?? formatText(localeFor(run), "toolCompleted", { tool: step.toolName ?? "tool" }),
-        payload: { eventType: "tool_result", toolName: step.toolName, status: result.result.status },
-      });
-      if (result.pendingAction) pendingActions.push(result.pendingAction);
-      if (result.result.status === "needs_input" || result.result.status === "failed") break;
-    }
-    return { toolResults, pendingActions, executions };
+    return this.planExecutionService.executePlan(run, plan);
   }
 
   private createCriticGate(run: RunState): CriticGate {
@@ -970,6 +964,8 @@ export class AgentOrchestrator {
       critic: this.agents.critic,
       messageBus: run.messageBus,
       trace: run.trace,
+      decisionRunner: this.decisionRunner,
+      reviewPolicy: this.reviewPolicy,
       executeCriticPlan: async (criticPlan) => {
         const validPlan = this.validatePlan(criticPlan, this.agents.critic);
         return (await this.executePlan(run, validPlan)).executions;
@@ -977,415 +973,13 @@ export class AgentOrchestrator {
     });
   }
 
-  private async executeToolOrCreatePendingAction(
-    run: RunState,
-    step: PlanStep,
-  ): Promise<{ result: ToolResult; pendingAction?: PendingAction }> {
-    const tool = this.tools.get(step.toolName ?? "");
-    if (!tool) throw new AgentError("TOOL_NOT_FOUND", "Planned tool is not registered.", { statusCode: 404 });
-
-    const hydratedArgs = this.contextHydrator.hydrate(tool.name, (step.arguments ?? {}) as Record<string, unknown>, run.context, run.workspace);
-    run.trace.add({
-      agentName: step.agentName,
-      type: "reason",
-      summary: `Hydrated arguments for ${tool.name}.`,
-      toolName: tool.name,
-      status: "success",
-      completedAt: new Date().toISOString(),
-      metadata: { argumentKeys: Object.keys(hydratedArgs) },
+  private createReviewPipeline(run: RunState): ReviewPipeline {
+    return new ReviewPipeline({
+      reviewPolicy: this.reviewPolicy,
+      createCriticGate: () => this.createCriticGate(run),
+      evaluationHooks: this.capabilityRegistry.listEvaluationHooks(),
+      learningEventRecorder: new LearningEventRecorder(this.capabilityRegistry.listReflectionSinks()),
     });
-    if (Array.isArray(hydratedArgs.__resolverConflicts) && hydratedArgs.__resolverConflicts.length > 0) {
-      run.trace.add({
-        agentName: step.agentName,
-        type: "reason",
-        summary: `Resolver detected conflicting IDs for ${tool.name}.`,
-        toolName: tool.name,
-        status: "needs_input",
-        completedAt: new Date().toISOString(),
-        metadata: {
-          toolName: tool.name,
-          conflicts: hydratedArgs.__resolverConflicts,
-        },
-      });
-    }
-    const idGuardResult = guardToolIds(tool.name, hydratedArgs);
-    if (idGuardResult) {
-      run.trace.add({
-        agentName: step.agentName,
-        type: "reason",
-        summary: `Guard blocked tool ${tool.name}: non-canonical ID detected.`,
-        toolName: tool.name,
-        status: "needs_input",
-        completedAt: new Date().toISOString(),
-        metadata: {
-          stepId: step.id,
-          toolName: tool.name,
-          rejectedReason: idGuardResult.actionResult?.missingInputs,
-          sessionId: run.context.sessionId,
-          turnId: run.context.turnId,
-        },
-      });
-      this.emit(run, "agent.tool.failed", `工具调用被拦截：${tool.name}`, {
-        agentName: step.agentName,
-        toolName: tool.name,
-        status: "needs_input",
-        payload: { reason: "non_canonical_id", missingInputs: idGuardResult.actionResult?.missingInputs },
-      });
-      return { result: idGuardResult };
-    }
-    const parsed = tool.inputSchema.safeParse(stripInternalToolArgs(hydratedArgs));
-    if (!parsed.success) {
-      const missingFields = parsed.error.issues
-        .map((issue) => issue.path.join("."))
-        .filter(Boolean);
-      this.emit(run, "agent.tool.failed", `工具调用失败：${tool.name}`, {
-        agentName: step.agentName,
-        toolName: tool.name,
-        status: "needs_input",
-        payload: { reason: "missing_required_input" },
-      });
-      const message = toolNeedsInputMessageForFields(tool.name, missingFields, localeFor(run));
-      return {
-        result: {
-          status: "needs_input",
-          message,
-          visibility: "error_user_visible",
-          actionResult: {
-            actionType: tool.name,
-            status: "needs_input",
-            reason: "missing_required_input",
-            missingInputs: missingFields,
-            message,
-          },
-        },
-      };
-    }
-    const args = parsed.data as Record<string, unknown>;
-    const scopedArgs = {
-      ...args,
-      ...(Array.isArray(hydratedArgs.__resolverConflicts) ? { __resolverConflicts: hydratedArgs.__resolverConflicts } : {}),
-    };
-    const scopeGuardResult = await guardToolScope(tool.name, scopedArgs, run.context, run.workspace);
-    if (scopeGuardResult) {
-      run.trace.add({
-        agentName: step.agentName,
-        type: "reason",
-        summary: `Guard blocked tool ${tool.name}: scope validation failed.`,
-        toolName: tool.name,
-        status: "needs_input",
-        completedAt: new Date().toISOString(),
-        metadata: {
-          stepId: step.id,
-          toolName: tool.name,
-          reason: scopeGuardResult.actionResult?.missingInputs,
-          sessionId: run.context.sessionId,
-          turnId: run.context.turnId,
-        },
-      });
-      this.emit(run, "agent.tool.failed", `工具调用被拦截：${tool.name}`, {
-        agentName: step.agentName,
-        toolName: tool.name,
-        status: "needs_input",
-        payload: { reason: "scope_guard", missingInputs: scopeGuardResult.actionResult?.missingInputs },
-      });
-      return { result: scopeGuardResult };
-    }
-    this.emit(run, "agent.tool.started", labelForToolStarted(tool.name), {
-      agentName: step.agentName,
-      toolName: tool.name,
-      status: "running",
-    });
-    const autoRevisionAuthorized = isAutoRevisionAuthorized(run, tool.name);
-    if (!tool.requiresConfirmation || autoRevisionAuthorized) {
-      if (autoRevisionAuthorized) {
-        run.trace.add({
-          agentName: "AgentOrchestrator",
-          type: "reason",
-          summary: `Using internal auto-revision authorization for ${tool.name}.`,
-          toolName: tool.name,
-          status: "success",
-          completedAt: new Date().toISOString(),
-          metadata: {
-            autoRevisionAuthorized: true,
-            sourcePendingActionId: run.autoRevisionContext?.sourcePendingActionId,
-          },
-        });
-      }
-      try {
-        const rawResult = await run.executor.executeDefinition(tool, args, run.context);
-        const patched = sanitizeReadToolConfirmationResult(rawResult, tool.name);
-        if (patched !== rawResult) {
-          run.trace.add({
-            agentName: "AgentOrchestrator",
-            type: "reason",
-            summary: `Downgraded unexpected needs_confirmation from read tool ${tool.name} to success.`,
-            status: "success",
-            completedAt: new Date().toISOString(),
-          });
-        }
-        const result = ensureToolResultVisibility(patched, tool.name);
-        this.emit(run, "agent.tool.completed", "工具调用完成", {
-          agentName: step.agentName,
-          toolName: tool.name,
-          status: result.status,
-        });
-        this.emit(run, "agent.tool.summary", "工具结果已整理", {
-          agentName: step.agentName,
-          toolName: tool.name,
-          status: result.status,
-          payload: {
-            summary: result.message || "工具执行完成",
-            status: result.status,
-          },
-        });
-        return { result };
-      } catch (error) {
-        this.emit(run, "agent.tool.failed", `工具调用失败：${tool.name}`, {
-          agentName: step.agentName,
-          toolName: tool.name,
-          status: "failed",
-          payload: { message: error instanceof Error ? error.message : "Tool execution failed." },
-        });
-        throw error;
-      }
-    }
-
-    // For save_experience_from_text: run prepare_save_experience_from_text first
-    // to get LLM-structured data before creating the pending action preview.
-    let enrichedArgs: Record<string, unknown> = args;
-    let enrichedPreview: PendingAction["preview"] = previewFor(tool.name, args);
-    if (tool.name === "save_experience_from_text") {
-      // Dedup: if there's already a pending save_experience_from_text for this session
-      // with the same text, don't create a duplicate card.
-      const existingPending = await this.pendingActions.list(run.context.userId, run.context.sessionId);
-      const duplicatePending = existingPending.find(
-        (pa) => pa.toolName === "save_experience_from_text" && pa.toolArguments?.text === (typeof args.text === "string" ? args.text : undefined),
-      );
-      if (duplicatePending) {
-        // Return the existing pending action's result without creating a new one
-        return {
-          result: {
-            status: "needs_input",
-            message: duplicatePending.summary,
-            pendingActionId: duplicatePending.id,
-            visibility: "action_required",
-            actionResult: {
-              status: "needs_confirmation",
-              actionType: tool.name,
-              pendingActionId: duplicatePending.id,
-            },
-          },
-        };
-      }
-
-      const prepared = await this.getOrExecutePrepareSaveResult(run, args);
-      if (prepared) {
-        const textFallback = stringValue(args.text) ?? buildExperienceTextFallback(prepared.draft);
-        enrichedArgs = {
-          ...args,
-          ...(textFallback ? { text: textFallback } : {}),
-          candidate: prepared.draft,
-          experienceDraft: prepared.experienceDraft,
-        };
-        enrichedPreview = {
-          after: {
-            experienceDraft: prepared.experienceDraft,
-          },
-        };
-      } else {
-        const draft = draftFromSaveExperienceArgs(args);
-        if (draft) {
-          const experienceDraft = buildNormalizedExperiencePreview(draft, { missingFields: draft.warnings });
-          const textFallback = stringValue(args.text) ?? buildExperienceTextFallback(draft);
-          enrichedArgs = {
-            ...args,
-            ...(textFallback ? { text: textFallback } : {}),
-            candidate: draft,
-            experienceDraft,
-          };
-          enrichedPreview = {
-            after: {
-              experienceDraft,
-            },
-          };
-        }
-      }
-    }
-
-    if (tool.name === "save_jd_from_text") {
-      const jdText = stringValue(args.text) ?? stringValue(args.jdText) ?? stringValue(args.rawText);
-      if (jdText) {
-        const jdHash = computeJDHash(jdText);
-        enrichedArgs = {
-          ...args,
-          text: jdText,
-          jdText,
-          rawText: jdText,
-          jdHash,
-        };
-        enrichedPreview = previewFor(tool.name, enrichedArgs);
-        const existingPending = await this.pendingActions.list(run.context.userId, run.context.sessionId);
-        const duplicatePending = existingPending.find((pa) => {
-          if (pa.toolName !== "save_jd_from_text") return false;
-          const pendingArgs = pa.toolArguments ?? {};
-          const existingHash = stringValue(pendingArgs.jdHash)
-            ?? computeJDHash(
-              stringValue(pendingArgs.text)
-              ?? stringValue(pendingArgs.jdText)
-              ?? stringValue(pendingArgs.rawText)
-              ?? "",
-            );
-          return existingHash === jdHash;
-        });
-        if (duplicatePending) {
-          return {
-            result: {
-              status: "needs_input",
-              message: duplicatePending.summary,
-              pendingActionId: duplicatePending.id,
-              visibility: "action_required",
-              actionResult: {
-                status: "needs_confirmation",
-                actionType: tool.name,
-                pendingActionId: duplicatePending.id,
-              },
-            },
-          };
-        }
-      }
-    }
-
-    if (tool.name === "generate_resume_from_jd") {
-      const jdId = stringValue(args.jdId);
-      const jdText = stringValue(args.jdText);
-      const jdHash = stringValue(args.jdHash) ?? (jdText ? computeJDHash(jdText) : undefined);
-      enrichedArgs = {
-        ...enrichedArgs,
-        ...(jdHash ? { jdHash } : {}),
-      };
-
-      const history = await this.pendingActions.listAll(run.context.userId, run.context.sessionId);
-      const sameGenerateActions = history.filter((item) => {
-        if (item.toolName !== "generate_resume_from_jd") return false;
-        const itemArgs = item.toolArguments ?? {};
-        const itemJdId = stringValue(itemArgs.jdId);
-        const itemJdHash =
-          stringValue(itemArgs.jdHash)
-          ?? (() => {
-            const text = stringValue(itemArgs.jdText) ?? stringValue(itemArgs.text) ?? stringValue(itemArgs.rawText);
-            return text ? computeJDHash(text) : undefined;
-          })();
-        if (jdId && itemJdId && jdId === itemJdId) return true;
-        if (jdHash && itemJdHash && jdHash === itemJdHash) return true;
-        return false;
-      });
-      const latestSameAction = sameGenerateActions.sort((a, b) => (b.createdAt || "").localeCompare(a.createdAt || ""))[0];
-      if (latestSameAction) {
-        if (latestSameAction.status === "confirmed" && latestSameAction.lastResult?.status === "success") {
-          const reused = ensureToolResultVisibility(latestSameAction.lastResult, tool.name);
-          return {
-            result: {
-              ...reused,
-              message: reused.message ?? "已确认，正在生成简历版本。生成完成后会展示在这里。",
-            },
-          };
-        }
-        if (latestSameAction.status === "pending") {
-          return {
-            result: {
-              status: "needs_input",
-              message: latestSameAction.summary || "请确认后继续生成简历。",
-              pendingActionId: latestSameAction.id,
-              visibility: "action_required",
-              actionResult: {
-                status: "needs_confirmation",
-                actionType: tool.name,
-                pendingActionId: latestSameAction.id,
-              },
-            },
-          };
-        }
-        if (latestSameAction.status === "executed" && latestSameAction.lastResult?.status === "success") {
-          const reused = ensureToolResultVisibility(latestSameAction.lastResult, tool.name);
-          return {
-            result: {
-              ...reused,
-              message: reused.message ?? "简历已生成，可查看版本或下载文件。",
-            },
-          };
-        }
-      }
-    }
-
-    if (tool.name === "revise_resume_item" && !stringValue(enrichedArgs.rewrittenText)) {
-      const prepared = this.getPreparedResumeRewriteResult(run, enrichedArgs);
-      if (prepared) {
-        enrichedArgs = {
-          ...enrichedArgs,
-          rewrittenText: prepared.rewrittenText,
-          preparedRewrite: {
-            sourceTextPreview: prepared.sourceTextPreview,
-            changes: prepared.changes,
-          },
-        };
-        enrichedPreview = {
-          before: { sourceTextPreview: prepared.sourceTextPreview },
-          after: { rewrittenText: prepared.rewrittenText, changes: prepared.changes },
-        };
-      }
-    }
-
-    const pending = await this.pendingActions.create({
-      userId: run.context.userId,
-      sessionId: run.context.sessionId,
-      turnId: run.context.turnId,
-      tool,
-      toolArguments: enrichedArgs,
-      title: confirmationTitle(tool.name, localeFor(run), step.summary),
-      summary: confirmationSummary(tool.name, localeFor(run), enrichedArgs),
-      affectedResources: affectedResourcesFor(tool.name, enrichedArgs),
-      preview: enrichedPreview,
-    });
-    run.trace.add({
-      agentName: step.agentName,
-      type: "confirmation_required",
-      summary: `Confirmation required for ${tool.name}.`,
-      toolName: tool.name,
-      status: "needs_input",
-      completedAt: new Date().toISOString(),
-      metadata: { pendingActionId: pending.id },
-    });
-    this.emit(run, "agent.pending_action.created", "已准备确认操作", {
-      agentName: step.agentName,
-      toolName: tool.name,
-      status: "needs_confirmation",
-      payload: {
-        pendingActionId: pending.id,
-        toolName: tool.name,
-        summary: pending.summary,
-        riskLevel: pending.riskLevel,
-      },
-    });
-    this.emit(run, "agent.tool.completed", "已准备确认操作", {
-      agentName: step.agentName,
-      toolName: tool.name,
-      status: "needs_confirmation",
-      payload: { pendingActionId: pending.id },
-    });
-    return {
-      pendingAction: pending,
-      result: {
-        status: "needs_input",
-        message: pending.summary,
-        pendingActionId: pending.id,
-        visibility: "action_required",
-        actionResult: {
-          status: "needs_confirmation",
-          actionType: tool.name,
-          pendingActionId: pending.id,
-        },
-      },
-    };
   }
 
   private validatePlan(plan: PlanStep[], agent: Agent): PlanStep[] {
@@ -2098,13 +1692,6 @@ function labelForCriticStatus(status: string): string {
   return "审查完成";
 }
 
-function labelForToolStarted(toolName: string): string {
-  if (toolName === "list_experiences" || toolName === "search_experiences" || toolName === "get_experience") {
-    return "正在查看经历库…";
-  }
-  return `正在调用工具：${toolName}`;
-}
-
 type RuntimeTextKey =
   | "productIntro"
   | "clarify"
@@ -2241,16 +1828,6 @@ function sanitizeInvalidConfirmationResults(run: RunState, results: ToolResult[]
   return { toolResults, invalidCount };
 }
 
-function shouldEmitCriticReview(executions: ToolExecutionRecord[]): boolean {
-  return executions.some((execution) => execution.result.status === "success" && Boolean(execution.step.toolName && shouldReviewTool(execution.step.toolName)));
-}
-
-function isAutoRevisionAuthorized(run: RunState, toolName: string): boolean {
-  return run.autoRevisionContext?.autoRevisionAuthorized === true
-    && run.autoRevisionContext.toolName === toolName
-    && toolName === "generate_resume_from_jd";
-}
-
 function confirmedActionStep(action: PendingAction, agentName: AgentName): PlanStep {
   return {
     id: `confirm-${action.id}`,
@@ -2364,19 +1941,6 @@ function isTerminalDisplayToolResult(result: ToolResult): boolean {
     || actionType === "search_experiences"
     || actionType === "match_experiences_against_jd";
 }
-
-function decisionTraceMeta(decision: unknown): Record<string, unknown> | undefined {
-  const meta = getAgentDecisionMeta(decision);
-  if (!meta) return undefined;
-  return {
-    decisionSource: meta.decisionSource,
-    fallbackReason: meta.fallbackReason,
-    modelUsed: meta.modelUsed,
-    schemaValid: meta.schemaValid,
-    repairApplied: meta.repairApplied,
-  };
-}
-
 
 function debugConfirm(event: string, payload: Record<string, unknown>): void {
   if (process.env.DEBUG_CONFIRM !== "true" && process.env.NODE_ENV !== "development") return;
@@ -2555,26 +2119,6 @@ const BLOCKED_METADATA_KEYS = new Set([
   "apiKey",
   "authorization",
 ]);
-
-function ensureToolResultVisibility(result: ToolResult, toolName?: string): ToolResult {
-  return {
-    ...result,
-    visibility: result.visibility ?? defaultToolResultVisibility(toolName, result.status),
-  };
-}
-
-export function sanitizeReadToolConfirmationResult(result: ToolResult, toolName: string): ToolResult {
-  if (result.actionResult?.status !== "needs_confirmation") return result;
-  return {
-    ...result,
-    visibility: result.visibility ?? "user_summary",
-    actionResult: {
-      ...(result.actionResult as Record<string, unknown>),
-      status: "success",
-      reason: "read_tool_cannot_request_confirmation",
-    },
-  };
-}
 
 function assistantFromResults(results: ToolResult[], fallback: string): string {
   const visible = results
@@ -2834,53 +2378,6 @@ function legacyAffectedResourcesFor(toolName: string, args: Record<string, unkno
   if (toolName.includes("export")) return [{ type: "export" as const }];
   return [];
 }
-
-function draftFromSaveExperienceArgs(args: Record<string, unknown>): ExperienceDraftLike | undefined {
-  const source = isRecord(args.candidate)
-    ? args.candidate
-    : isRecord(args.experienceDraft)
-      ? args.experienceDraft
-      : undefined;
-  if (!source) return undefined;
-
-  const title = stringValue(source.title);
-  const content = stringValue(source.content) ?? stringValue(source.description) ?? stringValue(source.rawText);
-  if (!title || !content) return undefined;
-
-  return {
-    category: (stringValue(source.category) ?? "other") as ExperienceDraftLike["category"],
-    title,
-    organization: stringValue(source.organization),
-    role: stringValue(source.role),
-    startDate: stringValue(source.startDate),
-    endDate: stringValue(source.endDate),
-    content,
-    tags: Array.isArray(source.tags)
-      ? source.tags.filter((item): item is string => typeof item === "string" && item.trim().length > 0)
-      : Array.isArray(source.skills)
-        ? source.skills.filter((item): item is string => typeof item === "string" && item.trim().length > 0)
-        : [],
-    structured: (isRecord(source.structured) ? source.structured : { rawText: content }) as ExperienceDraftLike["structured"],
-    confidence: numberValue(source.confidence) ?? 0.5,
-    warnings: Array.isArray(source.warnings)
-      ? source.warnings.filter((item): item is string => typeof item === "string" && item.trim().length > 0)
-      : Array.isArray(source.missingFields)
-        ? source.missingFields.filter((item): item is string => typeof item === "string" && item.trim().length > 0)
-        : [],
-  };
-}
-
-function buildExperienceTextFallback(draft: Record<string, unknown>): string | undefined {
-  const parts = [
-    stringValue(draft.title),
-    stringValue(draft.organization),
-    stringValue(draft.role),
-    [stringValue(draft.startDate), stringValue(draft.endDate)].filter(Boolean).join(" - "),
-    stringValue(draft.content) ?? stringValue(draft.description) ?? stringValue(draft.rawText),
-  ].filter((item): item is string => Boolean(item));
-  return parts.length > 0 ? parts.join("\n") : undefined;
-}
-
 
 function isString(value: unknown): value is string {
   return typeof value === "string" && value.trim().length > 0;

@@ -1,18 +1,13 @@
 import type { Agent } from "../agents/BaseAgent.js";
 import { getAgentDecisionMeta } from "../agents/BaseAgent.js";
+import { defaultReviewPolicy, type ReviewPolicy } from "../evaluation/ReviewPolicy.js";
 import type { ToolResult } from "../tools/ToolResult.js";
 import { CriticReviewSchema, type AgentName, type CriticReview, type PlanStep } from "../validation/AgentOutputSchemas.js";
 import { detectLocale } from "../../copilot/locale.js";
 import type { AgentMessageBus } from "./AgentMessageBus.js";
 import type { AgentContext } from "./AgentContext.js";
 import type { AgentTraceRecorder } from "./AgentTrace.js";
-
-const CRITIC_TOOL_NAMES = new Set([
-  "generate_resume_from_jd",
-  "revise_resume_item",
-  "save_experience_from_text",
-  "update_experience",
-]);
+import { AgentDecisionRunner } from "./AgentDecisionRunner.js";
 
 export type ToolExecutionRecord = {
   step: PlanStep;
@@ -32,15 +27,23 @@ export class CriticGate {
       messageBus: AgentMessageBus;
       trace: AgentTraceRecorder;
       executeCriticPlan(plan: PlanStep[]): Promise<ToolExecutionRecord[]>;
+      decisionRunner?: AgentDecisionRunner;
+      reviewPolicy?: ReviewPolicy;
     },
-  ) {}
+  ) {
+    this.decisionRunner = deps.decisionRunner ?? new AgentDecisionRunner();
+    this.reviewPolicy = deps.reviewPolicy ?? defaultReviewPolicy;
+  }
+
+  private readonly decisionRunner: AgentDecisionRunner;
+  private readonly reviewPolicy: ReviewPolicy;
 
   public async review(input: {
     context: AgentContext;
     toolExecutions: ToolExecutionRecord[];
     sourceAgent: AgentName;
   }): Promise<CriticGateResult> {
-    const reviewTargets = input.toolExecutions.filter((execution) => shouldReview(execution));
+    const reviewTargets = input.toolExecutions.filter((execution) => this.reviewPolicy.shouldReviewExecution(execution));
     if (reviewTargets.length === 0) return { status: "skipped", criticToolResults: [] };
 
     const message = this.deps.messageBus.requestReview(input.sourceAgent, "critic", {
@@ -57,7 +60,8 @@ export class CriticGate {
     });
 
     const criticResults: ToolResult[] = [];
-    let decision = await this.deps.critic.decide({
+    let decision = await this.decisionRunner.decide({
+      agent: this.deps.critic,
       context: input.context,
       routeHint: "critic",
       task: "Review the recent generated or modified result. Return a CriticReview-compatible JSON object in criticReview.",
@@ -67,7 +71,8 @@ export class CriticGate {
     if (!review && decision.plan.length > 0) {
       const executions = await this.deps.executeCriticPlan(decision.plan);
       criticResults.push(...executions.map((execution) => execution.result));
-      decision = await this.deps.critic.decide({
+      decision = await this.decisionRunner.decide({
+        agent: this.deps.critic,
         context: input.context,
         routeHint: "critic",
         task: "Use the observations from your review tools and return the final CriticReview-compatible JSON object in criticReview.",
@@ -88,12 +93,8 @@ export class CriticGate {
   }
 }
 
-function shouldReview(execution: ToolExecutionRecord): boolean {
-  return execution.result.status === "success" && Boolean(execution.step.toolName && shouldReviewTool(execution.step.toolName));
-}
-
 export function shouldReviewTool(toolName: string): boolean {
-  return CRITIC_TOOL_NAMES.has(toolName);
+  return defaultReviewPolicy.shouldReviewTool(toolName);
 }
 
 function extractReview(decision: unknown): CriticReview | undefined {

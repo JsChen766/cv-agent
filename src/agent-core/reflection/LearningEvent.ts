@@ -10,6 +10,7 @@ export type LearningEventType =
   | "tool.failed"
   | "critic.needs_revision"
   | "critic.blocked"
+  | "critic.needs_user_confirmation"
   | "generation.completed"
   | "export.completed"
   | "user.preference_signal";
