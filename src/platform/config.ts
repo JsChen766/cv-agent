@@ -96,7 +96,7 @@ export function readPlatformConfig(env: NodeJS.ProcessEnv = process.env): Platfo
     fileAllowedMimeTypes: env.FILE_ALLOWED_MIME_TYPES?.trim() || "application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/plain",
 
     // export
-    pdfRenderer: readPdfRenderer(env),
+    pdfRenderer: readPdfRenderer(env, nodeEnv),
     exportStorageDir: env.EXPORT_STORAGE_DIR?.trim() || ".data/exports",
     exportDownloadTtlMinutes: readPositiveNumber(env.EXPORT_DOWNLOAD_TTL_MINUTES) ?? 60,
 
@@ -160,9 +160,18 @@ function readFileStorageProvider(env: NodeJS.ProcessEnv): FileStorageProvider {
   return "local";
 }
 
-function readPdfRenderer(env: NodeJS.ProcessEnv): PdfRenderer {
-  const configured = env.PDF_RENDERER?.trim() || "none";
-  const valid: PdfRenderer[] = ["none", "playwright", "external"];
-  if ((valid as string[]).includes(configured)) return configured as PdfRenderer;
-  return "none";
+function readPdfRenderer(env: NodeJS.ProcessEnv, nodeEnv: string): PdfRenderer {
+  const configured = env.PDF_RENDERER?.trim();
+  if (configured) {
+    const valid: PdfRenderer[] = ["none", "playwright", "external"];
+    if ((valid as string[]).includes(configured)) return configured as PdfRenderer;
+    return "none";
+  }
+  // No explicit value: default to playwright outside production so local
+  // development can export PDFs without setting an env var, while production
+  // deploys still need to opt in explicitly to avoid accidentally launching
+  // chromium on bare images. Tests also default to "none" so the test bench
+  // stays deterministic — tests inject their own renderer when needed.
+  if (nodeEnv === "production" || nodeEnv === "test") return "none";
+  return "playwright";
 }

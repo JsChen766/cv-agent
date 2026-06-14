@@ -35,11 +35,26 @@ export class JobRunner {
     });
     this.registry.register("import_resume_file", async ({ job }) => {
       const fileId = stringInput(job.input, "fileId");
+      const file = await this.deps.fileService.getFile(job.userId, fileId);
+      if (!file) {
+        throw new Error(`File ${fileId} not found. It may have been deleted before the import job ran.`);
+      }
       const parsed = await this.deps.fileService.getParsedDocumentByFileId(job.userId, fileId)
         ?? await this.deps.fileService.parseFile(job.userId, fileId);
+      const text = parsed.text?.trim() ?? "";
+      if (!text) {
+        throw new Error(`Parsed document for file ${fileId} is empty. The file may be unreadable, scanned, or contain no extractable text. Please upload a text-based PDF, DOCX, or TXT file.`);
+      }
       const importJob = await this.deps.productServices.importService.createTextImportJob(job.userId, parsed.text);
-      const candidates = await this.deps.productServices.importService.createCandidatesFromText(job.userId, importJob.id);
-      return { importJobId: importJob.id, candidateCount: candidates.length };
+      try {
+        const candidates = await this.deps.productServices.importService.createCandidatesFromText(job.userId, importJob.id);
+        return { importJobId: importJob.id, candidateCount: candidates.length, fileId };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Experience extraction failed.";
+        // Surface a clear, user-readable error and keep the importJobId so the
+        // frontend can still link to a failed import job for diagnostics.
+        throw new Error(`Failed to extract experiences from file ${fileId} (importJobId=${importJob.id}): ${message}`);
+      }
     });
     this.registry.register("long_generation", async ({ job }) => {
       const actionType = stringInput(job.input, "actionType");

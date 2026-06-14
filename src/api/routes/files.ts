@@ -81,26 +81,83 @@ function parseUpload(request: FastifyRequest): { originalName: string; mimeType:
   if (typeof body === "object" && body !== null && !Buffer.isBuffer(body)) {
     const record = body as Record<string, unknown>;
     const base64 = requiredString(record.base64, "base64");
+    const buffer = decodeBase64(base64);
     return {
       originalName: requiredString(record.fileName ?? record.originalName, "fileName"),
       mimeType: requiredString(record.mimeType, "mimeType"),
-      buffer: Buffer.from(base64, "base64"),
+      buffer,
     };
   }
   throw new ApiError(ErrorCodes.INVALID_BODY, "Expected multipart file upload or JSON base64 body.", 400);
 }
 
+function decodeBase64(value: string): Buffer {
+  // Strip any data: URL prefix and surrounding whitespace so frontends can
+  // pass either a raw base64 payload or a `data:<mime>;base64,...` URL.
+  const cleaned = value.replace(/^data:[^;,]*;base64,/i, "").replace(/\s+/g, "");
+  if (!cleaned) throw new ApiError(ErrorCodes.INVALID_BODY, "base64 payload is empty.", 400);
+  if (!/^[A-Za-z0-9+/=_-]+$/.test(cleaned)) {
+    throw new ApiError(ErrorCodes.INVALID_BODY, "base64 payload contains invalid characters.", 400);
+  }
+  const buffer = Buffer.from(cleaned, "base64");
+  if (buffer.length === 0) {
+    throw new ApiError(ErrorCodes.INVALID_BODY, "base64 payload decoded to an empty buffer.", 400);
+  }
+  return buffer;
+}
+
 function parseMultipartUpload(body: unknown, contentType: string): { originalName: string; mimeType: string; buffer: Buffer } {
   if (!Buffer.isBuffer(body)) throw new ApiError(ErrorCodes.INVALID_BODY, "Multipart body must be binary.", 400);
-  const boundary = contentType.match(/boundary=([^;]+)/i)?.[1];
-  if (!boundary) throw new ApiError(ErrorCodes.INVALID_BODY, "Multipart boundary is required.", 400);
+  const boundary = contentType.match(/boundary=(?:"([^"]+)"|([^;]+))/i);
+  const boundaryValue = (boundary?.[1] ?? boundary?.[2])?.trim();
+  if (!boundaryValue) throw new ApiError(ErrorCodes.INVALID_BODY, "Multipart boundary is required.", 400);
+
+  // Parse multipart bytes correctly — splitting on the boundary in `binary`
+  // preserves byte positions, then we slice the raw `body` buffer for the
+  // file content so PDFs/DOCX (which contain non-utf8 bytes) round-trip
+  // intact.
+  const delimiter = `--${boundaryValue}`;
   const raw = body.toString("binary");
-  const part = raw.split(`--${boundary}`).find((item) => item.includes('name="file"'));
-  if (!part) throw new ApiError(ErrorCodes.INVALID_BODY, "file field is required.", 400);
-  const [headerText, ...rest] = part.split("\r\n\r\n");
-  const content = rest.join("\r\n\r\n").replace(/\r\n--$/, "").replace(/\r\n$/, "");
-  const filename = headerText.match(/filename="([^"]+)"/)?.[1] ?? "upload";
-  const mimeType = headerText.match(/content-type:\s*([^\r\n]+)/i)?.[1]?.trim() ?? "application/octet-stream";
-  return { originalName: filename, mimeType, buffer: Buffer.from(content, "binary") };
+  // Find each part's start by searching for the delimiter; build [start, end)
+  // ranges that cover everything between consecutive delimiters.
+  const parts: Array<{ start: number; end: number }> = [];
+  let cursor = 0;
+  while (cursor < raw.length) {
+    const next = raw.indexOf(delimiter, cursor);
+    if (next < 0) break;
+    const partStart = next + delimiter.length;
+    // skip CRLF after delimiter
+    const after = raw.charCodeAt(partStart) === 0x0d && raw.charCodeAt(partStart + 1) === 0x0a
+      ? partStart + 2
+      : partStart;
+    const closing = raw.indexOf(delimiter, after);
+    if (closing < 0) break;
+    parts.push({ start: after, end: closing });
+    cursor = closing;
+  }
+
+  for (const part of parts) {
+    const headerEnd = raw.indexOf("\r\n\r\n", part.start);
+    if (headerEnd < 0 || headerEnd >= part.end) continue;
+    const headerText = raw.slice(part.start, headerEnd);
+    if (!/name="file"/i.test(headerText)) continue;
+    const contentStart = headerEnd + 4;
+    // Strip trailing CRLF that precedes the next boundary delimiter.
+    const contentEnd = part.end >= 2 && raw.charCodeAt(part.end - 2) === 0x0d && raw.charCodeAt(part.end - 1) === 0x0a
+      ? part.end - 2
+      : part.end;
+    if (contentEnd <= contentStart) {
+      throw new ApiError(ErrorCodes.INVALID_BODY, "Uploaded file is empty.", 400);
+    }
+    const filename = headerText.match(/filename="([^"]*)"/i)?.[1]?.trim();
+    const mimeType = headerText.match(/content-type:\s*([^\r\n]+)/i)?.[1]?.trim() ?? "application/octet-stream";
+    const buffer = body.subarray(contentStart, contentEnd);
+    return {
+      originalName: filename && filename.length > 0 ? filename : "upload",
+      mimeType,
+      buffer,
+    };
+  }
+  throw new ApiError(ErrorCodes.INVALID_BODY, 'Multipart "file" field is required.', 400);
 }
 
