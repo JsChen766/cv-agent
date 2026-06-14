@@ -7,6 +7,7 @@ import type { ExperienceDraft } from "../../product/types.js";
 import type { PendingAction } from "../confirmation/PendingAction.js";
 import type { PendingActionService } from "../confirmation/PendingActionService.js";
 import { affectedResourcesFor } from "../security/ToolAffectedResources.js";
+import { LearningEventService } from "../reflection/LearningEventService.js";
 import { guardToolIds, stripInternalToolArgs } from "../security/ToolIdGuard.js";
 import { guardToolScope } from "../security/ToolScopeGuard.js";
 import type { ToolResult } from "../tools/ToolResult.js";
@@ -26,6 +27,7 @@ type PlanExecutionServiceDeps = {
   pendingActions: PendingActionService;
   contextHydrator?: ContextHydrator;
   toolExecutionPolicy?: ToolExecutionPolicy;
+  learningEventService?: LearningEventService;
   localeFor: (run: RunState) => CopilotLocale;
   toolCompletedMessage: (run: RunState, toolName: string) => string;
   emit: (
@@ -68,10 +70,12 @@ type ToolOrPendingActionResult = {
 export class PlanExecutionService {
   private readonly contextHydrator: ContextHydrator;
   private readonly toolExecutionPolicy: ToolExecutionPolicy;
+  private readonly learningEventService: LearningEventService;
 
   public constructor(private readonly deps: PlanExecutionServiceDeps) {
     this.contextHydrator = deps.contextHydrator ?? new ContextHydrator();
     this.toolExecutionPolicy = deps.toolExecutionPolicy ?? new ToolExecutionPolicy();
+    this.learningEventService = deps.learningEventService ?? new LearningEventService();
   }
 
   public async executePlan(run: RunState, plan: PlanStep[]): Promise<ExecutedPlan> {
@@ -89,6 +93,7 @@ export class PlanExecutionService {
       const result = await this.executeToolOrCreatePendingAction(run, step);
       toolResults.push(result.result);
       executions.push({ step, result: result.result });
+      await this.learningEventService.recordToolResult(run.context, step, result.result);
       this.deps.addObservation(run, step, result.result);
       this.deps.addPublicAgentMessage(run, {
         from: "orchestrator",
@@ -265,6 +270,10 @@ export class PlanExecutionService {
         });
         return { result };
       } catch (error) {
+        await this.learningEventService.recordToolResult(run.context, step, {
+          status: "failed",
+          message: error instanceof Error ? error.message : "Tool execution failed.",
+        });
         this.deps.emit(run, "agent.tool.failed", `工具调用失败：${tool.name}`, {
           agentName: step.agentName,
           toolName: tool.name,
@@ -466,6 +475,7 @@ export class PlanExecutionService {
       affectedResources: affectedResourcesFor(tool.name, enrichedArgs),
       preview: enrichedPreview,
     });
+    await this.learningEventService.recordPendingActionCreated(run.context, pending, step);
     run.trace.add({
       agentName: step.agentName,
       type: "confirmation_required",

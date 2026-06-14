@@ -1,9 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { NoopEvaluationHook } from "../src/agent-core/evaluation/NoopEvaluationHook.js";
+import type { AgentContext } from "../src/agent-core/runtime/AgentContext.js";
 import type { MemoryRecord } from "../src/agent-core/memory/MemoryRecord.js";
 import { NoopMemoryProvider } from "../src/agent-core/memory/NoopMemoryProvider.js";
 import type { LearningEvent } from "../src/agent-core/reflection/LearningEvent.js";
 import { LearningEventRecorder } from "../src/agent-core/reflection/LearningEventRecorder.js";
+import { LearningEventService } from "../src/agent-core/reflection/LearningEventService.js";
 import { NoopReflectionSink } from "../src/agent-core/reflection/NoopReflectionSink.js";
 
 describe("memory, reflection, and evaluation internal interfaces", () => {
@@ -70,5 +72,113 @@ describe("memory, reflection, and evaluation internal interfaces", () => {
     await expect(hook.afterRun?.({ userId: "user-1", status: "completed" })).resolves.toBeUndefined();
     await expect(hook.onToolResult?.({ toolName: "list_experiences", status: "success" })).resolves.toBeUndefined();
     await expect(hook.onCriticReview?.({ verdict: "pass", riskLevel: "low" })).resolves.toBeUndefined();
+  });
+
+  it("LearningEventService records tool, pending, critic, and preference events internally", async () => {
+    const delivered: LearningEvent[] = [];
+    const toolHookCalls: unknown[] = [];
+    const service = new LearningEventService({
+      recorder: new LearningEventRecorder([{
+        id: "recording-sink",
+        record: async (event) => {
+          delivered.push(event);
+        },
+      }]),
+      evaluationHooks: [{
+        id: "tool-hook",
+        onToolResult: async (result) => {
+          toolHookCalls.push(result);
+        },
+      }],
+      now: () => new Date("2026-06-14T00:00:00.000Z"),
+    });
+    const context = {
+      userId: "user-1",
+      sessionId: "session-1",
+      turnId: "turn-1",
+    } as AgentContext;
+
+    await service.recordToolResult(context, {
+      id: "step-1",
+      agentName: "architect",
+      toolName: "save_experience_from_text",
+      arguments: {},
+      summary: "Save experience.",
+    }, {
+      status: "success",
+      actionResult: { actionType: "save_experience_from_text", status: "success" },
+    });
+    await service.recordPendingActionCreated(context, {
+      id: "pa-1",
+      userId: "user-1",
+      sessionId: "session-1",
+      turnId: "turn-1",
+      toolName: "generate_resume_from_jd",
+      toolArguments: {},
+      status: "pending",
+      title: "Generate resume",
+      summary: "Generate resume",
+      riskLevel: "high",
+      affectedResources: [{ type: "resume" }],
+      createdAt: "2026-06-14T00:00:00.000Z",
+      expiresAt: "2026-06-14T00:30:00.000Z",
+    });
+    await service.recordPendingActionConfirmed(context, {
+      id: "pa-1",
+      userId: "user-1",
+      sessionId: "session-1",
+      turnId: "turn-1",
+      toolName: "generate_resume_from_jd",
+      toolArguments: {},
+      status: "confirmed",
+      title: "Generate resume",
+      summary: "Generate resume",
+      riskLevel: "high",
+      affectedResources: [],
+      createdAt: "2026-06-14T00:00:00.000Z",
+      expiresAt: "2026-06-14T00:30:00.000Z",
+    }, {
+      status: "success",
+      actionResult: { actionType: "generate_resume_from_jd", status: "success" },
+    });
+    await service.recordCriticReview(context, {
+      status: "pass",
+      criticToolResults: [],
+      review: {
+        verdict: "pass",
+        riskLevel: "low",
+        unsupportedClaims: [],
+        missingEvidence: [],
+        suggestedFixes: [],
+        userVisibleSummary: "Review passed.",
+      },
+    });
+    await service.recordExplicitAction(context, "prefer", { variantId: "pvar-1" });
+
+    expect(delivered.map((event) => event.type)).toEqual([
+      "experience.saved",
+      "pending_action.created",
+      "pending_action.confirmed",
+      "critic.passed",
+      "user.preference_signal",
+    ]);
+    expect(toolHookCalls).toHaveLength(1);
+  });
+
+  it("LearningEventService does not surface recorder failures", async () => {
+    const service = new LearningEventService({
+      recorder: {
+        record: async () => {
+          throw new Error("recorder unavailable");
+        },
+      } as unknown as LearningEventRecorder,
+    });
+    const context = {
+      userId: "user-1",
+      sessionId: "session-1",
+      turnId: "turn-1",
+    } as AgentContext;
+
+    await expect(service.recordExplicitAction(context, "reject", { variantId: "pvar-1" })).resolves.toBeUndefined();
   });
 });

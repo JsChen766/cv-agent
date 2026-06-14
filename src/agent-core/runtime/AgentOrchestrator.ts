@@ -31,6 +31,7 @@ import { AgentCapabilityRegistry } from "../capabilities/AgentCapabilityRegistry
 import { createDefaultCapabilities } from "../capabilities/defaultCapabilities.js";
 import { ContextAssemblyPipeline } from "../context/ContextAssemblyPipeline.js";
 import { LearningEventRecorder } from "../reflection/LearningEventRecorder.js";
+import { LearningEventService } from "../reflection/LearningEventService.js";
 import { ToolRegistry } from "../tools/ToolRegistry.js";
 import type { ToolResult } from "../tools/ToolResult.js";
 import type { AgentName, CriticReview, PlanStep } from "../validation/AgentOutputSchemas.js";
@@ -74,6 +75,7 @@ export class AgentOrchestrator {
   private readonly capabilityRegistry: AgentCapabilityRegistry;
   private readonly contextAssemblyPipeline: ContextAssemblyPipeline;
   private readonly planExecutionService: PlanExecutionService;
+  private readonly learningEventService: LearningEventService;
   private readonly decisionRunner = new AgentDecisionRunner();
   private readonly reviewPolicy = new ReviewPolicy();
   private readonly agents: Record<AgentName, Agent>;
@@ -84,6 +86,10 @@ export class AgentOrchestrator {
     this.tools = new ToolRegistry();
     this.tools.registerMany(createAgentTools());
     this.capabilityRegistry = new AgentCapabilityRegistry(createDefaultCapabilities());
+    this.learningEventService = new LearningEventService({
+      recorder: new LearningEventRecorder(this.capabilityRegistry.listReflectionSinks()),
+      evaluationHooks: this.capabilityRegistry.listEvaluationHooks(),
+    });
     this.contextAssemblyPipeline = new ContextAssemblyPipeline({
       kernel: deps.kernel,
       tools: this.tools,
@@ -99,6 +105,7 @@ export class AgentOrchestrator {
       addPublicAgentMessage: (run, message) => this.addPublicAgentMessage(run, message),
       getOrExecutePrepareSaveResult: (run, args) => this.getOrExecutePrepareSaveResult(run, args),
       getPreparedResumeRewriteResult: (run, args) => this.getPreparedResumeRewriteResult(run, args),
+      learningEventService: this.learningEventService,
     });
     const modelClient = deps.kernel.frontDeskModelClient;
     const domainRegistry = new AgentDomainRegistry([careerDomain]);
@@ -271,6 +278,10 @@ export class AgentOrchestrator {
       },
       productContext: { explicitAction: request.action.type },
     });
+    await this.learningEventService.recordExplicitAction(run.context, request.action.type, {
+      ...(request.action.payload ?? {}),
+      ...(request.action.variantId ? { variantId: request.action.variantId } : {}),
+    });
 
     const mapped = this.mapExplicitAction(request, run);
     if (mapped.kind === "unsupported") {
@@ -366,6 +377,8 @@ export class AgentOrchestrator {
     const step = confirmedActionStep(confirmedAction, tool?.ownerAgent ?? "frontdesk");
     const execution: ToolExecutionRecord = { step, result };
     const confirmSucceeded = result.status === "success";
+    await this.learningEventService.recordPendingActionConfirmed(run.context, confirmedAction, result);
+    await this.learningEventService.recordToolResult(run.context, step, result);
     this.addObservation(run, step, result);
     run.trace.add({
       agentName: "AgentOrchestrator",
@@ -533,6 +546,7 @@ export class AgentOrchestrator {
   public async cancelPendingAction(userId: string, id: string) {
     const action = await this.pendingActions.cancel(userId, id);
     await this.updatePendingActionDisplayStatus(userId, id, "cancelled");
+    await this.learningEventService.recordPendingActionCancelled(action);
     return action;
   }
 
@@ -971,7 +985,7 @@ export class AgentOrchestrator {
       reviewPolicy: this.reviewPolicy,
       createCriticGate: () => this.createCriticGate(run),
       evaluationHooks: this.capabilityRegistry.listEvaluationHooks(),
-      learningEventRecorder: new LearningEventRecorder(this.capabilityRegistry.listReflectionSinks()),
+      learningEventService: this.learningEventService,
     });
   }
 

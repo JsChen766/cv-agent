@@ -1379,6 +1379,40 @@ type AgentDomainModule = {
 
 ---
 
+## Phase 10 完成情况
+
+已完成 Phase 10：内部 Learning Event 采集点接入。
+
+### 本阶段改动
+
+- 扩展 `src/agent-core/reflection/LearningEvent.ts` 内部事件类型，补充 tool success / needs_input、pending action created / confirmed / cancelled、critic pass、resume generated 等内部事件枚举；未改任何对外 schema。
+- 新增 `src/agent-core/reflection/LearningEventService.ts`，集中封装 LearningEvent 组装、tool/action/critic/pending 映射、EvaluationHook tool 回调，以及 recorder 失败隔离。
+- `LearningEventService` 默认使用空 `LearningEventRecorder`，通过 `try/catch` 确保事件记录异常不会影响主流程。
+- `PlanExecutionService` 内部接入 `LearningEventService`：
+  - 记录每个 tool result。
+  - pending action 创建后记录 `pending_action.created`。
+- `ReviewPipeline` 改为复用 `LearningEventService` 记录 critic review 事件，保留既有 EvaluationHook critic 回调。
+- `AgentOrchestrator` 内部创建共享 `LearningEventService`，默认来自 `core.noop` ReflectionSink / EvaluationHook：
+  - 显式 action 中记录 variant / user preference 信号。
+  - pending action confirm 后记录 `pending_action.confirmed` 与对应 tool result。
+  - pending action cancel 后记录 `pending_action.cancelled`。
+- 更新 `tests/MemoryReflectionEvaluationInterfaces.test.ts`，覆盖内部事件采集、EvaluationHook tool 回调、recorder 失败不外溢。
+
+### Contract 保持情况
+
+- 未改变任何 API route、CopilotChatResponse、CopilotActionResult、ProductBlock、ToolResult、AgentDecisionSchema。
+- 未改变 ToolDefinition、AgentFactory、prompt、allowedTools 或前端 contract。
+- 默认 ReflectionSink / EvaluationHook 仍为 Noop；不落库、不持久化、不暴露给前端。
+- 事件采集失败不会影响用户请求主流程。
+
+### 验证结果
+
+- `npm run typecheck`：通过。
+- `npx vitest run tests/MemoryReflectionEvaluationInterfaces.test.ts tests/agentContractFreeze.test.ts tests/agentPromptContract.test.ts`：通过，3 个测试文件 / 15 个测试。
+- `npm test`：通过，56 个测试文件 / 546 个测试。
+
+---
+
 # Phase 11：Product Flow 与 Agent Runtime 边界整理
 
 ## 目标

@@ -1,8 +1,7 @@
-import { randomUUID } from "node:crypto";
 import type { EvaluationHook } from "../evaluation/EvaluationHook.js";
 import { defaultReviewPolicy, type ReviewPolicy } from "../evaluation/ReviewPolicy.js";
-import type { LearningEvent } from "../reflection/LearningEvent.js";
 import { LearningEventRecorder } from "../reflection/LearningEventRecorder.js";
+import { LearningEventService } from "../reflection/LearningEventService.js";
 import type { AgentName } from "../validation/AgentOutputSchemas.js";
 import type { AgentContext } from "./AgentContext.js";
 import type { CriticGate, CriticGateResult, ToolExecutionRecord } from "./CriticGate.js";
@@ -12,6 +11,7 @@ type ReviewPipelineDeps = {
   createCriticGate: () => CriticGate;
   evaluationHooks?: readonly EvaluationHook[];
   learningEventRecorder?: LearningEventRecorder;
+  learningEventService?: LearningEventService;
 };
 
 export type ReviewPipelineInput = {
@@ -23,12 +23,15 @@ export type ReviewPipelineInput = {
 export class ReviewPipeline {
   private readonly reviewPolicy: ReviewPolicy;
   private readonly evaluationHooks: readonly EvaluationHook[];
-  private readonly learningEventRecorder: LearningEventRecorder;
+  private readonly learningEventService: LearningEventService;
 
   public constructor(private readonly deps: ReviewPipelineDeps) {
     this.reviewPolicy = deps.reviewPolicy ?? defaultReviewPolicy;
     this.evaluationHooks = deps.evaluationHooks ?? [];
-    this.learningEventRecorder = deps.learningEventRecorder ?? new LearningEventRecorder();
+    this.learningEventService = deps.learningEventService ?? new LearningEventService({
+      recorder: deps.learningEventRecorder ?? new LearningEventRecorder(),
+      evaluationHooks: this.evaluationHooks,
+    });
   }
 
   public shouldReviewTool(toolName: string): boolean {
@@ -46,7 +49,7 @@ export class ReviewPipeline {
 
     const result = await this.deps.createCriticGate().review(input);
     await this.emitCriticReview(input.context, result);
-    await this.recordLearningEvent(input.context, result);
+    await this.learningEventService.recordCriticReview(input.context, result);
     return result;
   }
 
@@ -63,29 +66,4 @@ export class ReviewPipeline {
     })));
   }
 
-  private async recordLearningEvent(context: AgentContext, result: CriticGateResult): Promise<void> {
-    const type = learningEventTypeFor(result.status);
-    if (!type) return;
-    const event: LearningEvent = {
-      id: `le-${randomUUID()}`,
-      type,
-      userId: context.userId,
-      sessionId: context.sessionId,
-      turnId: context.turnId,
-      source: "review_pipeline",
-      payload: {
-        verdict: result.review?.verdict,
-        riskLevel: result.review?.riskLevel,
-      },
-      createdAt: new Date().toISOString(),
-    };
-    await this.learningEventRecorder.record(event);
-  }
-}
-
-function learningEventTypeFor(status: CriticGateResult["status"]): LearningEvent["type"] | undefined {
-  if (status === "needs_revision") return "critic.needs_revision";
-  if (status === "blocked") return "critic.blocked";
-  if (status === "needs_user_confirmation") return "critic.needs_user_confirmation";
-  return undefined;
 }
