@@ -3,14 +3,22 @@ import type { ContextProvider } from "../src/agent-core/memory/ContextProvider.j
 import { AgentCapabilityRegistry } from "../src/agent-core/capabilities/AgentCapabilityRegistry.js";
 import type { AgentCapabilityModule } from "../src/agent-core/capabilities/AgentCapabilityModule.js";
 import { createDefaultCapabilities } from "../src/agent-core/capabilities/defaultCapabilities.js";
+import type { RetrievalProvider } from "../src/agent-core/retrieval/RetrievalProvider.js";
 
 describe("AgentCapabilityRegistry", () => {
-  it("creates a default Noop capability set without registering active providers", () => {
+  it("creates a default Noop capability set with only a Noop retrieval provider", async () => {
     const registry = new AgentCapabilityRegistry(createDefaultCapabilities());
+    const retrievalProviders = registry.listRetrievalProviders();
 
-    expect(registry.listModules()).toEqual([{ id: "core.noop" }]);
+    expect(registry.listModules().map((module) => module.id)).toEqual(["core.noop"]);
     expect(registry.listContextProviders()).toEqual([]);
-    expect(registry.listRetrievalProviders()).toEqual([]);
+    expect(retrievalProviders.map((provider) => provider.id)).toEqual(["core.noop.retrieval"]);
+    expect(retrievalProviders[0]?.supports("experience")).toBe(false);
+    await expect(retrievalProviders[0]?.retrieve({
+      userId: "user-1",
+      query: "React",
+      scopes: ["experience"],
+    })).resolves.toEqual([]);
     expect(registry.listMemoryProviders()).toEqual([]);
     expect(registry.listReflectionSinks()).toEqual([]);
     expect(registry.listEvaluationHooks()).toEqual([]);
@@ -20,10 +28,15 @@ describe("AgentCapabilityRegistry", () => {
     const contextProvider: ContextProvider = {
       provide: async () => ({ source: "capability-test" }),
     };
+    const retrievalProvider: RetrievalProvider = {
+      id: "retrieval.first",
+      supports: (scope) => scope === "experience",
+      retrieve: async () => [],
+    };
     const first: AgentCapabilityModule = {
       id: "first",
       contextProviders: [contextProvider],
-      retrievalProviders: [{ id: "retrieval.first" }],
+      retrievalProviders: [retrievalProvider],
       memoryProviders: [{ id: "memory.first" }],
     };
     const second: AgentCapabilityModule = {

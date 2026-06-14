@@ -617,6 +617,34 @@ productContext: {
 请将 AgentOrchestrator 中的 buildAgentContext 上下文组装逻辑抽离为 ContextAssemblyPipeline。保持 AgentContext 字段、Copilot response、AgentDecisionSchema、ToolDefinition、ProductBlock 全部不变。新增的 context provider/capability 输出只能进入内部 productContext 命名空间，默认不改变现有行为。完成后运行 typecheck 和 tests。
 ```
 
+## Phase 3 完成情况（2026-06-14）
+
+### 已完成
+
+- 新增 `src/agent-core/context/ContextAssemblyPipeline.ts`，承接原 `AgentOrchestrator.buildAgentContext()` 中的上下文组装逻辑。
+- 新增 `src/agent-core/context/ContextAssemblyInput.ts`，集中定义 context assembly 的输入与 pipeline 依赖类型。
+- 新增 `src/agent-core/context/ContextProvider.ts`，作为新的 context provider 类型入口。
+- 将 `src/agent-core/memory/ContextProvider.ts` 改为兼容 re-export，旧 import 路径继续可用。
+- 新增 `src/agent-core/context/BaseContextProvider.ts` 与 `src/agent-core/context/ContextBudgetManager.ts`，为后续上下文 provider 和 token budget 管理预留内部位置；本阶段默认不接入运行路径。
+- `AgentOrchestrator.buildAgentContext()` 已变薄，改为委托 `ContextAssemblyPipeline.assemble()`，调用点和返回 `RunState` 字段保持不变。
+- `ContextAssemblyPipeline` 保持原有字段组装：workspace、recentMessages、trace、messageBus、loopController、activeAssetContext、userAssetContext、productContext、availableTools。
+- capability context provider 输出只会进入 `productContext.capabilities.context`；默认 `core.noop` 下没有 providers，因此现有 `productContext` 保持原样。
+- 新增 `tests/ContextAssemblyPipeline.test.ts`，覆盖默认 Noop 不改变 `productContext`，以及 provider 输出不会泄漏到 `productContext` 根层级。
+
+### 验证结果
+
+- `npm run typecheck` 通过。
+- `npx vitest run tests/ContextAssemblyPipeline.test.ts tests/agentContractFreeze.test.ts tests/agentRuntimeLoopAndCritic.test.ts` 通过：3 test files passed，23 tests passed。
+- `npm test` 通过：54 test files passed，535 tests passed。
+
+### 变更范围确认
+
+- 未修改 `AgentContext` 字段名或结构。
+- 未修改 Copilot response、SSE envelope、`AgentDecisionSchema`、`ToolDefinition`、`ToolResult`、`ProductBlock` 或 prompt。
+- 未接入真实 retrieval/RAG、memory、reflection 或 evaluation。
+- `BaseAgent.buildPayload()` 未改动；默认运行时不会新增 `productContext.capabilities`。
+- 已检查非测试代码中本阶段新增/触达文件没有引入测试替身形式或测试替身命名。
+
 ---
 
 # Phase 4：引入 Retrieval 与 Evidence 内部接口
@@ -727,6 +755,36 @@ EvidenceNormalizer.ts
 ```text
 请新增 agent-core/retrieval 与 agent-core/evidence 的内部接口和 Noop 实现，使系统具备未来接入 RAG 和证据追踪的架构插槽。不要接真实向量库，不要改变任何 API、response、ToolDefinition、AgentDecisionSchema、ProductBlock 或现有业务行为。完成后运行 typecheck 和 tests。
 ```
+
+## Phase 4 完成情况（2026-06-14）
+
+### 已完成
+
+- 新增 `src/agent-core/retrieval/RetrievalScope.ts`，定义内部 retrieval scope：experience、jd、resume、conversation、file、strategy_memory、skill_graph。
+- 新增 `src/agent-core/retrieval/RetrievalQuery.ts`、`RetrievalResult.ts`、`RetrievalProvider.ts`，沉淀未来 RAG 接入所需的查询、结果、provider 接口。
+- 新增 `src/agent-core/retrieval/NoopRetrievalProvider.ts`，默认 `supports()` 返回 `false`，`retrieve()` 返回空数组。
+- 新增 `src/agent-core/retrieval/index.ts`，集中导出 retrieval 内部接口。
+- 新增 `src/agent-core/evidence/EvidenceItem.ts`、`EvidenceBundle.ts`，定义证据条目、证据用途、证据 bundle 的内部 contract。
+- 新增 `src/agent-core/evidence/EvidenceNormalizer.ts`，提供 Noop 风格的证据归一化入口：默认空输入返回 `{ items: [] }`，已有 bundle/数组只做浅复制，不触发业务副作用。
+- 新增 `src/agent-core/evidence/index.ts`，集中导出 evidence 内部接口。
+- 将 `AgentCapabilityModule` 的 `retrievalProviders` 从临时占位类型替换为正式 `RetrievalProvider` 接口。
+- `defaultCapabilities` 的 `core.noop` module 注册 `NoopRetrievalProvider`，使 capability registry 已具备 retrieval provider 插槽；运行路径默认不调用 retrieval。
+- 新增 `tests/RetrievalEvidenceInterfaces.test.ts`，覆盖 Noop retrieval、RetrievalResult 携带 EvidenceItem、EvidenceNormalizer 行为。
+- 更新 `tests/AgentCapabilityRegistry.test.ts`，覆盖默认 Noop retrieval provider 注册与聚合。
+
+### 验证结果
+
+- `npm run typecheck` 通过。
+- `npx vitest run tests/AgentCapabilityRegistry.test.ts tests/RetrievalEvidenceInterfaces.test.ts tests/agentContractFreeze.test.ts tests/ContextAssemblyPipeline.test.ts` 通过：4 test files passed，15 tests passed。
+- `npm test` 通过：55 test files passed，538 tests passed。
+
+### 变更范围确认
+
+- 未接入真实向量库、数据库、RAG 服务或外部检索源。
+- 未把 retrieval 结果塞进 prompt，也未改变 ContextAssemblyPipeline 的默认输出。
+- 未修改任何 product service、tool 输出、API route、request/response envelope、`AgentDecisionSchema`、`ToolDefinition`、`ToolResult`、`ProductBlock` 或 prompt。
+- 默认 retrieval provider 为 Noop，不改变现有业务行为。
+- 已检查非测试代码中本阶段新增/触达文件没有引入测试替身形式或测试替身命名。
 
 ---
 

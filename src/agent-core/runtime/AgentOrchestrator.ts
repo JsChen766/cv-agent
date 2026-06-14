@@ -1,7 +1,6 @@
 ﻿import { randomUUID } from "node:crypto";
 import type { ApiKernel } from "../../api/types.js";
-import { ActiveAssetContextBuilder, type ActiveAssetContext } from "../../copilot/ActiveAssetContextBuilder.js";
-import { UserAssetContextBuilder } from "../../copilot/context/UserAssetContextBuilder.js";
+import type { ActiveAssetContext } from "../../copilot/ActiveAssetContextBuilder.js";
 import { ContextHydrator, toolNeedsInputMessage, toolNeedsInputMessageForFields } from "../../copilot/context/ContextHydrator.js";
 import { applyHandoffToDrafts, mostRecentJDDraft } from "../../copilot/context/DraftContext.js";
 import { normalizeFrontDeskHandoff } from "../../copilot/handoff/HandoffNormalizer.js";
@@ -45,19 +44,17 @@ import { careerDomain } from "../../agent-domains/career/index.js";
 import { PromptRegistry } from "../prompts/PromptRegistry.js";
 import { AgentCapabilityRegistry } from "../capabilities/AgentCapabilityRegistry.js";
 import { createDefaultCapabilities } from "../capabilities/defaultCapabilities.js";
+import { ContextAssemblyPipeline } from "../context/ContextAssemblyPipeline.js";
 import type { ToolDefinition } from "../tools/Tool.js";
-import { ToolExecutor } from "../tools/ToolExecutor.js";
 import { ToolRegistry } from "../tools/ToolRegistry.js";
 import type { ToolResult } from "../tools/ToolResult.js";
 import type { AgentName, CriticReview, PlanStep } from "../validation/AgentOutputSchemas.js";
 import type { KernelRequestContext } from "../../api/context.js";
 import type { AgentContext } from "./AgentContext.js";
 import { AgentError } from "./AgentError.js";
-import { AgentLoopController } from "./AgentLoopController.js";
-import { AgentMessageBus } from "./AgentMessageBus.js";
+import type { AgentMessageBus } from "./AgentMessageBus.js";
 import type { AgentMessageParticipant, AgentMessageType } from "./AgentMessage.js";
 import type { AgentObservation, AgentObservationStatus } from "./AgentObservation.js";
-import { AgentTraceRecorder } from "./AgentTrace.js";
 import type { AgentRuntimeEmitter, AgentStreamEventType } from "./AgentStreamEvent.js";
 import { CriticGate, shouldReviewTool, type ToolExecutionRecord } from "./CriticGate.js";
 import type { ExecutedPlan, LoopRunResult } from "./RunResult.js";
@@ -85,11 +82,10 @@ type ExperienceDraftLike = ReturnType<typeof extractExperienceDraftFromText>;
 export class AgentOrchestrator {
   public readonly pendingActions: PendingActionService;
   public readonly tools: ToolRegistry;
-  private readonly activeAssetContextBuilder: ActiveAssetContextBuilder;
-  private readonly userAssetContextBuilder: UserAssetContextBuilder;
   private readonly contextHydrator = new ContextHydrator();
   private readonly responseComposer = new ResponseComposer();
   private readonly capabilityRegistry: AgentCapabilityRegistry;
+  private readonly contextAssemblyPipeline: ContextAssemblyPipeline;
   private readonly agents: Record<AgentName, Agent>;
 
   public constructor(private readonly deps: AgentOrchestratorDeps) {
@@ -97,9 +93,12 @@ export class AgentOrchestrator {
     this.pendingActions = deps.pendingActions ?? new PendingActionService();
     this.tools = new ToolRegistry();
     this.tools.registerMany(createAgentTools());
-    this.activeAssetContextBuilder = new ActiveAssetContextBuilder(deps.kernel);
-    this.userAssetContextBuilder = new UserAssetContextBuilder(deps.kernel);
     this.capabilityRegistry = new AgentCapabilityRegistry(createDefaultCapabilities());
+    this.contextAssemblyPipeline = new ContextAssemblyPipeline({
+      kernel: deps.kernel,
+      tools: this.tools,
+      capabilityRegistry: this.capabilityRegistry,
+    });
     const modelClient = deps.kernel.frontDeskModelClient;
     const domainRegistry = new AgentDomainRegistry([careerDomain]);
     this.agents = domainRegistry.createAgents({ modelClient, promptRegistry });
@@ -619,64 +618,7 @@ export class AgentOrchestrator {
       streamEmitter?: AgentRuntimeEmitter;
     },
   ): Promise<RunState> {
-    const [workspace, recentMessages] = await Promise.all([
-      this.deps.kernel.copilotServices.workspaceService.getWorkspace(ctx.user.id, input.sessionId),
-      this.deps.kernel.copilotServices.sessionService.getRecentMessages(ctx.user.id, input.sessionId, 8),
-    ]);
-    const trace = new AgentTraceRecorder();
-    const messageBus = new AgentMessageBus(trace.trace.runId, input.turnId);
-    const loopController = new AgentLoopController();
-    const activeAsset = await this.activeAssetContextBuilder.build({ userId: ctx.user.id, request: input.request, workspace });
-    const userAsset = await this.userAssetContextBuilder.build({
-      userId: ctx.user.id,
-      workspace,
-      clientState: input.request.clientState,
-      activeAssetContext: activeAsset,
-      productContext: input.productContext,
-      userMessage: input.userMessage,
-    });
-    const context: AgentContext = {
-      kernel: this.deps.kernel,
-      requestContext: ctx,
-      userId: ctx.user.id,
-      sessionId: input.sessionId,
-      turnId: input.turnId,
-      userMessage: input.userMessage,
-      recentMessages,
-      workspace,
-      clientState: input.request.clientState,
-      activeAssetContext: activeAsset,
-      userAssetContext: userAsset,
-      productContext: input.productContext,
-      availableTools: this.tools.list(),
-      trace: trace.trace,
-      observations: [],
-      agentMessages: [],
-      loopState: loopController.state,
-    };
-    trace.add({
-      agentName: "AgentOrchestrator",
-      type: "reason",
-      summary: "Built user asset manifest.",
-      status: "success",
-      completedAt: new Date().toISOString(),
-      metadata: {
-        counts: userAsset.counts,
-        active: userAsset.active,
-        experienceIds: userAsset.experiences.map((item) => item.id),
-        jdIds: userAsset.jds.map((item) => item.id),
-        resumeIds: userAsset.resumes.map((item) => item.id),
-      },
-    });
-    return {
-      context,
-      trace,
-      executor: new ToolExecutor(this.tools, trace),
-      workspace,
-      messageBus,
-      loopController,
-      streamEmitter: input.streamEmitter,
-    };
+    return this.contextAssemblyPipeline.assemble({ ctx, ...input });
   }
 
   private applyHandoff(

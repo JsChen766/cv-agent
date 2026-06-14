@@ -1,10 +1,8 @@
-import type { ContextProvider } from "../memory/ContextProvider.js";
+import type { ContextProvider } from "../context/ContextProvider.js";
+import type { RetrievalProvider } from "../retrieval/RetrievalProvider.js";
 
 export type { ContextProvider };
-
-export type RetrievalProvider = {
-  readonly id: string;
-};
+export type { RetrievalProvider };
 
 export type MemoryProvider = {
   readonly id: string;
