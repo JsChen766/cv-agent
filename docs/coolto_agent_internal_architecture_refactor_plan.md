@@ -924,6 +924,40 @@ LearningEventRecorder.ts
 请新增 agent-core/memory、agent-core/reflection、agent-core/evaluation 的内部接口和 Noop 实现，定义 MemoryProvider、LearningEvent、ReflectionSink、EvaluationHook、LearningEventRecorder。当前不要持久化、不要改变业务行为、不要改变任何 API/contract，只为未来 self-evolution 和反馈学习预留架构插槽。完成后运行 typecheck 和 tests。
 ```
 
+## Phase 5 完成情况（2026-06-14）
+
+### 已完成
+
+- 新增 `src/agent-core/memory/MemoryRecord.ts`，定义内部 memory record 类型与 record 分类。
+- 新增 `src/agent-core/memory/MemoryProvider.ts`，定义 `MemoryProvider` 与 retrieval input。
+- 新增 `src/agent-core/memory/NoopMemoryProvider.ts`，默认 `retrieve()` 返回空数组，`remember()` 不做持久化。
+- 新增 `src/agent-core/memory/index.ts`，集中导出现有 context providers 与新增 memory 接口。
+- 新增 `src/agent-core/reflection/LearningEvent.ts`，定义 `LearningEvent` 与 `LearningEventType`。
+- 新增 `src/agent-core/reflection/ReflectionSink.ts` 与 `NoopReflectionSink.ts`，默认 sink 不做持久化。
+- 新增 `src/agent-core/reflection/LearningEventRecorder.ts`，提供 best-effort event recorder：向 sinks 投递事件并收集 delivered/failed 结果，不抛出 sink 失败。
+- 新增 `src/agent-core/reflection/index.ts`，集中导出 reflection 内部接口。
+- 新增 `src/agent-core/evaluation/EvaluationHook.ts`，定义 `EvaluationHook` 与 run/tool/critic hook 输入类型。
+- 新增 `src/agent-core/evaluation/NoopEvaluationHook.ts`，默认 hook 方法全部无副作用。
+- 新增 `src/agent-core/evaluation/index.ts`，集中导出 evaluation 内部接口。
+- 将 `AgentCapabilityModule` 中的 memory/reflection/evaluation 临时占位类型替换为正式 `MemoryProvider`、`ReflectionSink`、`EvaluationHook`。
+- `defaultCapabilities` 的 `core.noop` module 注册 `NoopMemoryProvider`、`NoopReflectionSink`、`NoopEvaluationHook`。
+- 新增 `tests/MemoryReflectionEvaluationInterfaces.test.ts`，覆盖 Noop memory、LearningEventRecorder、Noop reflection/evaluation 行为。
+- 更新 `tests/AgentCapabilityRegistry.test.ts`，覆盖默认 Noop memory/reflection/evaluation 注册与聚合。
+
+### 验证结果
+
+- `npm run typecheck` 通过。
+- `npx vitest run tests/AgentCapabilityRegistry.test.ts tests/MemoryReflectionEvaluationInterfaces.test.ts tests/agentContractFreeze.test.ts` 通过：3 test files passed，13 tests passed。
+- `npm test` 通过：56 test files passed，541 tests passed。
+
+### 变更范围确认
+
+- 未写入数据库，未新增迁移，未改变用户数据模型。
+- 未把 memory/reflection/evaluation 接入 agent 决策、prompt、tool execution、critic review 或 response assembly。
+- 未修改 API route、request/response envelope、`AgentDecisionSchema`、`ToolDefinition`、`ToolResult`、`ProductBlock` 或 prompt。
+- 默认 memory/reflection/evaluation 全部为 Noop，不改变现有业务行为。
+- 已检查非测试代码中本阶段新增/触达文件没有引入测试替身形式或测试替身命名。
+
 ---
 
 # Phase 6：拆分 Plan Execution Service

@@ -1,20 +1,14 @@
 import type { ContextProvider } from "../context/ContextProvider.js";
+import type { EvaluationHook } from "../evaluation/EvaluationHook.js";
+import type { MemoryProvider } from "../memory/MemoryProvider.js";
+import type { ReflectionSink } from "../reflection/ReflectionSink.js";
 import type { RetrievalProvider } from "../retrieval/RetrievalProvider.js";
 
 export type { ContextProvider };
+export type { EvaluationHook };
+export type { MemoryProvider };
+export type { ReflectionSink };
 export type { RetrievalProvider };
-
-export type MemoryProvider = {
-  readonly id: string;
-};
-
-export type ReflectionSink = {
-  readonly id: string;
-};
-
-export type EvaluationHook = {
-  readonly id: string;
-};
 
 export type AgentCapabilityModule = {
   readonly id: string;

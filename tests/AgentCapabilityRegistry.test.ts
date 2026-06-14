@@ -19,9 +19,19 @@ describe("AgentCapabilityRegistry", () => {
       query: "React",
       scopes: ["experience"],
     })).resolves.toEqual([]);
-    expect(registry.listMemoryProviders()).toEqual([]);
-    expect(registry.listReflectionSinks()).toEqual([]);
-    expect(registry.listEvaluationHooks()).toEqual([]);
+    expect(registry.listMemoryProviders().map((provider) => provider.id)).toEqual(["core.noop.memory"]);
+    await expect(registry.listMemoryProviders()[0]?.retrieve({
+      userId: "user-1",
+      query: "preference",
+    })).resolves.toEqual([]);
+    expect(registry.listReflectionSinks().map((sink) => sink.id)).toEqual(["core.noop.reflection"]);
+    await expect(registry.listReflectionSinks()[0]?.record({
+      id: "event-1",
+      type: "user.preference_signal",
+      userId: "user-1",
+      createdAt: "2026-06-14T00:00:00.000Z",
+    })).resolves.toBeUndefined();
+    expect(registry.listEvaluationHooks().map((hook) => hook.id)).toEqual(["core.noop.evaluation"]);
   });
 
   it("aggregates providers from registered modules in registration order", () => {
@@ -37,11 +47,11 @@ describe("AgentCapabilityRegistry", () => {
       id: "first",
       contextProviders: [contextProvider],
       retrievalProviders: [retrievalProvider],
-      memoryProviders: [{ id: "memory.first" }],
+      memoryProviders: [{ id: "memory.first", retrieve: async () => [] }],
     };
     const second: AgentCapabilityModule = {
       id: "second",
-      reflectionSinks: [{ id: "reflection.second" }],
+      reflectionSinks: [{ id: "reflection.second", record: async () => {} }],
       evaluationHooks: [{ id: "evaluation.second" }],
     };
 
