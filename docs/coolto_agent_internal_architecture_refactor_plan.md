@@ -498,6 +498,30 @@ type AgentCapabilityModule = {
 请新增 agent-core/capabilities 内部能力注册层，用于未来注册 context、retrieval、memory、reflection、evaluation 能力。默认实现必须是 Noop 或现有逻辑适配，不要接真实 RAG，不要改变任何 API、response、AgentDecisionSchema、ToolDefinition、ProductBlock 或现有行为。完成后运行 typecheck 和 tests。
 ```
 
+## Phase 2 完成情况（2026-06-14）
+
+### 已完成
+
+- 新增 `src/agent-core/capabilities/AgentCapabilityModule.ts`，定义内部 `AgentCapabilityModule` 以及 context、retrieval、memory、reflection、evaluation 能力槽位类型。
+- 新增 `src/agent-core/capabilities/AgentCapabilityRegistry.ts`，支持注册 capability modules、聚合各类 providers/sinks/hooks，并检测重复 module id。
+- 新增 `src/agent-core/capabilities/defaultCapabilities.ts`，提供默认 `core.noop` capability module；默认不注册任何真实 provider，不接 RAG、不读写 memory、不触发 reflection/evaluation。
+- 在 `AgentOrchestrator` constructor 中创建 `AgentCapabilityRegistry(createDefaultCapabilities())`，但不接入任何运行路径，因此不改变现有上下文、工具执行、review、response 或 metadata 行为。
+- 新增 `tests/AgentCapabilityRegistry.test.ts`，覆盖默认 Noop 能力、provider 聚合顺序、重复 id 检测。
+
+### 验证结果
+
+- `npm run typecheck` 通过。
+- `npx vitest run tests/AgentCapabilityRegistry.test.ts tests/agentContractFreeze.test.ts` 通过：2 test files passed，10 tests passed。
+- `npm test` 通过：53 test files passed，533 tests passed。
+
+### 变更范围确认
+
+- 本阶段只新增内部能力注册层与测试。
+- 未接入真实 RAG、retrieval、memory、reflection 或 evaluation 实现。
+- 未修改 API route、request/response envelope、`AgentDecisionSchema`、`ToolDefinition`、`ToolResult`、`ProductBlock`、prompt 或任何前端 contract。
+- 默认 capability module 为 Noop；不会改变 runtime 现有行为。
+- 已检查非测试代码中本阶段新增/触达文件没有引入测试替身形式或测试替身命名。
+
 ---
 
 # Phase 3：重构 Context Assembly Pipeline

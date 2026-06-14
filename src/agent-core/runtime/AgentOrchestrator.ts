@@ -43,6 +43,8 @@ import { getAgentDecisionMeta, type Agent } from "../agents/BaseAgent.js";
 import { AgentDomainRegistry } from "../domain/AgentDomainRegistry.js";
 import { careerDomain } from "../../agent-domains/career/index.js";
 import { PromptRegistry } from "../prompts/PromptRegistry.js";
+import { AgentCapabilityRegistry } from "../capabilities/AgentCapabilityRegistry.js";
+import { createDefaultCapabilities } from "../capabilities/defaultCapabilities.js";
 import type { ToolDefinition } from "../tools/Tool.js";
 import { ToolExecutor } from "../tools/ToolExecutor.js";
 import { ToolRegistry } from "../tools/ToolRegistry.js";
@@ -87,6 +89,7 @@ export class AgentOrchestrator {
   private readonly userAssetContextBuilder: UserAssetContextBuilder;
   private readonly contextHydrator = new ContextHydrator();
   private readonly responseComposer = new ResponseComposer();
+  private readonly capabilityRegistry: AgentCapabilityRegistry;
   private readonly agents: Record<AgentName, Agent>;
 
   public constructor(private readonly deps: AgentOrchestratorDeps) {
@@ -96,6 +99,7 @@ export class AgentOrchestrator {
     this.tools.registerMany(createAgentTools());
     this.activeAssetContextBuilder = new ActiveAssetContextBuilder(deps.kernel);
     this.userAssetContextBuilder = new UserAssetContextBuilder(deps.kernel);
+    this.capabilityRegistry = new AgentCapabilityRegistry(createDefaultCapabilities());
     const modelClient = deps.kernel.frontDeskModelClient;
     const domainRegistry = new AgentDomainRegistry([careerDomain]);
     this.agents = domainRegistry.createAgents({ modelClient, promptRegistry });
