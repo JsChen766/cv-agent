@@ -1502,6 +1502,41 @@ docs/agent-capability-layer.md
 
 ---
 
+## Phase 11 / Phase 12 完成情况
+
+已完成 Phase 11：Product Flow 与 Agent Runtime 边界整理，以及 Phase 12：文档、架构图与开发者指南。
+
+### Phase 11 改动
+
+- 新增 `src/agent-core/flow/FlowIntent.ts`，定义内部 `FlowIntent` 与 explicit action mapping result 类型。
+- 新增 `src/agent-core/flow/ExplicitActionMapper.ts`，将 `AgentOrchestrator` 中原 `mapExplicitAction()` 的 deterministic action-to-plan 逻辑迁移出来。
+- 新增 `src/agent-core/flow/ProductFlowRouter.ts`，预留产品 flow routing 边界；当前只包装 explicit action intent 与 mapping，不改变业务行为。
+- `AgentOrchestrator.handleExplicitAction()` 改为调用 `ProductFlowRouter.mapExplicitAction()`，保持 `step` / `needs_input` / `unsupported` 语义不变。
+- 移除 `AgentOrchestrator` 内部的大段 explicit action mapping 逻辑与本地 `explicitStep()`，Orchestrator 继续保留对 `/copilot/actions` 的 facade 行为。
+- 新增 `tests/ExplicitActionMapper.test.ts`，覆盖 action mapper 单独可测、ProductFlowRouter intent、`step` / `needs_input` / `unsupported` 三类结果。
+
+### Phase 12 文档
+
+- 新增 `docs/agent-internal-architecture-v2.md`，说明 Agent Runtime v2 内部结构、public contract 边界、请求路径、内部 extension points 与验证方式。
+- 新增 `docs/agent-extension-guide.md`，说明未来如何新增 ContextProvider、RetrievalProvider、MemoryProvider、ReflectionSink、EvaluationHook、EvidenceNormalizer、Tool、Domain，以及 explicit product action。
+- 新增 `docs/agent-capability-layer.md`，说明 capability module、registry、context/retrieval/evidence/memory/reflection/evaluation flow、默认 Noop 行为与验证方式。
+- 文档明确：未来 RAG、memory、reflection、evaluation 不应直接加入 `AgentOrchestrator`，应通过 capability layer 或对应内部扩展点接入。
+
+### Contract 保持情况
+
+- 未改变 `ProductActionType`。
+- 未改变 `/copilot/actions` 的 response contract、pending action 行为、needs_input/unsupported/step 语义。
+- 未改变 CopilotChatResponse、CopilotActionResult、ProductBlock、ToolDefinition、ToolResult、AgentDecisionSchema。
+- Phase 12 仅新增文档，不改变代码行为。
+
+### 验证结果
+
+- `npm run typecheck`：通过。
+- `npx vitest run tests/ExplicitActionMapper.test.ts tests/copilotExplicitActions.test.ts tests/agentContractFreeze.test.ts tests/agentPromptContract.test.ts tests/AgentCapabilityRegistry.test.ts tests/MemoryReflectionEvaluationInterfaces.test.ts tests/RetrievalEvidenceInterfaces.test.ts`：通过，7 个测试文件 / 27 个测试。
+- `npm test`：通过，57 个测试文件 / 550 个测试。
+
+---
+
 ## 5. 推荐执行顺序
 
 建议不要一次性让 Codex 做完整重构。
