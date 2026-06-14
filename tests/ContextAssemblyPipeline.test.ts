@@ -101,4 +101,68 @@ describe("ContextAssemblyPipeline", () => {
     expect(run.context.productContext).not.toHaveProperty("retrievalPreview");
     expect(run.context.productContext).not.toHaveProperty("memoryPreview");
   });
+
+  it("keeps assembling when a capability context provider fails", async () => {
+    kernel = await createP12Kernel();
+    const tools = new ToolRegistry();
+    const successfulProvider: ContextProvider = {
+      provide: async () => ({
+        retrievalPreview: { enabled: true },
+      }),
+    };
+    const failingProvider: ContextProvider & { id: string } = {
+      id: "test.failing-context",
+      provide: async () => {
+        throw new Error("provider unavailable");
+      },
+    };
+    const productContext = {
+      targetRole: "Backend Engineer",
+      capabilities: {
+        context: { existingContext: true },
+      },
+    };
+    const pipeline = new ContextAssemblyPipeline({
+      kernel,
+      tools,
+      capabilityRegistry: new AgentCapabilityRegistry([
+        {
+          id: "test.context.fail-open",
+          contextProviders: [successfulProvider, failingProvider],
+        },
+      ]),
+    });
+
+    const run = await pipeline.assemble({
+      ctx: createTestKernelContext({ user: { id: "provider-fail-user" }, request: { requestId: "provider-fail-req", traceId: "provider-fail-trace" } }),
+      sessionId: "provider-fail-session",
+      turnId: "provider-fail-turn",
+      userMessage: "Build context with a failing provider.",
+      request: { message: "Build context with a failing provider." },
+      productContext,
+    });
+
+    expect(run.context.productContext).toMatchObject({
+      targetRole: "Backend Engineer",
+      capabilities: {
+        context: {
+          existingContext: true,
+          retrievalPreview: { enabled: true },
+        },
+      },
+    });
+    expect(run.context.productContext).not.toHaveProperty("retrievalPreview");
+    expect(run.context.productContext.capabilities).not.toHaveProperty("retrievalPreview");
+    expect(run.trace.trace.steps).toContainEqual(expect.objectContaining({
+      agentName: "AgentOrchestrator",
+      type: "reason",
+      summary: "Capability context provider failed; continuing without provider output.",
+      status: "failed",
+      metadata: expect.objectContaining({
+        providerId: "test.failing-context",
+        index: 1,
+        reason: "provider unavailable",
+      }),
+    }));
+  });
 });

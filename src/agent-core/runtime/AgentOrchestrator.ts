@@ -21,6 +21,7 @@ import { createAgentTools } from "../../agent-tools/index.js";
 import type { PendingAction } from "../confirmation/PendingAction.js";
 import { PendingActionService } from "../confirmation/PendingActionService.js";
 import type { Agent } from "../agents/BaseAgent.js";
+import type { AgentDomainModule } from "../domain/AgentDomainModule.js";
 import { AgentDomainRegistry } from "../domain/AgentDomainRegistry.js";
 import { ReviewPolicy } from "../evaluation/ReviewPolicy.js";
 import { careerDomain } from "../../agent-domains/career/index.js";
@@ -65,6 +66,7 @@ const MAX_REVISION_ATTEMPTS = 3;
 export type AgentOrchestratorDeps = {
   kernel: ApiKernel;
   pendingActions?: PendingActionService;
+  domains?: readonly AgentDomainModule[];
 };
 
 export class AgentOrchestrator {
@@ -82,10 +84,14 @@ export class AgentOrchestrator {
 
   public constructor(private readonly deps: AgentOrchestratorDeps) {
     const promptRegistry = new PromptRegistry();
+    const domainRegistry = new AgentDomainRegistry(deps.domains ?? [careerDomain]);
     this.pendingActions = deps.pendingActions ?? new PendingActionService();
     this.tools = new ToolRegistry();
     this.tools.registerMany(createAgentTools());
-    this.capabilityRegistry = new AgentCapabilityRegistry(createDefaultCapabilities());
+    this.capabilityRegistry = new AgentCapabilityRegistry([
+      ...createDefaultCapabilities(),
+      ...domainRegistry.listCapabilities(),
+    ]);
     this.learningEventService = new LearningEventService({
       recorder: new LearningEventRecorder(this.capabilityRegistry.listReflectionSinks()),
       evaluationHooks: this.capabilityRegistry.listEvaluationHooks(),
@@ -108,7 +114,6 @@ export class AgentOrchestrator {
       learningEventService: this.learningEventService,
     });
     const modelClient = deps.kernel.frontDeskModelClient;
-    const domainRegistry = new AgentDomainRegistry([careerDomain]);
     this.agents = domainRegistry.createAgents({ modelClient, promptRegistry });
   }
 
@@ -278,11 +283,6 @@ export class AgentOrchestrator {
       },
       productContext: { explicitAction: request.action.type },
     });
-    await this.learningEventService.recordExplicitAction(run.context, request.action.type, {
-      ...(request.action.payload ?? {}),
-      ...(request.action.variantId ? { variantId: request.action.variantId } : {}),
-    });
-
     const mapped = this.productFlowRouter.mapExplicitAction({
       request,
       workspace: run.workspace,
@@ -321,6 +321,10 @@ export class AgentOrchestrator {
     }
 
     try {
+      await this.learningEventService.recordExplicitAction(run.context, request.action.type, {
+        ...(request.action.payload ?? {}),
+        ...(request.action.variantId ? { variantId: request.action.variantId } : {}),
+      });
       const executed = await this.executePlan(run, [mapped.step]);
       return this.finishRun(ctx.user.id, run, {
         assistantText: assistantFromResults(executed.toolResults, t(run, "done")),

@@ -85,7 +85,28 @@ export class ContextAssemblyPipeline {
     const providers = this.deps.capabilityRegistry.listContextProviders();
     if (providers.length === 0) return context.productContext;
 
-    const provided = await Promise.all(providers.map((provider) => provider.provide(context)));
+    const settled = await Promise.allSettled(providers.map((provider) => provider.provide(context)));
+    const provided: Record<string, unknown>[] = [];
+    settled.forEach((result, index) => {
+      if (result.status === "fulfilled") {
+        provided.push(result.value);
+        return;
+      }
+      context.trace.steps.push({
+        id: `capability-provider-failed-${index}`,
+        agentName: "AgentOrchestrator",
+        type: "reason",
+        summary: "Capability context provider failed; continuing without provider output.",
+        status: "failed",
+        startedAt: new Date().toISOString(),
+        completedAt: new Date().toISOString(),
+        metadata: {
+          providerId: providerIdFor(providers[index]),
+          index,
+          reason: errorReason(result.reason),
+        },
+      });
+    });
     const contextOutput = this.budgetManager.apply(Object.assign({}, ...provided));
     if (Object.keys(contextOutput).length === 0) return context.productContext;
 
@@ -106,6 +127,16 @@ export class ContextAssemblyPipeline {
       },
     };
   }
+}
+
+function providerIdFor(provider: unknown): string | undefined {
+  if (!isRecord(provider)) return undefined;
+  return typeof provider.id === "string" ? provider.id : undefined;
+}
+
+function errorReason(reason: unknown): string {
+  if (reason instanceof Error) return reason.message;
+  return String(reason);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
