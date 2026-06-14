@@ -4,28 +4,20 @@ import type { ActiveAssetContext } from "../../copilot/ActiveAssetContextBuilder
 import { applyHandoffToDrafts, mostRecentJDDraft } from "../../copilot/context/DraftContext.js";
 import { normalizeFrontDeskHandoff } from "../../copilot/handoff/HandoffNormalizer.js";
 import { computeJDHash } from "../../product/jdHash.js";
-import type { FrontDeskHandoff } from "../../copilot/handoff/FrontDeskHandoff.js";
 import type {
   CopilotActionRequest,
-  CopilotActionResult,
   CopilotChatRequest,
   CopilotChatResponse,
   CopilotMessageMetadata,
   CopilotMessage,
   CopilotWorkspace,
   ProductBlock,
-  ProductAction,
-  ProductTimelineItem,
-  DisplayPendingAction,
 } from "../../copilot/types.js";
 import { detectLocale, type CopilotLocale } from "../../copilot/locale.js";
-import { ResponseComposer } from "../../copilot/response/ResponseComposer.js";
 import { isBlockedToolLog } from "../../copilot/response/ProductReplyTemplates.js";
 import { isCanonicalExperienceId, isCanonicalGenerationId, isCanonicalJDId, isCanonicalResumeId, isCanonicalVariantId } from "../../copilot/context/IdGuards.js";
 import { sanitizeExperiencePatch } from "../security/ToolPatchSanitizer.js";
-import { buildProductBlocks, sanitizeMetadataObject } from "./ProductBlockPresenter.js";
-import { mergeWorkspacePatch, buildWorkspaceSnapshot, buildRelatedResourceIds, hasRelatedResourceIds, updatePendingStatusInProductBlocks, buildWorkspaceForHistory } from "./WorkspaceProjector.js";
-import { projectAgentRoomEvents } from "../events/AgentRoomEventProjector.js";
+import { mergeWorkspacePatch, updatePendingStatusInProductBlocks } from "./WorkspaceProjector.js";
 import { tasksFromHandoff } from "../../copilot/tasks/TaskStateReducer.js";
 import { createAgentTools } from "../../agent-tools/index.js";
 import type { PendingAction } from "../confirmation/PendingAction.js";
@@ -51,6 +43,7 @@ import type { AgentObservation, AgentObservationStatus } from "./AgentObservatio
 import type { AgentRuntimeEmitter, AgentStreamEventType } from "./AgentStreamEvent.js";
 import { CriticGate, type ToolExecutionRecord } from "./CriticGate.js";
 import { AgentDecisionRunner } from "./AgentDecisionRunner.js";
+import { AgentResultAssembler } from "./AgentResultAssembler.js";
 import { PlanExecutionService, ensureToolResultVisibility } from "./PlanExecutionService.js";
 import { ReviewPipeline } from "./ReviewPipeline.js";
 import type { ExecutedPlan, LoopRunResult } from "./RunResult.js";
@@ -77,7 +70,7 @@ export type AgentOrchestratorDeps = {
 export class AgentOrchestrator {
   public readonly pendingActions: PendingActionService;
   public readonly tools: ToolRegistry;
-  private readonly responseComposer = new ResponseComposer();
+  private readonly resultAssembler = new AgentResultAssembler();
   private readonly capabilityRegistry: AgentCapabilityRegistry;
   private readonly contextAssemblyPipeline: ContextAssemblyPipeline;
   private readonly planExecutionService: PlanExecutionService;
@@ -1488,35 +1481,6 @@ export class AgentOrchestrator {
       agentName: "AgentOrchestrator",
       status: "running",
     });
-    const now = new Date().toISOString();
-    const composed = this.responseComposer.compose({
-      locale: localeFor(run),
-      userMessage: run.context.userMessage,
-      frontDeskHandoff: run.context.productContext.frontDeskHandoff as FrontDeskHandoff | undefined,
-      workspace: run.workspace,
-      toolResults: sanitized.toolResults,
-      pendingActions: input.pendingActions,
-      criticReview: input.criticReview,
-      currentTask: run.workspace?.currentTask,
-      suggestedTasks: run.workspace?.suggestedTasks,
-      context: run.context,
-      fallbackText: input.assistantText,
-    });
-    const isGenericResponse = sanitized.invalidCount > 0
-      ? false
-      : composed.assistantText === t(run, "done") || composed.assistantText === t(run, "productIntro");
-    let finalAssistantText = composed.assistantText;
-    if (
-      isGenericResponse
-      && input.assistantText
-      && input.assistantText.trim()
-      && input.assistantText !== composed.assistantText
-      && !isBlockedToolLog(input.assistantText)
-    ) {
-      finalAssistantText = input.assistantText;
-    }
-    const assistantText = sanitized.invalidCount > 0 ? t(run, "invalidConfirmation") : finalAssistantText;
-    const workspacePatch = sanitized.invalidCount > 0 ? {} : input.workspacePatch;
     const hasPublicAgentMessages = (run.context.agentMessages ?? []).some((message) => (
       message.to === "all" || message.to === "orchestrator"
     ));
@@ -1528,38 +1492,36 @@ export class AgentOrchestrator {
         payload: { eventType: "announcement" },
       });
     }
-    const agentRoomEvents = projectAgentRoomEvents({
-      productBlocks: buildProductBlocks(sanitized.toolResults),
+    const assembly = this.resultAssembler.assemble({
+      run,
+      locale: localeFor(run),
+      assistantText: input.assistantText,
       toolResults: sanitized.toolResults,
-      pendingActionIds: input.pendingActions.map((pa) => pa.id),
       pendingActions: input.pendingActions,
-      workspacePatch,
-      sessionId: run.context.sessionId,
-      turnId: run.context.turnId,
-      agentMessages: run.context.agentMessages,
-    });
-    const assistantMessageMetadata = buildAssistantMessageMetadata({
-      toolResults: sanitized.toolResults,
-      workspace: run.workspace,
-      workspacePatch,
-      pendingActions: input.pendingActions,
-      agentRoomEvents: agentRoomEvents.length > 0 ? agentRoomEvents : undefined,
+      workspacePatch: input.workspacePatch,
+      criticReview: input.criticReview,
+      invalidConfirmation: sanitized.invalidCount > 0,
+      text: {
+        done: t(run, "done"),
+        productIntro: t(run, "productIntro"),
+        invalidConfirmation: t(run, "invalidConfirmation"),
+      },
     });
     const assistantMessage = await this.saveMessage(
       userId,
       run.context.sessionId,
       "assistant",
-      assistantText,
+      assembly.assistantText,
       run.context.turnId,
-      sanitized.toolResults,
-      assistantMessageMetadata,
+      assembly.toolResults,
+      assembly.assistantMessageMetadata,
     );
     this.emit(run, "agent.message.completed", "回复已生成", {
       agentName: "AgentOrchestrator",
       status: "success",
       payload: { messageId: assistantMessage.id },
     });
-    const workspace = await this.saveWorkspace(userId, run.context.sessionId, run.workspace, workspacePatch, now);
+    const workspace = await this.saveWorkspace(userId, run.context.sessionId, run.workspace, assembly.workspacePatch, assembly.now);
     this.emit(run, "agent.workspace.updated", "工作区已更新", {
       agentName: "AgentOrchestrator",
       status: "success",
@@ -1576,37 +1538,14 @@ export class AgentOrchestrator {
       title: "Copilot replied",
       metadata: { traceRunId: run.trace.trace.runId },
     });
-    const response: CopilotChatResponse = {
+    const response = this.resultAssembler.buildResponse({
+      assembly,
       sessionId: run.context.sessionId,
       turnId: run.context.turnId,
       assistantMessage,
-      timeline: timelineFor(sanitized.toolResults, now, run.context.turnId),
       workspace,
-      nextActions: composed.nextActions ?? [],
-      agentRoomEvents: agentRoomEvents.length > 0 ? agentRoomEvents : undefined,
-      raw: {
-        artifactIds: [],
-        evidenceChainIds: [],
-        critiqueItemIds: [],
-        decisionIds: [],
-        agentTrace: run.trace.trace,
-        toolResults: sanitized.toolResults,
-        pendingActions: input.pendingActions,
-        metadata: {
-          loop: run.context.loopState,
-          observations: run.context.observations ?? [],
-          agentMessages: run.context.agentMessages ?? [],
-          criticReview: input.criticReview,
-          responseComposer: {
-            used: true,
-            systemNotices: composed.systemNotices,
-          },
-        },
-        actionResults: sanitized.toolResults
-          .map((result) => result.actionResult)
-          .filter((item): item is CopilotActionResult => item !== undefined && typeof item.status === "string"),
-      },
-    };
+      trace: run.trace.trace,
+    });
     if (!options?.skipCompletedEmit) {
       this.emit(run, "agent.completed", "处理完成", {
         agentName: "AgentOrchestrator",
@@ -1974,123 +1913,6 @@ function isGenerationQueuedResult(result: ToolResult): boolean {
     );
 }
 
-function buildAssistantMessageMetadata(input: {
-  toolResults: ToolResult[];
-  workspace: CopilotWorkspace | null;
-  workspacePatch: Record<string, unknown>;
-  pendingActions?: PendingAction[];
-  agentRoomEvents?: import("../events/AgentRoomEvent.js").AgentRoomEvent[];
-}): CopilotMessageMetadata {
-  const actionResult = sanitizeActionResultForMetadata(primaryActionResult(input.toolResults));
-  const productBlocks = buildProductBlocks(input.toolResults);
-  const workspaceForHistory = buildWorkspaceForHistory(input.workspace, input.workspacePatch);
-  const workspaceSnapshot = buildWorkspaceSnapshot(input.workspace, input.workspacePatch);
-  const relatedResourceIds = buildRelatedResourceIds(input.toolResults, input.workspace);
-
-  // Build display snapshot for history restoration
-  const pendingActions = input.pendingActions ?? [];
-  const displaySnapshot = buildDisplaySnapshot(input.toolResults, pendingActions, input.workspacePatch, productBlocks);
-
-  return {
-    ...(productBlocks.length > 0 ? { productBlocks } : {}),
-    ...(actionResult ? { actionResult } : {}),
-    ...(workspaceForHistory ? { workspace: workspaceForHistory } : {}),
-    ...(workspaceSnapshot ? { workspaceSnapshot } : {}),
-    ...(hasRelatedResourceIds(relatedResourceIds) ? { relatedResourceIds } : {}),
-    ...(displaySnapshot ? { displaySnapshot } : {}),
-    ...(input.agentRoomEvents?.length ? { agentRoomEvents: input.agentRoomEvents } : {}),
-  };
-}
-
-/**
- * Build a display snapshot that captures all renderable card data
- * for this assistant message, so the frontend can restore history
- * without depending on browser cache or runtime state.
- */
-function buildDisplaySnapshot(
-  toolResults: ToolResult[],
-  pendingActions: PendingAction[],
-  workspacePatch: Record<string, unknown>,
-  productBlocks: ProductBlock[],
-): CopilotMessageMetadata["displaySnapshot"] {
-  const hasPending = pendingActions.length > 0;
-  const hasToolResults = toolResults.length > 0;
-  if (!hasPending && !hasToolResults) return undefined;
-
-  const snapshot: NonNullable<CopilotMessageMetadata["displaySnapshot"]> = {};
-
-  if (hasPending) {
-    snapshot.pendingActions = pendingActions.map((pa) => ({
-      id: pa.id,
-      toolName: pa.toolName,
-      title: pa.title,
-      summary: pa.summary,
-      riskLevel: pa.riskLevel as string,
-      status: pa.status as DisplayPendingAction["status"],
-      preview: pa.preview,
-      createdAt: pa.createdAt,
-    }));
-  }
-
-  if (hasToolResults) {
-    snapshot.toolResults = toolResults
-      .filter((tr) => tr.visibility !== "internal")
-      .map((tr) => ({
-        status: tr.status,
-        message: tr.message,
-        visibility: tr.visibility,
-        actionResult: tr.actionResult ? {
-          actionType: typeof tr.actionResult.actionType === "string" ? tr.actionResult.actionType : undefined,
-          status: typeof tr.actionResult.status === "string" ? tr.actionResult.status : "success",
-          message: typeof tr.actionResult.message === "string" ? tr.actionResult.message : undefined,
-          reason: typeof tr.actionResult.reason === "string" ? tr.actionResult.reason : undefined,
-          pendingActionId: typeof tr.actionResult.pendingActionId === "string" ? tr.actionResult.pendingActionId : undefined,
-          experienceId: typeof tr.actionResult.experienceId === "string" ? tr.actionResult.experienceId : undefined,
-          variantId: typeof tr.actionResult.variantId === "string" ? tr.actionResult.variantId : undefined,
-          revisionSuggestion: (tr.actionResult.revisionSuggestion ?? undefined) as CopilotActionResult["revisionSuggestion"],
-          metadata: isRecord(tr.actionResult.metadata) ? tr.actionResult.metadata as Record<string, unknown> : undefined,
-        } : undefined,
-        data: tr.data,
-        workspacePatch: tr.workspacePatch,
-      }));
-  }
-
-  if (Object.keys(workspacePatch).length > 0) {
-    snapshot.workspacePatch = workspacePatch;
-  }
-
-  if (productBlocks.length > 0) {
-    snapshot.productBlocks = productBlocks;
-  }
-
-  return Object.keys(snapshot).length > 0 ? snapshot : undefined;
-}
-
-function primaryActionResult(toolResults: ToolResult[]): CopilotActionResult | undefined {
-  const actionResults = toolResults
-    .map((result) => result.actionResult)
-    .filter((item): item is CopilotActionResult => item !== undefined && typeof item.status === "string");
-  return actionResults.at(-1);
-}
-
-function sanitizeActionResultForMetadata(result: CopilotActionResult | undefined): CopilotActionResult | undefined {
-  if (!result) return undefined;
-  const metadata = sanitizeMetadataObject(result.metadata);
-  return {
-    actionType: result.actionType,
-    status: result.status,
-    message: result.message,
-    reason: result.reason,
-    pendingActionId: result.pendingActionId,
-    missingInputs: result.missingInputs,
-    exportRecord: result.exportRecord,
-    revisionSuggestion: result.revisionSuggestion,
-    evidenceId: result.evidenceId,
-    variantId: result.variantId,
-    ...(metadata && Object.keys(metadata).length > 0 ? { metadata } : {}),
-  };
-}
-
 
 
 
@@ -2128,21 +1950,6 @@ function assistantFromResults(results: ToolResult[], fallback: string): string {
   if (visible.length > 0) return visible.join("\n");
   return fallback;
 }
-
-function timelineFor(results: ToolResult[], now: string, turnId: string): ProductTimelineItem[] {
-  if (results.length === 0) {
-    return [{ id: `tl-${turnId}-message`, type: "message_received", title: "Assistant replied", status: "completed", createdAt: now }];
-  }
-  return results.map((result, index) => ({
-    id: `tl-${turnId}-${index}`,
-    type: result.actionResult?.status === "needs_confirmation" ? "warning" : "message_received",
-    title: result.message ?? "Tool result",
-    status: result.status === "failed" ? "failed" : "completed",
-    createdAt: now,
-  }));
-}
-
-
 
 function maybeAugmentResumeGenerationPlan(plan: PlanStep[], context: AgentContext): PlanStep[] {
   const generateIndex = plan.findIndex((step) => step.toolName === "generate_resume_from_jd");

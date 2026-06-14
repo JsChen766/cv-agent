@@ -1190,6 +1190,28 @@ src/agent-core/runtime/AssistantMessageProjector.ts
 请把 AgentOrchestrator.finishRun 中的 response/productBlocks/workspacePatch/displaySnapshot/AgentRoomEvent/metadata 组装逻辑抽离到 AgentResultAssembler，保持 CopilotChatResponse、metadata、ProductBlock、displaySnapshot、AgentRoomEvent 完全兼容。不要改前端 contract。完成后运行 typecheck 和 tests。
 ```
 
+## Phase 8 完成情况
+
+### 已完成
+
+- 新增 `src/agent-core/runtime/AgentResultAssembler.ts`，承接 `finishRun()` 中的 `ResponseComposer.compose()`、assistant 文案选择、workspacePatch 决定、`ProductBlock` 构建、`AgentRoomEvent` 投影、timeline、raw metadata/actionResults 与 `CopilotChatResponse` 结构组装。
+- 新增 `src/agent-core/runtime/AssistantMessageProjector.ts`，承接 assistant message metadata、workspace history、workspaceSnapshot、relatedResourceIds、displaySnapshot、ProductBlock 与 AgentRoomEvent metadata 投影。
+- `AgentOrchestrator.finishRun()` 已变薄：保留 invalid confirmation trace、final trace、stream event、completion announcement、save assistant message、save workspace、complete turn、record activity 等副作用，response/product metadata 组装委托给 `AgentResultAssembler`。
+- 原 `buildAssistantMessageMetadata()`、`buildDisplaySnapshot()`、`timelineFor()` 等本地组装 helper 已从 `AgentOrchestrator` 移出，避免 response/metadata 组装逻辑继续堆在 orchestrator。
+
+### 验证结果
+
+- `npm run typecheck` 通过。
+- `npx vitest run tests/agentContractFreeze.test.ts tests/CopilotRoutes.test.ts tests/AgentRoomEventProjector.test.ts tests/generateResumePendingFlow.test.ts tests/copilotConfirmContract.test.ts tests/agentOrchestratorFinalResponse.test.ts tests/jdMatchOrchestration.test.ts` 通过：7 test files passed，71 tests passed。
+- `npm test` 通过：56 test files passed，541 tests passed。
+
+### 变更范围确认
+
+- 未修改 `CopilotChatResponse`、`CopilotMessageMetadata`、displaySnapshot、`ProductBlock`、`AgentRoomEvent` 或前端 contract。
+- assistant message 保存、workspace 保存、turn complete、activity record 的外部副作用顺序仍由 `AgentOrchestrator.finishRun()` 保持。
+- 未新增 API route、未新增持久化模型、未改变前端需要适配的字段。
+- 已检查非测试代码中本阶段新增/触达文件没有引入测试替身内容或测试替身命名。
+
 ---
 
 # Phase 9：Domain / Agent Manifest 内部增强
@@ -1259,6 +1281,31 @@ type AgentDomainModule = {
 ```text
 请为 AgentDomainModule 增加 optional 的 AgentManifest 与 capabilities 支持，增强 AgentDomainRegistry 的 list 能力，但不要改变现有 AgentNameSchema、AgentFactory、ToolDefinition、prompt、allowedTools 或 runtime 行为。所有新增字段必须 optional 并向后兼容。完成后运行 typecheck 和 tests。
 ```
+
+## Phase 9 完成情况
+
+### 已完成
+
+- 新增 `src/agent-core/domain/AgentManifest.ts`，定义内部 `AgentManifest` 类型，包含 `name`、`domainId`、`roleLabel`、`description`、`promptKey`、`allowedTools`、`capabilities`、`intents` 等元数据字段。
+- 增强 `AgentDomainModule`，新增 optional `manifests?: readonly AgentManifest[]` 与 `capabilities?: readonly AgentCapabilityModule[]` 字段，未改变既有 `agents` / `tools` 字段。
+- 增强 `AgentDomainRegistry`：
+  - 新增 `listTools()`，保留原 duplicate tool name 校验，并让 `createTools()` 委托该方法以保持兼容。
+  - 新增 `listAgentManifests()`，聚合所有 domain 的 optional manifests。
+  - 新增 `listCapabilities()`，聚合所有 domain 的 optional capability modules。
+- 更新 `tests/AgentDomainRegistry.test.ts`，覆盖 `listTools()` 与 `createTools()` 输出兼容、optional manifests/capabilities 缺省返回空数组、提供 optional manifests/capabilities 时可被 registry 列出且不触发 agent/tool 创建行为变化。
+
+### 验证结果
+
+- `npm run typecheck` 通过。
+- `npx vitest run tests/AgentDomainRegistry.test.ts tests/agentContractFreeze.test.ts tests/agentPromptContract.test.ts` 通过：3 test files passed，21 tests passed。
+- `npm test` 通过：56 test files passed，544 tests passed。
+
+### 变更范围确认
+
+- 未新增 `AgentNameSchema` 值，未改变现有五个 agent。
+- 未改变 `AgentFactory`、`ToolDefinition`、prompt 加载、allowedTools 或 runtime 行为。
+- 新增 `manifests` / `capabilities` 均为 optional 字段；未提供时 `careerDomain` 与现有 registry 流程保持正常。
+- 已检查非测试代码中本阶段新增/触达文件没有引入测试替身内容或测试替身命名。
 
 ---
 
