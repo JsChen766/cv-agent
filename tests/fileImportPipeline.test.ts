@@ -6,6 +6,7 @@ import type { ApiKernel } from "../src/api/types.js";
 import type { BackgroundJob } from "../src/platform/index.js";
 import type { ProductImportCandidate, ProductImportJob } from "../src/product/types.js";
 import type { UploadedFile } from "../src/files/types.js";
+import { buildResumeImportDrafts } from "../src/product/services/index.js";
 
 function setupEnv() {
   process.env.AUTH_MODE = "dev_header";
@@ -44,6 +45,44 @@ describe("file upload → resume import pipeline", () => {
     expect(response.statusCode).toBe(200);
     return (response.json() as ApiSuccess<UploadedFile>).data;
   }
+
+  const chineseResumeText = [
+    "张三",
+    "教育经历",
+    "2020.09-2024.06 香港科技大学 计算机科学 本科 GPA 3.8/4.0",
+    "",
+    "实习经历",
+    "2023.06-2023.09 腾讯科技有限公司 数据分析实习生",
+    "负责用户增长看板和 SQL 数据分析，将日报生成时间从 2 小时缩短到 15 分钟。",
+    "",
+    "项目经历",
+    "项目一：智能简历解析系统",
+    "2023.10-2024.01 角色：负责人",
+    "使用 TypeScript、Node 和 PostgreSQL 设计上传解析链路，支持 PDF/DOCX/TXT。",
+    "项目二：校园二手交易平台",
+    "2022.03-2022.06 角色：后端开发者",
+    "使用 Python 和 Vue 实现商品发布、搜索和订单管理。",
+    "",
+    "获奖经历",
+    "2023 校级一等奖学金",
+    "",
+    "技能栈",
+    "TypeScript, JavaScript, Vue, React, Node, Python, SQL, Docker",
+  ].join("\n");
+
+  it("splits a complete Chinese resume into multiple import drafts", () => {
+    const drafts = buildResumeImportDrafts(chineseResumeText);
+
+    expect(drafts.length).toBeGreaterThanOrEqual(5);
+    expect(drafts.map((draft) => draft.category)).toEqual(expect.arrayContaining([
+      "education",
+      "internship",
+      "project",
+      "award",
+      "skill",
+    ]));
+    expect(drafts.filter((draft) => draft.category === "project")).toHaveLength(2);
+  });
 
   it("uploads a text resume, runs the import_resume_file job, and returns candidates", async () => {
     const resumeText = [
@@ -90,6 +129,49 @@ describe("file upload → resume import pipeline", () => {
       expect(candidate.content).toEqual(expect.any(String));
       expect(candidate.status).toBe("pending");
     }
+  });
+
+  it("imports a complete Chinese resume text file as multiple candidates", async () => {
+    const file = await uploadTextFile(chineseResumeText, "text/plain", "完整中文简历.txt");
+    const importStarted = await server.inject({
+      method: "POST",
+      url: "/product/imports/file",
+      headers: { "x-user-id": "user-1", "content-type": "application/json" },
+      payload: { fileId: file.id },
+    });
+    expect(importStarted.statusCode).toBe(200);
+    const startData = (importStarted.json() as ApiSuccess<{ job: BackgroundJob }>).data;
+
+    await kernel.jobRunner.runJob(startData.job.id, "user-1");
+
+    const job = await kernel.platformServices.backgroundJobs.getJob("user-1", startData.job.id);
+    expect(job?.status).toBe("completed");
+    expect((job?.output as { candidateCount?: number })?.candidateCount ?? 0).toBeGreaterThan(1);
+    expect((job?.output as { parsedDocumentId?: string })?.parsedDocumentId).toEqual(expect.any(String));
+  });
+
+  it("falls back to resume section splitting when the LLM returns one merged candidate", async () => {
+    (kernel.productServices.importService as unknown as { llmExtractor: unknown }).llmExtractor = {
+      extractCandidates: async () => [{
+        type: "work",
+        title: "整份简历",
+        company: "多个组织",
+        content: chineseResumeText,
+        confidence: 0.7,
+      }],
+    };
+
+    const job = await kernel.productServices.importService.createTextImportJob("user-1", chineseResumeText);
+    const candidates = await kernel.productServices.importService.createCandidatesFromText("user-1", job.id);
+
+    expect(candidates.length).toBeGreaterThan(1);
+    expect(candidates.map((candidate) => candidate.category)).toEqual(expect.arrayContaining([
+      "education",
+      "internship",
+      "project",
+      "award",
+      "skill",
+    ]));
   });
 
   it("returns 404 when /product/imports/file is called with a missing fileId", async () => {

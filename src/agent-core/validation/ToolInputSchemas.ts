@@ -3,8 +3,17 @@ import { z } from "zod";
 export const EmptyInputSchema = z.object({}).passthrough();
 export const ListInputSchema = z.object({ limit: z.number().int().positive().max(100).optional() }).passthrough();
 export const IdInputSchema = z.object({ id: z.string().min(1) }).passthrough();
+export const ImportCandidateInputSchema = z.object({
+  candidateId: z.string().min(1),
+  patch: z.unknown().optional(),
+}).passthrough();
 export const SearchInputSchema = z.object({ query: z.string().min(1), limit: z.number().int().positive().max(50).optional() }).passthrough();
 export const TextInputSchema = z.object({ text: z.string().min(1) }).passthrough();
+export const ResumeFileImportInputSchema = z.object({
+  fileId: z.string().min(1),
+  originalName: z.string().optional(),
+  source: z.enum(["resume_upload", "file_upload", "copilot"]).optional(),
+}).passthrough();
 export const SaveExperienceFromTextInputSchema = z.object({
   text: z.string().optional(),
   candidate: z.unknown().optional(),

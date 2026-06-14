@@ -45,10 +45,22 @@ export class JobRunner {
       if (!text) {
         throw new Error(`Parsed document for file ${fileId} is empty. The file may be unreadable, scanned, or contain no extractable text. Please upload a text-based PDF, DOCX, or TXT file.`);
       }
-      const importJob = await this.deps.productServices.importService.createTextImportJob(job.userId, parsed.text);
+      const importJob = await this.deps.productServices.importService.createTextImportJob(job.userId, parsed.text, {
+        sourceType: file.mimeType === "application/pdf" ? "pdf" : "text",
+      });
       try {
-        const candidates = await this.deps.productServices.importService.createCandidatesFromText(job.userId, importJob.id);
-        return { importJobId: importJob.id, candidateCount: candidates.length, fileId };
+        const candidates = await this.deps.productServices.importService.createCandidatesFromText(job.userId, importJob.id, {
+          sourceDocumentId: parsed.id,
+        });
+        console.debug("[jobs] import_resume_file extracted candidates", {
+          fileId,
+          originalName: file.originalName,
+          mimeType: file.mimeType,
+          pageCount: parsed.metadata?.pageCount,
+          textLength: parsed.text.length,
+          candidateCount: candidates.length,
+        });
+        return { importJobId: importJob.id, candidateCount: candidates.length, fileId, parsedDocumentId: parsed.id };
       } catch (error) {
         const message = error instanceof Error ? error.message : "Experience extraction failed.";
         // Surface a clear, user-readable error and keep the importJobId so the

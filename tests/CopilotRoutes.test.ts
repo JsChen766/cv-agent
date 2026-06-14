@@ -3,6 +3,7 @@ import { createServer } from "../src/api/createServer.js";
 import type { ApiSuccess } from "../src/api/response.js";
 import type { ApiKernel } from "../src/api/types.js";
 import type { CopilotChatResponse } from "../src/copilot/types.js";
+import type { UploadedFile } from "../src/files/types.js";
 import { createP12Kernel } from "./p12Helpers.js";
 
 function setupEnv() {
@@ -33,6 +34,21 @@ describe("Copilot routes on agent-core runtime", () => {
     await kernel.close();
   });
 
+  async function uploadTextFile(text: string, fileName = "resume.txt"): Promise<UploadedFile> {
+    const response = await server.inject({
+      method: "POST",
+      url: "/files/upload",
+      headers: { "x-user-id": "user-1", "content-type": "application/json" },
+      payload: {
+        fileName,
+        mimeType: "text/plain",
+        base64: Buffer.from(text, "utf8").toString("base64"),
+      },
+    });
+    expect(response.statusCode).toBe(200);
+    return (response.json() as ApiSuccess<UploadedFile>).data;
+  }
+
   it("POST /copilot/chat returns the compatibility envelope with agentTrace", async () => {
     const response = await server.inject({
       method: "POST",
@@ -58,6 +74,51 @@ describe("Copilot routes on agent-core runtime", () => {
       },
     });
     expect(JSON.stringify(body.data.raw.agentTrace)).toContain("list_experiences");
+  });
+
+  it("POST /copilot/chat imports an uploaded resume file from clientState fileId", async () => {
+    const resumeText = [
+      "李四",
+      "教育经历",
+      "2020.09-2024.06 香港科技大学 计算机科学 本科",
+      "实习经历",
+      "2023.06-2023.09 腾讯科技有限公司 数据分析实习生",
+      "项目经历",
+      "项目一：智能简历解析系统",
+      "2023.10-2024.01 角色：负责人",
+      "项目二：校园二手交易平台",
+      "2022.03-2022.06 角色：后端开发者",
+      "获奖经历",
+      "2023 校级一等奖学金",
+      "技能栈",
+      "TypeScript, Vue, Node, Python, SQL",
+    ].join("\n");
+    const file = await uploadTextFile(resumeText, "resume.txt");
+
+    const response = await server.inject({
+      method: "POST",
+      url: "/copilot/chat",
+      headers: { "x-user-id": "user-1" },
+      payload: {
+        message: `导入简历：resume.txt fileId:${file.id}`,
+        clientState: {
+          resumeUpload: {
+            fileId: file.id,
+            originalName: file.originalName,
+          },
+        },
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+    const body = response.json() as ApiSuccess<CopilotChatResponse>;
+    const toolResults = body.data.raw.toolResults as Array<Record<string, unknown>>;
+    const importResult = toolResults.find((result) => (result.actionResult as Record<string, unknown> | undefined)?.actionType === "import_resume_file_as_candidates");
+    expect(importResult).toBeTruthy();
+    expect((importResult!.data as Record<string, unknown>).candidateCount).toBeGreaterThan(1);
+    expect(body.data.assistantMessage.metadata?.productBlocks?.some((block) => block.type === "experience_candidate_form")).toBe(true);
+    expect(body.data.assistantMessage.metadata?.displaySnapshot?.productBlocks?.some((block) => block.type === "experience_candidate_form")).toBe(true);
+    expect(JSON.stringify(body.data.raw.agentTrace)).toContain("experience_receiver");
   });
 
   it("save experience chat creates a pending action and confirm endpoint executes it", async () => {

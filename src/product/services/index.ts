@@ -45,6 +45,9 @@ type ImportDraftLike = {
   endDate?: string;
   content: string;
   structured?: Record<string, unknown>;
+  confidence?: number;
+  warnings?: string[];
+  sourceDocumentId?: string;
 };
 
 export class ProductStateConflictError extends Error {
@@ -286,12 +289,12 @@ export class ImportService {
     private readonly llmExtractor?: LLMExperienceExtractor,
   ) {}
 
-  public createTextImportJob(userId: string, rawText: string): Promise<ProductImportJob> {
+  public createTextImportJob(userId: string, rawText: string, options: { sourceType?: ProductImportJob["sourceType"] } = {}): Promise<ProductImportJob> {
     const now = new Date().toISOString();
     return this.repository.createImportJob({
       id: `pimp-${randomUUID()}`,
       userId,
-      sourceType: "text",
+      sourceType: options.sourceType ?? "text",
       status: "pending",
       rawText,
       createdAt: now,
@@ -299,7 +302,7 @@ export class ImportService {
     });
   }
 
-  public async createCandidatesFromText(userId: string, jobId: string): Promise<ProductImportCandidate[]> {
+  public async createCandidatesFromText(userId: string, jobId: string, options: { sourceDocumentId?: string } = {}): Promise<ProductImportCandidate[]> {
     const job = await this.repository.getImportJob(userId, jobId);
     if (!job) throw new Error("Import job not found.");
     await this.repository.updateImportJobStatus(userId, jobId, { status: "extracting" });
@@ -311,9 +314,14 @@ export class ImportService {
     if (this.llmExtractor) {
       const extracted = await this.llmExtractor.extractCandidates(rawText);
       if (extracted.length > 0) {
-        for (const candidate of extracted) {
-          const draft = extractedCandidateToDraft(candidate, detectDominantLanguage(rawText));
-          candidates.push(await this.createImportCandidateFromDraft(userId, jobId, draft));
+        const llmDrafts = extracted.map((candidate) => extractedCandidateToDraft(candidate, detectDominantLanguage(rawText)));
+        const resumeDrafts = buildResumeImportDrafts(rawText);
+        const selectedDrafts = extracted.length === 1 && resumeDrafts.length > 1 ? resumeDrafts : llmDrafts;
+        for (const draft of selectedDrafts.slice(0, 20)) {
+          candidates.push(await this.createImportCandidateFromDraft(userId, jobId, {
+            ...draft,
+            sourceDocumentId: options.sourceDocumentId,
+          }));
         }
         await this.repository.updateImportJobStatus(userId, jobId, { status: "candidates_ready" });
         return candidates;
@@ -322,7 +330,10 @@ export class ImportService {
       const conservative = buildConservativeImportDrafts(rawText);
       if (conservative.length > 0) {
         for (const draft of conservative) {
-          candidates.push(await this.createImportCandidateFromDraft(userId, jobId, draft));
+          candidates.push(await this.createImportCandidateFromDraft(userId, jobId, {
+            ...draft,
+            sourceDocumentId: options.sourceDocumentId,
+          }));
         }
         await this.repository.updateImportJobStatus(userId, jobId, { status: "candidates_ready" });
         return candidates;
@@ -335,7 +346,10 @@ export class ImportService {
       const conservative = buildConservativeImportDrafts(rawText);
       if (conservative.length > 0) {
         for (const draft of conservative) {
-          candidates.push(await this.createImportCandidateFromDraft(userId, jobId, draft));
+          candidates.push(await this.createImportCandidateFromDraft(userId, jobId, {
+            ...draft,
+            sourceDocumentId: options.sourceDocumentId,
+          }));
         }
         await this.repository.updateImportJobStatus(userId, jobId, { status: "candidates_ready" });
         return candidates;
@@ -345,12 +359,20 @@ export class ImportService {
     }
 
     // Deterministic fallback: rule-based chunking and extraction (test mode only)
-    const chunks = splitExperienceText(rawText);
+    const resumeDrafts = buildResumeImportDrafts(rawText);
+    for (const draft of resumeDrafts) {
+      candidates.push(await this.createImportCandidateFromDraft(userId, jobId, {
+        ...draft,
+        sourceDocumentId: options.sourceDocumentId,
+      }));
+    }
+    const chunks = resumeDrafts.length > 0 ? [] : splitExperienceText(rawText);
     for (const [index, content] of chunks.entries()) {
       const draft = extractExperienceDraftFromText(content);
       candidates.push(await this.createImportCandidateFromDraft(userId, jobId, {
         ...draft,
         title: draft.title || inferTitle(content, `Imported experience ${index + 1}`),
+        sourceDocumentId: options.sourceDocumentId,
       }));
     }
     await this.repository.updateImportJobStatus(userId, jobId, { status: "candidates_ready" });
@@ -363,6 +385,8 @@ export class ImportService {
     draft: ImportDraftLike,
   ): Promise<ProductImportCandidate> {
     const now = new Date().toISOString();
+    const existingWarnings = Array.isArray(draft.structured?.warnings) ? draft.structured.warnings : [];
+    const warnings = draft.warnings ?? existingWarnings;
     return this.repository.createImportCandidate({
       id: `pimpcand-${randomUUID()}`,
       jobId,
@@ -373,8 +397,14 @@ export class ImportService {
       role: draft.role,
       startDate: draft.startDate,
       endDate: draft.endDate,
+      sourceDocumentId: draft.sourceDocumentId,
       content: draft.content,
-      structured: draft.structured,
+      structured: {
+        ...(draft.structured ?? {}),
+        confidence: draft.confidence,
+        missingFields: warnings,
+        warnings,
+      },
       status: "pending",
       createdAt: now,
       updatedAt: now,
@@ -467,8 +497,281 @@ export class ImportService {
 }
 
 function buildConservativeImportDrafts(rawText: string): ImportDraftLike[] {
+  const resumeDrafts = buildResumeImportDrafts(rawText);
+  if (resumeDrafts.length > 0) return resumeDrafts;
   const publication = buildPublicationDraft(rawText);
   return publication ? [publication] : [];
+}
+
+export function buildResumeImportDrafts(rawText: string): ImportDraftLike[] {
+  const text = normalizeResumeText(rawText);
+  if (!text) return [];
+  const sections = splitResumeSections(text);
+  const drafts: ImportDraftLike[] = [];
+  for (const section of sections) {
+    for (const chunk of splitResumeSectionEntries(section.category, section.content)) {
+      const draft = buildResumeDraft(section.category, chunk);
+      if (draft) drafts.push(draft);
+      if (drafts.length >= 20) return drafts;
+    }
+  }
+  return drafts;
+}
+
+type ResumeSection = {
+  category: ProductExperienceCategory;
+  content: string;
+};
+
+function normalizeResumeText(rawText: string): string {
+  return String(rawText ?? "")
+    .replace(/\r\n/g, "\n")
+    .replace(/\r/g, "\n")
+    .split("\n")
+    .map((line) => line.replace(/[ \t\f\v]+/g, " ").trim())
+    .join("\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+function splitResumeSections(text: string): ResumeSection[] {
+  const lines = text.split("\n");
+  const sections: ResumeSection[] = [];
+  let current: ResumeSection | null = null;
+  for (const line of lines) {
+    const category = sectionCategory(line);
+    if (category) {
+      if (current && current.content.trim()) sections.push({ ...current, content: current.content.trim() });
+      current = { category, content: "" };
+      continue;
+    }
+    if (!current) continue;
+    current.content += `${line}\n`;
+  }
+  if (current && current.content.trim()) sections.push({ ...current, content: current.content.trim() });
+  if (sections.length > 0) return sections;
+
+  const chunks = splitExperienceText(text);
+  if (chunks.length <= 1 && !hasResumeImportSignals(text)) return [];
+  return chunks.map((chunk) => ({ category: inferResumeChunkCategory(chunk), content: chunk }));
+}
+
+function hasResumeImportSignals(text: string): boolean {
+  const sectionSignals = [
+    /教育经历|教育背景|Education/i,
+    /实习经历|工作经历|Internship|Work Experience/i,
+    /项目经历|项目经验|Projects?/i,
+    /获奖经历|荣誉奖项|Awards?|Honors?/i,
+    /技能|技能栈|Skills?|Certificates?/i,
+  ].filter((pattern) => pattern.test(text)).length;
+  const dateSignals = (text.match(/20\d{2}(?:[./-]\d{1,2})?\s*(?:-|–|—|~|至|到|to)\s*(?:20\d{2}(?:[./-]\d{1,2})?|至今|现在|present|current)/gi) ?? []).length;
+  const projectSignals = (text.match(/项目[一二三四五六七八九十\d]*[:：-]?|Project\s*\d*[:：-]?/gi) ?? []).length;
+  return sectionSignals >= 2 || dateSignals >= 2 || projectSignals >= 2;
+}
+
+function sectionCategory(line: string): ProductExperienceCategory | undefined {
+  const normalized = line.replace(/\s+/g, "");
+  if (!normalized || normalized.length > 24) return undefined;
+  if (/^(教育经历|教育背景|教育|Education)$/i.test(normalized)) return "education";
+  if (/^(实习经历|实习经验|实习|Internship|Internships)$/i.test(normalized)) return "internship";
+  if (/^(工作经历|工作经验|职业经历|WorkExperience|Experience)$/i.test(normalized)) return "work";
+  if (/^(项目经历|项目经验|项目|Projects?|ProjectExperience)$/i.test(normalized)) return "project";
+  if (/^(获奖经历|荣誉奖项|获奖|荣誉|奖项|Awards?|Honors?)$/i.test(normalized)) return "award";
+  if (/^(技能|技能栈|专业技能|证书|技能证书|Skills?|Certificates?)$/i.test(normalized)) return "skill";
+  return undefined;
+}
+
+function splitResumeSectionEntries(category: ProductExperienceCategory, content: string): string[] {
+  const lines = content.split("\n").map((line) => line.trim()).filter(Boolean);
+  if (lines.length === 0) return [];
+  if (category === "skill") return [lines.join("\n")];
+  if (category === "education" || category === "award") {
+    const entries = splitByEntryStarts(lines, (line, index) => index > 0 && (hasDateRange(line) || startsNumberedItem(line)));
+    return entries.length > 0 ? entries : [lines.join("\n")];
+  }
+  if (category === "project") {
+    const projectEntries = splitByEntryStarts(lines, (line, index) => index > 0 && startsProjectEntry(line));
+    if (projectEntries.length > 1) return projectEntries;
+    const dateEntries = splitByEntryStarts(lines, (line, index) => index > 0 && hasDateRange(line));
+    return dateEntries.length > 1 ? dateEntries : [lines.join("\n")];
+  }
+  const entries = splitByEntryStarts(lines, (line, index) => index > 0 && (hasDateRange(line) || startsNumberedItem(line)));
+  return entries.length > 0 ? entries : [lines.join("\n")];
+}
+
+function splitByEntryStarts(lines: string[], isStart: (line: string, index: number) => boolean): string[] {
+  const entries: string[] = [];
+  let current: string[] = [];
+  lines.forEach((line, index) => {
+    if (isStart(line, index) && current.length > 0) {
+      entries.push(current.join("\n").trim());
+      current = [];
+    }
+    current.push(line);
+  });
+  if (current.length > 0) entries.push(current.join("\n").trim());
+  return entries.filter((entry) => entry.length > 0);
+}
+
+function buildResumeDraft(category: ProductExperienceCategory, content: string): ImportDraftLike | null {
+  const clean = content.trim();
+  if (clean.length < 4) return null;
+  const firstLine = clean.split("\n").find(Boolean)?.replace(/^[-*•\d.、\s]+/, "").trim() ?? "";
+  const dateRange = extractResumeDateRange(clean);
+  const warnings: string[] = [];
+  const structured: Record<string, unknown> = {
+    summary: clean.replace(/\s+/g, " ").slice(0, 220),
+    highlights: clean.split("\n").filter(Boolean).slice(0, 6),
+    metrics: extractResumeMetrics(clean),
+    rawText: clean,
+  };
+  let title = firstLine.slice(0, 90);
+  let organization: string | undefined;
+  let role: string | undefined;
+
+  if (category === "education") {
+    organization = extractSchoolName(clean);
+    role = [extractDegreeName(clean), extractMajorName(clean)].filter(Boolean).join(" / ") || undefined;
+    title = ([organization, role].filter(Boolean).join(" - ") || title) || "教育经历";
+    structured.school = organization;
+    structured.degree = extractDegreeName(clean);
+    structured.major = extractMajorName(clean);
+    if (!organization) warnings.push("school_not_found");
+  } else if (category === "project") {
+    const projectName = (extractProjectTitle(clean) ?? title) || "项目经历";
+    title = projectName;
+    role = extractProjectRoleName(clean);
+    structured.projectName = projectName;
+    structured.projectRole = role;
+    structured.techStack = extractResumeTags(clean);
+  } else if (category === "skill") {
+    title = firstLine && !/技能|skills?/i.test(firstLine) ? firstLine : "技能栈";
+    structured.skillCategory = title;
+    structured.techStack = extractResumeTags(clean);
+  } else if (category === "award") {
+    title = (extractAwardName(clean) ?? title) || "获奖经历";
+    organization = extractAwardIssuer(clean);
+    structured.issuer = organization;
+    structured.awardDate = dateRange.startDate;
+  } else {
+    organization = extractResumeOrganization(clean);
+    role = extractResumeRole(clean);
+    title = [role, organization].filter(Boolean).join(" - ") || title || (category === "internship" ? "实习经历" : "工作经历");
+    structured.company = organization;
+    structured.employmentType = category === "internship" ? "internship" : undefined;
+    if (!organization) warnings.push("organization_not_found");
+  }
+
+  return {
+    category,
+    title,
+    organization,
+    role: category === "education" ? role : role,
+    startDate: dateRange.startDate,
+    endDate: dateRange.endDate,
+    content: clean,
+    structured,
+    confidence: Math.max(0.45, Math.min(0.9, 0.62 + (dateRange.startDate ? 0.1 : 0) + (organization ? 0.08 : 0) + (role ? 0.06 : 0) - warnings.length * 0.04)),
+    warnings,
+  };
+}
+
+function inferResumeChunkCategory(content: string): ProductExperienceCategory {
+  const text = content.toLowerCase();
+  if (/教育|大学|学院|本科|硕士|博士|university|college|bachelor|master|phd/.test(text)) return "education";
+  if (/实习|internship|intern/.test(text)) return "internship";
+  if (/项目|project|系统|平台/.test(text)) return "project";
+  if (/获奖|奖学金|荣誉|award|honor|scholarship/.test(text)) return "award";
+  if (/技能|skills?|证书|certificate/.test(text)) return "skill";
+  if (/公司|工作|engineer|analyst|developer/.test(text)) return "work";
+  return "other";
+}
+
+function hasDateRange(line: string): boolean {
+  return /20\d{2}(?:[./-]\d{1,2})?\s*(?:-|–|—|~|至|到|to)\s*(?:20\d{2}(?:[./-]\d{1,2})?|至今|现在|present|current)/i.test(line);
+}
+
+function startsNumberedItem(line: string): boolean {
+  return /^(?:[-*•]|\d+[.、]|[一二三四五六七八九十]+[、.])\s*/.test(line);
+}
+
+function startsProjectEntry(line: string): boolean {
+  return /^(?:[-*•]\s*)?(?:项目[一二三四五六七八九十\d]*[:：-]?|Project\s*\d*[:：-]?|(?:\d+[.、]|[一二三四五六七八九十]+[、.])\s*(?:项目|Project))/i.test(line);
+}
+
+function extractResumeDateRange(text: string): { startDate?: string; endDate?: string } {
+  const match = text.match(/(?<start>20\d{2}(?:[./-]\d{1,2})?)\s*(?:-|–|—|~|至|到|to)\s*(?<end>20\d{2}(?:[./-]\d{1,2})?|至今|现在|present|current)/i);
+  return {
+    startDate: normalizeResumeDate(match?.groups?.start),
+    endDate: normalizeResumeDate(match?.groups?.end),
+  };
+}
+
+function normalizeResumeDate(value?: string): string | undefined {
+  if (!value) return undefined;
+  const lower = value.trim().toLowerCase();
+  if (["至今", "现在", "present", "current"].includes(lower)) return "present";
+  const match = lower.match(/^(20\d{2})(?:[./-](\d{1,2}))?/);
+  if (!match) return undefined;
+  return match[2] ? `${match[1]}-${match[2].padStart(2, "0")}` : match[1];
+}
+
+function extractSchoolName(text: string): string | undefined {
+  return text.match(/([\p{Script=Han}A-Za-z&.\-\s]{2,60}(?:大学|学院|University|College|Institute))/u)?.[1]?.trim();
+}
+
+function extractDegreeName(text: string): string | undefined {
+  return text.match(/(本科|硕士|博士|学士|Bachelor(?:'s)?|Master(?:'s)?|PhD|B\.?Sc|M\.?Sc)/i)?.[1]?.trim();
+}
+
+function extractMajorName(text: string): string | undefined {
+  return text.match(/(?:专业|Major)[:：\s]*([^\n，,。；;]{2,40})/i)?.[1]?.trim();
+}
+
+function extractProjectTitle(text: string): string | undefined {
+  const first = text.split("\n").find(Boolean)?.replace(/^[-*•\d.、\s]+/, "").trim();
+  return first?.replace(/^项目[一二三四五六七八九十\d]*[:：-]?\s*/, "").slice(0, 90);
+}
+
+function extractProjectRoleName(text: string): string | undefined {
+  return text.match(/(?:角色|职责|担任|负责|Role)[:：\s-]*([^\n，,。；;]{2,40})/i)?.[1]?.trim()
+    ?? text.match(/(负责人|开发者|成员|组长|核心成员|leader|developer|member)/i)?.[1]?.trim();
+}
+
+function extractAwardName(text: string): string | undefined {
+  return text.split("\n").find((line) => /奖|荣誉|award|honor|scholarship/i.test(line))?.replace(/^[-*•\d.、\s]+/, "").trim().slice(0, 90);
+}
+
+function extractAwardIssuer(text: string): string | undefined {
+  return text.match(/([\p{Script=Han}A-Za-z&.\-\s]{2,50}(?:大学|学院|协会|委员会|University|College|Association|Committee))/u)?.[1]?.trim();
+}
+
+function extractResumeOrganization(text: string): string | undefined {
+  return text.match(/([\p{Script=Han}A-Za-z&.\-\s]{2,60}(?:公司|集团|科技|有限责任公司|有限公司|证券|银行|事务所|Inc|LLC|Ltd|Technology|Company))/u)?.[1]?.trim();
+}
+
+function extractResumeRole(text: string): string | undefined {
+  return text.match(/(?:职位|岗位|担任|任职|Role|Position)[:：\s-]*([^\n，,。；;]{2,40})/i)?.[1]?.trim()
+    ?? text.match(/([^\n，,。；;]{2,30}(?:实习生|工程师|分析师|研究员|经理|开发|运营|Intern|Engineer|Analyst|Developer))/i)?.[1]?.trim();
+}
+
+function extractResumeTags(text: string): string[] {
+  const keywords = ["TypeScript", "JavaScript", "React", "Vue", "Node", "Python", "SQL", "Java", "Go", "Docker", "Kubernetes", "Excel", "Power BI", "PyTorch", "TensorFlow"];
+  return keywords.filter((keyword) => new RegExp(`\\b${escapeRegExp(keyword)}\\b`, "i").test(text)).slice(0, 12);
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function extractResumeMetrics(text: string): Array<{ name: string; value: string; context?: string }> {
+  return Array.from(text.matchAll(/(\d+(?:\.\d+)?)\s*(%|ms|s|秒|分钟|人|次|万|k|m|x|倍)/gi))
+    .slice(0, 8)
+    .map((match) => ({
+      name: "metric",
+      value: `${match[1]}${match[2]}`,
+      context: text.slice(Math.max(0, (match.index ?? 0) - 24), Math.min(text.length, (match.index ?? 0) + 36)).replace(/\s+/g, " ").trim(),
+    }));
 }
 
 function buildPublicationDraft(rawText: string): ImportDraftLike | null {

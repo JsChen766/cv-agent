@@ -54,15 +54,25 @@ export class FileService {
       const buffer = await this.storage.read(file.storageKey);
       const extracted = await extractText(file.originalName, file.mimeType, buffer);
       const maxChars = readPlatformConfig().fileMaxParsedTextChars;
-      const text = extracted.text.length > maxChars ? extracted.text.slice(0, maxChars) : extracted.text;
+      const cleanedText = cleanParsedText(extracted.text);
+      const text = cleanedText.length > maxChars ? cleanedText.slice(0, maxChars) : cleanedText;
       const document = await this.repository.createParsedDocument({
         id: `pdoc-${randomUUID()}`,
         userId,
         fileId: file.id,
         sourceType: sourceTypeForMime(file.mimeType),
         text,
-        metadata: { ...extracted.metadata, truncated: extracted.text.length > maxChars, originalLength: extracted.text.length },
+        metadata: { ...extracted.metadata, truncated: cleanedText.length > maxChars, originalLength: cleanedText.length },
         createdAt: new Date().toISOString(),
+      });
+      console.debug("[files] parsed document", {
+        fileId: file.id,
+        originalName: file.originalName,
+        mimeType: file.mimeType,
+        pageCount: extracted.metadata.pageCount,
+        textLength: text.length,
+        originalLength: cleanedText.length,
+        parsedDocumentId: document.id,
       });
       await this.repository.updateFile(userId, id, { status: "parsed", parserStatus: "parsed", parserError: undefined, textDocumentId: document.id });
       return document;
@@ -85,6 +95,17 @@ export class FileService {
     if (!file) throw new Error("File not found.");
     return this.storage.read(file.storageKey);
   }
+}
+
+function cleanParsedText(text: string): string {
+  return String(text ?? "")
+    .replace(/\r\n/g, "\n")
+    .replace(/\r/g, "\n")
+    .split("\n")
+    .map((line) => line.replace(/[ \t\f\v]+/g, " ").trim())
+    .join("\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
 }
 
 async function extractText(fileName: string, mimeType: string, buffer: Buffer): Promise<{ text: string; metadata: Record<string, unknown> }> {
@@ -120,7 +141,7 @@ async function extractPdfText(buffer: Buffer, fileName: string): Promise<{ text:
       pages.push(pageText);
     }
     return {
-      text: pages.join("\n"),
+      text: pages.join("\n\n"),
       metadata: {
         parser: "PdfJsParser",
         fileName,

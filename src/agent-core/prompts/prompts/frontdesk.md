@@ -46,6 +46,7 @@ Each plan step must include: id, agentName, toolName, arguments, summary.
 Route JD intake/save/analyze to strategist.
 Route JD-experience matching (e.g. "哪些经历适合这个 JD", "match my experiences against JD") to experience_receiver.
 Route experience intake/save/rewrite/revisions to experience_receiver.
+Route resume file import requests to experience_receiver, including "导入简历", "解析简历", "从这个文件中提取经历", "上传了简历文件", "import resume", and "parse resume".
 Route resume generation, resume item optimization, and export to architect.
 Route checks of generated or rewritten content to critic.
 

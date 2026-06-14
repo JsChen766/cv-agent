@@ -20,6 +20,10 @@ const WorkExperienceSchema = z.object({
   confidence: z.number().min(0).max(1).optional(),
 });
 
+const InternshipExperienceSchema = WorkExperienceSchema.extend({
+  type: z.literal("internship"),
+});
+
 const ProjectExperienceSchema = z.object({
   type: z.literal("project"),
   title: z.string().min(1),
@@ -76,6 +80,7 @@ const SkillExperienceSchema = z.object({
 
 const ExtractedCandidateSchema = z.discriminatedUnion("type", [
   WorkExperienceSchema,
+  InternshipExperienceSchema,
   ProjectExperienceSchema,
   EducationExperienceSchema,
   AwardExperienceSchema,
@@ -83,7 +88,7 @@ const ExtractedCandidateSchema = z.discriminatedUnion("type", [
 ]);
 
 const ExtractionResultSchema = z.object({
-  candidates: z.array(ExtractedCandidateSchema).min(1).max(12),
+  candidates: z.array(ExtractedCandidateSchema).min(1).max(20),
 });
 
 export type ExtractedCandidate = z.infer<typeof ExtractedCandidateSchema>;
@@ -120,6 +125,9 @@ export function buildUserPrompt(text: string): string {
     "- Keep proper nouns, paper titles, journal names, company names, school names, product names, model names, and technical terms in their original language.",
     "- If the detected language is zh, write explanatory resume text in Chinese while preserving English proper nouns.",
     "- If the detected language is en, write explanatory resume text in English.",
+    "- This may be a complete resume. Extract education, internship/work, each project, awards/certificates, and skills as separate candidates.",
+    "- Do not merge the whole resume into one candidate. Do not stop after the first candidate.",
+    "- Every candidate must include a category via the 'type' field.",
     "",
     "```text",
     truncated,
@@ -136,6 +144,12 @@ export class LLMExperienceExtractor {
 
   public async extractCandidates(text: string): Promise<ExtractedCandidate[]> {
     const result = await this.tryExtract(text);
+    if (result.candidates.length === 1 && looksLikeMultiExperienceResume(text)) {
+      const repaired = await this.repairExtraction(text, [
+        "Only one candidate was returned, but the source text appears to contain multiple resume sections, dates, or projects. Split the complete resume into separate candidates.",
+      ]);
+      if (repaired.candidates.length > 1) return repaired.candidates;
+    }
     return result.candidates;
   }
 
@@ -167,12 +181,12 @@ export class LLMExperienceExtractor {
 
   private async repairExtraction(
     text: string,
-    issues: z.ZodIssue[],
+    issues: z.ZodIssue[] | string[],
   ): Promise<ExtractionResult> {
     try {
       const errorSummary = issues
         .slice(0, 6)
-        .map((issue) => `${issue.path.join(".")}: ${issue.message}`)
+        .map((issue) => typeof issue === "string" ? issue : `${issue.path.join(".")}: ${issue.message}`)
         .join("\n");
 
       const repairMessage = REPAIR_PROMPT.replace("{{errors}}", errorSummary);
@@ -252,11 +266,12 @@ export function extractedCandidateToDraft(
 
   switch (candidate.type) {
     case "work":
+    case "internship":
       if (!candidate.company) warnings.push("organization_not_found");
       if (!candidate.role) warnings.push("role_not_found");
       return {
         ...base,
-        category: "work",
+        category: candidate.type === "internship" ? "internship" : "work",
         title: candidate.title,
         organization: candidate.company,
         role: candidate.role,
@@ -393,4 +408,18 @@ export function extractedCandidateToDraft(
       };
     }
   }
+}
+
+export function looksLikeMultiExperienceResume(text: string): boolean {
+  const normalized = String(text ?? "");
+  const sectionHits = [
+    /教育经历|教育背景|Education/i,
+    /实习经历|工作经历|工作经验|Internship|Work Experience/i,
+    /项目经历|项目经验|Projects?/i,
+    /获奖经历|荣誉奖项|Awards?|Honors?/i,
+    /技能|技能栈|Skills?|Certificates?/i,
+  ].reduce((count, pattern) => count + (pattern.test(normalized) ? 1 : 0), 0);
+  const dateHits = (normalized.match(/\b20\d{2}(?:[./-]\d{1,2})?\s*(?:-|–|—|~|至|到|to)\s*(?:20\d{2}(?:[./-]\d{1,2})?|至今|现在|present|current)\b/gi) ?? []).length;
+  const projectHits = (normalized.match(/项目[一二三四五六七八九十\d]?[:：]|Project\s*\d*[:：-]/gi) ?? []).length;
+  return sectionHits >= 2 || dateHits >= 2 || projectHits >= 2;
 }

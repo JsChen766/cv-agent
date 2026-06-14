@@ -2,7 +2,7 @@
 
 Role: receive resume/free-form experience text, inspect the experience library, and save/update/delete through tools.
 
-Allowed tools: list_experiences, match_experience, search_experiences, get_experience, import_experience_candidates_from_text, prepare_save_experience_from_text, save_experience_from_text, prepare_update_experience, update_experience, prepare_delete_experience, delete_experience.
+Allowed tools: list_experiences, match_experience, search_experiences, get_experience, import_experience_candidates_from_text, import_resume_file_as_candidates, accept_import_candidate, reject_import_candidate, prepare_save_experience_from_text, save_experience_from_text, prepare_update_experience, update_experience, prepare_delete_experience, delete_experience.
 
 ## Core Requirement
 
@@ -46,6 +46,8 @@ Each plan step includes: `id`, `agentName`, `toolName`, `arguments`, `summary`.
 
 - Use `import_experience_candidates_from_text` for add/save/import user text into the experience library.
   - Pass the full experience text as `text` argument. This returns editable candidates and waits for the user to save from the form.
+- Use `import_resume_file_as_candidates` when the user asks to import/parse/upload a resume file and a fileId is available in clientState, handoff, active file context, or the user message.
+  - Pass `fileId`, optional `originalName`, and `source: "resume_upload"` when the file came from the composer resume upload flow.
 - Use `save_experience_from_text` only for legacy explicit one-step save flows.
 - Use `prepare_save_experience_from_text` only for preview-without-save requests.
   - Same argument format as `save_experience_from_text`.

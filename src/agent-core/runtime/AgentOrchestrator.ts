@@ -172,6 +172,13 @@ export class AgentOrchestrator {
         status: "running",
       });
       const frontDeskDecision = await this.decisionRunner.decide({ agent: this.agents.frontdesk, context: run.context });
+      if (extractResumeFileImportRequest(run.context)) {
+        frontDeskDecision.responseType = "route";
+        frontDeskDecision.routeTo = "experience_receiver";
+        frontDeskDecision.missingInputs = [];
+        frontDeskDecision.confidence = Math.max(frontDeskDecision.confidence ?? 0, 0.9);
+        frontDeskDecision.assistantMessage = frontDeskDecision.assistantMessage || "我来从上传的简历文件中识别可编辑的经历候选。";
+      }
       const normalizedHandoff = normalizeFrontDeskHandoff({
         raw: frontDeskDecision.handoff,
         sessionId: run.context.sessionId,
@@ -794,8 +801,11 @@ export class AgentOrchestrator {
         };
       }
 
-      const augmentedPlan = maybeAugmentResumeGenerationPlan(
-        maybeAppendJDSaveStep(decision.plan, run.context),
+      const augmentedPlan = maybeAppendResumeFileImportStep(
+        maybeAugmentResumeGenerationPlan(
+          maybeAppendJDSaveStep(decision.plan, run.context),
+          run.context,
+        ),
         run.context,
       );
       const plan = this.validatePlan(augmentedPlan, specialist);
@@ -1625,6 +1635,9 @@ function isTerminalDisplayToolResult(result: ToolResult): boolean {
   const actionType = result.actionResult?.actionType;
   return actionType === "analyze_jd"
     || actionType === "import_experience_candidates_from_text"
+    || actionType === "import_resume_file_as_candidates"
+    || actionType === "accept_import_candidate"
+    || actionType === "reject_import_candidate"
     || actionType === "list_experiences"
     || actionType === "search_experiences"
     || actionType === "match_experiences_against_jd";
@@ -1756,6 +1769,68 @@ function maybeAppendJDSaveStep(plan: PlanStep[], context: AgentContext): PlanSte
       summary: "Save JD after matching results.",
     },
   ];
+}
+
+function maybeAppendResumeFileImportStep(plan: PlanStep[], context: AgentContext): PlanStep[] {
+  const importRequest = extractResumeFileImportRequest(context);
+  if (!importRequest) return plan;
+  if (plan.some((step) => step.toolName === "import_resume_file_as_candidates")) return plan;
+  return [{
+    id: "step-import-resume-file",
+    agentName: "experience_receiver",
+    toolName: "import_resume_file_as_candidates",
+    arguments: importRequest,
+    summary: "Parse uploaded resume file into editable experience candidates.",
+  }];
+}
+
+function extractResumeFileImportRequest(context: AgentContext): { fileId: string; originalName?: string; source: "resume_upload" | "file_upload" | "copilot" } | undefined {
+  if (!isResumeFileImportMessage(context.userMessage)) return undefined;
+  const clientState = context.clientState ?? {};
+  const resumeUpload = isRecord(clientState.resumeUpload) ? clientState.resumeUpload : undefined;
+  const fileId =
+    stringValue(resumeUpload?.fileId)
+    ?? stringValue(resumeUpload?.id)
+    ?? stringValue(clientState.fileId)
+    ?? stringValue(clientState.activeFileId)
+    ?? stringValue(clientState.resumeFileId)
+    ?? stringValue(clientState.uploadedFileId)
+    ?? extractFileIdFromMessage(context.userMessage);
+  if (!fileId) return undefined;
+  const originalName =
+    stringValue(resumeUpload?.originalName)
+    ?? stringValue(resumeUpload?.fileName)
+    ?? stringValue(resumeUpload?.name)
+    ?? stringValue(clientState.originalName)
+    ?? stringValue(clientState.fileName)
+    ?? extractOriginalNameFromMessage(context.userMessage);
+  return {
+    fileId,
+    originalName,
+    source: "resume_upload",
+  };
+}
+
+function isResumeFileImportMessage(message: string): boolean {
+  const lower = message.toLowerCase();
+  return lower.includes("import resume")
+    || lower.includes("parse resume")
+    || lower.includes("resume upload")
+    || lower.includes("extract experience")
+    || message.includes("导入简历")
+    || message.includes("解析简历")
+    || message.includes("从这个文件中提取经历")
+    || message.includes("上传了简历文件")
+    || (message.includes("简历") && message.includes("fileId"));
+}
+
+function extractFileIdFromMessage(message: string): string | undefined {
+  return message.match(/\bfileId\s*[:=]\s*([A-Za-z0-9_-]+)/i)?.[1]
+    ?? message.match(/\b(file-[A-Za-z0-9_-]+)/)?.[1];
+}
+
+function extractOriginalNameFromMessage(message: string): string | undefined {
+  return message.match(/(?:导入简历|解析简历|resume)[:：]\s*([^\n，,]+?\.(?:pdf|docx|txt))/i)?.[1]?.trim();
 }
 
 function shouldSaveJDFromMessage(message: string): boolean {

@@ -43,6 +43,8 @@ export class ExplicitActionMapper {
         stringValue(payload.content) ?? stringValue(payload.rewrittenText) ?? stringValue(payload.after),
       selectedText: () =>
         stringValue(payload.selectedText) ?? stringValue(payload.instruction) ?? clientState.selectedText ?? ctx?.activeResume?.selectedItem?.contentPreview,
+      candidateId: () =>
+        stringValue(payload.candidateId) ?? stringValue(payload.id) ?? (Array.isArray(clientState.activeCandidateIds) ? stringValue(clientState.activeCandidateIds[0]) : undefined),
     };
 
     switch (request.action.type) {
@@ -77,6 +79,31 @@ export class ExplicitActionMapper {
           return { kind: "needs_input", missingInputs: ["text"], message: "Please provide experience text to save." };
         }
         return { kind: "step", step: explicitStep("experience_receiver", "save_experience_from_text", { text }, "Save experience from text.") };
+      }
+
+      case "save_experience_candidate":
+      case "acceptImportCandidate":
+      case "accept_import_candidate": {
+        const candidateId = resolve.candidateId();
+        if (!candidateId) {
+          return { kind: "needs_input", missingInputs: ["candidateId"], message: "Please choose an import candidate to save." };
+        }
+        return { kind: "step", step: explicitStep("experience_receiver", "accept_import_candidate", {
+          candidateId,
+          patch: isRecord(payload.patch) ? payload.patch : payload,
+        }, "Accept import candidate.") };
+      }
+
+      case "reject_experience_candidate":
+      case "rejectImportCandidate":
+      case "reject_import_candidate": {
+        const candidateId = resolve.candidateId();
+        if (!candidateId) {
+          return { kind: "needs_input", missingInputs: ["candidateId"], message: "Please choose an import candidate to reject." };
+        }
+        return { kind: "step", step: explicitStep("experience_receiver", "reject_import_candidate", {
+          candidateId,
+        }, "Reject import candidate.") };
       }
 
       case "save_jd_from_text": {
