@@ -58,6 +58,8 @@ import type { AgentObservation, AgentObservationStatus } from "./AgentObservatio
 import { AgentTraceRecorder } from "./AgentTrace.js";
 import type { AgentRuntimeEmitter, AgentStreamEventType } from "./AgentStreamEvent.js";
 import { CriticGate, shouldReviewTool, type ToolExecutionRecord } from "./CriticGate.js";
+import type { ExecutedPlan, LoopRunResult } from "./RunResult.js";
+import type { AutoRevisionContext, RunState } from "./RunState.js";
 
 export { guardToolIds } from "../security/ToolIdGuard.js";
 
@@ -74,37 +76,6 @@ const MAX_REVISION_ATTEMPTS = 3;
 export type AgentOrchestratorDeps = {
   kernel: ApiKernel;
   pendingActions?: PendingActionService;
-};
-
-type RunState = {
-  context: AgentContext;
-  trace: AgentTraceRecorder;
-  executor: ToolExecutor;
-  workspace: CopilotWorkspace | null;
-  messageBus: AgentMessageBus;
-  loopController: AgentLoopController;
-  streamEmitter?: AgentRuntimeEmitter;
-  autoRevisionContext?: AutoRevisionContext;
-};
-
-type ExecutedPlan = {
-  toolResults: ToolResult[];
-  pendingActions: PendingAction[];
-  executions: ToolExecutionRecord[];
-};
-
-type LoopRunResult = {
-  assistantText: string;
-  toolResults: ToolResult[];
-  pendingActions: PendingAction[];
-  workspacePatch: Record<string, unknown>;
-  criticReview?: CriticReview;
-};
-
-type AutoRevisionContext = {
-  autoRevisionAuthorized: true;
-  toolName: "generate_resume_from_jd";
-  sourcePendingActionId?: string;
 };
 
 type ExperienceDraftLike = ReturnType<typeof extractExperienceDraftFromText>;
