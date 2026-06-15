@@ -55,7 +55,17 @@ export type ProductBlock = {
   data: Record<string, unknown>;
 };
 
+export type CopilotMessageAttachment = {
+  id?: string;
+  fileId?: string;
+  originalName: string;
+  mimeType?: string;
+  size?: number;
+  kind?: "resume_upload" | "file";
+};
+
 export type CopilotMessageMetadata = {
+  attachments?: CopilotMessageAttachment[];
   productBlocks?: ProductBlock[];
   actionResult?: CopilotActionResult;
   /** Full workspace snapshot at this assistant turn for high-fidelity history restore. */
@@ -333,6 +343,16 @@ export type CopilotClientState = {
   visibleArtifactIds?: string[];
   intentSource?: "composer" | "sidebar" | "artifact_action" | "asset_detail" | "system";
   sourceComponent?: string;
+  resumeUpload?: {
+    fileId: string;
+    originalName?: string;
+    mimeType?: string;
+    size?: number;
+    source?: string;
+  };
+  activeFileId?: string;
+  resumeFileId?: string;
+  uploadedFileId?: string;
   [key: string]: unknown;
 };
 

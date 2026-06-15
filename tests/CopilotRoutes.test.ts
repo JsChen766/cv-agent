@@ -100,11 +100,13 @@ describe("Copilot routes on agent-core runtime", () => {
       url: "/copilot/chat",
       headers: { "x-user-id": "user-1" },
       payload: {
-        message: `导入简历：resume.txt fileId:${file.id}`,
+        message: "import resume: resume.txt",
         clientState: {
           resumeUpload: {
             fileId: file.id,
             originalName: file.originalName,
+            mimeType: file.mimeType,
+            size: file.sizeBytes,
           },
         },
       },
@@ -116,9 +118,70 @@ describe("Copilot routes on agent-core runtime", () => {
     const importResult = toolResults.find((result) => (result.actionResult as Record<string, unknown> | undefined)?.actionType === "import_resume_file_as_candidates");
     expect(importResult).toBeTruthy();
     expect((importResult!.data as Record<string, unknown>).candidateCount).toBeGreaterThan(1);
+    expect((importResult!.data as Record<string, unknown>).fileId).toBe(file.id);
+    expect(body.data.workspace.handoffs?.at(-1)?.routeTo).toBe("experience_receiver");
+    expect(body.data.workspace.handoffs?.at(-1)?.extracted).toMatchObject({
+      fileId: file.id,
+      resumeFileId: file.id,
+      originalName: file.originalName,
+    });
     expect(body.data.assistantMessage.metadata?.productBlocks?.some((block) => block.type === "experience_candidate_form")).toBe(true);
     expect(body.data.assistantMessage.metadata?.displaySnapshot?.productBlocks?.some((block) => block.type === "experience_candidate_form")).toBe(true);
+    expect(body.data.assistantMessage.metadata?.displaySnapshot?.toolResults?.some((result) => {
+      const data = result.data as Record<string, unknown> | undefined;
+      return Array.isArray(data?.candidates) && data.fileId === file.id;
+    })).toBe(true);
     expect(JSON.stringify(body.data.raw.agentTrace)).toContain("experience_receiver");
+
+    const detail = await server.inject({
+      method: "GET",
+      url: `/copilot/sessions/${body.data.sessionId}`,
+      headers: { "x-user-id": "user-1" },
+    });
+    expect(detail.statusCode).toBe(200);
+    const detailBody = detail.json() as ApiSuccess<{
+      messages: Array<{ role: string; metadata?: { attachments?: Array<Record<string, unknown>>; displaySnapshot?: { productBlocks?: Array<{ type: string }> } } }>;
+    }>;
+    const userMessage = detailBody.data.messages.find((message) => message.role === "user");
+    expect(userMessage?.metadata?.attachments).toEqual([
+      expect.objectContaining({
+        fileId: file.id,
+        originalName: file.originalName,
+        mimeType: file.mimeType,
+        size: file.sizeBytes,
+        kind: "resume_upload",
+      }),
+    ]);
+    const assistantMessage = detailBody.data.messages.find((message) => message.role === "assistant");
+    expect(assistantMessage?.metadata?.displaySnapshot?.productBlocks?.some((block) => block.type === "experience_candidate_form")).toBe(true);
+  });
+
+  it("POST /copilot/chat asks for a resume fileId when import is requested without upload metadata", async () => {
+    const response = await server.inject({
+      method: "POST",
+      url: "/copilot/chat",
+      headers: { "x-user-id": "user-1" },
+      payload: {
+        message: "import resume from uploaded file",
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+    const body = response.json() as ApiSuccess<CopilotChatResponse>;
+    const actionResult = body.data.raw.actionResults?.find((result) => result.actionType === "import_resume_file_as_candidates");
+    expect(actionResult).toMatchObject({
+      status: "needs_input",
+      reason: "missing_required_input",
+      missingInputs: ["fileId"],
+    });
+    expect(body.data.raw.toolResults?.[0]).toMatchObject({
+      status: "needs_input",
+      actionResult: {
+        actionType: "import_resume_file_as_candidates",
+        status: "needs_input",
+      },
+    });
+    expect(body.data.assistantMessage.content).not.toContain("started");
   });
 
   it("save experience chat creates a pending action and confirm endpoint executes it", async () => {
@@ -369,6 +432,8 @@ describe("Copilot routes on agent-core runtime", () => {
     expect(detail.statusCode).toBe(200);
     const detailBody = detail.json() as ApiSuccess<Record<string, unknown>>;
     const messages = detailBody.data.messages as Array<Record<string, unknown>>;
+    const user = messages.find((item) => item.role === "user");
+    expect(user?.metadata).toBeUndefined();
     const assistant = messages.find((item) => item.role === "assistant");
     const restoredMetadata = assistant?.metadata as Record<string, unknown> | undefined;
     expect(restoredMetadata?.productBlocks).toBeTruthy();

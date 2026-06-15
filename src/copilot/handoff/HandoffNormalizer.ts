@@ -25,19 +25,19 @@ export function normalizeFrontDeskHandoff(input: HandoffNormalizeInput): {
   const parsed = FrontDeskHandoffSchema.safeParse(input.raw);
   if (parsed.success) {
     return {
-      handoff: {
+      handoff: enrichHandoffWithUpload(input, {
         ...parsed.data,
         sessionId: parsed.data.sessionId || input.sessionId,
         turnId: parsed.data.turnId || input.turnId,
         createdAt: parsed.data.createdAt || now,
-      },
+      }),
       repaired: false,
     };
   }
 
   const fallback = inferFallback(input, now);
   return {
-    handoff: fallback,
+    handoff: enrichHandoffWithUpload(input, fallback),
     repaired: true,
     reason: input.raw === undefined ? "missing_handoff" : "invalid_handoff_schema",
   };
@@ -69,6 +69,9 @@ function inferFallback(input: HandoffNormalizeInput, now: string): FrontDeskHand
       experienceId: stringField(rawExtracted.experienceId) ?? active.activeExperienceId ?? workspaceActive?.experienceId,
       resumeId: stringField(rawExtracted.resumeId) ?? active.activeResumeId ?? input.workspace?.resumeId ?? workspaceActive?.resumeId,
       resumeItemId: stringField(rawExtracted.resumeItemId) ?? active.activeResumeItemId ?? workspaceActive?.resumeItemId,
+      fileId: stringField(rawExtracted.fileId),
+      resumeFileId: stringField(rawExtracted.resumeFileId),
+      originalName: stringField(rawExtracted.originalName),
       variantId: stringField(rawExtracted.variantId) ?? active.activeVariantId ?? input.workspace?.activeVariantId ?? workspaceActive?.variantId,
       targetRole: stringField(rawExtracted.targetRole) ?? textSignals.targetRole,
       company: stringField(rawExtracted.company) ?? textSignals.company,
@@ -93,6 +96,39 @@ function inferFallback(input: HandoffNormalizeInput, now: string): FrontDeskHand
     handoff.missingInputs = handoff.missingInputs?.length ? handoff.missingInputs : ["intent"];
   }
   return handoff;
+}
+
+function enrichHandoffWithUpload(input: HandoffNormalizeInput, handoff: FrontDeskHandoff): FrontDeskHandoff {
+  const upload = uploadFromClientState(input.clientState);
+  if (!upload.fileId && !upload.originalName) return handoff;
+  return {
+    ...handoff,
+    extracted: {
+      ...handoff.extracted,
+      fileId: handoff.extracted.fileId ?? upload.fileId,
+      resumeFileId: handoff.extracted.resumeFileId ?? upload.fileId,
+      originalName: handoff.extracted.originalName ?? upload.originalName,
+    },
+  };
+}
+
+function uploadFromClientState(clientState: CopilotClientState | undefined): { fileId?: string; originalName?: string } {
+  if (!clientState) return {};
+  const resumeUpload: Record<string, unknown> | undefined = isRecord(clientState.resumeUpload) ? clientState.resumeUpload : undefined;
+  const fileId =
+    stringField(resumeUpload?.fileId)
+    ?? stringField(resumeUpload?.id)
+    ?? stringField(clientState.activeFileId)
+    ?? stringField(clientState.resumeFileId)
+    ?? stringField(clientState.uploadedFileId)
+    ?? stringField(clientState.fileId);
+  const originalName =
+    stringField(resumeUpload?.originalName)
+    ?? stringField(resumeUpload?.fileName)
+    ?? stringField(resumeUpload?.name)
+    ?? stringField(clientState.originalName)
+    ?? stringField(clientState.fileName);
+  return { fileId, originalName };
 }
 
 function asIntent(value: unknown): FrontDeskHandoff["intent"] | undefined {

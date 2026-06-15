@@ -7,6 +7,8 @@ import type {
   CopilotActionRequest,
   CopilotChatRequest,
   CopilotChatResponse,
+  CopilotClientState,
+  CopilotMessageAttachment,
   CopilotMessageMetadata,
   CopilotMessage,
   CopilotWorkspace,
@@ -144,8 +146,11 @@ export class AgentOrchestrator {
       jdText: request.jdText,
       targetRole: request.targetRole,
     });
-    const userMessage = await this.saveMessage(ctx.user.id, session.id, "user", request.message);
+    const resumeUploadAttachment = extractResumeUploadAttachment(request.clientState);
+    const userMessageMetadata = buildUserMessageMetadata(resumeUploadAttachment);
+    const userMessage = await this.saveMessage(ctx.user.id, session.id, "user", request.message, undefined, [], userMessageMetadata);
     const turn = await this.deps.kernel.copilotServices.sessionService.createTurn(ctx.user.id, session.id, userMessage.id);
+    const resumeUploadContext = buildResumeUploadProductContext(resumeUploadAttachment);
     const run = await this.buildAgentContext(ctx, {
       sessionId: session.id,
       turnId: turn.id,
@@ -155,6 +160,7 @@ export class AgentOrchestrator {
         targetRole: request.targetRole ?? session.targetRole,
         hasJDText: Boolean(request.jdText ?? session.jdText),
         requestJDText: request.jdText ?? session.jdText ?? undefined,
+        ...resumeUploadContext,
       },
       streamEmitter,
     });
@@ -172,12 +178,15 @@ export class AgentOrchestrator {
         status: "running",
       });
       const frontDeskDecision = await this.decisionRunner.decide({ agent: this.agents.frontdesk, context: run.context });
-      if (extractResumeFileImportRequest(run.context)) {
+      if (isResumeFileImportMessage(run.context.userMessage)) {
         frontDeskDecision.responseType = "route";
         frontDeskDecision.routeTo = "experience_receiver";
-        frontDeskDecision.missingInputs = [];
+        frontDeskDecision.missingInputs = extractResumeFileImportRequest(run.context) ? [] : ["fileId"];
         frontDeskDecision.confidence = Math.max(frontDeskDecision.confidence ?? 0, 0.9);
-        frontDeskDecision.assistantMessage = frontDeskDecision.assistantMessage || "我来从上传的简历文件中识别可编辑的经历候选。";
+        frontDeskDecision.assistantMessage = frontDeskDecision.assistantMessage
+          || (frontDeskDecision.missingInputs.length > 0
+            ? "请重新上传简历文件，我需要 fileId 才能解析。"
+            : "我来从上传的简历文件中识别可编辑的经历候选。");
       }
       const normalizedHandoff = normalizeFrontDeskHandoff({
         raw: frontDeskDecision.handoff,
@@ -1345,7 +1354,7 @@ export class AgentOrchestrator {
         ? "clarifying_question"
         : "plain_text",
       createdAt: new Date().toISOString(),
-      metadata: role === "assistant" ? metadata : undefined,
+      metadata: metadata && Object.keys(metadata).length > 0 ? metadata : undefined,
     };
     return this.deps.kernel.copilotServices.sessionService.saveMessage(userId, message);
   }
@@ -1772,41 +1781,50 @@ function maybeAppendJDSaveStep(plan: PlanStep[], context: AgentContext): PlanSte
 }
 
 function maybeAppendResumeFileImportStep(plan: PlanStep[], context: AgentContext): PlanStep[] {
+  if (!isResumeFileImportMessage(context.userMessage)) return plan;
   const importRequest = extractResumeFileImportRequest(context);
-  if (!importRequest) return plan;
   if (plan.some((step) => step.toolName === "import_resume_file_as_candidates")) return plan;
   return [{
     id: "step-import-resume-file",
     agentName: "experience_receiver",
     toolName: "import_resume_file_as_candidates",
-    arguments: importRequest,
+    arguments: importRequest ?? {},
     summary: "Parse uploaded resume file into editable experience candidates.",
   }];
 }
 
-function extractResumeFileImportRequest(context: AgentContext): { fileId: string; originalName?: string; source: "resume_upload" | "file_upload" | "copilot" } | undefined {
+function extractResumeFileImportRequest(context: AgentContext): { fileId: string; originalName?: string; mimeType?: string; size?: number; source: "resume_upload" | "file_upload" | "copilot" } | undefined {
   if (!isResumeFileImportMessage(context.userMessage)) return undefined;
   const clientState = context.clientState ?? {};
-  const resumeUpload = isRecord(clientState.resumeUpload) ? clientState.resumeUpload : undefined;
+  const resumeUpload: Record<string, unknown> | undefined = isRecord(clientState.resumeUpload) ? clientState.resumeUpload : undefined;
+  const productResumeUpload = isRecord(context.productContext.resumeUpload) ? context.productContext.resumeUpload : undefined;
   const fileId =
     stringValue(resumeUpload?.fileId)
     ?? stringValue(resumeUpload?.id)
+    ?? stringValue(productResumeUpload?.fileId)
     ?? stringValue(clientState.fileId)
     ?? stringValue(clientState.activeFileId)
     ?? stringValue(clientState.resumeFileId)
     ?? stringValue(clientState.uploadedFileId)
+    ?? stringValue(context.productContext.activeFileId)
+    ?? stringValue(context.productContext.resumeFileId)
     ?? extractFileIdFromMessage(context.userMessage);
   if (!fileId) return undefined;
   const originalName =
     stringValue(resumeUpload?.originalName)
     ?? stringValue(resumeUpload?.fileName)
     ?? stringValue(resumeUpload?.name)
+    ?? stringValue(productResumeUpload?.originalName)
     ?? stringValue(clientState.originalName)
     ?? stringValue(clientState.fileName)
     ?? extractOriginalNameFromMessage(context.userMessage);
+  const mimeType = stringValue(resumeUpload?.mimeType) ?? stringValue(productResumeUpload?.mimeType);
+  const size = numberValue(resumeUpload?.size) ?? numberValue(productResumeUpload?.size);
   return {
     fileId,
     originalName,
+    mimeType,
+    size,
     source: "resume_upload",
   };
 }
@@ -1818,10 +1836,62 @@ function isResumeFileImportMessage(message: string): boolean {
     || lower.includes("resume upload")
     || lower.includes("extract experience")
     || message.includes("导入简历")
+    || message.includes("上传简历")
     || message.includes("解析简历")
+    || message.includes("从文件提取经历")
     || message.includes("从这个文件中提取经历")
     || message.includes("上传了简历文件")
     || (message.includes("简历") && message.includes("fileId"));
+}
+
+function extractResumeUploadAttachment(clientState: CopilotClientState | undefined): CopilotMessageAttachment | undefined {
+  if (!clientState) return undefined;
+  const resumeUpload: Record<string, unknown> | undefined = isRecord(clientState.resumeUpload) ? clientState.resumeUpload : undefined;
+  const fileId =
+    stringValue(resumeUpload?.fileId)
+    ?? stringValue(resumeUpload?.id)
+    ?? stringValue(clientState.activeFileId)
+    ?? stringValue(clientState.resumeFileId)
+    ?? stringValue(clientState.uploadedFileId)
+    ?? stringValue(clientState.fileId);
+  if (!fileId) return undefined;
+  const originalName =
+    stringValue(resumeUpload?.originalName)
+    ?? stringValue(resumeUpload?.fileName)
+    ?? stringValue(resumeUpload?.name)
+    ?? stringValue(clientState.originalName)
+    ?? stringValue(clientState.fileName)
+    ?? "Uploaded resume";
+  return {
+    id: stringValue(resumeUpload?.id),
+    fileId,
+    originalName,
+    mimeType: stringValue(resumeUpload?.mimeType),
+    size: numberValue(resumeUpload?.size),
+    kind: "resume_upload",
+  };
+}
+
+function buildUserMessageMetadata(attachment: CopilotMessageAttachment | undefined): CopilotMessageMetadata | undefined {
+  if (!attachment?.fileId) return undefined;
+  return {
+    attachments: [attachment],
+  };
+}
+
+function buildResumeUploadProductContext(attachment: CopilotMessageAttachment | undefined): Record<string, unknown> {
+  if (!attachment?.fileId) return {};
+  return {
+    resumeUpload: {
+      fileId: attachment.fileId,
+      originalName: attachment.originalName,
+      mimeType: attachment.mimeType,
+      size: attachment.size,
+      source: "composer",
+    },
+    activeFileId: attachment.fileId,
+    resumeFileId: attachment.fileId,
+  };
 }
 
 function extractFileIdFromMessage(message: string): string | undefined {
