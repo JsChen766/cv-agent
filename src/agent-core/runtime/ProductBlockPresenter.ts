@@ -2,6 +2,46 @@ import { computeJDHash } from "../../product/jdHash.js";
 import type { ProductAction, ProductBlock } from "../../copilot/types.js";
 import type { ToolResult } from "../tools/ToolResult.js";
 
+const EXPERIENCE_IMPORT_ACTION_TYPES = new Set([
+  "import_resume_file_as_candidates",
+  "parse_resume_file_to_experience_candidates",
+  "save_experience_from_text",
+  "import_experience_candidates",
+  "import_experience_candidates_from_text",
+]);
+
+const EXPERIENCE_IMPORT_DATA_KINDS = new Set([
+  "experience_candidate_form",
+  "experience_import_candidates",
+  "resume_upload",
+  "import_resume_file",
+]);
+
+const EXPERIENCE_IMPORT_JOB_TYPES = new Set([
+  "import_resume_file",
+  "parse_document_for_experience_import",
+]);
+
+const EXPERIENCE_IMPORT_CATEGORIES = new Set([
+  "work",
+  "internship",
+  "project",
+  "education",
+  "award",
+  "skill",
+  "other",
+]);
+
+const NON_EXPERIENCE_CANDIDATE_TEXT = [
+  "我已准备好基于这份 JD 生成简历版本",
+  "正在调用工具",
+  "generate_resume_from_jd",
+  "处理完成",
+  "Tool completed",
+  "pending action",
+  "confirmation",
+];
+
 export function buildProductBlocks(toolResults: ToolResult[]): ProductBlock[] {
   let experienceList: ProductBlock | null = null;
   let experienceCard: ProductBlock | null = null;
@@ -79,8 +119,11 @@ export function buildProductBlocks(toolResults: ToolResult[]): ProductBlock[] {
       };
       continue;
     }
-    if (Array.isArray(data.candidates) && isRecord(data.job) && data.formSchemaVersion === 1) {
-      const candidates = (data.candidates as Array<Record<string, unknown>>).map(sanitizeImportCandidate);
+    if (Array.isArray(data.candidates) && isRecord(data.job) && data.formSchemaVersion === 1 && canBuildExperienceCandidateForm(result, data)) {
+      const candidates = (data.candidates as unknown[])
+        .filter(isExperienceImportCandidateLike)
+        .map(sanitizeImportCandidate);
+      if (candidates.length === 0) continue;
       experienceCandidateForm = {
         type: "experience_candidate_form",
         title: "待确认的经历候选",
@@ -171,6 +214,19 @@ export function sanitizeImportCandidate(item: Record<string, unknown>): Record<s
     createdAt: item.createdAt,
     updatedAt: item.updatedAt,
   }) ?? {};
+}
+
+export function isExperienceImportCandidateLike(candidate: unknown): candidate is Record<string, unknown> {
+  if (!isRecord(candidate)) return false;
+  if (!stringValue(candidate.id)) return false;
+  if (!EXPERIENCE_IMPORT_CATEGORIES.has(stringValue(candidate.category) ?? "")) return false;
+
+  const title = stringValue(candidate.title);
+  const content = stringValue(candidate.content);
+  if (!title && !content) return false;
+  if (isNonExperienceCandidateText(title) || isNonExperienceCandidateText(content)) return false;
+
+  return true;
 }
 
 function defaultExperienceCandidateActions(): ProductAction[] {
@@ -343,4 +399,26 @@ function stringValue(value: unknown): string | undefined {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function canBuildExperienceCandidateForm(result: ToolResult, data: Record<string, unknown>): boolean {
+  const actionType = isRecord(result.actionResult) ? stringValue(result.actionResult.actionType) : undefined;
+  if (actionType && EXPERIENCE_IMPORT_ACTION_TYPES.has(actionType)) return true;
+
+  const dataKind = stringValue(data.blockKind) ?? stringValue(data.kind) ?? stringValue(data.source);
+  if (dataKind && EXPERIENCE_IMPORT_DATA_KINDS.has(dataKind)) return true;
+
+  const job = isRecord(data.job) ? data.job : undefined;
+  const jobType = job ? stringValue(job.type) : undefined;
+  if (jobType && EXPERIENCE_IMPORT_JOB_TYPES.has(jobType)) return true;
+
+  const jobInput = job && isRecord(job.input) ? job.input : undefined;
+  const jobInputType = jobInput ? stringValue(jobInput.type) : undefined;
+  return Boolean(jobInputType && EXPERIENCE_IMPORT_JOB_TYPES.has(jobInputType));
+}
+
+function isNonExperienceCandidateText(value: string | undefined): boolean {
+  if (!value) return false;
+  const lowerValue = value.toLowerCase();
+  return NON_EXPERIENCE_CANDIDATE_TEXT.some((phrase) => lowerValue.includes(phrase.toLowerCase()));
 }

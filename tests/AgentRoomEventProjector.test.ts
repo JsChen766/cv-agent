@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { projectAgentRoomEvents, reprojectAgentRoomEvents } from "../src/agent-core/events/AgentRoomEventProjector.js";
+import { buildProductBlocks } from "../src/agent-core/runtime/ProductBlockPresenter.js";
 import type { ProductBlock, CopilotMessageMetadata } from "../src/copilot/types.js";
 import type { PendingAction } from "../src/agent-core/confirmation/PendingAction.js";
 
@@ -58,6 +59,58 @@ describe("AgentRoomEventProjector", () => {
     expect(events[0].visibility).toBe("visible");
     expect(events[0].specialInfo?.kind).toBe("experience_candidate_form");
     expect((events[0].specialInfo?.data?.candidates as Array<Record<string, unknown>>)[0].category).toBe("education");
+  });
+
+  it("projects real resume import candidate tool results to experience receiver", () => {
+    const productBlocks = buildProductBlocks([{
+      status: "success",
+      data: {
+        job: { id: "pimp-1", type: "import_resume_file", status: "candidates_ready" },
+        candidates: [{
+          id: "pimpcand-1",
+          category: "work",
+          title: "Frontend Engineer at Acme",
+          organization: "Acme",
+          role: "Frontend Engineer",
+          content: "Built a React dashboard and improved load time by 35%.",
+          status: "pending",
+        }],
+        formSchemaVersion: 1,
+      },
+      actionResult: {
+        status: "success",
+        actionType: "import_resume_file_as_candidates",
+      },
+    }]);
+    const events = projectAgentRoomEvents({ productBlocks });
+
+    expect(events).toHaveLength(1);
+    expect(events[0].agentName).toBe("experience_receiver");
+    expect(events[0].specialInfo?.kind).toBe("experience_candidate_form");
+  });
+
+  it("does not project generate_resume_from_jd pseudo candidates as experience receiver events", () => {
+    const productBlocks = buildProductBlocks([{
+      status: "success",
+      data: {
+        job: { id: "job-1" },
+        candidates: [{
+          id: "fake-1",
+          category: "project",
+          title: "我已准备好基于这份 JD 生成简历版本，请确认后开始。",
+          content: "正在调用工具：generate_resume_from_jd",
+        }],
+        formSchemaVersion: 1,
+      },
+      actionResult: {
+        status: "success",
+        actionType: "generate_resume_from_jd",
+      },
+    }]);
+    const events = projectAgentRoomEvents({ productBlocks });
+
+    expect(events.some((event) => event.agentName === "experience_receiver")).toBe(false);
+    expect(events.some((event) => event.specialInfo?.kind === "experience_candidate_form")).toBe(false);
   });
 
   it("projects jd_analysis_result block as visible special info for JD analyst", () => {

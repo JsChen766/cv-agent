@@ -588,6 +588,9 @@ describe("Copilot routes on agent-core runtime", () => {
     const actionBody = actionResponse.json() as ApiSuccess<CopilotChatResponse>;
     const pending = actionBody.data.raw.pendingActions?.[0] as { id: string; toolName: string } | undefined;
     expect(pending).toMatchObject({ toolName: "generate_resume_from_jd" });
+    expect(actionBody.data.assistantMessage.metadata?.productBlocks?.some((block) => block.type === "experience_candidate_form") ?? false).toBe(false);
+    expect(actionBody.data.assistantMessage.metadata?.displaySnapshot?.productBlocks?.some((block) => block.type === "experience_candidate_form") ?? false).toBe(false);
+    expect(actionBody.data.agentRoomEvents?.some((event) => event.agentName === "experience_receiver" && event.specialInfo?.kind === "experience_candidate_form") ?? false).toBe(false);
 
     const confirmed = await server.inject({
       method: "POST",
@@ -604,6 +607,9 @@ describe("Copilot routes on agent-core runtime", () => {
     expect(confirmBody.data.assistantMessage.kind).toBe("plain_text");
     expect(confirmBody.data.assistantMessage.content).toContain("Resume generation has started");
     expect(confirmBody.data.raw.pendingActions ?? []).toHaveLength(0);
+    expect(confirmBody.data.assistantMessage.metadata?.productBlocks?.some((block) => block.type === "experience_candidate_form") ?? false).toBe(false);
+    expect(confirmBody.data.assistantMessage.metadata?.displaySnapshot?.productBlocks?.some((block) => block.type === "experience_candidate_form") ?? false).toBe(false);
+    expect(confirmBody.data.agentRoomEvents?.some((event) => event.agentName === "experience_receiver" && event.specialInfo?.kind === "experience_candidate_form") ?? false).toBe(false);
     expect(confirmBody.data.raw.actionResults?.some((item) => item.status === "needs_confirmation")).toBe(false);
     expect(generateSpy).not.toHaveBeenCalled();
     expect(confirmBody.data.raw.toolResults?.[0]).toMatchObject({
