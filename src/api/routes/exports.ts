@@ -1,4 +1,4 @@
-import type { FastifyInstance, FastifyRequest } from "fastify";
+﻿import type { FastifyInstance, FastifyRequest } from "fastify";
 import type { AuthResolver } from "../auth/index.js";
 import { createKernelRequestContext } from "../context.js";
 import { ApiError, ErrorCodes } from "../errors.js";
@@ -68,8 +68,8 @@ export async function registerExportRoutes(app: FastifyInstance, kernel: ApiKern
     const contentType = result.exportRecord.format === "pdf" ? "application/pdf" : "text/html; charset=utf-8";
     reply.header("content-type", contentType);
     if (result.exportRecord.format === "pdf" && result.fileBuffer) {
-      const filename = await buildDownloadFilename(kernel, ctx.user.id, result.exportRecord.resumeId, "pdf");
-      reply.header("content-disposition", `attachment; filename="${filename}"`);
+      const headerValue = await buildContentDispositionHeader(kernel, ctx.user.id, result.exportRecord.resumeId, "pdf");
+      reply.header("content-disposition", headerValue);
       return result.fileBuffer;
     }
     return result.fileText;
@@ -91,23 +91,50 @@ function readFormat(value: unknown): ResumeExportFormat {
   throw new ApiError(ErrorCodes.INVALID_BODY, "format must be html or pdf.", 400);
 }
 
-async function buildDownloadFilename(kernel: ApiKernel, userId: string, resumeId: string, extension: string): Promise<string> {
+async function buildContentDispositionHeader(kernel: ApiKernel, userId: string, resumeId: string, extension: string): Promise<string> {
+  let rawBase = resumeId;
   try {
     const resume = await kernel.productServices.resumeService.getResume(userId, resumeId);
-    const base = sanitizeForContentDisposition(resume?.title) || resumeId;
-    return `${base}.${extension}`;
+    const candidate = sanitizeRawFilenameBase(resume?.title);
+    if (candidate) rawBase = candidate;
   } catch {
-    return `${resumeId}.${extension}`;
+    // ignore — fall back to resumeId
   }
+  return contentDispositionAttachment(`${rawBase}.${extension}`);
 }
 
-function sanitizeForContentDisposition(title: string | undefined): string {
+/** Strip control / path-hostile characters but **preserve UTF-8** so the
+ *  RFC 5987 encoded form below can carry non-ASCII titles like Chinese. */
+function sanitizeRawFilenameBase(title: string | undefined): string {
   if (!title) return "";
-  // RFC 6266: keep ASCII-safe characters in the unquoted-style filename, and
-  // collapse anything else to underscores so curl / browsers don't choke.
   return title
-    .replace(/[\\/:*?"<>|\r\n]/g, "_")
+    .replace(/[\\/:*?"<>|\r\n\t]/g, "_")
     .replace(/\s+/g, " ")
     .trim()
     .slice(0, 80);
+}
+
+/** Reduce to a strict ASCII filename for legacy `filename="..."` parameter.
+ *  Any non-ASCII byte collapses to `_` so the header value stays valid. */
+function asciiFallbackFilename(rawFilename: string): string {
+  return rawFilename
+    .replace(/[\u0080-\uFFFF]/g, "_")
+    .replace(/[\x00-\x1F\x7F]/g, "_");
+}
+
+/** Percent-encode a UTF-8 filename per RFC 5987 attr-char rules. */
+function rfc5987EncodeFilename(rawFilename: string): string {
+  return encodeURIComponent(rawFilename)
+    .replace(/['()*]/g, (c) => "%" + c.charCodeAt(0).toString(16).toUpperCase());
+}
+
+/** Build a Content-Disposition header that carries a UTF-8-safe filename
+ *  (RFC 5987 `filename*=UTF-8''…`) plus an ASCII fallback for old clients. */
+export function contentDispositionAttachment(rawFilename: string): string {
+  const ascii = asciiFallbackFilename(rawFilename) || "download";
+  const encoded = rfc5987EncodeFilename(rawFilename);
+  if (encoded === ascii) {
+    return `attachment; filename="${ascii}"`;
+  }
+  return `attachment; filename="${ascii}"; filename*=UTF-8''${encoded}`;
 }

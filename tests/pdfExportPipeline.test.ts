@@ -90,6 +90,41 @@ describe("resume export — PDF pipeline", () => {
     expect(body.subarray(0, 5).toString("utf8")).toBe("%PDF-");
   });
 
+  it("emits an RFC 5987 Content-Disposition header for non-ASCII (Chinese) resume titles", async () => {
+    const title = "前端工程师简历";
+    const resume = await kernel.productServices.resumeService.createResume("user-1", { title });
+    await kernel.productServices.resumeService.addResumeItem("user-1", resume.id, {
+      title: "Highlights",
+      contentSnapshot: "中文标题导出测试。",
+    });
+
+    const created = await server.inject({
+      method: "POST",
+      url: `/exports/resumes/${resume.id}`,
+      headers: { "x-user-id": "user-1", "content-type": "application/json" },
+      payload: { format: "pdf" },
+    });
+    expect(created.statusCode).toBe(200);
+    const data = (created.json() as ApiSuccess<{ exportRecord: ResumeExport; job: BackgroundJob }>).data;
+    await kernel.jobRunner.runJob(data.job.id, "user-1");
+
+    const download = await server.inject({
+      method: "GET",
+      url: `/exports/${data.exportRecord.id}/download`,
+      headers: { "x-user-id": "user-1" },
+    });
+    expect(download.statusCode).toBe(200);
+    const disposition = download.headers["content-disposition"] ?? "";
+    // ASCII fallback is present (collapsed underscores) AND RFC 5987 percent-encoded form is present.
+    expect(disposition).toMatch(/filename="[^"\u0080-\uFFFF]+\.pdf"/);
+    expect(disposition).toMatch(/filename\*=UTF-8''/);
+    expect(disposition).toContain(encodeURIComponent(title));
+    // Header must contain only valid (ISO-8859-1) bytes — no raw CJK characters.
+    for (let i = 0; i < disposition.length; i += 1) {
+      expect(disposition.charCodeAt(i)).toBeLessThan(0x100);
+    }
+  });
+
   it("returns 503 when PDF_RENDERER=none and a pdf export is requested", async () => {
     await server.close();
     await kernel.close();
