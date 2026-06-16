@@ -1,0 +1,1029 @@
+# cv-agent 下一阶段改动实施文档
+
+> 面向仓库：`JsChen766/cv-agent`  
+> 文档目的：把“减少固定输出、增强多 Agent 智能表达、提升一页 PDF 简历质量”拆成可逐阶段交给 CodingAgent 执行的工程任务。  
+> 推荐执行方式：每次只让 CodingAgent 做一个阶段，完成后跑测试、提交，再进入下一阶段。
+
+---
+
+## 0. 总体目标
+
+当前系统已经具备多 Agent、工具注册、LLM 生成、导出任务、Playwright PDF 渲染等基础能力，但产品体验仍然偏“固定脚本 + 工具日志 + 简单 HTML 转 PDF”。下一阶段要把系统升级为：
+
+```text
+Agent 决策
+  → Tool 执行并返回结构化事实
+  → Narrator/Presenter 生成自然回复
+  → ResumeDocument 生成完整简历
+  → Template + Fit Engine 精准排版
+  → 高质量一页 PDF 导出
+```
+
+核心结果：
+
+1. 聊天回复不再大量依赖固定模板，而是能根据工具结果、用户上下文、当前任务动态表达。
+2. 工具不再把“用户可见话术”作为主要输出，而是输出结构化事实、证据、风险、下一步动作。
+3. 简历生成不再只是一个 `variant.content` 字符串，而是完整的结构化 `ResumeDocument`。
+4. PDF 导出从“简陋 HTML 转 PDF”升级为“专业模板 + 一页适配 + 布局测量 + 压缩策略”。
+5. 每一阶段都有明确验收标准，避免 CodingAgent 大范围乱改。
+
+---
+
+## 1. 当前代码关键观察
+
+### 1.1 固定输出感的主要来源
+
+重点文件：
+
+```text
+src/agent-core/agents/BaseAgent.ts
+src/agent-core/agents/deterministicAgentFallback.ts
+src/copilot/response/ResponseComposer.ts
+src/copilot/response/ProductReplyTemplates.ts
+src/agent-tools/resume/generateResumeFromJD.tool.ts
+src/agent-tools/export/index.ts
+src/agent-tools/experience/matchExperiencesAgainstJD.tool.ts
+```
+
+当前问题：
+
+- `BaseAgent` 确实会调用 LLM 做决策，但失败后会进入 deterministic fallback；fallback 本身合理，但如果模型不可用或 JSON 不稳定，就会明显脚本化。
+- 很多工具直接返回固定 `message`，比如“已基于 JD 生成 X 个简历版本”“简历导出任务已创建”。
+- `ResponseComposer` 会根据 actionType 再次覆盖成固定话术，导致即使工具结果很丰富，最终用户看到的仍然类似固定模板。
+- `ProductReplyTemplates` 目前只是过滤若干英文工具日志，没有形成系统性的“工具结果 → 用户表达”机制。
+
+### 1.2 PDF 简历质量差的主要来源
+
+重点文件：
+
+```text
+src/product/services/index.ts
+src/product/LLMGenerationService.ts
+src/product/types.ts
+src/exports/ResumeExportService.ts
+src/exports/ResumeHtmlRenderer.ts
+src/exports/templates/defaultTemplate.ts
+src/exports/PdfRendererAdapter.ts
+```
+
+当前问题：
+
+- `generateResumeFromJD` 当前主要生成 `ProductGeneratedVariant[]`，variant 核心还是 `content: string`。
+- `saveAcceptedVariantToResume` 会把整个 variant 内容保存为一个 resume item，`sectionType` 近似当作 `experience`。
+- `ResumeHtmlRenderer` 已经有模板注册机制，但实际只注册了 `defaultTemplate`。
+- `defaultTemplate` 只是遍历 `resume.items`，渲染成简单 section、h2、p，无法支持真正的一页专业简历结构。
+- `PlaywrightPdfRenderer` 已经能输出 A4 PDF，但没有测量 DOM 高度、页数、溢出，也没有一页适配逻辑。
+
+---
+
+## 2. 执行原则
+
+### 2.1 每阶段只解决一个核心问题
+
+不要让 CodingAgent 一次同时改 Agent、工具、数据库、PDF、前端契约。每阶段只做一个主目标，完成后必须测试。
+
+### 2.2 保留 fallback，但不要让 fallback 成为主体验
+
+fallback 用于模型失败时的安全兜底，不要删除。但主流程必须优先使用 LLM + 结构化结果。
+
+### 2.3 工具返回事实，Narrator 负责表达
+
+工具层不要追求“说得好听”，工具层应该返回：
+
+```ts
+status
+resultKind
+entities
+evidence
+warnings
+risk
+nextActionHints
+workspacePatch
+actionResult
+```
+
+用户可见自然语言由 Narrator/Presenter 层生成。
+
+### 2.4 PDF 质量不能只靠 Prompt
+
+一页 PDF 的稳定性必须靠：
+
+```text
+结构化简历 → 模板 → Playwright 测量 → 压缩/补足 → 再测量 → 导出
+```
+
+不能只让模型“请生成一页简历”。
+
+---
+
+## 3. 分阶段实施计划
+
+---
+
+# 阶段 0：建立改动基线与测试样本
+
+## 目标
+
+先建立可复现的测试样本，避免后续改动把已有链路改坏。
+
+## 建议修改范围
+
+```text
+tests/
+scripts/
+docs/
+```
+
+## 具体任务
+
+1. 新增 2-3 份固定测试数据：
+   - 一份中文 JD。
+   - 一组中文经历库数据，包括教育、实习、项目、技能。
+   - 一份“目标一页简历”的期望结构样例。
+2. 新增或整理一个 debug 脚本，用于跑通：
+   - 保存经历。
+   - 保存 JD。
+   - JD 匹配。
+   - 生成简历版本。
+   - 保存版本到简历。
+   - 导出 PDF / HTML。
+3. 给现有导出测试补充断言：
+   - PDF export job 能创建。
+   - job runner 能完成。
+   - download 返回 PDF buffer。
+   - HTML 中包含目标 resume 内容。
+
+## 不要做
+
+- 不要改 Agent 决策逻辑。
+- 不要改数据库结构。
+- 不要改模板设计。
+
+## 验收标准
+
+- `npm test` 通过。
+- `npm run typecheck` 通过。
+- 有一个稳定脚本可以复现 generate → accept → export 全链路。
+
+## 可直接给 CodingAgent 的短 prompt
+
+```text
+请先为 cv-agent 建立下一阶段重构的测试基线：补充固定 JD/经历/简历生成导出样本，整理或新增一个可复现 generate→accept→export 的 debug/test 流程。不要改业务逻辑，只补测试和脚本，确保 npm test 和 npm run typecheck 通过。
+```
+
+---
+
+## 阶段 0 完成情况记录（执行回顾）
+
+> 本节由阶段 0 实施时追加，作为 phase-by-phase 的工程账本，给后续阶段（尤其是阶段 9 / 10 整理契约时）提供参照。后续每个阶段完成后，建议在对应阶段标题下也追加同样格式的小节。
+
+### 0.1 实际改动文件清单
+
+仅新增/扩展测试与脚本，**不修改任何 src/ 业务逻辑、不改数据库结构、不改模板设计**。
+
+```text
+新增  tests/fixtures/phase0/index.ts                      # 桶导出
+新增  tests/fixtures/phase0/chineseJd.ts                  # 中文 JD 样本（高级前端工程师）
+新增  tests/fixtures/phase0/chineseExperiences.ts         # 中文经历库样本（4 类 category）
+新增  tests/fixtures/phase0/expectedOnePageResume.ts      # 期望的一页简历结构样例（前瞻）
+新增  tests/phase0Baseline.test.ts                        # 全链路烟雾测试
+修改  scripts/debug-generate-export-flow.ts               # 支持 DEBUG_FLOW_SEED_FIXTURES=1 复用 Phase 0 fixtures
+```
+
+### 0.2 关键设计说明
+
+1. **Fixture 三件套**：
+   - `PHASE0_CHINESE_JD`：完整中文 JD 原文 + `mustHaveKeywords` / `niceToHaveKeywords`，便于阶段 1/2 在工具结构化和 Narrator 中做匹配度断言。
+   - `PHASE0_CHINESE_EXPERIENCES`：4 条经历，强制覆盖 `education` / `internship` / `project` / `skill` 四类 category，给“真实经历库”一个最小但齐全的形态。
+   - `PHASE0_EXPECTED_RESUME`：使用本地最小 TS 类型描述目标一页简历的结构（header + sections + bullets + metadata），**故意不依赖 src/product/types.ts**，避免提前耦合阶段 3 的 ResumeDocument 类型。阶段 3 落地后，可一次性把该 fixture 替换为真实 ResumeDocument 实例。
+
+2. **Phase 0 baseline test (`tests/phase0Baseline.test.ts`)** 覆盖：
+   - 用例 A：用 fixtures 走完 `保存经历(4 条) → 保存 JD → listExperiences → generateResumeFromJD（fallback 路径）→ saveAcceptedVariantToResume → POST /exports/resumes/:id (html) → runJob → GET /exports/:id/download`，断言 download HTML 包含被接受 variant 的 contentSnapshot 片段。
+   - 用例 B：覆盖文档明确要求的导出断言 —— PDF export job 能创建（`status=pending`、`type=export_resume_pdf`）、`runJob` 完成、`download` 返回 `application/pdf` + `%PDF-` 头 + 非空 buffer。
+   - 注入 `FakePdfRenderer` 避免依赖真实 Chromium，与既有 `pdfExportPipeline.test.ts` 风格一致。
+
+3. **debug 脚本扩展**：
+   - 新增 `DEBUG_FLOW_SEED_FIXTURES=1` / `=true` 环境变量。开启后，脚本在 `/copilot/chat` 之前先调用 `POST /product/experiences`（4 条）和 `POST /product/jds` 注入 Phase 0 fixtures，并把 `generate_from_jd` 的 `jdText` / `targetRole` 切到 fixture 版本。
+   - 默认行为（不设 env）保持向后兼容：仍使用原英文 JD，老用法不受影响。
+
+4. **遇到并刻意绕过的现有 bug（不在 Phase 0 修复）**：
+   - 路由 `GET /exports/:id/download` 在 PDF 下载时把 `resume.title` 直接写入 `Content-Disposition` header；当 `resume.title` 含中文（Phase 0 fixture 的中文 JD 默认会让 title 是中文）会触发 Node `Invalid character in header content`。
+   - 阶段 0 不修业务代码，因此 PDF 用例预先 `createResume({ title: "Phase0 PDF Export Resume" })` 后再 `saveAcceptedVariantToResume({ resumeId })`，使 PDF 文件名走 ASCII。**TODO：阶段 4（onePageModernTemplate）或阶段 9（契约整理）应顺手把 `sanitizeForContentDisposition` 改成 RFC 5987 `filename*=UTF-8''…` 形式，以便中文标题也能正确命名下载文件。**
+
+### 0.3 验收标准达成
+
+- `npm run typecheck`：通过（无新增类型错误）。
+- `npm test`：60 → 61 个 test files、577 → 579 个 tests，**全部通过**。
+- 全链路可复现脚本：`DEBUG_FLOW_SEED_FIXTURES=1 npm run debug:flow` 可在已启动的 API 上跑通 seed → generate → confirm → accept → export(html) → download。
+
+### 0.4 是否影响对外 API 与契约
+
+**结论：阶段 0 对所有现有对外 API 和前后端契约零破坏，前端无需任何改动。**
+
+| 维度 | 影响 | 说明 |
+| --- | --- | --- |
+| `POST /copilot/chat` / `POST /copilot/actions` / `POST /copilot/pending-actions/:id/confirm` | 无 | 未改 ResponseComposer、未改 ToolResult、未改 workspace 构造。 |
+| `POST /product/experiences` / `POST /product/jds` | 无 | 仅在调试脚本中调用了既有路由，未改 schema。 |
+| `POST /exports/resumes/:resumeId` / `GET /exports/:id` / `GET /exports/:id/download` | 无 | 未改路由、未改返回结构。 |
+| `GET /jobs/:jobId` | 无 | 未改 background job 协议。 |
+| Tool 输出（`generate_resume_from_jd`、`accept_generation_variant` 等） | 无 | `message` / `data` / `workspacePatch` / `actionResult` 字段保持不变。 |
+| 数据库 schema | 无 | 未涉及。 |
+| 环境变量 | **新增 1 个**：`DEBUG_FLOW_SEED_FIXTURES`（仅影响 `npm run debug:flow` 脚本，不影响 server 行为，不需要前端识别）。 |
+
+> 提示：阶段 1 起将开始扩展 `ToolResult` 的可选字段（`summaryFacts` / `entities` / `evidence` / `nextActionHints` 等）。届时本节的“是否影响契约”将变为**新增 optional 字段（向后兼容）**。前端可以按需逐步识别这些字段，但不识别也不会破坏现有功能。完整的契约累积变化将在阶段 9 由文档统一汇总。
+
+---
+
+# 阶段 1：工具结果结构化，降低固定 message 权重
+
+## 目标
+
+让工具输出更像“事实对象”，而不是“固定话术”。先不新增 Narrator，只调整工具结果结构，为下一阶段做准备。
+
+## 建议修改范围
+
+```text
+src/agent-core/tools/ToolResult.ts
+src/agent-core/validation/ToolInputSchemas.ts
+src/agent-tools/**
+src/copilot/types.ts
+tests/ToolResultSchemas.test.ts
+```
+
+## 具体任务
+
+1. 扩展 ToolResult 结构，新增可选字段：
+
+```ts
+resultKind?: string;
+summaryFacts?: string[];
+entities?: Array<{ type: string; id?: string; title?: string; data?: unknown }>;
+evidence?: Array<{ sourceId?: string; claim?: string; support?: string; confidence?: number }>;
+warnings?: string[];
+nextActionHints?: Array<{ type: string; label: string; payload?: Record<string, unknown> }>;
+```
+
+2. 改造核心工具，不删除原有 `message`，但把主要信息放入结构化字段：
+   - `generate_resume_from_jd`
+   - `match_experiences_against_jd`
+   - `prepare_export_resume`
+   - `export_resume`
+   - `get_export`
+   - `accept_generation_variant`
+3. 保持前端兼容：
+   - `message` 继续保留。
+   - `workspacePatch` 不破坏。
+   - `actionResult` 不破坏。
+4. 测试 schema 兼容旧结果和新结果。
+
+## 不要做
+
+- 不要新增 Narrator。
+- 不要移除 ResponseComposer 的固定逻辑。
+- 不要改变前端契约中的旧字段。
+
+## 验收标准
+
+- 所有旧测试通过。
+- 新增测试证明 ToolResult 可以携带结构化 facts、entities、evidence、nextActionHints。
+- `generate_resume_from_jd` 返回中包含 variants 的同时，也包含 summaryFacts / entities / nextActionHints。
+
+## 可直接给 CodingAgent 的短 prompt
+
+```text
+请扩展 ToolResult，使工具能返回 summaryFacts、entities、evidence、warnings、nextActionHints 等结构化信息；先保持 message/actionResult/workspacePatch 向后兼容。重点改造 generate_resume_from_jd、match_experiences_against_jd、export_resume、get_export、accept_generation_variant，并补 schema/test。
+```
+
+---
+
+# 阶段 2：新增 Narrator/Presenter 层，替代大量固定回复
+
+## 目标
+
+让最终聊天回复由模型根据工具结果动态生成，而不是主要依赖 `ResponseComposer` 的固定模板。
+
+## 建议修改范围
+
+```text
+src/copilot/response/ResponseComposer.ts
+src/copilot/response/NarratorService.ts
+src/agent-core/prompts/PromptRegistry.ts
+src/agent-core/prompts/prompts/product/narrator-system.md
+tests/ResponseComposer.test.ts 或新增 NarratorService.test.ts
+```
+
+## 具体任务
+
+1. 新增 `NarratorService`：
+   - 输入：userMessage、locale、frontDeskHandoff、toolResults、criticReview、workspace summary、next actions。
+   - 输出：自然语言 assistantText。
+2. 新增 narrator prompt：
+   - 要求中文自然、具体、不要像系统日志。
+   - 必须基于 toolResults，不得编造结果。
+   - 如果结果有风险或缺失信息，要明确说。
+   - 如果有下一步动作，要自然引导。
+3. 修改 `ResponseComposer`：
+   - 优先尝试 NarratorService。
+   - Narrator 不可用或失败时，走原有固定 fallback。
+4. 增加环境开关：
+
+```text
+ENABLE_NARRATOR=true/false
+```
+
+5. 增加测试：
+   - Narrator 开启时，能基于结构化结果生成非固定话术。
+   - Narrator 失败时，原有 ResponseComposer fallback 仍然可用。
+
+## 不要做
+
+- 不要删除原有 ResponseComposer 逻辑。
+- 不要让 Narrator 改 workspacePatch 或 actionResult。
+- 不要让 Narrator 执行工具。
+
+## 验收标准
+
+- `ENABLE_NARRATOR=false` 时，旧行为稳定。
+- `ENABLE_NARRATOR=true` 时，生成、匹配、导出这三类回复不再完全固定。
+- 模型失败时不会影响主流程。
+
+## 可直接给 CodingAgent 的短 prompt
+
+```text
+请新增 NarratorService，用模型根据 userMessage、toolResults、workspace、criticReview 生成最终 assistantText，并让 ResponseComposer 在 ENABLE_NARRATOR=true 时优先使用它，失败则回退旧固定模板。不要删除旧逻辑，不改变工具执行和 workspacePatch。
+```
+
+---
+
+# 阶段 3：引入结构化 ResumeDocument 模型
+
+## 目标
+
+把“简历版本是一段 content 字符串”升级为“简历版本包含完整结构化文档”。这是 PDF 质量提升的核心前置阶段。
+
+## 建议修改范围
+
+```text
+src/product/types.ts
+src/product/LLMGenerationService.ts
+src/product/services/index.ts
+src/persistence/postgres/schema.sql
+src/persistence/postgres/migrations/
+tests/resumeAgentTools.test.ts
+tests/generateResumePendingFlow.test.ts
+```
+
+## 推荐新增类型
+
+```ts
+type ResumeDocument = {
+  header?: ResumeHeader;
+  summary?: ResumeSummarySection;
+  sections: ResumeSection[];
+  metadata: {
+    language: "zh" | "en";
+    targetRole?: string;
+    jdId?: string;
+    targetPages?: number;
+    templateId?: string;
+    density?: "comfortable" | "standard" | "compact";
+  };
+};
+
+type ResumeSection = {
+  id: string;
+  type: "summary" | "education" | "work" | "internship" | "project" | "skill" | "award" | "other";
+  title: string;
+  order: number;
+  items: ResumeSectionItem[];
+};
+
+type ResumeSectionItem = {
+  id: string;
+  title?: string;
+  organization?: string;
+  role?: string;
+  startDate?: string;
+  endDate?: string;
+  bullets: ResumeBullet[];
+  tags?: string[];
+  sourceExperienceId?: string;
+};
+
+type ResumeBullet = {
+  id: string;
+  text: string;
+  sourceExperienceId?: string;
+  jdRequirementIds?: string[];
+  evidenceStrength?: number;
+  relevanceScore?: number;
+  impactScore?: number;
+  pinned?: boolean;
+  optional?: boolean;
+  riskLevel?: "low" | "medium" | "high";
+};
+```
+
+## 具体任务
+
+1. 在 `ProductGeneratedVariant` 中新增可选字段：
+
+```ts
+resumeDocument?: ResumeDocument;
+```
+
+2. 修改 `LLMGenerationService` 的 prompt 和 schema：
+   - 仍然保留 `content`，用于旧前端兼容。
+   - 新增 `resumeDocument`，作为后续导出和编辑的主数据。
+3. 修改 `saveAcceptedVariantToResume`：
+   - 如果 variant 有 `resumeDocument`，则按 section/items 拆成多个 `ProductResumeItem`。
+   - 如果没有，则继续走旧的单 item 保存逻辑。
+4. 保存时每个 item 的 metadata 记录：
+   - sourceExperienceId
+   - generationId
+   - sectionType
+   - bullet ids
+   - relevance score
+5. 新增测试：
+   - 有 `resumeDocument` 时，会生成多个 resume items。
+   - 无 `resumeDocument` 时，旧逻辑仍然可用。
+
+## 不要做
+
+- 不要马上做 PDF 一页适配。
+- 不要删除 `content` 字段。
+- 不要要求前端立即使用新结构。
+
+## 验收标准
+
+- variant 同时有 `content` 和 `resumeDocument`。
+- accept variant 后，resume 不再只有一个大 item，而是拆分为多个 section item。
+- 旧数据仍然可以导出。
+
+## 可直接给 CodingAgent 的短 prompt
+
+```text
+请为简历生成引入 ResumeDocument 结构。ProductGeneratedVariant 保留 content，同时新增 resumeDocument。LLMGenerationService 生成结构化 resumeDocument；saveAcceptedVariantToResume 在存在 resumeDocument 时按 section 拆分保存为多个 resume items，否则保持旧逻辑。补测试保证兼容。
+```
+
+---
+
+# 阶段 4：新增真正的一页简历模板 onePageModernTemplate
+
+## 目标
+
+先做一个质量明显高于 defaultTemplate 的专业一页简历模板，暂时不做自动适配，只做模板质量提升。
+
+## 建议修改范围
+
+```text
+src/exports/ResumeHtmlRenderer.ts
+src/exports/templates/defaultTemplate.ts
+src/exports/templates/onePageModernTemplate.ts
+tests/exportPipeline.test.ts
+tests/pdfExportPipeline.test.ts
+```
+
+## 具体任务
+
+1. 新增 `onePageModernTemplate.ts`。
+2. 在 `ResumeHtmlRenderer` 中注册该模板。
+3. 模板使用 A4 打印 CSS：
+
+```css
+@page {
+  size: A4;
+  margin: 10mm 12mm;
+}
+```
+
+4. 模板按 section type 渲染：
+   - summary
+   - education
+   - internship/work
+   - project
+   - skills
+   - awards
+5. bullet 使用紧凑但可读的样式：
+   - 字号 8.8pt - 10pt。
+   - 行距 1.18 - 1.28。
+   - section 间距控制。
+6. 如果 resume items 仍然是旧的一大段 content，也要有兼容渲染。
+7. 导出时支持 `templateId: "one-page-modern"`。
+
+## 不要做
+
+- 不要在本阶段做 DOM 高度测量。
+- 不要新增压缩算法。
+- 不要修改 PlaywrightPdfRenderer。
+
+## 验收标准
+
+- HTML 导出可以选择 `one-page-modern`。
+- PDF 导出可以使用 `one-page-modern`。
+- 旧 default template 不受影响。
+- 模板生成的 HTML 有清晰 section class，便于下一阶段测量。
+
+## 可直接给 CodingAgent 的短 prompt
+
+```text
+请新增 onePageModernTemplate，使用 A4 打印 CSS 和专业简历布局渲染 ResumeDetail，并在 ResumeHtmlRenderer 注册 templateId=one-page-modern。保持 defaultTemplate 不变，确保 HTML/PDF 导出均可使用新模板，并补导出测试。
+```
+
+---
+
+# 阶段 5：实现一页 Fit Engine v1：测量是否超页
+
+## 目标
+
+先实现“能判断是否超过一页”，不急着自动压缩。建立后续精准一页的技术基础。
+
+## 建议修改范围
+
+```text
+src/exports/PdfRendererAdapter.ts
+src/exports/ResumeExportService.ts
+src/exports/ResumeFitService.ts
+src/exports/types.ts
+tests/pdfExportPipeline.test.ts
+```
+
+## 具体任务
+
+1. 新增 `ResumeFitService` 或 `ResumeLayoutMeasurer`。
+2. 使用 Playwright 打开 HTML 后，测量：
+   - `.resume-page` 高度。
+   - 内容 scrollHeight。
+   - A4 可用高度。
+   - estimatedPages。
+   - overflowPx。
+3. 新增 `fitReport` 类型：
+
+```ts
+fitReport: {
+  targetPages: number;
+  estimatedPages: number;
+  overflowPx: number;
+  underflowPx?: number;
+  templateId: string;
+  density: string;
+  measuredAt: string;
+}
+```
+
+4. 导出记录 metadata 或 data 中保存 fitReport。
+5. 如果超过一页，暂时不要失败，只记录 warning。
+6. 测试中使用 fake renderer 或可注入 measurer，确保不依赖真实 Chromium。
+
+## 不要做
+
+- 不要自动删除内容。
+- 不要让导出因为超过一页失败。
+- 不要改 LLM 生成逻辑。
+
+## 验收标准
+
+- PDF 导出记录中能看到 fitReport。
+- 能区分一页内、超过一页。
+- 测试不依赖真实浏览器也能通过。
+
+## 可直接给 CodingAgent 的短 prompt
+
+```text
+请新增 ResumeFitService/ResumeLayoutMeasurer，在 PDF 渲染前后测量 one-page-modern HTML 的内容高度、A4 可用高度、estimatedPages 和 overflowPx，并把 fitReport 写入导出记录或返回数据。先只测量和记录，不做自动压缩。
+```
+
+---
+
+# 阶段 6：实现一页 Fit Engine v2：规则压缩
+
+## 目标
+
+当简历超过一页时，先用规则压缩，而不是直接让模型重写。规则压缩更稳定、可解释、可测试。
+
+## 建议修改范围
+
+```text
+src/exports/ResumeFitService.ts
+src/exports/ResumeCompressionService.ts
+src/product/types.ts
+src/product/services/index.ts
+tests/resumeFitOptimizer.test.ts
+```
+
+## 压缩策略优先级
+
+```text
+1. 删除 optional=true 且 relevanceScore 低的 bullet
+2. 压缩超过指定长度的 bullet
+3. 合并过短 bullet
+4. 隐藏低相关 section
+5. 降低 density：standard → compact
+6. 最后才略微降低字号/行距
+```
+
+## 具体任务
+
+1. 新增 `ResumeCompressionService`。
+2. 输入：ResumeDocument 或 ResumeDetail + fitReport。
+3. 输出：压缩后的 ResumeDocument/ResumeDetail + compressionReport。
+4. compressionReport 记录：
+
+```ts
+removedBullets
+shortenedBullets
+hiddenSections
+densityBefore
+densityAfter
+reason
+```
+
+5. `ResumeExportService` 中增加最多 2-3 次迭代：
+
+```text
+render html → measure → compress if overflow → render again → measure again
+```
+
+6. 仅对 `targetPages=1` 且 `templateId=one-page-modern` 启用。
+7. 保证 pinned bullet 不被删除。
+
+## 不要做
+
+- 不要使用 LLM 压缩。
+- 不要修改原始经历库。
+- 不要永久覆盖用户简历，除非明确保存压缩版本。
+
+## 验收标准
+
+- 超页样本经过压缩后 estimatedPages 降低。
+- pinned bullet 不会被删除。
+- compressionReport 可追踪每次删减。
+- 如果仍然超过一页，导出继续完成，但返回 warning。
+
+## 可直接给 CodingAgent 的短 prompt
+
+```text
+请实现 ResumeCompressionService 和一页适配迭代：当 one-page-modern 的 fitReport 显示超过 1 页时，按 optional/relevance/pinned 规则压缩 bullet 或隐藏低相关 section，最多迭代 3 次，并输出 compressionReport。不要调用 LLM，不要改原始经历库。
+```
+
+---
+
+# 阶段 7：实现 LLM 简历压缩与补足
+
+## 目标
+
+在规则压缩之后，再引入 LLM 作为高级优化：当规则无法解决拥挤或页面太空时，让模型进行“简历编辑级别”的压缩或补足。
+
+## 建议修改范围
+
+```text
+src/product/LLMGenerationService.ts
+src/product/LLMRewriteService.ts
+src/exports/ResumeLLMFitEditor.ts
+src/agent-core/prompts/prompts/product/resume-fit-editor-system.md
+tests/resumeLLMFitEditor.test.ts
+```
+
+## 具体任务
+
+1. 新增 `ResumeLLMFitEditor`。
+2. 触发条件：
+   - 规则压缩后仍超过一页。
+   - 或 underflow 太大，页面明显空。
+3. 输入：
+   - ResumeDocument
+   - JD summary
+   - fitReport
+   - compressionReport
+   - 约束：不得编造事实、不得增加无依据指标。
+4. 输出：
+   - revised ResumeDocument
+   - editReport
+5. 对 LLM 输出做 schema validation。
+6. 保留旧版本，不直接覆盖原始经历库。
+
+## 不要做
+
+- 不要让 LLM 直接输出 HTML。
+- 不要让 LLM 操作 CSS。
+- 不要让 LLM 编造新经历或新指标。
+
+## 验收标准
+
+- LLM 只编辑 ResumeDocument 的文字和 optional 标记。
+- 输出 schema 稳定。
+- 有模型失败 fallback。
+- 仍然保留 rules-only 压缩路径。
+
+## 可直接给 CodingAgent 的短 prompt
+
+```text
+请新增 ResumeLLMFitEditor，在规则压缩仍超页或页面明显过空时，用 LLM 在严格 ResumeDocument schema 内压缩/补足文字。禁止输出 HTML，禁止编造事实，失败时回退 rules-only 结果。补 schema validation 和测试。
+```
+
+---
+
+# 阶段 8：简历质量 Critic 与导出前质量报告
+
+## 目标
+
+让系统不仅能导出一页 PDF，还能告诉用户这份简历质量如何、有什么风险、哪些地方缺少证据。
+
+## 建议修改范围
+
+```text
+src/agent-core/prompts/prompts/critic.md
+src/agent-core/evaluation/ReviewPolicy.ts
+src/exports/ResumeQualityService.ts
+src/product/types.ts
+tests/agentRuntimeLoopAndCritic.test.ts
+tests/resumeQualityService.test.ts
+```
+
+## 质量维度
+
+```text
+真实性：是否有无依据夸大
+JD 匹配：是否覆盖核心要求
+证据强度：每条关键 bullet 是否有 sourceExperienceId
+指标质量：是否有真实可解释的量化结果
+表达质量：是否行动 + 方法 + 结果
+版面质量：是否一页、是否拥挤、是否过空
+```
+
+## 具体任务
+
+1. 新增 `ResumeQualityService`。
+2. 导出前生成 `qualityReport`：
+
+```ts
+qualityReport: {
+  overallScore: number;
+  jdMatchScore: number;
+  evidenceScore: number;
+  layoutScore: number;
+  risks: string[];
+  suggestions: string[];
+  unsupportedClaims: string[];
+}
+```
+
+3. 将 qualityReport 放入 export result / workspacePatch。
+4. 如果风险过高，不要直接阻塞导出；先提示用户。
+5. 只有 critical unsupported claims 才走 critic block 或 confirmation。
+
+## 不要做
+
+- 不要过度阻塞用户导出。
+- 不要让 critic 再次造成无限循环确认。
+- 不要修改保存逻辑。
+
+## 验收标准
+
+- 导出前/导出后可以看到 qualityReport。
+- 高风险 unsupported claim 能被识别。
+- 普通建议不会阻断导出。
+
+## 可直接给 CodingAgent 的短 prompt
+
+```text
+请新增 ResumeQualityService，在导出前基于 ResumeDocument/ResumeDetail、JD、fitReport、evidence 生成 qualityReport，包含真实性、JD 匹配、证据强度、表达质量、版面质量。只对 critical 风险触发阻断或确认，普通建议仅展示，避免循环确认。
+```
+
+---
+
+# 阶段 9：前后端契约整理与 UI 接入准备
+
+## 目标
+
+把后端新增的结构化结果、Narrator 回复、fitReport、qualityReport、compressionReport 形成稳定契约，方便前端逐步接入。
+
+## 建议修改范围
+
+```text
+docs/CONTRACT.md
+docs/coolto_frontend_backend_contract_v2.md
+docs/frontend_backend_contract_llm_first.md
+frontend/src/types/copilot.ts 如果仓库内仍维护 frontend 类型
+```
+
+## 具体任务
+
+1. 更新 contract 文档，说明新增字段：
+   - ToolResult structured fields
+   - ResumeDocument
+   - fitReport
+   - compressionReport
+   - qualityReport
+   - nextActionHints
+2. 标注字段兼容性：
+   - required
+   - optional
+   - legacy
+   - frontend recommended
+3. 给前端建议展示方式：
+   - Narrator 文本显示在聊天区。
+   - fitReport / qualityReport 可以折叠显示。
+   - compressionReport 用“小字说明”展示，不要干扰主流程。
+4. 如果仓库内有 frontend 类型，同步类型定义。
+
+## 不要做
+
+- 不要在本阶段大改前端 UI。
+- 不要删除旧字段。
+
+## 验收标准
+
+- 契约文档足够让前端按字段接入。
+- 类型定义和后端返回一致。
+- 旧前端不接新字段也不会坏。
+
+## 可直接给 CodingAgent 的短 prompt
+
+```text
+请整理并更新前后端契约文档，补充 ToolResult 结构化字段、ResumeDocument、fitReport、compressionReport、qualityReport、nextActionHints 的类型、兼容性和前端建议展示方式。不要大改前端 UI，不删除旧字段。
+```
+
+---
+
+# 阶段 10：体验收敛与默认链路切换
+
+## 目标
+
+当前面阶段都稳定后，把默认体验切换到新链路：Narrator 默认开、新模板默认用、生成默认产出 ResumeDocument、导出默认走一页适配。
+
+## 建议修改范围
+
+```text
+src/platform/config.ts
+src/api/routes/**
+src/agent-tools/**
+src/exports/**
+docs/
+tests/
+```
+
+## 具体任务
+
+1. 默认开启：
+
+```text
+ENABLE_NARRATOR=true
+DEFAULT_RESUME_TEMPLATE=one-page-modern
+DEFAULT_TARGET_PAGES=1
+ENABLE_RESUME_FIT_ENGINE=true
+```
+
+2. 保留回滚开关：
+
+```text
+ENABLE_NARRATOR=false
+ENABLE_RESUME_FIT_ENGINE=false
+DEFAULT_RESUME_TEMPLATE=default
+```
+
+3. 更新 README / docs。
+4. 加一条端到端测试：
+
+```text
+用户输入 JD → 匹配经历 → 生成结构化简历 → 接受推荐版本 → 导出一页 PDF → 下载成功
+```
+
+5. 检查日志和错误提示，确保用户看到的是产品化话术，而不是底层错误。
+
+## 不要做
+
+- 不要删除 default template。
+- 不要删除旧 content 字段。
+- 不要删除 fallback。
+
+## 验收标准
+
+- 默认链路是新体验。
+- 环境变量可以快速回滚旧体验。
+- 端到端测试稳定通过。
+
+## 可直接给 CodingAgent 的短 prompt
+
+```text
+请将新链路切换为默认体验：Narrator 默认开启、默认模板 one-page-modern、默认 targetPages=1、默认启用 Fit Engine，同时保留环境变量回滚开关。补端到端测试：JD→匹配→生成 ResumeDocument→接受→一页 PDF 导出→下载。
+```
+
+---
+
+## 4. 推荐提交节奏
+
+建议每个阶段独立一个 commit 或 PR：
+
+```text
+phase-0: add generation/export baseline tests
+phase-1: extend tool result structured payloads
+phase-2: add narrator response layer
+phase-3: introduce resume document model
+phase-4: add one-page modern resume template
+phase-5: measure resume layout fit report
+phase-6: add rule-based one-page compression
+phase-7: add LLM fit editor
+phase-8: add resume quality report
+phase-9: update frontend/backend contract
+phase-10: switch default product flow
+```
+
+---
+
+## 5. 风险点与处理方式
+
+### 5.1 LLM JSON 不稳定
+
+处理方式：
+
+- 保留现有 repair 机制。
+- 对 ResumeDocument 做严格 schema validation。
+- 失败时退回旧 `content` variant。
+
+### 5.2 一页适配删掉重要内容
+
+处理方式：
+
+- bullet 增加 `pinned`。
+- sourceExperienceId 和 relevanceScore 参与删减排序。
+- compressionReport 透明记录删了什么。
+
+### 5.3 Critic 再次造成循环确认
+
+处理方式：
+
+- 普通风险只提示，不阻断。
+- 只有 critical unsupported claims 才阻断或要求确认。
+- 已确认/已保存的 action 不重复 critic。
+
+### 5.4 前端短期不支持新字段
+
+处理方式：
+
+- 所有新增字段 optional。
+- 保留 `message`、`content`、`workspacePatch`、`actionResult`。
+- 新字段先用于后端导出和 Narrator，不强依赖前端。
+
+---
+
+## 6. 最小可用版本建议
+
+如果你想最快看到产品质变，最低只做以下 4 个阶段：
+
+```text
+阶段 1：工具结果结构化
+阶段 2：Narrator 动态回复
+阶段 3：ResumeDocument 结构化简历
+阶段 4：onePageModernTemplate 专业模板
+```
+
+这四步完成后，即使还没有 Fit Engine，系统也会明显从“固定脚本感”升级为“智能 Copilot 感”，PDF 质量也会比当前 defaultTemplate 高很多。
+
+如果你要真正实现“精准一页”，则必须继续做：
+
+```text
+阶段 5：布局测量
+阶段 6：规则压缩
+阶段 7：LLM 压缩/补足
+```
+
+---
+
+## 7. 给 CodingAgent 的总控提示词模板
+
+每次执行一个阶段时，可以用下面这个固定格式：
+
+```text
+你正在修改 cv-agent 仓库。请只执行《cv-agent 下一阶段改动实施文档》中的【阶段 X】。
+
+要求：
+1. 只修改该阶段允许范围内的文件，除非确有必要并说明原因。
+2. 不删除旧字段，不破坏现有前后端契约。
+3. 保持 fallback 可用。
+4. 补充或更新测试。
+5. 完成后运行 npm test 和 npm run typecheck。
+6. 输出：修改文件清单、关键设计说明、测试结果、后续阶段注意事项。
+```
+
+---
+
+## 8. 最终目标状态
+
+完成全部阶段后，cv-agent 的核心体验应当变为：
+
+```text
+用户输入 JD 或目标
+  → Agent 判断任务
+  → 匹配经历并解释依据
+  → 生成多个结构化 ResumeDocument 版本
+  → Narrator 给出自然、具体的推荐说明
+  → 用户选择一个版本
+  → 系统保存为完整简历，而不是一段文本
+  → one-page-modern 模板渲染
+  → Fit Engine 测量和压缩到一页
+  → Quality Report 检查真实性、匹配度、版面质量
+  → 导出高质量一页 PDF
+```
+
+这时你的产品会从“能生成简历”升级为“能像求职 Copilot 一样，理解岗位、筛选经历、组织简历、控制版面、解释风险”。

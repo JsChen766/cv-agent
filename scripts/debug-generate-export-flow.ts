@@ -1,24 +1,40 @@
 import { randomUUID } from "node:crypto";
+import {
+  PHASE0_CHINESE_EXPERIENCES,
+  PHASE0_CHINESE_JD,
+} from "../tests/fixtures/phase0/index.js";
 
 const baseUrl = (process.env.DEBUG_FLOW_API_BASE_URL || "http://127.0.0.1:3000").replace(/\/$/, "");
 const userId = process.env.DEBUG_FLOW_USER_ID || "debug-flow-user";
 const timeoutMs = Number(process.env.DEBUG_FLOW_TIMEOUT_MS || 120_000);
 const pollIntervalMs = Number(process.env.DEBUG_FLOW_POLL_INTERVAL_MS || 1500);
+const seedFixtures = process.env.DEBUG_FLOW_SEED_FIXTURES === "1"
+  || process.env.DEBUG_FLOW_SEED_FIXTURES === "true";
 let sessionCookie = process.env.DEBUG_FLOW_COOKIE || "";
 const bearerToken = process.env.DEBUG_FLOW_BEARER_TOKEN || "";
 
 type ApiEnvelope<T> = { ok: true; data: T; meta?: Record<string, unknown> } | { ok: false; error?: { message?: string }; meta?: Record<string, unknown> };
 type JsonRecord = Record<string, unknown>;
 
-const jdText = [
+// Default English JD kept for backward compatibility with existing manual runs.
+// When DEBUG_FLOW_SEED_FIXTURES=1, we instead seed Phase 0 Chinese fixtures
+// (experiences + JD) so the script reproduces the same baseline scenario
+// covered by tests/phase0Baseline.test.ts.
+const defaultJdText = [
   "Senior Frontend Engineer",
   "We need a Vue and TypeScript engineer to build reliable product dashboards, improve performance, own export flows,",
   "collaborate with backend engineers, and ship tested user-facing workflows.",
 ].join("\n");
+const jdText = seedFixtures ? PHASE0_CHINESE_JD.rawText : defaultJdText;
+const targetRole = seedFixtures ? PHASE0_CHINESE_JD.targetRole : "Senior Frontend Engineer";
 
 async function main() {
-  console.log("[debug-flow] start", { baseUrl, userId, timeoutMs });
+  console.log("[debug-flow] start", { baseUrl, userId, timeoutMs, seedFixtures });
   await ensureAuth();
+
+  if (seedFixtures) {
+    await seedPhase0Fixtures();
+  }
 
   const chat = await postJson<JsonRecord>("/copilot/chat", {
     message: "Create a debug session for resume generation.",
@@ -33,7 +49,7 @@ async function main() {
       type: "generate_from_jd",
       payload: {
         jdText,
-        targetRole: "Senior Frontend Engineer",
+        targetRole,
       },
     },
     clientState: {},
@@ -101,6 +117,49 @@ async function main() {
     fileId: readString(completedExport, "fileId"),
     downloadBytes: Buffer.byteLength(download.text),
   });
+}
+
+async function seedPhase0Fixtures(): Promise<void> {
+  console.log("[debug-flow] seeding Phase 0 fixtures", {
+    experiences: PHASE0_CHINESE_EXPERIENCES.length,
+    jdTitle: PHASE0_CHINESE_JD.title,
+  });
+  // 1) Seed experiences via product API. Each call is idempotent at the
+  //    HTTP layer thanks to the unique idempotency key generated per request.
+  for (const exp of PHASE0_CHINESE_EXPERIENCES) {
+    try {
+      await postJson<JsonRecord>("/product/experiences", {
+        title: exp.title,
+        category: exp.category,
+        content: exp.content,
+        organization: exp.organization,
+        role: exp.role,
+        startDate: exp.startDate,
+        endDate: exp.endDate,
+        tags: exp.tags ?? [],
+      });
+    } catch (error) {
+      console.warn("[debug-flow] seed experience failed", {
+        title: exp.title,
+        error: error instanceof Error ? error.message : error,
+      });
+    }
+  }
+  // 2) Seed JD via product API. The actual generation in main() will save its
+  //    own JD record from `jdText`; this seeded JD is just so /product/jds
+  //    reflects the fixture in case the operator inspects state.
+  try {
+    await postJson<JsonRecord>("/product/jds", {
+      rawText: PHASE0_CHINESE_JD.rawText,
+      title: PHASE0_CHINESE_JD.title,
+      company: PHASE0_CHINESE_JD.company,
+      targetRole: PHASE0_CHINESE_JD.targetRole,
+    });
+  } catch (error) {
+    console.warn("[debug-flow] seed JD failed", {
+      error: error instanceof Error ? error.message : error,
+    });
+  }
 }
 
 async function pollJob(jobId: string): Promise<JsonRecord> {
