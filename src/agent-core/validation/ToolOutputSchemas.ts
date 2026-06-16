@@ -37,6 +37,29 @@ export const BaseToolResultSchema = z.object({
   actionResult: BaseActionResultSchema.optional(),
   pendingActionId: z.string().optional(),
   visibility: z.enum(["internal", "user_summary", "action_required", "error_user_visible"]).optional(),
+
+  // Phase 1 structured fields. Schema mirrors src/agent-core/tools/ToolResult.ts.
+  // All optional; any tool that does not yet emit them stays valid.
+  resultKind: z.string().optional(),
+  summaryFacts: z.array(z.string()).optional(),
+  entities: z.array(z.object({
+    type: z.string(),
+    id: z.string().optional(),
+    title: z.string().optional(),
+    data: z.unknown().optional(),
+  }).passthrough()).optional(),
+  evidence: z.array(z.object({
+    sourceId: z.string().optional(),
+    claim: z.string().optional(),
+    support: z.string().optional(),
+    confidence: z.number().min(0).max(1).optional(),
+  }).passthrough()).optional(),
+  warnings: z.array(z.string()).optional(),
+  nextActionHints: z.array(z.object({
+    type: z.string(),
+    label: z.string(),
+    payload: z.record(z.string(), z.unknown()).optional(),
+  }).passthrough()).optional(),
 }).passthrough();
 
 // ═══════════════════════════════════════════════════════════════

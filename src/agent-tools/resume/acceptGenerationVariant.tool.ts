@@ -1,4 +1,5 @@
 import type { ToolDefinition } from "../../agent-core/tools/Tool.js";
+import type { ToolResultEntity, ToolResultNextActionHint } from "../../agent-core/tools/ToolResult.js";
 import { AcceptGenerationVariantInputSchema, ToolResultSchema } from "../../agent-core/validation/ToolInputSchemas.js";
 
 export function createAcceptGenerationVariantTool(): ToolDefinition {
@@ -23,6 +24,47 @@ export function createAcceptGenerationVariantTool(): ToolDefinition {
       } catch {
         // Fallback: resumeId alone is enough for the frontend to fetch detail
       }
+
+      // ── Phase 1 structured payload (additive; legacy fields untouched) ──
+      const summaryFacts: string[] = [
+        `Variant ${result.variant.id} accepted into resume ${result.resume.id}.`,
+        `Generation: ${result.generation.id}.`,
+        activeResume?.items?.length !== undefined
+          ? `Resume now has ${activeResume.items.length} item(s).`
+          : "Resume detail not loaded; downstream consumers should fetch it.",
+      ];
+      const entities: ToolResultEntity[] = [
+        {
+          type: "resume",
+          id: result.resume.id,
+          title: result.resume.title,
+          data: { targetRole: result.resume.targetRole, jdId: result.resume.jdId },
+        },
+        {
+          type: "resume_variant",
+          id: String(input.variantId),
+          data: { generationId: String(input.generationId) },
+        },
+        {
+          type: "resume_item",
+          id: result.item.id,
+          title: result.item.title,
+          data: { resumeId: result.resume.id },
+        },
+      ];
+      const nextActionHints: ToolResultNextActionHint[] = [
+        {
+          type: "export_resume",
+          label: "Export this resume",
+          payload: { resumeId: result.resume.id, format: "pdf" },
+        },
+        {
+          type: "open_resume_editor",
+          label: "Open in resume editor",
+          payload: { resumeId: result.resume.id },
+        },
+      ];
+
       return {
         status: "success",
         message: "已将选中的版本保存到简历。",
@@ -52,6 +94,10 @@ export function createAcceptGenerationVariantTool(): ToolDefinition {
           },
         },
         visibility: "user_summary",
+        resultKind: "variant_accepted",
+        summaryFacts,
+        entities,
+        nextActionHints,
       };
     },
   };

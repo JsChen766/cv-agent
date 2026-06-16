@@ -46,6 +46,60 @@ export function createGenerateResumeFromJDTool(): ToolDefinition {
       const comparisonMatrix = result.comparisonMatrix && result.comparisonMatrix.length > 0
         ? result.comparisonMatrix
         : buildFallbackComparisonMatrix(variants);
+
+      // ── Phase 1 structured payload ──────────────────────────────────────
+      // Note: `message` / `data` / `workspacePatch` / `actionResult` are kept
+      // verbatim for backward compatibility. The structured fields below are
+      // additive and exist so Narrator (Phase 2) and the frontend (Phase 9)
+      // can compose richer replies without re-parsing free text.
+      const summaryFacts: string[] = [
+        `Generated ${variants.length} resume variant${variants.length === 1 ? "" : "s"} from JD ${result.jd.id}.`,
+        recommended ? `Recommended variant: ${recommended.id}.` : "No recommended variant flagged.",
+        result.jd.targetRole ? `Target role: ${result.jd.targetRole}.` : "Target role not specified.",
+      ];
+      const variantEntities = variants.map((variant, idx) => ({
+        type: "resume_variant",
+        id: variant.id,
+        title: variant.variantName ?? `Variant ${idx + 1}`,
+        data: {
+          generationId: result.generation.id,
+          recommended: Boolean(variant.recommended),
+          rank: variant.rank,
+          summary: variant.summary,
+        },
+      }));
+      const entities: import("../../agent-core/tools/ToolResult.js").ToolResultEntity[] = [
+        {
+          type: "generation",
+          id: result.generation.id,
+          title: result.jd.targetRole ? `${result.jd.targetRole} - generation` : "Resume generation",
+          data: { jdId: result.jd.id, variantCount: variants.length },
+        },
+        {
+          type: "jd",
+          id: result.jd.id,
+          title: result.jd.title,
+          data: { targetRole: result.jd.targetRole },
+        },
+        ...variantEntities,
+      ];
+      const warnings: string[] = [];
+      if (variants.length === 0) warnings.push("No variants were produced for this JD.");
+      const nextActionHints: import("../../agent-core/tools/ToolResult.js").ToolResultNextActionHint[] = [];
+      const targetVariantId = recommended?.id ?? variants[0]?.id;
+      if (targetVariantId) {
+        nextActionHints.push({
+          type: "accept_generation_variant",
+          label: "Save this variant to a resume",
+          payload: { generationId: result.generation.id, variantId: targetVariantId },
+        });
+      }
+      nextActionHints.push({
+        type: "review_variants",
+        label: "Compare the generated variants",
+        payload: { generationId: result.generation.id },
+      });
+
       return {
         status: "success",
         message: `已基于 JD 生成 ${variants.length} 个简历版本。请选择一个版本保存为简历，之后可以导出文件。`,
@@ -78,6 +132,11 @@ export function createGenerateResumeFromJDTool(): ToolDefinition {
           },
         },
         visibility: "user_summary",
+        resultKind: "generation_completed",
+        summaryFacts,
+        entities,
+        ...(warnings.length > 0 ? { warnings } : {}),
+        nextActionHints,
       };
     },
   };

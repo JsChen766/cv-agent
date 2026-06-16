@@ -296,6 +296,75 @@ nextActionHints?: Array<{ type: string; label: string; payload?: Record<string, 
 
 ---
 
+## 阶段 1 完成情况记录（执行回顾）
+
+### 1.1 实际改动文件清单
+
+```text
+修改  src/agent-core/tools/ToolResult.ts                       # 新增 6 个 optional 结构化字段 + 子类型
+修改  src/agent-core/validation/ToolInputSchemas.ts            # ToolResultSchema 增加 6 个 optional 字段；导出 3 个子 schema
+修改  src/agent-core/validation/ToolOutputSchemas.ts           # BaseToolResultSchema 显式声明同样 6 个 optional 字段
+修改  src/agent-tools/resume/generateResumeFromJD.tool.ts      # 输出 resultKind/summaryFacts/entities/warnings/nextActionHints
+修改  src/agent-tools/resume/acceptGenerationVariant.tool.ts   # 输出 variant_accepted 结构化负载
+修改  src/agent-tools/export/index.ts                          # prepare/export/get_export 三个工具全部输出结构化负载
+修改  src/agent-tools/experience/matchExperiencesAgainstJD.tool.ts  # 成功/空两条路径都输出结构化负载（含 evidence）
+修改  tests/ToolResultSchemas.test.ts                          # 追加 6 个 schema 测试（向后兼容 + 新字段 + 校验拒绝项）
+修改  tests/resumeAgentTools.test.ts                           # 追加 generate / accept 工具的结构化输出行为测试
+新增  tests/phase1StructuredToolResults.test.ts                # export 三件套 + match 工具结构化输出行为测试
+```
+
+未触碰：`ResponseComposer`、`NarratorService`（阶段 2 才引入）、数据库 schema、前端类型定义。
+
+### 1.2 关键设计说明
+
+1. **6 个新字段全部 optional，且只追加在最外层**：
+   - `resultKind?: string` — 粗粒度的“结果类型”枚举（值都是简短下划线 token，例如 `generation_completed` / `match_completed` / `match_empty` / `export_prepared` / `export_pending` / `export_ready` / `export_not_found` / `variant_accepted`）。后续 Narrator 直接根据它分支文风。
+   - `summaryFacts?: string[]` — 模型友好的事实 bullet（数量、id、关键决策），**故意不写产品话术**。
+   - `entities?: ToolResultEntity[]` — 涉及到的实体清单（generation / jd / resume / resume_variant / resume_item / experience / export / background_job）。`type` 必填，`id` / `title` / `data` 可选。
+   - `evidence?: ToolResultEvidence[]` — 证据条目（`sourceId` / `claim` / `support` / `confidence∈[0,1]`），目前只有 `match_experiences_against_jd` 在用，其他工具暂不强填。
+   - `warnings?: string[]` — 非致命提示（low coverage、fallback、failed export 等）。
+   - `nextActionHints?: ToolResultNextActionHint[]` — 建议下一步动作（`type`（多为下游工具名）/ `label`（短文案）/ `payload`（可直接回放给 `/copilot/actions`））。
+2. **不影响既有字段路径**：
+   - `mergeWorkspacePatch` 只读 `workspacePatch`；`assistantFromResults` 只读 `message`/`actionResult`；`AgentResultAssembler` 把 `toolResults` 整体序列化下发，新字段透传过去而已。
+   - `DisplayToolResult`（`src/copilot/types.ts`）当前的字段子集仍然完全有效；前端旧代码读不到新字段，但读到的所有旧字段值与之前**完全一致**。
+3. **校验**：`ToolResultSchema` 使用 zod 的强类型 + `.passthrough()` 既能兼容老结果（无新字段），也能在新字段类型错误时直接拒掉（如 `summaryFacts` 是字符串、`confidence` > 1、`nextActionHint` 缺 `label`）。
+4. **fallback 完全保留**：所有旧的 `message` / `data` / `workspacePatch` / `actionResult` / `visibility` 字段值全部保持不变（逐字符对照），新字段都是 spread 在末尾追加的。
+
+### 1.3 验收标准达成
+
+- `npm run typecheck`：通过。
+- `npm test`：61 → 62 文件、579 → 593 个 tests（+14 个新 tests），**全部通过**，无既有用例回归。
+- 新 schema 用例验证：旧形状 ToolResult 仍然合法；带 `summaryFacts` / `entities` / `evidence` / `nextActionHints` 的新形状也合法；类型错误被拒。
+- 行为用例验证：`generate_resume_from_jd` 实际返回中**同时**包含 variants（旧契约）、`summaryFacts` / `entities`（含 generation/jd/resume_variant 三类）/ `nextActionHints`（含 `accept_generation_variant`）。`accept_generation_variant`、`export_resume`、`get_export`（pending / ready / not_found 三种状态）、`match_experiences_against_jd`（success / empty 两条路径）都各自通过专门的行为用例。
+
+### 1.4 是否影响对外 API 与契约
+
+**结论：阶段 1 仅在 ToolResult 上追加 6 个 optional 字段，对所有现有对外 API 全部向后兼容，前端无需任何改动也不会坏，但可以选择渐进识别这些字段以获得更好的体验。**
+
+| 维度 | 影响 | 说明 |
+| --- | --- | --- |
+| `POST /copilot/chat` / `POST /copilot/actions` / `POST /copilot/pending-actions/:id/confirm` 返回的 `raw.toolResults` 数组 | **+6 个 optional 字段**（all additive） | 老字段（`status` / `message` / `data` / `workspacePatch` / `actionResult` / `visibility` / `pendingActionId`）值与之前完全一致。 |
+| `/exports/*` REST 路由 | 无 | 未触碰。 |
+| `/product/*` REST 路由 | 无 | 未触碰。 |
+| `/jobs/:id` | 无 | 未触碰。 |
+| 数据库 schema | 无 | 未触碰。 |
+| 持久化的 message metadata（含 historical `toolResults`） | 兼容 | 历史数据没有新字段，反序列化后仍然合法。 |
+| 环境变量 | 无 | 未新增。 |
+
+#### 前端建议（非强制，留作阶段 9 contract 整理时统一指引）
+
+- 短期可完全忽略新字段，体验不变。
+- 想要逐步接入时：
+  - `resultKind` 是最便宜的切入点，可以替换前端目前一些基于 `actionResult.actionType` 的 if-else，更稳定。
+  - `summaryFacts` 不要直接展示给用户（语气是工程化的），等阶段 2 Narrator 上线再用作输入；只想看一眼用作 debug 视图也可以。
+  - `nextActionHints` 是天然的“快捷按钮源”：`type` 直接对应工具/动作名，`label` 是 UI 文本，`payload` 可以直接回放进 `/copilot/actions`。
+  - `warnings` 适合渲染为黄色 banner / chip，不必做翻译。
+  - `entities` / `evidence` 适合放进侧边的 inspect / explain 抽屉。
+
+> 累积影响表会在阶段 9 里统一汇总；阶段 2 起会继续追加（Narrator 文风、ENABLE_NARRATOR 开关等）。
+
+---
+
 # 阶段 2：新增 Narrator/Presenter 层，替代大量固定回复
 
 ## 目标

@@ -1,5 +1,6 @@
 ﻿import { z } from "zod";
 import type { ToolDefinition } from "../../agent-core/tools/Tool.js";
+import type { ToolResultEntity, ToolResultEvidence, ToolResultNextActionHint } from "../../agent-core/tools/ToolResult.js";
 import type { ModelClientChatRequest } from "../../agent-core/model/types.js";
 import { PromptRegistry } from "../../agent-core/prompts/PromptRegistry.js";
 import { ToolResultSchema } from "../../agent-core/validation/ToolInputSchemas.js";
@@ -362,6 +363,64 @@ function buildSuccessResponse(
     message = `我已根据这份 JD 匹配了经历库，暂无高匹配经历，但有 ${candidateCount} 条可作为候选素材。`;
   }
 
+  // ── Phase 1 structured payload ──────────────────────────────────────────
+  // Top-N entities + evidence let downstream consumers (Narrator, frontend)
+  // explain the match without re-deriving anything from the unsorted list.
+  const TOP_N = 5;
+  const topForEntities = sorted.slice(0, TOP_N);
+  const entities: ToolResultEntity[] = [
+    ...(jdId ? [{ type: "jd" as const, id: jdId, data: { preview: jdSummary.preview } }] : []),
+    ...topForEntities.map((m) => ({
+      type: "experience" as const,
+      id: m.experienceId,
+      title: m.title,
+      data: {
+        matchScore: m.matchScore,
+        matchLevel: m.matchLevel,
+        category: m.category,
+        organization: m.organization,
+        role: m.role,
+      },
+    })),
+  ];
+  const evidence: ToolResultEvidence[] = topForEntities.flatMap((m) =>
+    (m.evidenceFromExperience.length > 0 ? m.evidenceFromExperience : [m.reason])
+      .slice(0, 3)
+      .map((line) => ({
+        sourceId: m.experienceId,
+        claim: `Match level: ${m.matchLevel} (score ${m.matchScore.toFixed(2)})`,
+        support: line,
+        confidence: m.matchScore,
+      })),
+  );
+  const summaryFacts: string[] = [
+    `Matched ${totalExperienceCount} experience(s) against JD.`,
+    `High: ${high.length}, medium: ${medium.length}, low: ${low.length}.`,
+    `Match method: ${matchMethod}.`,
+  ];
+  const warnings: string[] = [];
+  if (high.length === 0 && totalExperienceCount > 0) {
+    warnings.push("No high-match experiences for this JD; results may need rewriting before use.");
+  }
+  if (matchMethod === "keyword") {
+    warnings.push("Keyword fallback was used (LLM matcher unavailable); precision may be lower.");
+  }
+  const nextActionHints: ToolResultNextActionHint[] = [];
+  if (high.length > 0 || medium.length > 0) {
+    nextActionHints.push({
+      type: "generate_resume_from_jd",
+      label: "Generate a resume from these matches",
+      payload: jdId ? { jdId } : { jdText: jdText.slice(0, 4000) },
+    });
+  }
+  if (low.length > 0 && high.length === 0) {
+    nextActionHints.push({
+      type: "improve_experience_content",
+      label: "Add more JD-relevant detail to weak experiences",
+      payload: { weakExperienceIds: low.slice(0, 3).map((m) => m.experienceId) },
+    });
+  }
+
   return {
     status: "success" as const,
     message,
@@ -404,6 +463,12 @@ function buildSuccessResponse(
         summary,
       },
     },
+    resultKind: "match_completed" as const,
+    summaryFacts,
+    entities,
+    evidence,
+    ...(warnings.length > 0 ? { warnings } : {}),
+    nextActionHints,
   };
 }
 
@@ -426,6 +491,16 @@ function emptyResult(jdId: string | undefined) {
       scoreDistribution: { high: 0, medium: 0, low: 0 },
     },
     visibility: "user_summary" as const,
+    // Phase 1 structured fields
+    resultKind: "match_empty" as const,
+    summaryFacts: ["Experience library is empty; nothing to match against the JD."],
+    entities: jdId ? [{ type: "jd" as const, id: jdId }] : [],
+    warnings: ["Your experience library is empty; please save experiences before generating a resume."],
+    nextActionHints: [{
+      type: "import_resume_file" as const,
+      label: "Import a resume to seed your experience library",
+      payload: {},
+    }] as ToolResultNextActionHint[],
   };
 }
 

@@ -123,4 +123,84 @@ describe("resume agent tools", () => {
       await kernel.close();
     }
   });
+
+  it("Phase 1 — generate_resume_from_jd emits structured summaryFacts / entities / nextActionHints alongside legacy fields", async () => {
+    const kernel = await createP12Kernel();
+    await kernel.productServices.experienceService.createExperience("user-1", {
+      title: "Vue performance migration",
+      content: "Migrated a Vue 2 dashboard to Vue 3 + TypeScript and reduced TTI by 35%.",
+      role: "Senior Frontend Engineer",
+      organization: "Acme",
+    });
+    const tool = createResumeAgentTools().find((item) => item.name === "generate_resume_from_jd");
+    expect(tool).toBeDefined();
+
+    try {
+      const result = await tool!.execute({
+        jdText: "Senior Frontend Engineer; Vue 3, TypeScript, performance optimization.",
+        targetRole: "Senior Frontend Engineer",
+      }, testContext(kernel, [tool!]));
+
+      expect(result.status).toBe("success");
+      // Legacy fields are unchanged
+      expect(result.message).toContain("已基于 JD 生成");
+      expect(result.workspacePatch).toBeTruthy();
+      expect(result.actionResult?.actionType).toBe("generate_resume_from_jd");
+
+      // Phase 1 structured fields are present
+      expect(result.resultKind).toBe("generation_completed");
+      expect(Array.isArray(result.summaryFacts)).toBe(true);
+      expect(result.summaryFacts!.length).toBeGreaterThan(0);
+      expect(result.summaryFacts!.some((line) => line.includes("Generated"))).toBe(true);
+
+      expect(Array.isArray(result.entities)).toBe(true);
+      const entityTypes = new Set((result.entities ?? []).map((entity) => entity.type));
+      expect(entityTypes.has("generation")).toBe(true);
+      expect(entityTypes.has("jd")).toBe(true);
+      expect(entityTypes.has("resume_variant")).toBe(true);
+
+      expect(Array.isArray(result.nextActionHints)).toBe(true);
+      const hintTypes = new Set((result.nextActionHints ?? []).map((hint) => hint.type));
+      expect(hintTypes.has("accept_generation_variant")).toBe(true);
+    } finally {
+      await kernel.close();
+    }
+  });
+
+  it("Phase 1 — accept_generation_variant emits resultKind=variant_accepted and export hint", async () => {
+    const kernel = await createP12Kernel();
+    const genResult = await kernel.productServices.generationProductService.generateResumeFromJD({
+      userId: "user-1",
+      jdText: "React developer role.",
+      targetRole: "Frontend",
+    });
+    const variant = genResult.variants[0]!;
+
+    const tool = createResumeAgentTools().find((item) => item.name === "accept_generation_variant");
+    expect(tool).toBeDefined();
+
+    try {
+      const result = await tool!.execute({
+        generationId: genResult.generation.id,
+        variantId: variant.id,
+      }, testContext(kernel, [tool!]));
+
+      expect(result.status).toBe("success");
+      // Legacy contract intact
+      expect(result.workspacePatch?.status).toBe("accepted");
+      expect(result.actionResult?.actionType).toBe("accept_generation_variant");
+
+      // Phase 1 structured fields
+      expect(result.resultKind).toBe("variant_accepted");
+      expect(result.summaryFacts?.length).toBeGreaterThan(0);
+      const types = new Set((result.entities ?? []).map((entity) => entity.type));
+      expect(types.has("resume")).toBe(true);
+      expect(types.has("resume_variant")).toBe(true);
+      expect(types.has("resume_item")).toBe(true);
+      const hintTypes = new Set((result.nextActionHints ?? []).map((hint) => hint.type));
+      expect(hintTypes.has("export_resume")).toBe(true);
+    } finally {
+      await kernel.close();
+    }
+  });
 });

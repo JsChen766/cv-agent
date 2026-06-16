@@ -67,6 +67,26 @@ export const ShowEvidenceInputSchema = z.object({
   generationId: z.string().optional(),
 }).passthrough();
 
+export const ToolResultEntitySchema = z.object({
+  type: z.string().min(1),
+  id: z.string().optional(),
+  title: z.string().optional(),
+  data: z.unknown().optional(),
+}).passthrough();
+
+export const ToolResultEvidenceSchema = z.object({
+  sourceId: z.string().optional(),
+  claim: z.string().optional(),
+  support: z.string().optional(),
+  confidence: z.number().min(0).max(1).optional(),
+}).passthrough();
+
+export const ToolResultNextActionHintSchema = z.object({
+  type: z.string().min(1),
+  label: z.string().min(1),
+  payload: z.record(z.string(), z.unknown()).optional(),
+}).passthrough();
+
 export const ToolResultSchema = z.object({
   status: z.enum(["success", "needs_input", "failed"]),
   message: z.string().optional(),
@@ -75,4 +95,12 @@ export const ToolResultSchema = z.object({
   actionResult: z.record(z.string(), z.unknown()).optional(),
   pendingActionId: z.string().optional(),
   visibility: z.enum(["internal", "user_summary", "action_required", "error_user_visible"]).optional(),
+
+  // Phase 1 structured fields (all optional). See ToolResult.ts for rationale.
+  resultKind: z.string().optional(),
+  summaryFacts: z.array(z.string()).optional(),
+  entities: z.array(ToolResultEntitySchema).optional(),
+  evidence: z.array(ToolResultEvidenceSchema).optional(),
+  warnings: z.array(z.string()).optional(),
+  nextActionHints: z.array(ToolResultNextActionHintSchema).optional(),
 });

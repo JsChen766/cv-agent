@@ -9,6 +9,12 @@ import {
   PrepareReviseResumeItemOutputSchema,
   ReviseResumeItemOutputSchema,
 } from "../src/agent-core/validation/ToolOutputSchemas.js";
+import {
+  ToolResultSchema,
+  ToolResultEntitySchema,
+  ToolResultEvidenceSchema,
+  ToolResultNextActionHintSchema,
+} from "../src/agent-core/validation/ToolInputSchemas.js";
 
 describe("BaseWorkspacePatchSchema", () => {
   it("accepts a minimal workspacePatch with activePanel", () => {
@@ -347,6 +353,83 @@ describe("ReviseResumeItemOutputSchema", () => {
       },
     };
     const result = ReviseResumeItemOutputSchema.safeParse(output);
+    expect(result.success).toBe(false);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────
+// Phase 1: structured ToolResult fields (back-compat + new fields)
+// ─────────────────────────────────────────────────────────────────
+
+describe("Phase 1 — ToolResultSchema structured fields", () => {
+  it("accepts a legacy result with no Phase 1 fields (back-compat)", () => {
+    const legacy = {
+      status: "success" as const,
+      message: "ok",
+      data: { count: 1 },
+      workspacePatch: { activePanel: "variants" },
+      actionResult: { status: "success", actionType: "noop" },
+      visibility: "user_summary" as const,
+    };
+    const ok = ToolResultSchema.safeParse(legacy);
+    expect(ok.success).toBe(true);
+    const baseOk = BaseToolResultSchema.safeParse(legacy);
+    expect(baseOk.success).toBe(true);
+  });
+
+  it("accepts a result that carries summaryFacts / entities / evidence / warnings / nextActionHints", () => {
+    const enriched = {
+      status: "success" as const,
+      message: "Generated 2 variants.",
+      data: { generationId: "gen-1" },
+      visibility: "user_summary" as const,
+      resultKind: "generation_completed",
+      summaryFacts: [
+        "Generated 2 resume variants from JD jd-1.",
+        "Recommended variant: var-2.",
+      ],
+      entities: [
+        { type: "generation", id: "gen-1", title: "Frontend Engineer - generation" },
+        { type: "resume_variant", id: "var-1", title: "Variant 1" },
+        { type: "resume_variant", id: "var-2", title: "Variant 2" },
+      ],
+      evidence: [
+        { sourceId: "exp-7", claim: "Owns Vue 3 perf work", support: "Reduced TTI by 40%", confidence: 0.92 },
+      ],
+      warnings: ["No high-match experiences for this JD."],
+      nextActionHints: [
+        { type: "accept_generation_variant", label: "Save this variant", payload: { variantId: "var-2" } },
+        { type: "review_variants", label: "Compare variants", payload: { generationId: "gen-1" } },
+      ],
+    };
+    const ok = ToolResultSchema.safeParse(enriched);
+    expect(ok.success).toBe(true);
+    const baseOk = BaseToolResultSchema.safeParse(enriched);
+    expect(baseOk.success).toBe(true);
+  });
+
+  it("rejects entity without a `type`", () => {
+    const result = ToolResultEntitySchema.safeParse({ id: "x" });
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects evidence with confidence outside [0,1]", () => {
+    const tooHigh = ToolResultEvidenceSchema.safeParse({ confidence: 1.5 });
+    expect(tooHigh.success).toBe(false);
+    const negative = ToolResultEvidenceSchema.safeParse({ confidence: -0.1 });
+    expect(negative.success).toBe(false);
+  });
+
+  it("rejects nextActionHint without a label", () => {
+    const result = ToolResultNextActionHintSchema.safeParse({ type: "export_resume" });
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects summaryFacts as a single string (must be an array)", () => {
+    const result = ToolResultSchema.safeParse({
+      status: "success",
+      summaryFacts: "Generated 2 variants.",
+    });
     expect(result.success).toBe(false);
   });
 });
