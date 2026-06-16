@@ -1,6 +1,7 @@
 import type { FrontDeskHandoff } from "../../copilot/handoff/FrontDeskHandoff.js";
 import type { CopilotLocale } from "../../copilot/locale.js";
 import { ResponseComposer } from "../../copilot/response/ResponseComposer.js";
+import type { NarratorService } from "../../copilot/response/NarratorService.js";
 import { isBlockedToolLog } from "../../copilot/response/ProductReplyTemplates.js";
 import type {
   CopilotActionResult,
@@ -49,16 +50,23 @@ export type AgentResultAssembly = {
   actionResults: CopilotActionResult[];
 };
 
+export type AgentResultAssemblerDeps = {
+  narrator?: NarratorService;
+};
+
 export class AgentResultAssembler {
-  private readonly responseComposer = new ResponseComposer();
+  private readonly responseComposer: ResponseComposer;
 
   public constructor(
     private readonly assistantMessageProjector: AssistantMessageProjector = new AssistantMessageProjector(),
-  ) {}
+    deps: AgentResultAssemblerDeps = {},
+  ) {
+    this.responseComposer = new ResponseComposer({ narrator: deps.narrator });
+  }
 
-  public assemble(input: AgentResultAssemblyInput): AgentResultAssembly {
+  public async assemble(input: AgentResultAssemblyInput): Promise<AgentResultAssembly> {
     const now = new Date().toISOString();
-    const composed = this.responseComposer.compose({
+    const composed = await this.responseComposer.composeAsync({
       locale: input.locale,
       userMessage: input.run.context.userMessage,
       frontDeskHandoff: input.run.context.productContext.frontDeskHandoff as FrontDeskHandoff | undefined,

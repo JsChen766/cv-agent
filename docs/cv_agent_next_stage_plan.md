@@ -424,6 +424,69 @@ ENABLE_NARRATOR=true/false
 
 ---
 
+## 阶段 2 完成情况记录（执行回顾）
+
+### 2.1 实际改动文件清单
+
+```text
+新增  src/copilot/response/NarratorService.ts                    # 纯 LLM presenter；不动状态/不调工具/不读 DB
+新增  src/agent-core/prompts/prompts/product/narrator-system.md  # narrator 系统提示词（en/zh-CN，1-4 句，禁止编造）
+修改  src/agent-core/prompts/PromptRegistry.ts                   # 注册 product.narrator.system
+修改  src/copilot/response/ResponseComposer.ts                   # 增加 optional narrator 依赖 + 新 composeAsync + detectNarratorBranch；compose 同步路径完全不变（向后兼容零参构造）
+修改  src/agent-core/runtime/AgentResultAssembler.ts             # assemble 改 async；走 composeAsync；接受 deps.narrator 注入
+修改  src/agent-core/runtime/AgentOrchestrator.ts                # 仅当 kernel.frontDeskModelClient 与 narrator prompt 同时存在时构造 NarratorService 并注入；assemble 调用加 await
+新增  tests/NarratorService.test.ts                              # 5 用例：disabled/no-model/throw/blank-content/正常 LLM 路径
+新增  tests/ResponseComposer.narrator.test.ts                    # 5 用例：generated 分支用 narrator、null 回退、accepted 保留 nextActions、confirmation 不调 narrator、零参构造仍可用
+新增  tests/scenarioModelClient.ts                               # 测试专用智能 stub provider；按 responseFormat + system prompt "Narrator" 关键字双重判别
+修改  tests/copilotKernelRefactor.test.ts                        # 追加 2 个 ENABLE_NARRATOR e2e（accepted 分支：on=narrator 文案、unset=fallback）
+修改  docs/cv_agent_next_stage_plan.md                           # 本节
+```
+
+未触碰：所有工具代码（Phase 1 已完成结构化）、`mergeWorkspacePatch` / `WorkspaceProjector` / `PendingActionService`、REST 路由（`/exports/*`、`/product/*`、`/jobs/:id`）、数据库 schema、`KernelRefactorProvider`、生产 LLM provider（DeepSeek/OpenAICompatible）。
+
+### 2.2 关键设计说明
+
+1. **Narrator 仅在四个成功分支跑**：`accept_generation_variant` 成功 → `accepted`；`export_resume` 成功 → `exported`；`generate_resume_from_jd` 成功 **且无 generating: true** → `generated`；`match_experiences_against_jd` → `jd_match`。其余路径（`needs_confirmation` / `needs_input` / `failed` & error_user_visible / JD intake handoff / max_steps / "all internal" fallback / 默认"Done."）**全部** rule-based，UX 在错误/暧昧时刻保持完全确定性。
+2. **零破坏注入**：`ResponseComposer` 加上 `options: ResponseComposerOptions = {}` 默认参数后，所有现有 `new ResponseComposer()` 调用（包括测试中的）都不需要改动。`compose` 仍是同步方法且实现一字不变；`composeAsync` 是新增的 async 入口，仅 `AgentResultAssembler` 用它。
+3. **失败 → 回退**：narrator 任何异常或返回 null/空白，`composeAsync` 都把 baseline（即旧 rule-based `compose` 输出）原样返回；`nextActions` 等其他字段始终来自 baseline，不会被 narrator 覆盖。
+4. **wire-through e2e 真实链路**：测试用 `tests/scenarioModelClient.ts` 这个 test-only smart stub —— 同一个 provider 凭 `request.responseFormat === "json"` + system prompt 是否包含 "Narrator" 双重判别，agent 决策走 JSON 分支、narrator 走自由文本分支。**严格不污染生产 provider**。
+5. **enabled 默认值**：`NarratorService` 构造时 `enabled ?? (process.env.ENABLE_NARRATOR === "true")`，这意味着不设环境变量等价于关闭；测试可显式传 `enabled: true/false` 覆盖。
+6. **e2e 选择 `accepted` 分支而非 `generated`**：因为 `generate_resume_from_jd` 在 confirmation 时立刻入队后台 job 并打 `metadata.generating: true`（PendingActionService.ts:229），这是 narrator 故意排除的"还在路上"状态；`accept_generation_variant` 是同步完成的，干净打到 `accepted`。
+7. **未在 prompt 里塞 system facts**：narrator 收到的 user payload 是 JSON.stringify 的紧凑负载（locale / branch / userMessage / fallbackText / criticReview / frontDeskIntent / 工具结果摘要含 Phase 1 的 `summaryFacts` / `entities` / `evidence` / `warnings` / `nextActionHints`）。Prompt 明确要求"基于这些字段，不要发明计数/ID/百分比/名称"。
+
+### 2.3 验收标准达成
+
+- `npm run typecheck`：通过。
+- `npm test`：62 → **64** 文件、593 → **605** 个 tests（+12 个新 tests），全部通过，无任何既有用例回归。
+- 关闭路径（`ENABLE_NARRATOR` unset 或 `false`）：行为与阶段 1 baseline 逐字节一致 —— `tests/copilotKernelRefactor.test.ts` 第二个 e2e 直接断言 narrator stub 文案**不会**出现在 `assistantMessage.content` 中。
+- 启用路径（`ENABLE_NARRATOR=true` + 可用 `frontDeskModelClient`）：第一个 e2e 验证 `accepted` 分支 narrator 文案 "已保存这个版本到你的简历" 出现在最终 `assistantMessage.content` 中。
+- Narrator 失败回退：`tests/NarratorService.test.ts` 覆盖 modelClient 抛错、内容为空两种失败 → null；`tests/ResponseComposer.narrator.test.ts` "falls back to legacy text when narrator returns null" 验证 ResponseComposer 见到 null 后落回 baseline。
+- 确认/Needs-input 分支不调 narrator：`tests/ResponseComposer.narrator.test.ts` "does not call narrator on confirmation branch" 显式断言 stub 的 `chat` 调用次数 = 0。
+
+### 2.4 是否影响对外 API 与契约
+
+**结论：阶段 2 仅在 4 个特定成功分支可能改动 `assistantMessage.content` 的措辞；对所有结构化字段（toolResults / workspace / workspacePatch / actionResults / nextActions / pendingActions / timeline / agentRoomEvents / metadata）不做任何改动。新增 1 个 optional 环境变量。**
+
+| 维度 | 影响 | 说明 |
+| --- | --- | --- |
+| `POST /copilot/chat` / `POST /copilot/actions` / `POST /copilot/pending-actions/:id/confirm` 返回的 `assistantMessage.content` | **可能改变（仅启用时 + 仅 4 分支）** | `ENABLE_NARRATOR=true` 且 `frontDeskModelClient` 可用且本回合命中 `accepted` / `exported` / `generated`（非 generating） / `jd_match` 任一分支时，文案改由 narrator 生成；其他所有情况文案与阶段 1 一致。 |
+| `raw.toolResults` / `raw.actionResults` / `raw.pendingActions` / `raw.metadata` / `nextActions` / `timeline` / `agentRoomEvents` / `workspace` / `workspacePatch` | 无 | 字节一致。Narrator 不可写这些字段。 |
+| `/exports/*` / `/product/*` / `/jobs/:id` REST 路由 | 无 | 未触碰。 |
+| 数据库 schema | 无 | 未触碰。 |
+| 持久化的消息 metadata（含历史 `toolResults`） | 无 | 未触碰。 |
+| 环境变量 | **+1 optional** | `ENABLE_NARRATOR=true` 启用 narrator；未设置或非 `"true"` 等价于关闭。 |
+| 配置/部署 | 无新依赖 | 仅复用既有 `kernel.frontDeskModelClient` 和 `PromptRegistry`。 |
+
+#### 前端建议
+
+- 短期：忽略一切（`ENABLE_NARRATOR` 默认关，行为=阶段 1）。
+- 启用时：体验上 4 个分支的回复更自然，可选地把 Phase 1 的 `nextActionHints` 渲染成快捷按钮以增强引导（仍非强制）。
+- `assistantMessage.content` 的契约形态没变，仍是一段文本；只是更口语化，长度不会暴涨（prompt 限制 1-4 句、`maxTokens: 600`）。
+
+> 累积变化（阶段 0 起）：阶段 0 = 零破坏；阶段 1 = `raw.toolResults[]` 新增 6 个 optional 字段（向后兼容）；阶段 2 = 新增 optional `ENABLE_NARRATOR` 环境变量 + 启用时 4 分支文案变化（结构字段不变）。
+
+---
+
 # 阶段 3：引入结构化 ResumeDocument 模型
 
 ## 目标

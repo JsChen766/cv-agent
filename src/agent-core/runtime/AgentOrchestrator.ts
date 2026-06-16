@@ -47,6 +47,7 @@ import type { AgentRuntimeEmitter, AgentStreamEventType } from "./AgentStreamEve
 import { CriticGate, type ToolExecutionRecord } from "./CriticGate.js";
 import { AgentDecisionRunner } from "./AgentDecisionRunner.js";
 import { AgentResultAssembler } from "./AgentResultAssembler.js";
+import { NarratorService } from "../../copilot/response/NarratorService.js";
 import { PlanExecutionService, ensureToolResultVisibility } from "./PlanExecutionService.js";
 import { ReviewPipeline } from "./ReviewPipeline.js";
 import type { ExecutedPlan, LoopRunResult } from "./RunResult.js";
@@ -74,7 +75,7 @@ export type AgentOrchestratorDeps = {
 export class AgentOrchestrator {
   public readonly pendingActions: PendingActionService;
   public readonly tools: ToolRegistry;
-  private readonly resultAssembler = new AgentResultAssembler();
+  private readonly resultAssembler: AgentResultAssembler;
   private readonly capabilityRegistry: AgentCapabilityRegistry;
   private readonly contextAssemblyPipeline: ContextAssemblyPipeline;
   private readonly planExecutionService: PlanExecutionService;
@@ -86,6 +87,14 @@ export class AgentOrchestrator {
 
   public constructor(private readonly deps: AgentOrchestratorDeps) {
     const promptRegistry = new PromptRegistry();
+    const narratorPrompt = (() => {
+      try { return promptRegistry.get("product.narrator.system"); }
+      catch { return undefined; }
+    })();
+    const narrator = (deps.kernel.frontDeskModelClient && narratorPrompt)
+      ? new NarratorService({ modelClient: deps.kernel.frontDeskModelClient, prompt: narratorPrompt })
+      : undefined;
+    this.resultAssembler = new AgentResultAssembler(undefined, { narrator });
     const domainRegistry = new AgentDomainRegistry(deps.domains ?? [careerDomain]);
     this.pendingActions = deps.pendingActions ?? new PendingActionService();
     this.tools = new ToolRegistry();
@@ -1270,7 +1279,7 @@ export class AgentOrchestrator {
         payload: { eventType: "announcement" },
       });
     }
-    const assembly = this.resultAssembler.assemble({
+    const assembly = await this.resultAssembler.assemble({
       run,
       locale: localeFor(run),
       assistantText: input.assistantText,

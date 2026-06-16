@@ -10,6 +10,7 @@ import { ResponseComposer } from "../src/copilot/response/ResponseComposer.js";
 import type { CopilotWorkspace } from "../src/copilot/types.js";
 import { createTestKernelContext } from "../src/api/context.js";
 import { createP12Kernel } from "./p12Helpers.js";
+import { makeScenarioProvider } from "./scenarioModelClient.js";
 
 const JD_TEXT = `Senior Frontend Engineer
 Company: Example Tech
@@ -324,3 +325,78 @@ function plan(agentName: string, toolName: string, args: Record<string, unknown>
 function json(value: Record<string, unknown>): LLMChatResponse {
   return { content: JSON.stringify(value) };
 }
+
+describe("ENABLE_NARRATOR e2e through AgentResultAssembler", () => {
+  it("uses narrator output on the accepted branch when ENABLE_NARRATOR=true", async () => {
+    const original = process.env.ENABLE_NARRATOR;
+    process.env.ENABLE_NARRATOR = "true";
+    try {
+      const kernel = await createP12Kernel();
+      const provider = makeScenarioProvider({ narratorReply: "已保存这个版本到你的简历，可随时导出。" });
+      kernel.frontDeskModelClient = new ModelClient({ provider, defaultModel: "scenario-narrator-stub" });
+      const orchestrator = new AgentOrchestrator({ kernel });
+      const ctx = createTestKernelContext({ user: { id: "user-1" }, request: { requestId: "narr-1", traceId: "narr-1" } });
+
+      // Seed: directly generate variants via product service (bypasses pending),
+      // then drive an accept through handleExplicitAction → confirmPendingAction.
+      const session = await kernel.copilotServices.sessionService.getOrCreateSession("user-1", {});
+      const generated = await kernel.productServices.generationProductService.generateResumeFromJD({
+        userId: "user-1",
+        sessionId: session.id,
+        jdText: "Senior Frontend Engineer with Vue 3.",
+        targetRole: "Senior Frontend Engineer",
+      });
+      const variantId = generated.variants[0]!.id;
+
+      const acceptIntent = await orchestrator.handleExplicitAction(ctx, {
+        sessionId: session.id,
+        action: { type: "accept", variantId, payload: { generationId: generated.generation.id } },
+      });
+      const pendingId = (acceptIntent.raw.pendingActions as Array<{ id: string }> | undefined)?.[0]?.id;
+      expect(pendingId).toBeTruthy();
+
+      const confirmed = await orchestrator.confirmPendingAction(ctx, pendingId!);
+      // accept_generation_variant is the narrator `accepted` branch (sync, no `generating: true`).
+      expect(confirmed.assistantMessage.content).toContain("已保存这个版本到你的简历");
+      await kernel.close();
+    } finally {
+      if (original === undefined) delete process.env.ENABLE_NARRATOR;
+      else process.env.ENABLE_NARRATOR = original;
+    }
+  });
+
+  it("falls back to legacy text on the accepted branch when ENABLE_NARRATOR is unset", async () => {
+    const original = process.env.ENABLE_NARRATOR;
+    delete process.env.ENABLE_NARRATOR;
+    try {
+      const kernel = await createP12Kernel();
+      const provider = makeScenarioProvider({ narratorReply: "narrator should NOT be used" });
+      kernel.frontDeskModelClient = new ModelClient({ provider, defaultModel: "scenario-narrator-stub" });
+      const orchestrator = new AgentOrchestrator({ kernel });
+      const ctx = createTestKernelContext({ user: { id: "user-2" }, request: { requestId: "narr-2", traceId: "narr-2" } });
+
+      const session = await kernel.copilotServices.sessionService.getOrCreateSession("user-2", {});
+      const generated = await kernel.productServices.generationProductService.generateResumeFromJD({
+        userId: "user-2",
+        sessionId: session.id,
+        jdText: "Senior Frontend Engineer with Vue 3.",
+        targetRole: "Senior Frontend Engineer",
+      });
+      const variantId = generated.variants[0]!.id;
+
+      const acceptIntent = await orchestrator.handleExplicitAction(ctx, {
+        sessionId: session.id,
+        action: { type: "accept", variantId, payload: { generationId: generated.generation.id } },
+      });
+      const pendingId = (acceptIntent.raw.pendingActions as Array<{ id: string }> | undefined)?.[0]?.id;
+      expect(pendingId).toBeTruthy();
+
+      const confirmed = await orchestrator.confirmPendingAction(ctx, pendingId!);
+      expect(confirmed.assistantMessage.content).not.toContain("narrator should NOT be used");
+      expect(confirmed.assistantMessage.content.length).toBeGreaterThan(0);
+      await kernel.close();
+    } finally {
+      if (original !== undefined) process.env.ENABLE_NARRATOR = original;
+    }
+  });
+});

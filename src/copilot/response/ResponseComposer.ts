@@ -7,6 +7,7 @@ import type { CopilotWorkspace, ProductAction } from "../types.js";
 import type { FrontDeskHandoff } from "../handoff/FrontDeskHandoff.js";
 import type { CopilotTask } from "../tasks/CopilotTask.js";
 import { isBlockedToolLog } from "./ProductReplyTemplates.js";
+import { NarratorService, type NarratorBranch } from "./NarratorService.js";
 
 export type ResponseComposerInput = {
   locale: CopilotLocale;
@@ -28,7 +29,17 @@ export type ResponseComposerOutput = {
   systemNotices?: string[];
 };
 
+export type ResponseComposerOptions = {
+  narrator?: NarratorService;
+};
+
 export class ResponseComposer {
+  private readonly narrator: NarratorService | undefined;
+
+  public constructor(options: ResponseComposerOptions = {}) {
+    this.narrator = options.narrator;
+  }
+
   public compose(input: ResponseComposerInput): ResponseComposerOutput {
     const en = input.locale === "en";
     const actionable = input.toolResults.find((result) => (
@@ -173,6 +184,54 @@ export class ResponseComposer {
     }
 
     return { assistantText: en ? "Done." : "已完成。" };
+  }
+
+  public async composeAsync(input: ResponseComposerInput): Promise<ResponseComposerOutput> {
+    const baseline = this.compose(input);
+    if (!this.narrator) return baseline;
+
+    const branch = this.detectNarratorBranch(input);
+    if (!branch) return baseline;
+
+    try {
+      const text = await this.narrator.narrate({
+        locale: input.locale,
+        userMessage: input.userMessage,
+        toolResults: input.toolResults,
+        branch,
+        workspace: input.workspace,
+        pendingActions: input.pendingActions,
+        criticReview: input.criticReview,
+        frontDeskHandoff: input.frontDeskHandoff,
+        fallbackText: baseline.assistantText,
+      });
+      if (typeof text === "string" && text.trim().length > 0) {
+        return { ...baseline, assistantText: text };
+      }
+    } catch {
+      // fall through to baseline
+    }
+    return baseline;
+  }
+
+  private detectNarratorBranch(input: ResponseComposerInput): NarratorBranch | undefined {
+    const hasConfirmation = input.toolResults.some((r) => r.actionResult?.status === "needs_confirmation");
+    const hasNeedsInput = input.toolResults.some((r) => r.status === "needs_input");
+    const hasFailedVisible = input.toolResults.some((r) => r.status === "failed" && r.visibility === "error_user_visible");
+    if (hasConfirmation || hasNeedsInput || hasFailedVisible) return undefined;
+
+    if (input.toolResults.some((r) => r.actionResult?.actionType === "accept_generation_variant" && r.status === "success")) return "accepted";
+    if (input.toolResults.some((r) => r.actionResult?.actionType === "export_resume" && r.status === "success")) return "exported";
+    if (input.toolResults.some((r) => {
+      if (r.actionResult?.actionType === "generate_resume_from_jd") {
+        const md = r.actionResult?.metadata as Record<string, unknown> | undefined;
+        return !(md && md.generating === true);
+      }
+      const data = r.data as { variants?: unknown[] } | undefined;
+      return Array.isArray(data?.variants);
+    })) return "generated";
+    if (input.toolResults.some((r) => r.actionResult?.actionType === "match_experiences_against_jd")) return "jd_match";
+    return undefined;
   }
 }
 
