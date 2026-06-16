@@ -3,7 +3,7 @@ import { z } from "zod";
 import type { ModelClient } from "../agent-core/model/ModelClient.js";
 import { PromptRegistry } from "../agent-core/prompts/PromptRegistry.js";
 import { extractJsonCandidates } from "../infrastructure/llm/JsonOutputParser.js";
-import type { ProductExperienceSummary, ProductGeneratedVariant, VariantComparisonMatrixRow } from "./types.js";
+import type { ProductExperienceSummary, ProductGeneratedVariant, ResumeDocument, VariantComparisonMatrixRow } from "./types.js";
 
 export type LLMGenerationErrorPhase =
   | "initial"
@@ -204,6 +204,55 @@ function normalizeSourceExperienceIds(raw: unknown): string[] {
   return raw.filter((v): v is string => typeof v === "string" && v.trim().length > 0);
 }
 
+// ───────────────────────────────────────────────────────────────
+// Optional structured ResumeDocument — Phase 3
+// ───────────────────────────────────────────────────────────────
+//
+// The LLM MAY also return a structured `resumeDocument` alongside the plain
+// `content` string. We validate it strictly with zod; any failure (missing,
+// malformed, empty sections, …) silently drops the field. The unstructured
+// `content` remains authoritative — the saver in `services/index.ts` only
+// uses `resumeDocument` when it is present *and* its sections array is
+// non-empty, otherwise it keeps the legacy single-item behaviour.
+
+const ResumeDocumentBulletSchema = z.object({
+  id: z.string().min(1),
+  text: z.string().min(1),
+  evidenceIds: z.array(z.string()).optional(),
+});
+
+const ResumeDocumentItemSchema = z.object({
+  id: z.string().min(1),
+  title: z.string().min(1),
+  subtitle: z.string().optional(),
+  period: z.string().optional(),
+  location: z.string().optional(),
+  bullets: z.array(ResumeDocumentBulletSchema),
+  sourceExperienceId: z.string().optional(),
+  evidenceStrength: z.enum(["low", "medium", "high"]).optional(),
+  relevanceScore: z.number().min(0).max(1).optional(),
+});
+
+const ResumeDocumentSectionSchema = z.object({
+  id: z.string().min(1),
+  type: z.enum(["experience", "education", "project", "skill", "award", "summary", "other"]),
+  title: z.string().min(1),
+  order: z.number().int().nonnegative(),
+  items: z.array(ResumeDocumentItemSchema),
+});
+
+const ResumeDocumentSchema = z.object({
+  schemaVersion: z.literal(1),
+  sections: z.array(ResumeDocumentSectionSchema).min(1),
+});
+
+function normalizeResumeDocument(raw: unknown): ResumeDocument | undefined {
+  if (raw == null) return undefined;
+  const parsed = ResumeDocumentSchema.safeParse(raw);
+  if (!parsed.success) return undefined;
+  return parsed.data;
+}
+
 /**
  * Normalize a single variant from raw LLM output.
  * Never throws — returns null only if content is completely missing.
@@ -234,6 +283,7 @@ function normalizeVariant(raw: unknown, index: number): NormalizedVariant | null
     risks: normalizeStringArray(raw.risks ?? raw.cautions ?? raw.cons, 3, 18),
     recommended: normalizeBool(raw.recommended ?? raw.preferred ?? raw.isRecommended),
     rank: normalizeRank(raw.rank),
+    resumeDocument: normalizeResumeDocument(raw.resumeDocument ?? raw.document ?? raw.structuredResume),
   };
 }
 
@@ -300,6 +350,7 @@ type NormalizedVariant = {
   risks?: string[];
   recommended?: boolean;
   rank?: number;
+  resumeDocument?: ResumeDocument;
 };
 
 // ═══════════════════════════════════════════════════════════════
@@ -342,6 +393,7 @@ const NormalizedVariantSchema = z.object({
   risks: z.array(z.string()).optional(),
   recommended: z.boolean().optional(),
   rank: z.number().int().positive().optional(),
+  resumeDocument: ResumeDocumentSchema.optional(),
 });
 
 const ComparisonMatrixRowSchema = z.object({
@@ -444,6 +496,7 @@ export class LLMGenerationService {
       risks: variant.risks,
       recommended: variant.recommended,
       rank: variant.rank,
+      resumeDocument: variant.resumeDocument,
       createdAt: now,
     }));
 

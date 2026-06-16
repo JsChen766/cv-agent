@@ -600,6 +600,83 @@ resumeDocument?: ResumeDocument;
 
 ---
 
+## 阶段 3 完成情况记录（执行回顾）
+
+> 本阶段在阶段 2 实测交付的 P3-2（PDF 下载文件名 RFC 5987）和 P3-1（`/copilot/actions` locale 误判）两个补丁基础上，引入结构化 `ResumeDocument`。三个 commit 分别承载这三件事，互不耦合。
+
+### 3.1 实际改动文件清单
+
+```text
+# commit 1 ── fix(exports): RFC 5987 Content-Disposition  （承接阶段 0 标注的 TODO）
+修改  src/api/routes/exports.ts                                     # 替换 sanitizeForContentDisposition：emit `filename="<ASCII>"; filename*=UTF-8''<percent-encoded>` 双形式；导出 contentDispositionAttachment 供测试与未来复用
+新增  tests/contentDispositionHeader.test.ts                        # 5 个纯函数用例：ASCII 直通 / 中文双形式 / ISO-8859-1 字节不变量 / RFC 5987 保留字符 / 全 CJK 输入
+修改  tests/pdfExportPipeline.test.ts                               # +1 e2e 用例：中文 title 简历下载，断言双形式 header 且 header 字节均 < 0x100
+
+# commit 2 ── fix(orchestrator): infer locale from session handoffs
+修改  src/agent-core/runtime/AgentOrchestrator.ts                   # 新增 inferLocaleForRun(run) + isSystemInjectedUserMessage；localeFor 改委托；不动 detectLocale 签名
+新增  tests/inferLocaleForRun.test.ts                               # 9 个用例：clientState 显式覆盖（zh/en）/ 自然中英对话直通 / [action] [confirm] 占位回看 handoff 的 zh/en / 无自然语言 handoff 时回退到占位本身（en）/ workspace=null 回退 / 跳过更新但仍是占位的 handoff 取更早的中文 goal
+
+# commit 3 ── feat(phase 3): structured ResumeDocument
+修改  src/product/types.ts                                          # 新增 ResumeDocument / ResumeDocumentSection / ResumeDocumentItem / ResumeDocumentBullet；ProductGeneratedVariant.resumeDocument 设为 optional
+修改  src/product/LLMGenerationService.ts                           # 新增 ResumeDocumentSchema(zod)；NormalizedVariant + NormalizedVariantSchema 加 optional resumeDocument；schema fail 静默丢字段；透传到 ProductGeneratedVariant
+修改  src/agent-core/prompts/prompts/product/generation-resume-system.md # 追加 OPTIONAL STRUCTURED RESUME 段落 + 全部硬约束（id 非空唯一、sections 非空、bullets[].text 非空、不得与 content 冲突）
+新增  src/product/resumeDocumentFallback.ts                         # buildResumeDocumentFromContent 启发式 helper（仅供未来阶段使用，accept/save 路径不调用）
+修改  src/product/services/index.ts                                 # saveAcceptedVariantToResume：当 variant.resumeDocument 通过 schema 且 sections 非空时走新 saveAcceptedVariantWithDocument 多 item 拆分（每 item 一个 ProductResumeItem，metadata_json 持久化 sectionId/sectionType/sectionOrder/itemId/bulletIds/sourceExperienceId/evidenceStrength/relevanceScore/sourceVariantId/generationId）；否则保持阶段 2 旧单 item 路径字节一致；返回 shape +1 optional `items?: ProductResumeItem[]`，旧 `item` 字段保留指向第一条
+新增  tests/resumeDocumentFallback.test.ts                          # 6 用例：空输入 / 无标题包裹单 section / 中文标题 type 推断 / 空行分 item + bullet 解析 / 唯一非空 id / 类型契约
+新增  tests/llmGenerationResumeDocument.test.ts                     # 6 用例：valid document 直通 / sections 空丢弃 / 缺 schemaVersion 丢弃 / item id 空丢弃 / 未知 section.type 丢弃 / 老 variant 不带 resumeDocument 不回归
+新增  tests/saveAcceptedVariantWithDocument.test.ts                 # 4 用例：legacy 单 item 路径字节一致 / 三 item 文档拆三个 ProductResumeItem 含 metadata + sourceExperienceId / 单 item 文档也走结构化路径 / 提供 resumeId 时追加到既有简历
+修改  docs/cv_agent_next_stage_plan.md                              # 本节
+```
+
+未触碰：所有 confirmation/PendingActionService 路径、`/exports/render` 路径、ResponseComposer / NarratorService、`mergeWorkspacePatch` / `WorkspaceProjector`、生产 LLM provider、数据库 schema（zero migration）、`PostgresProductRepositories.saveAcceptedVariantToResume` 单 item 事务签名、前端契约。
+
+### 3.2 关键设计说明
+
+1. **三件事拆三个 commit、互不耦合**：commit 1（filename）只动 `exports.ts` + 测试；commit 2（locale）只动 `AgentOrchestrator.ts` + 测试；commit 3（ResumeDocument）才进入产品域。任一 commit 单独 cherry-pick 都能独立通过 typecheck + 全量测试。
+2. **ResumeDocument 是纯 additive，零迁移**：`variant.resumeDocument` optional；`ProductGeneratedVariant.content` 保留并仍为前端权威字段；多 item 拆分时把 `sectionId/sectionType/sectionOrder/itemId/bulletIds/sourceExperienceId/evidenceStrength/relevanceScore/sourceVariantId/generationId` 全部塞进既有 JSONB 列 `product_resume_item.metadata_json` —— 数据库零 schema 改动，老前端读 `variants[].content` 继续工作。
+3. **schema 严格 + 静默回退**：LLM 输出的 `resumeDocument` 走严格 zod（schemaVersion=1 字面量、sections 非空、id 非空、bullets[].text 非空、section.type 限定 7 个枚举、evidenceStrength low/medium/high）。**任何字段不合法整体丢弃**，但**绝不抛错**。`NormalizedVariant.resumeDocument` 因此要么是合法 ResumeDocument，要么是 undefined，下游 saveAccepted 不再做防御性校验。
+4. **保存路径只对已经合法的 document 拆分**（≥1 item 即触发结构化路径）；缺失/非法 document 走阶段 2 旧单 item 字节一致路径，包括 `inferTitle(variant.content)` / `sectionType: "experience"` / `contentSnapshot = variant.content` 与原 `PostgresProductRepositories.saveAcceptedVariantToResume` 事务 fast-path。**这意味着所有未带 resumeDocument 的 fixture（含 mock 模式 + 既有 66 个测试文件）行为完全不变**。
+5. **`buildResumeDocumentFromContent` 严格隔离**：作为 `src/product/resumeDocumentFallback.ts` 独立纯函数 + 6 个 unit test 存在，**不在生产保存路径上被调用**。意图是为后续阶段（4 模板渲染、6 自适配、9 契约整理）提供从 legacy variant 反推结构的工具，且其行为可独立演进/被替换而不影响 Phase 3 的保存契约。
+6. **multi-item 走 service-layer 慢路径而非扩 repo 事务**：现有 `repository.saveAcceptedVariantToResume(...)` 是单 item 事务签名，扩成 N item 会牵动 `PostgresProductRepositories` + 测试 stub。本阶段选择只在结构化路径下绕过 repo fast-path，逐 item 调 `resumeService.addResumeItem`，事后 `updateGenerationSelection` + `attachResume` —— 与现有的 in-memory fallback 路径完全同形，`PostgresProductRepositories` 文件零改动。代价是结构化保存不在单一事务内（阶段 4/9 引入真正模板时可顺手补一个多 item 事务签名）。
+7. **prompt 的硬约束**：`generation-resume-system.md` 明确告诉模型 OPTIONAL（缺失/部分缺失都不会失败），但一旦提供必须满足全部约束。这降低了"模型只产部分结构"的中间状态风险 —— schema 一票否决整个 document，模型要么完整产、要么完全不产。
+8. **P3-1 不改 `detectLocale` 签名**：`localeFor(run)` 改为 `inferLocaleForRun(run)` 内部分两层判断 → 命中 `[action]/[confirm]` 占位时回看 `workspace.handoffs[].userGoal` 取最近的非占位 goal。`detectLocale(message, clientState)` 仍保持原签名供其他调用点使用，避免对 `src/copilot/locale.ts` 的所有 caller 形成传染。
+9. **P3-2 输出双形式 header**：`filename="<ASCII fallback>"; filename*=UTF-8''<percent-encoded>` 同时给老 curl/老浏览器与现代浏览器；ASCII fallback 把所有 ≥0x80 字节折叠为 `_`，确保 Node HTTP 层 ISO-8859-1 校验绝不再抛 `Invalid character in header content`。
+
+### 3.3 验收标准达成
+
+- `npm run typecheck`：通过。
+- `npm test`：64 → **69** 文件、605 → **636** 个 tests（commit 1 +6、commit 2 +9、commit 3 +16，本阶段累积 +31），全部通过，无任何既有用例回归（`tests/phase0Baseline.test.ts` / `tests/llmFirstClosedLoops.test.ts` / `tests/contractBackendFixes.test.ts` / `tests/generateResumePendingFlow.test.ts` 等所有 saveAcceptedVariantToResume 用例继续以单 item 形式通过 —— 它们的 fixture/mock 都没产 resumeDocument，自动走阶段 2 兼容路径）。
+- variant 合法 `resumeDocument` 时 accept → resume 拆分多个 `ProductResumeItem` 并保留所有结构 id（`tests/saveAcceptedVariantWithDocument.test.ts` 第二个用例验证）。
+- variant 缺 `resumeDocument` / schema 非法时 accept → resume 仍为单 item，且 `contentSnapshot/sectionType/title` 与阶段 2 字节一致（同文件第一个用例验证）。
+- 中文 title PDF 下载不再抛 Header 错误；Header 同时含 `filename=` 与 `filename*=UTF-8''`（`tests/contentDispositionHeader.test.ts` 与 `tests/pdfExportPipeline.test.ts` 验证）。
+- chat 中文上下文中点 `[action] generate_resume_from_jd` 不再误判 en（`tests/inferLocaleForRun.test.ts` 第 5 个用例验证）。
+
+### 3.4 是否影响对外 API 与契约
+
+**结论：阶段 3 在 `ProductGeneratedVariant` 上 +1 optional 字段 `resumeDocument`，在 `saveAcceptedVariantToResume` 返回值上 +1 optional 字段 `items?: ProductResumeItem[]`；下载 Content-Disposition header 形态扩展为 RFC 5987 双形式（语义不变，老 client 仍读 `filename=`）；locale 推断仅修内部行为（中文上下文里中文回复，原本就是契约期望）；零数据库迁移；零新依赖；零新环境变量。**
+
+| 维度 | 影响 | 说明 |
+| --- | --- | --- |
+| `POST /product/generations` 响应中的 `variants[]` | **+1 optional 字段** | `resumeDocument?: ResumeDocument`；老前端忽略即可，`content` 仍是权威渲染字段。 |
+| `POST /product/generations/:id/accept` 与 `accept_generation_variant` 工具返回值 | **+1 optional 字段** | `items?: ProductResumeItem[]`（仅当 variant 走结构化路径时非空）；旧字段 `item` 保留指向第一条，所有现有 caller 不需要改。 |
+| `GET /exports/:id/download` 响应 Header `Content-Disposition` | **格式扩展（向后兼容）** | 中文 title 之前会触发 500（Node ISO-8859-1 校验），现在返回 `filename="<ASCII>"; filename*=UTF-8''<percent-encoded>`。RFC 6266 规范允许任何只识别 `filename=` 的 client 仍能下载。 |
+| `POST /copilot/actions` 与 `POST /copilot/pending-actions/:id/confirm` 返回的 `assistantMessage.content` | **行为修复** | 中文会话中点 action / confirm 的回复语言不再误判 en；其他结构化字段不变。 |
+| `raw.toolResults` / `raw.actionResults` / `raw.pendingActions` / `raw.metadata` / `nextActions` / `timeline` / `agentRoomEvents` / `workspace` / `workspacePatch` | 无 | 字节一致（包括阶段 2 narrator 启用时的所有分支）。 |
+| `product_resume_item.metadata_json` JSONB | **+多 key（现有列）** | 多 item 路径下塞入 sectionId/sectionType/sectionOrder/itemId/bulletIds/sourceExperienceId/evidenceStrength/relevanceScore/sourceVariantId/generationId；列本身已存在，零 migration。读侧老代码 `JSON.parse` 拿不到这些 key 时无影响。 |
+| 数据库 schema | 无 | 未触碰（无新增列、无 ALTER）。 |
+| 环境变量 | 无 | 未新增。 |
+| 配置/部署 | 无新依赖 | 仅复用既有 zod / PromptRegistry / resumeService.addResumeItem。 |
+
+#### 前端建议
+
+- 短期：忽略 `resumeDocument` 与 `items[]`（老字段 `content` 与 `item` 行为完全不变，渲染逻辑零修改）。
+- 阶段 4+ 建议优先使用 `variants[].resumeDocument` 作为模板渲染数据源、`accept` 返回的 `items[]` 作为 resume editor 多块编辑入口；这两份数据携带的结构 id 与 evidence 链路是后续 Fit Engine（阶段 6）的输入。
+- 中文标题 PDF 下载已可用；如前端用 `fetch` 后手动构造 `<a download>`，请优先解析 `filename*=UTF-8''` 部分（`Content-Disposition` 解析器例如 `content-disposition` npm 包默认即如此）。
+
+> 累积变化（阶段 0 起）：阶段 0 = 零破坏；阶段 1 = `raw.toolResults[]` +6 optional 字段；阶段 2 = +1 optional `ENABLE_NARRATOR` 环境变量 + 4 分支文案变化；阶段 3 = `variants[].resumeDocument?` / `accept.items?` / `Content-Disposition` 双 filename 形式 / 中文 action 文案修复；零迁移、零新依赖、零新环境变量。
+
+---
+
 # 阶段 4：新增真正的一页简历模板 onePageModernTemplate
 
 ## 目标

@@ -38,4 +38,43 @@ Return a JSON object shaped like:
 - comparisonMatrix cell values are ≤8 字 each ("高 / 中 / 低", "通用全栈", "数据指标足", "时间需复核"). Be specific to the variant; don't reuse the same value across all columns.
 - "v0" / "v1" / ... refer to variant array index (zero-based).
 
+OPTIONAL STRUCTURED RESUME — improves downstream rendering when present, ignored if you cannot produce it cleanly:
+For each variant you MAY also include a `resumeDocument` field carrying the same content as a structured tree. When you include it, EVERY field below is REQUIRED (the parser drops the entire `resumeDocument` if any field is missing or malformed; the plain `content` string is unaffected).
+
+```
+"resumeDocument": {
+  "schemaVersion": 1,
+  "sections": [
+    {
+      "id": "sec-1",
+      "type": "experience",                   // one of: experience | education | project | skill | award | summary | other
+      "title": "工作经历",
+      "order": 0,
+      "items": [
+        {
+          "id": "item-1",
+          "title": "高级前端工程师",            // role / position / project name
+          "subtitle": "字节跳动",               // company / school / org (optional)
+          "period": "2021.03 - 2024.06",      // optional
+          "location": "北京",                  // optional
+          "bullets": [
+            { "id": "b-1", "text": "...", "evidenceIds": ["exp-123"] }
+          ],
+          "sourceExperienceId": "exp-123",    // optional, ties item back to a candidate experience
+          "evidenceStrength": "high",         // optional: low | medium | high
+          "relevanceScore": 0.85              // optional, 0..1
+        }
+      ]
+    }
+  ]
+}
+```
+
+Hard rules for `resumeDocument`:
+- All ids (`sections[].id`, `items[].id`, `bullets[].id`) must be non-empty strings, unique within their parent.
+- `sections` must be non-empty if you include the field at all.
+- Every bullet `text` must be non-empty.
+- `bullets[].evidenceIds` and `items[].sourceExperienceId` should reference real ids from the experience library when applicable.
+- The structured representation must NOT contradict the plain `content` field — they describe the same resume.
+
 Output ONLY valid JSON. No markdown, no explanation.

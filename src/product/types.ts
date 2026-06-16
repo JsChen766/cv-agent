@@ -123,6 +123,54 @@ export type ProductGeneratedVariant = {
   risks?: string[];           // 1-3 short user-facing caveats
   recommended?: boolean;      // exactly one variant true within a generation
   rank?: number;              // 1 = top recommendation
+  /**
+   * Structured representation of the same content carried in `content`.
+   * Optional — when absent, downstream save/render paths fall back to the
+   * legacy single-item flow that uses `content` verbatim. The `content`
+   * field is still authoritative for display; `resumeDocument` is purely
+   * additive metadata used by structured save (Phase 3+) and future
+   * template rendering.
+   */
+  resumeDocument?: ResumeDocument;
+};
+
+/**
+ * Structured resume representation produced alongside a variant. Optional.
+ *
+ * Schema is intentionally minimal: a flat list of sections, each with items
+ * and bullets, plus stable IDs that survive serialization. `evidenceIds`
+ * (per-bullet) and `sourceExperienceId` (per-item) provide traceability
+ * back to the candidate inputs without coupling to any specific template.
+ */
+export type ResumeDocument = {
+  schemaVersion: 1;
+  sections: ResumeDocumentSection[];
+};
+
+export type ResumeDocumentSection = {
+  id: string;
+  type: ProductResumeItem["sectionType"];
+  title: string;
+  order: number;
+  items: ResumeDocumentItem[];
+};
+
+export type ResumeDocumentItem = {
+  id: string;
+  title: string;
+  subtitle?: string;
+  period?: string;
+  location?: string;
+  bullets: ResumeDocumentBullet[];
+  sourceExperienceId?: string;
+  evidenceStrength?: "low" | "medium" | "high";
+  relevanceScore?: number;
+};
+
+export type ResumeDocumentBullet = {
+  id: string;
+  text: string;
+  evidenceIds?: string[];
 };
 
 export type VariantComparisonMatrixRow = {

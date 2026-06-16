@@ -13,6 +13,7 @@ import type {
   ProductResume,
   ProductResumeDetail,
   ProductResumeItem,
+  ResumeDocumentSection,
   VariantComparisonMatrixRow,
 } from "../types.js";
 import { extractExperienceDraftFromText } from "../experienceDraft.js";
@@ -980,7 +981,7 @@ export class GenerationProductService {
     generationId: string;
     variantId: string;
     resumeId?: string;
-  }): Promise<{ generation: ProductGeneration; resume: ProductResume; item: ProductResumeItem; variant: ProductGeneratedVariant }> {
+  }): Promise<{ generation: ProductGeneration; resume: ProductResume; item: ProductResumeItem; items?: ProductResumeItem[]; variant: ProductGeneratedVariant }> {
     const generation = await this.repository.getGeneration(userId, input.generationId);
     if (!generation) throw new Error("Generation not found.");
     const variants = generation.outputSnapshot?.variants ?? [];
@@ -989,6 +990,23 @@ export class GenerationProductService {
     const resume = input.resumeId
       ? await this.resumeService.getResume(userId, input.resumeId)
       : null;
+
+    // Decide whether to take the structured path based on a present, schema-
+    // valid `resumeDocument`. The legacy single-item path is preserved
+    // *byte-identically* for variants that lack a usable document — the LLM
+    // schema in `LLMGenerationService` already drops malformed documents
+    // silently, so by the time we reach here `variant.resumeDocument` is
+    // either undefined or fully valid.
+    const documentItems = collectResumeDocumentItems(variant);
+    if (documentItems.length > 0) {
+      return this.saveAcceptedVariantWithDocument(userId, {
+        generation,
+        variant,
+        resume,
+        documentItems,
+      });
+    }
+
     const targetResume = resume
       ? resumeToRecord(resume)
       : buildResumeRecord(userId, {
@@ -1030,6 +1048,73 @@ export class GenerationProductService {
     await this.repository.updateGenerationSelection(userId, generation.id, selected);
     const attached = await this.repository.attachResume(userId, generation.id, savedResume.id);
     return { generation: attached ?? generation, resume: savedResume, item: savedItem, variant };
+  }
+
+  /**
+   * Structured save path — activated only when `variant.resumeDocument` is
+   * present and yields ≥2 items. Creates one ProductResumeItem per
+   * document item, preserving section/item/bullet ids inside
+   * `metadata_json` so future stages can reconstruct the tree without a
+   * schema migration.
+   *
+   * The plain (single-item) path above is left untouched so legacy variants
+   * continue to produce byte-identical persistence.
+   */
+  private async saveAcceptedVariantWithDocument(
+    userId: string,
+    input: {
+      generation: ProductGeneration;
+      variant: ProductGeneratedVariant;
+      resume: ProductResumeDetail | null;
+      documentItems: ResumeDocumentItemEntry[];
+    },
+  ): Promise<{ generation: ProductGeneration; resume: ProductResume; item: ProductResumeItem; items: ProductResumeItem[]; variant: ProductGeneratedVariant }> {
+    const { generation, variant, resume, documentItems } = input;
+    const savedResume = resume
+      ? resumeToRecord(resume)
+      : await this.resumeService.createResume(userId, {
+        targetRole: generation.targetRole,
+        jdId: generation.jdId,
+        title: generation.targetRole ? `${generation.targetRole} draft` : "Copilot resume draft",
+      });
+    const baseOrderIndex = resume?.items.length ?? 0;
+    const items: ProductResumeItem[] = [];
+    for (let i = 0; i < documentItems.length; i += 1) {
+      const entry = documentItems[i];
+      const itemMetadata: Record<string, unknown> = {
+        generationId: generation.id,
+        sourceVariantId: variant.id,
+        sectionId: entry.sectionId,
+        sectionType: entry.sectionType,
+        sectionOrder: entry.sectionOrder,
+        itemId: entry.itemId,
+        bulletIds: entry.bulletIds,
+      };
+      if (entry.sourceExperienceId) itemMetadata.sourceExperienceId = entry.sourceExperienceId;
+      if (entry.evidenceStrength) itemMetadata.evidenceStrength = entry.evidenceStrength;
+      if (entry.relevanceScore != null) itemMetadata.relevanceScore = entry.relevanceScore;
+
+      const saved = await this.resumeService.addResumeItem(userId, savedResume.id, {
+        sourceArtifactId: variant.id,
+        sourceExperienceId: entry.sourceExperienceId,
+        sectionType: entry.sectionType,
+        title: entry.title,
+        contentSnapshot: entry.contentSnapshot,
+        metadata: itemMetadata,
+      });
+      items.push(saved);
+    }
+    const selected = Array.from(new Set([...generation.selectedVariantIds, variant.id]));
+    await this.repository.updateGenerationSelection(userId, generation.id, selected);
+    const attached = await this.repository.attachResume(userId, generation.id, savedResume.id);
+    void baseOrderIndex; // resumeService manages orderIndex; kept for parity if repo path is added later.
+    return {
+      generation: attached ?? generation,
+      resume: savedResume,
+      item: items[0],
+      items,
+      variant,
+    };
   }
 
   public getGeneration(userId: string, id: string): Promise<ProductGeneration | null> {
@@ -1236,4 +1321,78 @@ function splitExperienceText(rawText: string): string[] {
 function inferTitle(content: string, fallback: string): string {
   const firstLine = content.split(/\r?\n/).find((line) => line.trim().length > 0)?.trim();
   return (firstLine ?? fallback).replace(/^[-*]\s*/, "").slice(0, 80);
+}
+
+// ───────────────────────────────────────────────────────────────
+// ResumeDocument → ProductResumeItem entries
+// ───────────────────────────────────────────────────────────────
+
+type ResumeDocumentItemEntry = {
+  sectionId: string;
+  sectionType: ProductResumeItem["sectionType"];
+  sectionOrder: number;
+  itemId: string;
+  bulletIds: string[];
+  title: string;
+  contentSnapshot: string;
+  sourceExperienceId?: string;
+  evidenceStrength?: "low" | "medium" | "high";
+  relevanceScore?: number;
+};
+
+/**
+ * Flatten `variant.resumeDocument` into one entry per LLM-produced item.
+ *
+ * Returns an empty array when the document is missing or has no usable
+ * items, in which case `saveAcceptedVariantToResume` falls through to the
+ * legacy single-item path. Each surviving entry is guaranteed to have a
+ * non-empty `title` and `contentSnapshot`.
+ */
+function collectResumeDocumentItems(variant: ProductGeneratedVariant): ResumeDocumentItemEntry[] {
+  const doc = variant.resumeDocument;
+  if (!doc || !Array.isArray(doc.sections) || doc.sections.length === 0) return [];
+  const entries: ResumeDocumentItemEntry[] = [];
+  for (const section of doc.sections) {
+    if (!section || !Array.isArray(section.items)) continue;
+    for (const item of section.items) {
+      const entry = toItemEntry(section, item);
+      if (entry) entries.push(entry);
+    }
+  }
+  return entries;
+}
+
+function toItemEntry(
+  section: ResumeDocumentSection,
+  item: ResumeDocumentSection["items"][number],
+): ResumeDocumentItemEntry | null {
+  const title = (item.title ?? "").trim();
+  if (!title) return null;
+  const headerParts: string[] = [title];
+  if (item.subtitle) headerParts.push(item.subtitle);
+  if (item.period) headerParts.push(item.period);
+  if (item.location) headerParts.push(item.location);
+  const header = headerParts.filter(Boolean).join(" · ");
+  const bulletLines = (item.bullets ?? [])
+    .map((b) => (b?.text ?? "").trim())
+    .filter((text) => text.length > 0)
+    .map((text) => `- ${text}`);
+  const contentSnapshot = bulletLines.length > 0
+    ? `${header}\n${bulletLines.join("\n")}`.trim()
+    : header.trim();
+  if (!contentSnapshot) return null;
+  return {
+    sectionId: section.id,
+    sectionType: section.type,
+    sectionOrder: section.order,
+    itemId: item.id,
+    bulletIds: (item.bullets ?? []).map((b) => b?.id).filter((id): id is string => typeof id === "string" && id.length > 0),
+    title: title.slice(0, 120),
+    contentSnapshot,
+    sourceExperienceId: typeof item.sourceExperienceId === "string" && item.sourceExperienceId.trim().length > 0
+      ? item.sourceExperienceId
+      : undefined,
+    evidenceStrength: item.evidenceStrength,
+    relevanceScore: typeof item.relevanceScore === "number" ? item.relevanceScore : undefined,
+  };
 }
