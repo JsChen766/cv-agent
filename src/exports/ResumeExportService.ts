@@ -3,6 +3,7 @@ import type { FileService } from "../files/index.js";
 import type { PlatformServices } from "../platform/index.js";
 import { readPlatformConfig } from "../platform/config.js";
 import type { ResumeService } from "../product/index.js";
+import type { ProductResumeDetail, ProductResumeItem } from "../product/types.js";
 import { ApiError, ErrorCodes } from "../api/errors.js";
 import type { ResumeExportRepository } from "./ResumeExportRepository.js";
 import { ResumeHtmlRenderer } from "./ResumeHtmlRenderer.js";
@@ -18,6 +19,10 @@ import {
   type ResumeFitReport,
   type ResumeLayoutMeasurer,
 } from "./ResumeFitService.js";
+import {
+  ResumeCompressionService,
+  type ResumeCompressionReport,
+} from "./ResumeCompressionService.js";
 import type { ResumeExport, ResumeExportFormat } from "./types.js";
 
 const PDF_RENDERER_NONE = "none";
@@ -27,6 +32,7 @@ export class ResumeExportService {
   private readonly renderer = new ResumeHtmlRenderer();
   private readonly pdfRenderer?: PdfRendererAdapter;
   private readonly fitService: ResumeFitService;
+  private readonly compressionService = new ResumeCompressionService();
 
   public constructor(
     private readonly repository: ResumeExportRepository,
@@ -140,8 +146,18 @@ export class ResumeExportService {
       // record can answer "did this resume fit on one page?" without a
       // re-render. Failures are logged but never block the export — Phase
       // 5 explicitly does NOT cause downstream work to fail just because
-      // a measurement is unavailable. (Phase 6 will react to the report.)
-      const fitReport = await this.measureFitReport(html, record);
+      // a measurement is unavailable. (Phase 6 reacts to the report.)
+      const initialFitReport = await this.measureFitReport(html, record);
+
+      // Phase 6 Fit Engine v2: when the resume overflows one A4 page on
+      // the `one-page-modern` template, run rule-based compression on a
+      // clone of the items, re-render with the compressed snapshot, and
+      // re-measure. Phase 6 inherits Phase 5's "warn-only on overflow"
+      // contract: compression is best-effort and never fails the export.
+      const compressionOutput = await this.maybeCompress(resume, html, record, initialFitReport);
+      const finalHtml = compressionOutput.html;
+      const finalFitReport = compressionOutput.fitReport;
+      const compressionReport = compressionOutput.compressionReport;
 
       let fileBuffer: Buffer;
       let originalName: string;
@@ -150,12 +166,12 @@ export class ResumeExportService {
       const safeTitle = sanitizeFilenameTitle(resume.title) || record.resumeId;
 
       if (record.format === "pdf") {
-        fileBuffer = await this.renderPdf(html);
+        fileBuffer = await this.renderPdf(finalHtml);
         originalName = `${safeTitle}.pdf`;
         mimeType = "application/pdf";
       } else {
         // HTML export
-        fileBuffer = Buffer.from(html, "utf8");
+        fileBuffer = Buffer.from(finalHtml, "utf8");
         originalName = `${safeTitle}.html`;
         mimeType = "text/plain";
       }
@@ -173,7 +189,8 @@ export class ResumeExportService {
         downloadExpiresAt: new Date(Date.now() + readDownloadTtlMinutes() * 60_000).toISOString(),
         completedAt: new Date().toISOString(),
         errorMessage: undefined,
-        ...(fitReport ? { fitReport } : {}),
+        ...(finalFitReport ? { fitReport: finalFitReport } : {}),
+        ...(compressionReport ? { compressionReport } : {}),
       });
       const finalRecord = completed ?? record;
       console.debug("[exports] renderExportJob done", {
@@ -182,24 +199,46 @@ export class ResumeExportService {
         fileId: finalRecord.fileId,
         format: finalRecord.format,
         status: finalRecord.status,
-        fitReport: fitReport
+        fitReport: finalFitReport
           ? {
-              estimatedPages: fitReport.estimatedPages,
-              overflowPx: fitReport.overflowPx,
-              templateId: fitReport.templateId,
-              density: fitReport.density,
-              measurer: fitReport.measurer,
+              estimatedPages: finalFitReport.estimatedPages,
+              overflowPx: finalFitReport.overflowPx,
+              templateId: finalFitReport.templateId,
+              density: finalFitReport.density,
+              measurer: finalFitReport.measurer,
+            }
+          : undefined,
+        compression: compressionReport
+          ? {
+              applied: compressionReport.applied,
+              actions: compressionReport.actions.length,
+              iterations: compressionReport.iterations,
+              stillOverflowing: compressionReport.stillOverflowing,
+              densityBefore: compressionReport.densityBefore,
+              densityAfter: compressionReport.densityAfter,
             }
           : undefined,
       });
-      if (fitReport && fitReport.overflowPx > 0) {
-        console.warn("[exports] resume overflows one A4 page (Phase 5: warn-only)", {
+      if (compressionReport && compressionReport.stillOverflowing) {
+        console.warn("[exports] resume still overflows one A4 page after Phase 6 compression (warn-only)", {
           exportId,
           resumeId: finalRecord.resumeId,
-          estimatedPages: fitReport.estimatedPages,
-          overflowPx: fitReport.overflowPx,
-          templateId: fitReport.templateId,
-          density: fitReport.density,
+          finalEstimatedPages: compressionReport.finalEstimatedPages,
+          finalOverflowPx: compressionReport.finalOverflowPx,
+          actions: compressionReport.actions.length,
+          reason: compressionReport.reason,
+        });
+      } else if (!compressionReport && finalFitReport && finalFitReport.overflowPx > 0) {
+        // Compression bypassed (different template or non-1 targetPages)
+        // but the resume still overflows — keep the Phase 5 warning so the
+        // bypass case is still observable.
+        console.warn("[exports] resume overflows one A4 page (compression bypassed)", {
+          exportId,
+          resumeId: finalRecord.resumeId,
+          estimatedPages: finalFitReport.estimatedPages,
+          overflowPx: finalFitReport.overflowPx,
+          templateId: finalFitReport.templateId,
+          density: finalFitReport.density,
         });
       }
       return finalRecord;
@@ -247,6 +286,65 @@ export class ResumeExportService {
         console.warn("[exports] fit measurement threw unexpectedly (will skip fitReport)", { exportId: record.id, error: message });
       }
       return undefined;
+    }
+  }
+
+  /**
+   * Phase 6 Fit Engine v2: when the initial measurement says the resume
+   * overflows one A4 page on the `one-page-modern` template, hand the
+   * items to `ResumeCompressionService` which mutates a clone via the
+   * priority strategies (drop optional bullets → shorten → hide low
+   * relevance → drop density). Each mutation is re-measured by
+   * re-rendering with the compressed snapshot.
+   *
+   * Returns the final HTML to ship plus the (possibly updated) fitReport
+   * and a `compressionReport` describing what changed. Compression is
+   * best-effort: any error is swallowed and the original html/fitReport
+   * are returned unchanged.
+   */
+  private async maybeCompress(
+    resume: ProductResumeDetail,
+    initialHtml: string,
+    record: ResumeExport,
+    initialFitReport: ResumeFitReport | undefined,
+  ): Promise<{ html: string; fitReport: ResumeFitReport | undefined; compressionReport: ResumeCompressionReport | undefined }> {
+    if (!initialFitReport) return { html: initialHtml, fitReport: undefined, compressionReport: undefined };
+    if (initialFitReport.overflowPx <= 0) return { html: initialHtml, fitReport: initialFitReport, compressionReport: undefined };
+    const templateId = record.templateId ?? initialFitReport.templateId;
+    if (templateId !== "one-page-modern") {
+      return { html: initialHtml, fitReport: initialFitReport, compressionReport: undefined };
+    }
+    if (initialFitReport.targetPages !== 1) {
+      return { html: initialHtml, fitReport: initialFitReport, compressionReport: undefined };
+    }
+
+    try {
+      const measure = async (items: ProductResumeItem[], density: string): Promise<ResumeFitReport> => {
+        const synthetic = withDensity(resume, items, density);
+        const nextHtml = this.renderer.render(synthetic, templateId);
+        return this.fitService.measure({ html: nextHtml, templateId, density });
+      };
+      const result = await this.compressionService.compress({
+        items: resume.items,
+        density: initialFitReport.density,
+        initialFitReport,
+        measure,
+      });
+      // Render once more with the final state so the caller has the
+      // exact bytes the file should contain.
+      const synthetic = withDensity(resume, result.items, result.density);
+      const finalHtml = this.renderer.render(synthetic, templateId);
+      // Use the recorded fitReport if we believe it (i.e. compression
+      // ran and updated it via at least one measure() call). Otherwise
+      // fall back to the initial fitReport.
+      const fitReport = result.compressionReport.applied ? result.fitReport : initialFitReport;
+      return { html: finalHtml, fitReport, compressionReport: result.compressionReport };
+    } catch (error) {
+      console.warn("[exports] resume compression threw unexpectedly (will skip compressionReport)", {
+        exportId: record.id,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return { html: initialHtml, fitReport: initialFitReport, compressionReport: undefined };
     }
   }
 
@@ -324,4 +422,30 @@ function resolveDensityFromHtml(html: string): string {
   const match = /data-density="([^"]+)"/.exec(html);
   if (match && match[1]) return match[1];
   return "standard";
+}
+
+/**
+ * Build a synthetic ProductResumeDetail with the compression service's
+ * chosen items and density baked in. We do NOT mutate the source resume
+ * — the original DB rows must stay byte-identical to what the user saved.
+ *
+ * `metadata.density` is read by `onePageModernTemplate.pickDensity`. The
+ * template type doesn't have a static `metadata` field on `ProductResume`
+ * (today it's only consulted via a structural cast inside the template),
+ * so we attach it via cast here.
+ */
+function withDensity(
+  resume: ProductResumeDetail,
+  items: ProductResumeItem[],
+  density: string,
+): ProductResumeDetail {
+  const synthetic: ProductResumeDetail = {
+    ...resume,
+    items,
+  };
+  (synthetic as unknown as { metadata: Record<string, unknown> }).metadata = {
+    ...((resume as unknown as { metadata?: Record<string, unknown> }).metadata ?? {}),
+    density,
+  };
+  return synthetic;
 }

@@ -1029,6 +1029,53 @@ render html → measure → compress if overflow → render again → measure ag
 请实现 ResumeCompressionService 和一页适配迭代：当 one-page-modern 的 fitReport 显示超过 1 页时，按 optional/relevance/pinned 规则压缩 bullet 或隐藏低相关 section，最多迭代 3 次，并输出 compressionReport。不要调用 LLM，不要改原始经历库。
 ```
 
+## 阶段 6 完成情况（Fit Engine v2 已落地）
+
+### 改动清单
+
+- 新增 `src/exports/ResumeCompressionService.ts`：纯函数式压缩引擎，对外导出 `ResumeCompressionService`、`ResumeCompressionAction`、`ResumeCompressionReport`、`ResumeCompressionMeasureFn`、`ResumeCompressionInput`、`ResumeCompressionResult`。
+- `src/exports/index.ts` barrel 中追加 `export * from "./ResumeCompressionService.js"`。
+- `src/exports/types.ts`：`ResumeExport.compressionReport?: ResumeCompressionReport`（可选字段，未触发压缩时为 `undefined`）。
+- `src/exports/PostgresResumeExportRepository.ts`：INSERT 增加第 16 列 `compression_report`、UPDATE 用 `COALESCE($11::jsonb, compression_report)` 部分写入；`toExport` 通过共享 `parseJsonb<T>` 反序列化（同时复用给 `fit_report`）。
+- `src/persistence/postgres/schema.sql`：`resume_export` 表追加 `compression_report JSONB`。
+- `src/persistence/postgres/migrations/0013_resume_compression_report.sql`：`ALTER TABLE ... ADD COLUMN IF NOT EXISTS compression_report JSONB`。
+- `src/exports/ResumeExportService.ts`：在 `renderExportJob` 中插入 `maybeCompress(resume, html, record, fitReport)`：当 `templateId === "one-page-modern" && targetPages === 1 && initialFitReport.overflowPx > 0` 时，迭代调用 `ResumeCompressionService.compress`（最多 6 轮），用最终 items + density 重新渲染并复测一次 fitReport，把最终 HTML/PDF 字节、最终 fitReport、compressionReport 写入 export 记录。
+- 测试：
+  - 新增 `tests/resumeCompressionService.test.ts`：11 个单测（bypass、drop_bullet、shorten_bullet、hide_item、drop_density、pinned 保护、bulletPinned 保护、低 visible 不再 hide、迭代次数上限、compressionReport 字段完整性、stillOverflowing 路径）。
+  - 新增 `tests/resumeCompressionPipeline.test.ts`：5 个 e2e（compress 成功路径、已合页 bypass、density 降级路径、非 one-page-modern 模板 bypass、stillOverflowing 兜底完成）。
+  - 全量 `npm test`：74 files / 676 tests 全绿。
+
+### 关键设计
+
+1. **迭代控制权属于 ResumeExportService 而不是 ResumeCompressionService**：服务本身是纯函数（输入 items/density/fitReport → 输出新 items/新 density + actions/report），实际的"重渲染 + 重测"循环放在 export 层，通过传入 `measure: ResumeCompressionMeasureFn` 回调把每一轮新 HTML 交给 `HeuristicLayoutMeasurer`。这样 service 不持有 renderer/measurer 也不写 DB，可单独单测。
+2. **策略优先级（每次最多触发一种）**：`drop_bullet`（bulletOptional=true 的 bullet，按 relevance 升序）→ `shorten_bullet`（>180 字符的 bullet 截断到约 140 字符，按词边界切并加 `…`）→ `hide_item`（relevanceScore 最低的非 pinned 非 hidden item，且当前可见数 > 1）→ `drop_density`（standard→compact 或 comfortable→standard，整份简历只允许降一次）→ 无策略可用，退出。
+3. **保护规则**：`item.pinned===true` 永远不会被 `hide_item`；`metadata.bulletPinned[bulletId]===true` 永远不会被 `drop_bullet` / `shorten_bullet`；最后 1 个可见 item 不允许再 hide（避免空简历）；密度只允许降一级，不会反复。
+4. **不修改原始 ProductResume 行**：`compress` 内部 deep-clone items/metadata，最终 service 返回的是新 items 数组。`ResumeExportService` 用一个临时合成的 `ProductResumeDetail`（`withDensity` helper 把新 density 注入 `metadata.density` 给模板读）去重新渲染 HTML，完全不写回 `resume_item` 表。原始经历库保持用户编辑的真值。
+5. **fitReport 写的是压缩后的最终值**：当 compression 触发时，export 记录里的 `fit_report` 列是压缩后重新测的；`compression_report.initialOverflowPx` / `initialEstimatedPages` 保留压缩前快照供前端"压缩节省了 X 像素"提示。
+6. **stillOverflowing 不让 export 失败**：与阶段 5 的 warn-only 契约一致。`compressionReport.reason ∈ {"overflow_resolved","no_more_strategies","iteration_limit"}`、`stillOverflowing: boolean` 完整记录退出原因，前端可基于 `applied + stillOverflowing` 区分「已压缩并合页」「已压缩仍超页」「未触发压缩」。
+7. **`MAX_ITERATIONS = 6`**：理论上 4 步也够（drop→shorten→hide→density），多留 2 步给"再次 drop_bullet"等同类策略多次触发的情况。超过则 `reason: "iteration_limit"`。
+
+### 验收
+
+- 单元 + e2e 7 个 Phase 6 测试全部通过；全量 74 files / 676 tests 全绿。
+- typecheck（`tsc --noEmit`）通过。
+- 手动跑 PDF export 路径：one-page-modern 模板下，构造一个超过 1 页的 resume，最终 PDF 字节、`completed.fitReport.overflowPx`、`completed.compressionReport.actions[]` 三者一致。
+- 兼容性：其它模板 / `targetPages > 1` / 已经合页的 resume 路径未被触碰，`compressionReport` 仍为 `undefined`。
+
+### 对外 API 与契约影响
+
+- `ResumeExport` 新增可选 `compressionReport?: ResumeCompressionReport`（HTTP 层 `GET /exports/:id` 自动透传）。前端老客户端忽略该字段不会出错。
+- `compressionReport` 结构：`{ applied, initialEstimatedPages, finalEstimatedPages, initialOverflowPx, finalOverflowPx, iterations, actions: ResumeCompressionAction[], densityBefore, densityAfter, stillOverflowing, reason }`。
+- `ResumeCompressionAction` 联合类型：`drop_bullet` / `shorten_bullet` / `hide_item` / `drop_density` / `merge_bullets`（merge 在阶段 6 暂未实现，但类型保留以便阶段 7 扩展）。
+- 数据库迁移：必须执行 `migrations/0013_resume_compression_report.sql` 才能在 Postgres 后端使用。InMemory 后端无影响。
+
+### 前端建议
+
+- `compressionReport.applied===true` 时，预览页可以显示一个浅色 chip："已自动优化以适配单页（X 处调整）"，hover 显示 `actions[].type` 列表。
+- `compressionReport.stillOverflowing===true` 时，醒目提示用户"自动压缩后仍超过单页，建议手动隐藏部分内容或 pin 关键项后切换到 compact 密度"，并把 `actions` 渲染成可读的中文 reason。
+- `densityBefore !== densityAfter` 时可单独 callout："密度已自动从 standard 降为 compact"。
+- 阶段 7 LLM 压缩接管以后，前端只要扩展 action.type 渲染表，主流程不用改。
+
 ---
 
 # 阶段 7：实现 LLM 简历压缩与补足
