@@ -326,3 +326,301 @@ export type AgentModesResponse = {
   model?: string;
   warnings?: string[];
 };
+
+// ---------------------------------------------------------------------------
+// Phase 9: Phase 1–8b additive contract surface (frontend type mirror).
+//
+// All types below are OPTIONAL on the wire and additive — a frontend that
+// ignores them keeps working byte-for-byte with the legacy contract. None of
+// them rename or repurpose existing fields. See:
+//   docs/CONTRACT.md §16
+//   docs/coolto_frontend_backend_contract_v2.md §18
+//   docs/frontend_backend_contract_llm_first.md §十五
+// for the full contract.
+// ---------------------------------------------------------------------------
+
+// Phase 1: ToolResult structured fields ---------------------------------------
+
+export type ToolResultEntity = {
+  type: string;
+  id?: string;
+  title?: string;
+  data?: unknown;
+};
+
+export type ToolResultEvidence = {
+  sourceId?: string;
+  claim?: string;
+  support?: string;
+  confidence?: number;
+};
+
+export type ToolResultNextActionHint = {
+  type: string;
+  label: string;
+  payload?: Record<string, unknown>;
+};
+
+export type StructuredToolResult = {
+  status: "success" | "needs_input" | "failed";
+  message?: string;
+  data?: unknown;
+  workspacePatch?: Record<string, unknown>;
+  actionResult?: Record<string, unknown>;
+  pendingActionId?: string;
+  visibility?: string;
+  resultKind?: string;
+  summaryFacts?: string[];
+  entities?: ToolResultEntity[];
+  evidence?: ToolResultEvidence[];
+  warnings?: string[];
+  nextActionHints?: ToolResultNextActionHint[];
+};
+
+// Phase 3: ResumeDocument -----------------------------------------------------
+
+export type ResumeDocumentBullet = {
+  id: string;
+  text: string;
+  evidenceIds?: string[];
+};
+
+export type ResumeDocumentItem = {
+  id: string;
+  title: string;
+  subtitle?: string;
+  period?: string;
+  location?: string;
+  bullets: ResumeDocumentBullet[];
+  sourceExperienceId?: string;
+  evidenceStrength?: "low" | "medium" | "high";
+  relevanceScore?: number;
+};
+
+export type ResumeDocumentSection = {
+  id: string;
+  type: string;
+  title: string;
+  order: number;
+  items: ResumeDocumentItem[];
+};
+
+export type ResumeDocument = {
+  schemaVersion: 1;
+  sections: ResumeDocumentSection[];
+};
+
+// Phase 5: ResumeFitReport ----------------------------------------------------
+
+export type ResumeFitReport = {
+  targetPages: number;
+  estimatedPages: number;
+  overflowPx: number;
+  underflowPx?: number;
+  contentHeightPx: number;
+  pageUsableHeightPx: number;
+  templateId: string;
+  density: string;
+  measurer: "playwright" | "heuristic";
+  measuredAt: string;
+};
+
+// Phase 6: ResumeCompressionReport --------------------------------------------
+
+export type ResumeCompressionAction =
+  | { type: "drop_bullet"; itemId: string; bulletId: string }
+  | { type: "shorten_bullet"; itemId: string; bulletId?: string; before: string; after: string }
+  | { type: "merge_bullets"; itemId: string; bulletIds: string[]; mergedText: string }
+  | { type: "hide_item"; itemId: string; sectionType: string; reason: "low_relevance" }
+  | { type: "drop_density"; from: string; to: string };
+
+export type ResumeCompressionReport = {
+  applied: boolean;
+  initialEstimatedPages: number;
+  finalEstimatedPages: number;
+  initialOverflowPx: number;
+  finalOverflowPx: number;
+  iterations: number;
+  actions: ResumeCompressionAction[];
+  densityBefore: string;
+  densityAfter: string;
+  stillOverflowing: boolean;
+  reason: "overflow_resolved" | "no_more_strategies" | "iteration_limit";
+};
+
+// Phase 7: ResumeFitEditorReport ----------------------------------------------
+
+export type ResumeFitEditorReason =
+  | "no_model_client"
+  | "no_actions"
+  | "schema_invalid"
+  | "model_error"
+  | "regression"
+  | "edits_applied"
+  | "all_rejected";
+
+export type ResumeFitEditorAppliedAction = {
+  type: "shorten_bullet" | "rephrase_bullet" | "drop_bullet" | "expand_bullet";
+  itemId: string;
+  bulletId: string;
+  before?: string;
+  after?: string;
+};
+
+export type ResumeFitEditorRejectedAction = {
+  type: string;
+  itemId?: string;
+  bulletId?: string;
+  reason: string;
+};
+
+export type ResumeFitEditorReport = {
+  applied: boolean;
+  fallback: boolean;
+  trigger: "shrink_to_fit" | "fill_underflow" | null;
+  reason: ResumeFitEditorReason;
+  initialEstimatedPages: number;
+  finalEstimatedPages: number;
+  initialOverflowPx: number;
+  finalOverflowPx: number;
+  initialUnderflowPx: number;
+  finalUnderflowPx: number;
+  actions: ResumeFitEditorAppliedAction[];
+  rejectedActions?: ResumeFitEditorRejectedAction[];
+  notes?: string;
+  llmReason?: string;
+  measuredAt: string;
+};
+
+// Phase 8: ResumeQualityReport ------------------------------------------------
+
+export type ResumeQualityDimension =
+  | "authenticity"
+  | "jd_match"
+  | "evidence"
+  | "metric"
+  | "expression"
+  | "layout";
+
+export type ResumeQualityRiskLevel = "low" | "medium" | "high" | "critical";
+
+export type ResumeQualityRisk = {
+  id: string;
+  level: ResumeQualityRiskLevel;
+  dimension: ResumeQualityDimension;
+  message: string;
+  itemId?: string;
+  bulletId?: string;
+};
+
+export type ResumeQualitySuggestion = {
+  id: string;
+  dimension: ResumeQualityDimension;
+  message: string;
+  itemId?: string;
+  bulletId?: string;
+};
+
+// Phase 8b: ResumeQualityCriticReview -----------------------------------------
+
+export type ResumeQualityCriticReason =
+  | "no_model_client"
+  | "disabled_by_env"
+  | "no_rule_report"
+  | "schema_invalid"
+  | "model_error"
+  | "ok";
+
+export type ResumeQualityCriticRisk = {
+  id: string;
+  level: ResumeQualityRiskLevel;
+  message: string;
+  itemId?: string;
+  bulletId?: string;
+  evidenceMissing?: boolean;
+};
+
+export type ResumeQualityCriticRewriteSuggestion = {
+  id: string;
+  itemId?: string;
+  bulletId?: string;
+  before?: string;
+  suggestion: string;
+  reason: string;
+};
+
+export type ResumeQualityCriticMissingEvidence = {
+  id: string;
+  bulletId?: string;
+  claim: string;
+  reason: string;
+};
+
+export type ResumeQualityCriticRejectedReference = {
+  kind: "risk" | "suggestion" | "missingEvidence";
+  itemId?: string;
+  bulletId?: string;
+  why: "unknown_item" | "unknown_bullet";
+};
+
+export type ResumeQualityCriticReview = {
+  applied: boolean;
+  fallback: boolean;
+  reason: ResumeQualityCriticReason;
+  semanticJdMatchScore?: number;
+  expressionQualityScore?: number;
+  authenticityRisks: ResumeQualityCriticRisk[];
+  rewriteSuggestions: ResumeQualityCriticRewriteSuggestion[];
+  missingEvidence: ResumeQualityCriticMissingEvidence[];
+  overallComment?: string;
+  rejectedReferences?: ResumeQualityCriticRejectedReference[];
+  llmReason?: string;
+  generatedAt: string;
+};
+
+export type ResumeQualityReport = {
+  overallScore: number;
+  authenticityScore: number;
+  jdMatchScore: number;
+  evidenceScore: number;
+  metricScore: number;
+  expressionScore: number;
+  layoutScore: number;
+  risks: ResumeQualityRisk[];
+  suggestions: ResumeQualitySuggestion[];
+  unsupportedClaims: string[];
+  hasCriticalRisks: boolean;
+  generatedAt: string;
+  criticReview?: ResumeQualityCriticReview;
+};
+
+// ResumeExport additive view (Phase 5 / 6 / 7 / 8 / 8b) -----------------------
+
+export type ResumeExportAdditive = {
+  /** Phase 5. Present after status="completed". May be undefined for legacy exports. */
+  fitReport?: ResumeFitReport;
+  /** Phase 6. Present only when rule-based one-page compression actually ran. */
+  compressionReport?: ResumeCompressionReport;
+  /** Phase 7. Present only when ENABLE_LLM_FIT_EDITOR + modelClient + (overflow/underflow). */
+  editReport?: ResumeFitEditorReport;
+  /** Phase 8. Present when status="completed" and a fitReport was produced. */
+  qualityReport?: ResumeQualityReport;
+};
+
+// ProductGenerationVariant additive view (Phase 3) ----------------------------
+
+export type ProductGenerationVariantAdditive = {
+  /** Phase 3. Optional structured doc next to legacy markdown `content`. */
+  resumeDocument?: ResumeDocument;
+};
+
+// CopilotChatResponse additive view (Phase 1) ---------------------------------
+
+export type CopilotChatResponseRawAdditive = {
+  /**
+   * Phase 1. Backend-side full ToolResult array carried alongside the existing
+   * `actionResults`. Frontend may ignore — `actionResults` and the legacy
+   * envelope continue to be the canonical render path.
+   */
+  toolResults?: StructuredToolResult[];
+};

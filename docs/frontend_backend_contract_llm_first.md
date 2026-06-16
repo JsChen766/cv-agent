@@ -1485,3 +1485,104 @@ pending → failed                 (执行失败)
 3. **无 LLM Key 时所有智能功能不可用**：需配置 `DEEPSEEK_API_KEY` 或 `AGENT_API_KEY` + `AGENT_MODEL_PROVIDER`。
 4. **PDF 导出需额外配置**：`PDF_RENDERER=playwright` 且 Playwright 浏览器已安装，否则返回 503。
 5. **Cookie Session 认证已完整可用**：`CookieSessionAuthResolver` 通过 `AuthService` 验证 session，支持 Postgres/in-memory。生产环境也可用 `bearer_static` 做更简单的部署。
+
+
+---
+
+## 十五、阶段 1–8b 累积新增字段（Phase 9 整理，LLM 链路视角）
+
+> 本节由阶段 9（前后端契约整理）落地。专注于"哪些字段是 LLM 链路填的、哪些是规则链路填的、关闭哪些环境变量后会变成什么样"，与 `docs/CONTRACT.md §16` 和 `docs/coolto_frontend_backend_contract_v2.md §18` 互为参考。
+>
+> **核心承诺**（与本仓库其余契约文档一致）：
+>
+> 1. 本节所有字段全部为 `optional`。前端不读它们，旧链路依然可用。
+> 2. 没有任何旧字段被改名、被删除、被重新定义。
+> 3. 后端不会因为前端没传新字段而拒绝请求。
+> 4. 与本节相关的环境变量都默认关闭；关闭时所有新增字段均为 `undefined`，输出与阶段 1 之前**逐字节一致**（在适用维度上）。
+
+### 15.1 链路 vs 字段速查
+
+| 字段 | 引入阶段 | 谁负责填 | env-gate | 为 `undefined` 的常见原因 |
+|------|---------|---------|---------|--------------------------|
+| `ToolResult.resultKind` / `summaryFacts` / `entities` / `evidence` / `warnings` / `nextActionHints` | 阶段 1 | 工具自身（确定性） | 无 | 旧工具未迁移；已是常态，不报错 |
+| `assistantMessage.content` 由 Narrator 撰文 | 阶段 2 | LLM（Narrator） | `ENABLE_NARRATOR` | 关闭 / 模型客户端未注入 ⇒ 模板字符串 |
+| `ProductGenerationVariant.resumeDocument` | 阶段 3 | LLM（变体生成器） + 规则后处理 | 无 | 旧 generator；fallback 时仅有 `content` markdown |
+| `accept-variant.items` 入参 | 阶段 3 | 调用方（前端） | 无 | 省略时后端从 `content` 派生 |
+| `templateId` 入参 + `data-*` 钩子 | 阶段 4 | 模板（确定性） | 无 | 默认 `templateId="default"`，输出与阶段 4 之前一致 |
+| `ResumeExport.fitReport` | 阶段 5 | 规则（Playwright / heuristic 测量） | 无 | 阶段 5 之前的旧 export；测量失败 |
+| `ResumeExport.compressionReport` | 阶段 6 | 规则（多策略压缩器） | 无 | 不需要压缩 / 非 one-page-modern |
+| `ResumeExport.editReport` | 阶段 7 | LLM（Fit Editor） | `ENABLE_LLM_FIT_EDITOR` | 关闭 / 无模型客户端 / 不需要 LLM 介入 |
+| `ResumeExport.qualityReport` | 阶段 8 | 规则（六维评分） | 无 | 阶段 8 之前的旧 export；缺 fitReport |
+| `qualityReport.criticReview` | 阶段 8b | LLM（Hybrid Critic） | `ENABLE_LLM_QUALITY_CRITIC` | 关闭 / 无模型客户端 / 解析失败 |
+
+**重要**：当某个 LLM 字段缺失时，并不一定是错——常见就是默认未启用。只有当调用方已显式打开对应环境变量、却仍持续返回 `undefined`，才需要排查模型客户端是否注入。
+
+### 15.2 LLM 失败时的回退保证
+
+阶段 7（Fit Editor）和阶段 8b（Critic）都遵循同一套回退枚举，前端可统一识别：
+
+```ts
+// editReport.reason / criticReview.reason 的并集
+type LlmFallbackReason =
+  | "no_model_client"      // 模型客户端没注入；前端可解读为"AI 不可用，但常规链路 ok"
+  | "disabled_by_env"      // 环境变量未打开；预期行为，不必报错（仅 critic 用）
+  | "no_actions"           // LLM 给空 actions，无可应用变更（仅 fit editor 用）
+  | "no_rule_report"       // 上游规则评分缺失，下游 critic 无法工作（仅 critic 用）
+  | "schema_invalid"       // LLM JSON 解析或 schema 校验失败
+  | "model_error"          // 模型调用本身抛错（超时 / 限流 / provider 错）
+  | "regression"           // LLM 编辑后比编辑前更差，已自动回滚（仅 fit editor 用）
+  | "edits_applied"        // 成功应用（仅 fit editor 用）
+  | "all_rejected"         // 所有 LLM 提议都被拒（仅 fit editor 用）
+  | "ok";                  // 成功（仅 critic 用）
+```
+
+后端**永远**把 LLM 回退处理为"上游字段缺失"而不是错误：导出请求依然会成功（`status="completed"`），只是 `editReport` / `criticReview` 内的 `applied=false` / `fallback=true`。前端拿到这种状态时建议显示一行小字提示，而不是 banner 报警，例如："AI 评审离线，仅展示规则评分"。
+
+### 15.3 前端识别 LLM 不可用的路径
+
+当 LLM 链路未配置（缺 API Key / 缺 modelClient）时，会同时观察到：
+
+1. `editReport === undefined` 或 `editReport.reason === "no_model_client"`；
+2. `criticReview === undefined` 或 `criticReview.reason === "no_model_client"`；
+3. `assistantMessage.content` 仍然是模板字符串（Narrator 没启用）。
+
+这些都是**预期行为**，不是后端 bug。前端可以选择：
+
+- 做一次"AI 能力可用性"自检：若以上三项均缺失，给用户一行温和提示"AI 智能功能未配置"；
+- 或保持静默，仅在用户触发对应功能时给上下文提示，避免噪声。
+
+注意，本节这些字段**不会**抛出 §10 中描述的 `model_not_available` / `LLM_PROVIDER_NOT_CONFIGURED` 错误码——那些错误码是阶段 1–8b 之前就存在的、与 generation/critique 主链路绑定的错误。本节字段一律走"安静 fallback"。
+
+### 15.4 与 §3.1 `clientState` 的关系
+
+阶段 1–8b 没有给 `clientState` 增加任何**必填**字段。但以下三个既有 `clientState` 字段会被新链路读取（仍是 optional，缺失时走 server-side default）：
+
+| `clientState` 字段 | 读它的阶段 | 用途 | 缺失时 fallback |
+|--------------------|-----------|------|----------------|
+| `locale` | 阶段 3 | `[action]` / `[confirm]` 占位符本地化 | 默认 `zh-CN` |
+| `activeJDId` | 阶段 8 | `qualityReport.jdMatchScore` 的 JD 关联 | 不打分 JD 维度，回中性 60 分 |
+| `activeResumeItemId` | 阶段 8b | critic 引用核验时的额外 item id 来源 | 只走 ruleReport 内 id 集合 |
+
+### 15.5 与 §10 错误处理契约的边界
+
+|  | §10 既有错误码 | 本节字段 |
+|---|---|---|
+| 何时出现 | 主链路（导入 / 生成 / critique）LLM 失败 | 阶段 5–8b 的辅助报告失败 |
+| 是否阻断用户操作 | 是（导入失败、生成失败） | 否（导出 / 评分继续，只是字段为 `undefined` 或 `fallback=true`） |
+| 前端处理 | 必须明确提示用户 | 可静默或给小字提示 |
+| 错误码 | `model_not_available` / `LLM_PROVIDER_NOT_CONFIGURED` / `MODEL_FAILED` 等 | 不进错误码体系；通过字段缺失 / `reason` 枚举表达 |
+
+简单结论：本节描述的字段**永远不会**导致请求 `ok=false`；它们只会出现"字段缺失"或"`fallback=true` + 诊断 `reason`"。
+
+### 15.6 阶段 9 testability 注记
+
+新增 `tests/phase9ContractAdditive.test.ts` 验证：
+
+1. 三个环境变量全部 unset 时，`editReport` / `criticReview` 都为 `undefined`；
+2. `qualityReport` 即使未启用 critic 也能产出（说明规则链路与 LLM 链路解耦）；
+3. `assistantMessage.content` 在 `ENABLE_NARRATOR` 未设时严格等于模板字符串（保护阶段 2 之前的契约）；
+4. 各个 ToolResult 阶段 1 字段都是 `optional`，不会因为某工具未迁移而让请求失败。
+
+测试**不**强制任何新字段必须存在。
+
+---

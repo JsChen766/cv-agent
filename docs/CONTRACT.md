@@ -2171,3 +2171,384 @@ Before adding new frontend/backend/kernel features, verify:
 [ ] Are API keys encrypted at rest and masked in responses?
 [ ] Are sensitive contents (CoT, reasoning, API keys, prompts, tool args) excluded from responses?
 ```
+
+---
+
+## 16. Phase 1–8b Additive Contract Surface (Phase 9 Consolidation)
+
+Status: implemented through Phase 9.
+
+This section consolidates **every** additive, optional, backward-compatible field, behavior, and environment variable introduced by Phases 1 through 8b of the agent revamp (see `docs/cv_agent_next_stage_plan.md`). The intent of Phase 9 is to make the cumulative surface easy for frontends to discover and adopt incrementally — **no field below is required**, every field is safely `undefined` for legacy responses, and no legacy field has been renamed or repurposed.
+
+### 16.0 Compatibility legend
+
+| Tag | Meaning |
+|-----|---------|
+| `optional` | Field may be absent (`undefined`). Safe to ignore. |
+| `legacy-preserved` | Pre-existing field whose shape and semantics are unchanged. |
+| `frontend-recommended` | Field the FE is encouraged to render once it has a UI surface. |
+| `additive-enum` | Existing enum extended with new values; consumers should treat unknown values defensively. |
+| `env-gated` | Field is only populated when the listed environment variable is set. |
+
+Every field in §16.1–§16.10 is `optional` and `frontend-recommended`. Nothing below is `required`. A frontend that ignores Section 16 entirely continues to behave exactly as before Phase 1.
+
+### 16.1 ToolResult Structured Fields (Phase 1)
+
+Source: `src/agent-core/tools/ToolResult.ts`. These fields sit alongside the legacy `{status, message, data, workspacePatch, actionResult, pendingActionId, visibility}` and are surfaced to the FE through `CopilotChatResponse.raw.toolResults[]` (full tool results) and tool-result mirrors in `assistantMessage.metadata.displaySnapshot.toolResults[]` (display snapshot).
+
+```ts
+type ToolResultEntity = {
+  type: string;             // e.g. "generation" | "variant" | "experience" | "jd" | "resume" | "export"
+  id?: string;              // domain id (variantId, generationId, exportId, …) when applicable
+  title?: string;           // short human-readable label
+  data?: unknown;           // tool-specific structured data (treat as opaque)
+};
+
+type ToolResultEvidence = {
+  sourceId?: string;        // backing source id (experienceId / requirementId)
+  claim?: string;           // what the tool asserts
+  support?: string;         // why the source supports the claim
+  confidence?: number;      // tool-reported confidence in [0, 1]
+};
+
+type ToolResultNextActionHint = {
+  type: string;             // tool name or product action type
+  label: string;            // short user-facing label (Narrator may rephrase)
+  payload?: Record<string, unknown>;
+};
+
+// Additive optional fields on ToolResult (every existing field unchanged):
+type ToolResultPhase1Extras = {
+  resultKind?: string;                       // "generation_completed" | "match_completed" | "export_pending" | "export_ready" | "variant_accepted" | "needs_input" | …
+  summaryFacts?: string[];                   // model-friendly bullet facts
+  entities?: ToolResultEntity[];
+  evidence?: ToolResultEvidence[];
+  warnings?: string[];                       // non-fatal warnings
+  nextActionHints?: ToolResultNextActionHint[];
+};
+```
+
+Compatibility: `optional`, `frontend-recommended`. Tools that have not yet been migrated still emit valid ToolResults with all six fields absent. The Narrator (§16.2) consumes these fields when present but never requires them.
+
+### 16.2 Narrator-Reworded `assistantMessage.content` (Phase 2)
+
+Behavior change only — no schema change. When `ENABLE_NARRATOR=true` AND a Narrator-capable model client is wired, four success branches (`generation_completed`, `match_completed`, `variant_accepted`, `export_ready`) compose `assistantMessage.content` dynamically from the structured fields in §16.1 instead of returning a templated string. Failure paths and `needs_confirmation` paths are untouched and continue to use deterministic copy.
+
+Compatibility: `legacy-preserved`. FE must continue to treat `assistantMessage.content` as opaque prose. The shape, role, and `kind` of the message are unchanged.
+
+`env-gated`: `ENABLE_NARRATOR` (default unset = off). When off, content reverts byte-for-byte to the pre-Phase-2 templated strings.
+
+### 16.3 ResumeDocument / variants / accept items (Phase 3)
+
+Source: `src/product/types.ts`.
+
+```ts
+type ResumeDocument = {
+  schemaVersion: 1;
+  sections: ResumeDocumentSection[];
+};
+type ResumeDocumentSection = {
+  id: string;
+  type: ProductResumeItem["sectionType"];
+  title: string;
+  order: number;
+  items: ResumeDocumentItem[];
+};
+type ResumeDocumentItem = {
+  id: string;
+  title: string;
+  subtitle?: string;
+  period?: string;
+  location?: string;
+  bullets: ResumeDocumentBullet[];
+  sourceExperienceId?: string;
+  evidenceStrength?: "low" | "medium" | "high";
+  relevanceScore?: number;
+};
+type ResumeDocumentBullet = {
+  id: string;
+  text: string;
+  evidenceIds?: string[];
+};
+```
+
+Surfaced as `ProductGenerationVariant.resumeDocument?: ResumeDocument`. The legacy `ProductGenerationVariant.content: string` markdown remains the canonical text and is unchanged.
+
+`accept-variant` request body gained an optional `items?: ResumeItemSeed[]` for caller-supplied items; when omitted, the legacy "auto-derive items from content" path is preserved.
+
+Export download responses now use RFC 5987 `Content-Disposition: attachment; filename*=UTF-8''…` for non-ASCII filenames; the legacy `filename=` continues to be emitted as fallback.
+
+Narrator strings respecting `clientState.locale` apply only to `[action]` and `[confirm]` placeholders; nothing else changed.
+
+Compatibility: `optional`, `legacy-preserved`.
+
+### 16.4 Template hooks (Phase 4)
+
+The export request body accepts an optional `templateId` parameter:
+
+```ts
+type ResumeExportRequest = {
+  format: "pdf" | "html";
+  templateId?: "default" | "one-page-modern" | string;   // "default" preserves byte-identical legacy output
+  // … existing optional fields unchanged
+};
+```
+
+Templates may emit the following HTML data-attributes for layout measurement (Phase 5) and FE anchoring:
+
+```text
+data-template       on the resume root
+data-density        on the resume root ("standard" | "compact" | …)
+data-section-type   on each section element
+data-item-id        on each item element
+data-bullet-id      on each bullet element
+```
+
+The default template's HTML output is **byte-identical** to its pre-Phase-4 form (verified by snapshot test). FE may use these attributes to anchor highlights / tooltips / "AI suggested edit" badges.
+
+Compatibility: `optional`, `legacy-preserved`. FE that ignores the new attributes continues to render normally.
+
+### 16.5 ResumeExport.fitReport (Phase 5)
+
+Source: `src/exports/ResumeFitService.ts:31`. Attached to `ResumeExport` (`src/exports/types.ts:29`) **only after** the export reaches `status="completed"`. May be `undefined` for legacy exports created before Phase 5.
+
+```ts
+type ResumeFitReport = {
+  targetPages: number;
+  estimatedPages: number;
+  overflowPx: number;
+  underflowPx?: number;
+  contentHeightPx: number;
+  pageUsableHeightPx: number;
+  templateId: string;
+  density: string;
+  measurer: "playwright" | "heuristic";
+  measuredAt: string;                // ISO-8601
+};
+```
+
+Compatibility: `optional`, `frontend-recommended`. FE may render this as a collapsible "Layout fit" panel.
+
+### 16.6 ResumeExport.compressionReport (Phase 6)
+
+Source: `src/exports/ResumeCompressionService.ts:15`. Attached only when the rule-based compression path actually ran — i.e. `templateId="one-page-modern"` AND `targetPages=1` AND initial `overflowPx > 0`. Otherwise `undefined`.
+
+```ts
+type ResumeCompressionAction =
+  | { type: "drop_bullet"; itemId: string; bulletId: string }
+  | { type: "shorten_bullet"; itemId: string; bulletId?: string; before: string; after: string }
+  | { type: "merge_bullets"; itemId: string; bulletIds: string[]; mergedText: string }
+  | { type: "hide_item"; itemId: string; sectionType: string; reason: "low_relevance" }
+  | { type: "drop_density"; from: string; to: string };
+
+type ResumeCompressionReport = {
+  applied: boolean;
+  initialEstimatedPages: number;
+  finalEstimatedPages: number;
+  initialOverflowPx: number;
+  finalOverflowPx: number;
+  iterations: number;
+  actions: ResumeCompressionAction[];
+  densityBefore: string;
+  densityAfter: string;
+  stillOverflowing: boolean;
+  reason: "overflow_resolved" | "no_more_strategies" | "iteration_limit";
+};
+```
+
+Phase 6 is warn-only: `stillOverflowing=true` does NOT block the export.
+
+Compatibility: `optional`, `frontend-recommended` — render as small explanatory text, not a banner.
+
+### 16.7 ResumeExport.editReport (Phase 7)
+
+Source: `src/exports/ResumeLLMFitEditor.ts:71`. Attached only when the LLM fit editor was invoked, which requires (a) `ENABLE_LLM_FIT_EDITOR=true`, (b) a configured frontDesk model client, and (c) the post-Phase-6 resume still overflows OR has a large underflow (`>= 240 px` by default). Otherwise `undefined`.
+
+```ts
+type ResumeFitEditorReason =
+  | "no_model_client"
+  | "no_actions"
+  | "schema_invalid"
+  | "model_error"
+  | "regression"
+  | "edits_applied"
+  | "all_rejected";
+
+type ResumeFitEditorReport = {
+  applied: boolean;
+  fallback: boolean;
+  trigger: "shrink_to_fit" | "fill_underflow" | null;
+  reason: ResumeFitEditorReason;
+  initialEstimatedPages: number;
+  finalEstimatedPages: number;
+  initialOverflowPx: number;
+  finalOverflowPx: number;
+  initialUnderflowPx: number;
+  finalUnderflowPx: number;
+  actions: Array<{
+    type: "shorten_bullet" | "rephrase_bullet" | "drop_bullet" | "expand_bullet";
+    itemId: string;
+    bulletId: string;
+    before?: string;
+    after?: string;
+  }>;
+  rejectedActions?: Array<{ type: string; itemId?: string; bulletId?: string; reason: string }>;
+  notes?: string;
+  llmReason?: string;
+  measuredAt: string;
+};
+```
+
+Phase 7 is warn-only and inherits Phase 5/6's "never block on overflow" contract; failures fall back transparently with `applied=false`, `fallback=true`, and a `reason` enum value the FE can use to render diagnostics.
+
+Compatibility: `optional`, `env-gated` (`ENABLE_LLM_FIT_EDITOR`), `frontend-recommended`.
+
+### 16.8 ResumeExport.qualityReport (Phase 8)
+
+Source: `src/exports/ResumeQualityService.ts:47`. Attached when the export reaches `status="completed"` AND a `fitReport` was produced. Always advisory — even `hasCriticalRisks=true` does NOT block export.
+
+```ts
+type ResumeQualityDimension =
+  | "authenticity" | "jd_match" | "evidence" | "metric" | "expression" | "layout";
+
+type ResumeQualityRiskLevel = "low" | "medium" | "high" | "critical";
+
+type ResumeQualityRisk = {
+  id: string;
+  level: ResumeQualityRiskLevel;
+  dimension: ResumeQualityDimension;
+  message: string;
+  itemId?: string;
+  bulletId?: string;
+};
+
+type ResumeQualitySuggestion = {
+  id: string;
+  dimension: ResumeQualityDimension;
+  message: string;
+  itemId?: string;
+  bulletId?: string;
+};
+
+type ResumeQualityReport = {
+  overallScore: number;            // 0..100, weights auth25/jd25/ev20/metric10/expr10/layout10
+  authenticityScore: number;       // 0..100
+  jdMatchScore: number;            // 0..100
+  evidenceScore: number;           // 0..100
+  metricScore: number;             // 0..100
+  expressionScore: number;         // 0..100
+  layoutScore: number;             // 0..100
+  risks: ResumeQualityRisk[];
+  suggestions: ResumeQualitySuggestion[];
+  unsupportedClaims: string[];     // bullet text that hit the hyperbole regex without evidence
+  hasCriticalRisks: boolean;       // any risk with level === "critical"
+  generatedAt: string;             // ISO-8601
+  criticReview?: ResumeQualityCriticReview;   // see §16.9
+};
+```
+
+Persistence: stored in the `resume_export.quality_report JSONB` column (migration `0015_resume_quality_report.sql`).
+
+Compatibility: `optional`, `frontend-recommended`. FE should render a non-blocking banner when `hasCriticalRisks=true` rather than gating the export.
+
+### 16.9 ResumeQualityReport.criticReview (Phase 8b — Hybrid Resume Critic)
+
+Source: `src/exports/ResumeQualityCriticService.ts:70`. Lives **inside** the existing `quality_report JSONB` column — no new migration. Only populated when `ENABLE_LLM_QUALITY_CRITIC=true` AND a model client is wired AND the rule-based `qualityReport` (§16.8) was produced. Otherwise `undefined`.
+
+```ts
+type ResumeQualityCriticReason =
+  | "no_model_client"
+  | "disabled_by_env"
+  | "no_rule_report"
+  | "schema_invalid"
+  | "model_error"
+  | "ok";
+
+type ResumeQualityCriticRisk = {
+  id: string;
+  level: "low" | "medium" | "high" | "critical";
+  message: string;
+  itemId?: string;
+  bulletId?: string;
+  evidenceMissing?: boolean;
+};
+
+type ResumeQualityCriticRewriteSuggestion = {
+  id: string;
+  itemId?: string;
+  bulletId?: string;
+  before?: string;
+  suggestion: string;
+  reason: string;
+};
+
+type ResumeQualityCriticMissingEvidence = {
+  id: string;
+  bulletId?: string;
+  claim: string;
+  reason: string;
+};
+
+type ResumeQualityCriticRejectedReference = {
+  kind: "risk" | "suggestion" | "missingEvidence";
+  itemId?: string;
+  bulletId?: string;
+  why: "unknown_item" | "unknown_bullet";
+};
+
+type ResumeQualityCriticReview = {
+  applied: boolean;                // true ⇒ LLM produced a parsed JSON response
+  fallback: boolean;               // true ⇒ any fallback path was taken
+  reason: ResumeQualityCriticReason;
+  semanticJdMatchScore?: number;     // 0..100, LLM's view of JD semantic match
+  expressionQualityScore?: number;   // 0..100, LLM's view of expression quality
+  authenticityRisks: ResumeQualityCriticRisk[];
+  rewriteSuggestions: ResumeQualityCriticRewriteSuggestion[];
+  missingEvidence: ResumeQualityCriticMissingEvidence[];
+  overallComment?: string;
+  rejectedReferences?: ResumeQualityCriticRejectedReference[];   // diagnostic; do NOT show to end users
+  llmReason?: string;                                           // diagnostic
+  generatedAt: string;
+};
+```
+
+`hasCriticalRisks` semantics extension: an LLM-only `critical` risk does NOT by itself flip `hasCriticalRisks` to `true`. It is promoted only when the rule layer corroborates the finding — specifically when the LLM risk's `bulletId` is in the rule layer's unsupportedBulletIds or noEvidenceBulletIds, or when the LLM risk's message text overlaps with the rule layer's `unsupportedClaims`. The result is **never more aggressive** than the rule layer alone.
+
+Compatibility: `optional`, `env-gated` (`ENABLE_LLM_QUALITY_CRITIC`), `frontend-recommended`. FE that already renders Phase 8 `qualityReport` is forward-compatible — `criticReview` simply augments the panel.
+
+### 16.10 New optional environment variables
+
+| Variable | Default | Effect when ON | Effect when OFF |
+|----------|---------|----------------|-----------------|
+| `ENABLE_NARRATOR` | unset (off) | `assistantMessage.content` reworded for 4 success branches when a Narrator-capable model client is wired (§16.2). | Templated strings (pre-Phase-2 output, byte-for-byte). |
+| `ENABLE_LLM_FIT_EDITOR` | unset (off) | `ResumeExport.editReport` may be populated when the export pipeline detects unresolved overflow or large underflow (§16.7). | `editReport` is always `undefined`. |
+| `ENABLE_LLM_QUALITY_CRITIC` | unset (off) | `ResumeQualityReport.criticReview` may be populated as a second-opinion overlay (§16.9). | `criticReview` is always `undefined`. |
+
+Each variable is independent. None of them changes existing field shapes. None of them is required for backend startup or for any existing route to function.
+
+### 16.11 Frontend rendering recommendations (non-binding)
+
+| Surface | Recommended UI placement |
+|---------|-------------------------|
+| `assistantMessage.content` (Narrator) | Chat bubble. Already present today. |
+| `raw.toolResults[].summaryFacts` / `entities` / `evidence` | Optional debug panel; no user-visible card required. |
+| `raw.toolResults[].nextActionHints` | Quick-reply chips below the assistant message. |
+| `variants[].resumeDocument` | Structured editor when present; fall back to `content` markdown otherwise. |
+| `templateId` | Template picker on the export dialog. `default` and `one-page-modern` are the two valid built-ins today. |
+| `fitReport` | Collapsible "Layout fit" panel on the export detail page. |
+| `compressionReport` | Small "AI compressed your resume to fit one page" footer note; do not interrupt the main flow. |
+| `editReport` | Collapsible diff list of LLM-applied bullet edits. Show `data-bullet-id` highlight in the live preview. |
+| `qualityReport` | Six 0–100 score bars; non-blocking banner when `hasCriticalRisks=true`; suggestions in a "Could be better" subsection. |
+| `qualityReport.criticReview` | Optional "AI review" sub-panel under quality. Treat as advisory text, not as a one-click mutation. |
+
+### 16.12 Phase 9 testing summary
+
+A new contract test (`tests/phase9ContractAdditive.test.ts`) asserts that:
+
+1. Every legacy field listed in §3.2 (Response Envelope), §6 (API Endpoint Contract), and §14.5 (Resume Export Contract) is still present and unchanged on a vanilla in-memory kernel response.
+2. Every Phase 1–8b additive field is **either absent or matches its TypeScript shape** — never required, never of unexpected type.
+3. With all three env vars (`ENABLE_NARRATOR`, `ENABLE_LLM_FIT_EDITOR`, `ENABLE_LLM_QUALITY_CRITIC`) **unset**, every additive output field is `undefined`, matching the legacy behavior byte-for-byte where applicable.
+
+This test does NOT require any new field to be present, in line with the Phase 9 directive (additive/optional only).
+
+---

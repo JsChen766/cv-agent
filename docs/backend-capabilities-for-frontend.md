@@ -8,6 +8,14 @@
 - 当前仓库后端接口，不包含未来规划接口。
 - 所有接口默认以 Fastify 注册，返回 JSON envelope，除 SSE 和下载接口外。
 
+> **阶段 1–8b 累积新增字段**：本文撰写早于阶段 1–8b 的迭代，未覆盖 `ToolResult` 结构化字段、Narrator 撰文、`ResumeDocument`、`fitReport` / `compressionReport` / `editReport` / `qualityReport` / `criticReview` 等可选追加字段。前端在做新功能接入时，请同时参考：
+>
+> - `docs/CONTRACT.md` §16. Phase 1–8b Additive Contract Surface
+> - `docs/coolto_frontend_backend_contract_v2.md` §18. 阶段 1–8b 累积新增字段
+> - `docs/frontend_backend_contract_llm_first.md` §十五、阶段 1–8b 累积新增字段（LLM 链路视角）
+>
+> 这些章节保证：所有新增字段均为 `optional`，前端不读它们时旧链路依然可用；本文未覆盖的字段都不会让既有接口失败。
+
 ## 1. 通用约定
 
 ### 1.1 API 返回 envelope

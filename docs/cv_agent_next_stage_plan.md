@@ -1471,6 +1471,63 @@ frontend/src/types/copilot.ts 如果仓库内仍维护 frontend 类型
 请整理并更新前后端契约文档，补充 ToolResult 结构化字段、ResumeDocument、fitReport、compressionReport、qualityReport、nextActionHints 的类型、兼容性和前端建议展示方式。不要大改前端 UI，不删除旧字段。
 ```
 
+## 阶段 9 完成情况记录（实施回执）
+
+> 状态：已完成（commit 待提交，前置 HEAD `05f9e05`）。本阶段为「契约整理 + 前端类型镜像 + 兼容性测试」纯文档/类型工作，**未改动任何后端运行时行为或 API 响应字段语义**。
+
+### 改动清单
+
+1. `docs/CONTRACT.md` 新增第 16 节「Phase 1–8b additive surface (frontend integration contract)」（英文规范），覆盖 16.0 legend 至 16.12 testing summary，逐项列出：
+   - ToolResult 结构化字段（entities / evidence / nextActionHints）
+   - Narrator opt-in 渲染（`ENABLE_NARRATOR`）
+   - ResumeDocument + items + RFC 5987 + locale
+   - templateId 与模板 data-* 钩子
+   - fitReport / compressionReport / editReport（`ENABLE_LLM_FIT_EDITOR`）
+   - qualityReport + criticReview（`ENABLE_LLM_QUALITY_CRITIC`）
+   - 测试文件索引表
+2. `docs/coolto_frontend_backend_contract_v2.md` 新增第 18 节（中文产品向契约 18.0–18.12），与 §16 一一对齐。
+3. `docs/frontend_backend_contract_llm_first.md` 新增第十五节 15.1–15.6（中文，LLM-link 视角，强调 env 控位与降级路径）。
+4. `docs/backend-capabilities-for-frontend.md` 顶部追加 cross-link 块，指向上述三个新增章节。
+5. `frontend/src/types/copilot.ts` 追加（仅新增、不删改）以下纯类型定义：
+   - `ToolResultEntity` / `ToolResultEvidence` / `ToolResultNextActionHint` / `StructuredToolResult`
+   - `ResumeDocumentItem` / `ResumeDocumentSection` / `ResumeDocument`
+   - `ResumeFitReport` / `ResumeCompressionReport` (+ `ResumeCompressionAction`)
+   - `ResumeFitEditorReport` (+ `ResumeFitEditorEdit`)
+   - `ResumeQualityReport` (+ `ResumeQualityRisk` / `ResumeQualitySuggestion` / `ResumeQualityUnsupportedClaim`)
+   - `ResumeQualityCriticReview` (+ `ResumeQualityCriticAdjustment` / `ResumeQualityCriticIssue`)
+   - `ResumeExportAdditive` / `ProductGenerationVariantAdditive` / `CopilotChatResponseRawAdditive`
+6. `tests/phase9ContractAdditive.test.ts` 新增 5 个用例，断言契约的「additive / optional / 向后兼容」性质。
+
+### 关键设计
+
+- **唯一原则：append-only**。所有契约文档新增独立顶层章节（CONTRACT §16 / coolto v2 §18 / llm_first §十五），不改动既有章节。前端类型仅追加在文件末尾，不修改既有 `CopilotMessage` / `CopilotChatResponse` 等类型。
+- **没有「必填」断言**。Phase 9 测试仅验证「字段存在则形状正确」与「env 关闭时字段必然 absent」，绝不断言任何 Phase 1–8b 字段必须出现 —— 否则会把 additive 升格为 required，违背阶段目标。
+- **env 闸门集中文档化**。`ENABLE_NARRATOR` / `ENABLE_LLM_FIT_EDITOR` / `ENABLE_LLM_QUALITY_CRITIC` 在三个契约文档中均独立成节列出（默认值、未配置时降级路径、与 modelClient 的耦合关系）。
+- **前端类型零依赖镜像**。`frontend/src/types/copilot.ts` 中追加的类型与后端类型同构，但通过纯结构定义独立维护，避免前端引入后端模块导致打包污染。
+- **测试用一个无 modelClient 的 in-memory kernel**：自动保证 `editReport` / `qualityReport.criticReview` 在 baseline 下绝对缺席，从而把「未配置 LLM」这种最常见的部署形态作为兼容性下限。
+
+### 验收
+
+- `npm run typecheck` ✅ 无错误。
+- `npm test` ✅ 81 个测试文件 / 735 个用例全部通过（较 Phase 8b baseline +1 文件 / +5 用例，正好对应 `tests/phase9ContractAdditive.test.ts`）。
+- 文档 cross-link 自检：`docs/backend-capabilities-for-frontend.md` → `docs/CONTRACT.md` §16 / `docs/coolto_frontend_backend_contract_v2.md` §18 / `docs/frontend_backend_contract_llm_first.md` §十五 全部链接有效。
+- 历史用例无回归：Phase 1–8b 既有契约/管道测试均保持通过，未对其作任何修改。
+
+### 对外 API 与契约影响
+
+- **响应字段**：零变化。`/copilot/chat` raw 信封、`/exports/resumes/:id` 返回 `ResumeExport` 的字段集合保持与 Phase 8b 完全一致。
+- **类型扩展**：仅在前端 `frontend/src/types/copilot.ts` 中以「intersection / additive interface」方式扩展，旧的 `CopilotChatResponse` / `ResumeExport`（若前端将来引入）仍可正常使用。
+- **行为门控**：Phase 7 / 8b 的 env 闸门未触动；本阶段不引入任何新的 env 变量。
+- **向后兼容性**：旧前端（不读 `entities` / `nextActionHints` / `fitReport` / `compressionReport` / `editReport` / `qualityReport` / `criticReview`）继续工作，因为这些字段始终是可选的。
+
+### 前端建议（落地到第十阶段时的接入指南）
+
+1. **优先消费 `assistantMessage.content`**：除非 `ENABLE_NARRATOR=true`，否则该字段仍是模板化文本，UI 直接渲染即可。
+2. **结构化展示走 `toolResults[].entities`**：替代旧的「按 artifact 字符串拼接」做法；entities 的 `kind` + `data` 已足够覆盖经验库 / 简历清单 / 导出记录三大场景。
+3. **导出页面渐进披露 `fitReport` / `qualityReport`**：默认折叠，`hasCriticalRisks=true` 时高亮提示，但永远不阻塞「下载」按钮 —— 后端契约保证这些字段是 advisory。
+4. **`criticReview.adjustments` 仅作只读展示**：UI 不应基于 critic 输出再次调整分数（后端已经做了 cap 与 floor）。
+5. **`nextActionHints` 直接渲染为引导按钮**：每个 hint 的 `actionId` 与既有 Pending Action 体系兼容，无需新协议。
+
 ---
 
 # 阶段 10：体验收敛与默认链路切换

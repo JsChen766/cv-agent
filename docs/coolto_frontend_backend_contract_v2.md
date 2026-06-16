@@ -2019,3 +2019,377 @@ npm run test
 完成后运行：
 npm run typecheck
 ```
+
+
+---
+
+# 18. 阶段 1–8b 累积新增字段（Phase 9 契约整理）
+
+> 本节由阶段 9（前后端契约整理）落地。汇总阶段 1 到阶段 8b 在主链路（ToolResult / assistantMessage / variants / ResumeExport / qualityReport）上引入的全部**可选、向后兼容**新增字段，方便前端按需逐步接入。
+>
+> **核心承诺**：
+>
+> 1. 本节列出的字段全部为 `optional`。前端不读它们，旧链路依然可用。
+> 2. 没有任何旧字段被改名、被删除、被重新定义。
+> 3. 后端不会因为前端没传新字段而拒绝请求。
+> 4. 与本节相关的环境变量都默认关闭；关闭时所有新增字段均为 `undefined`，输出与阶段 1 之前完全一致。
+
+## 18.0 兼容性等级速查
+
+| 标签 | 含义 |
+|------|------|
+| `optional` | 字段可能为 `undefined`，前端可安全忽略 |
+| `legacy-preserved` | 旧字段保持原状，shape 与语义不变 |
+| `frontend-recommended` | 建议前端有 UI 容器后接入 |
+| `additive-enum` | 既有枚举增加新值，前端遇到未知值需做 fallback |
+| `env-gated` | 仅在指定环境变量打开时才会被填充 |
+
+## 18.1 ToolResult 结构化字段（阶段 1）
+
+来源：`src/agent-core/tools/ToolResult.ts`。这些字段位于旧字段 `{status, message, data, workspacePatch, actionResult, pendingActionId, visibility}` 之外，全部为 `optional`：
+
+```ts
+type ToolResult = {
+  // —— 旧字段（保持不变） ——
+  status: "success" | "needs_input" | "failed";
+  message?: string;
+  data?: unknown;
+  workspacePatch?: Record<string, unknown>;
+  actionResult?: Record<string, unknown>;
+  pendingActionId?: string;
+  visibility?: ToolResultVisibility;
+
+  // —— 阶段 1 新增（全部 optional，全部 additive） ——
+  resultKind?: string;
+  summaryFacts?: string[];
+  entities?: Array<{ type: string; id?: string; title?: string; data?: unknown }>;
+  evidence?: Array<{ sourceId?: string; claim?: string; support?: string; confidence?: number }>;
+  warnings?: string[];
+  nextActionHints?: Array<{ type: string; label: string; payload?: Record<string, unknown> }>;
+};
+```
+
+`resultKind` 常见取值：`generation_completed` / `match_completed` / `export_pending` / `export_ready` / `variant_accepted` / `needs_input`。
+
+前端可见入口：
+- `CopilotChatResponse.raw.toolResults[]`：完整 ToolResult 数组（含上述 6 个新字段）。
+- `assistantMessage.metadata.displaySnapshot.toolResults[]`：display snapshot 精简版。
+
+接入建议：阶段 1 字段对前端 UI 来说完全可选——它们主要服务于阶段 2 的 Narrator 自动撰文。前端如要在调试面板里展示，可优先展示 `resultKind` + `nextActionHints[].label` 作为"快捷回复 chip"。
+
+## 18.2 Narrator 自然语言回复（阶段 2）
+
+仅运行时行为变化，**没有 schema 变化**。当 `ENABLE_NARRATOR=true` 且 Narrator 模型客户端已注入时，4 个 success 分支（`generation_completed` / `match_completed` / `variant_accepted` / `export_ready`）的 `assistantMessage.content` 会基于 §18.1 的结构化字段动态撰文，而不再是模板字符串。失败分支与 `needs_confirmation` 分支保持模板字符串不变。
+
+兼容性：`legacy-preserved`。前端继续把 `assistantMessage.content` 当作不透明的自然语言文本展示在聊天区即可；`role` / `kind` / `metadata` shape 都没变。
+
+`env-gated`：`ENABLE_NARRATOR`（默认未设置 = 关闭）。关闭时输出与阶段 2 之前**逐字节一致**。
+
+## 18.3 ResumeDocument / variants / accept items（阶段 3）
+
+来源：`src/product/types.ts`。
+
+```ts
+type ResumeDocument = {
+  schemaVersion: 1;
+  sections: ResumeDocumentSection[];
+};
+type ResumeDocumentSection = {
+  id: string;
+  type: ProductResumeItem["sectionType"];
+  title: string;
+  order: number;
+  items: ResumeDocumentItem[];
+};
+type ResumeDocumentItem = {
+  id: string;
+  title: string;
+  subtitle?: string;
+  period?: string;
+  location?: string;
+  bullets: ResumeDocumentBullet[];
+  sourceExperienceId?: string;
+  evidenceStrength?: "low" | "medium" | "high";
+  relevanceScore?: number;
+};
+type ResumeDocumentBullet = {
+  id: string;
+  text: string;
+  evidenceIds?: string[];
+};
+```
+
+暴露位置：`ProductGenerationVariant.resumeDocument?: ResumeDocument`。旧字段 `ProductGenerationVariant.content: string`（markdown 全文）保持不变，仍是规范文本来源。
+
+`accept-variant` 请求体新增可选 `items?: ResumeItemSeed[]`：调用方可显式指定要落到 resume 的 items；省略时仍走旧的"从 content 自动派生 items"路径。
+
+导出下载响应的 `Content-Disposition` 现在使用 RFC 5987（`filename*=UTF-8''…`）以正确处理非 ASCII 文件名；旧的 `filename=` 头作为 fallback 同时存在。
+
+`[action]` / `[confirm]` 占位符现在尊重 `clientState.locale`；其他文案不变。
+
+兼容性：`optional`、`legacy-preserved`。
+
+## 18.4 模板钩子（阶段 4）
+
+导出请求体新增可选 `templateId`：
+
+```ts
+type ResumeExportRequest = {
+  format: "pdf" | "html";
+  templateId?: "default" | "one-page-modern" | string;
+  // …其他既有可选字段保持不变
+};
+```
+
+`templateId="default"` 与阶段 4 之前的 HTML 输出**逐字节一致**。
+
+模板可能在 HTML 中输出以下 `data-*` 钩子，供阶段 5 测量与前端高亮使用：
+
+```text
+data-template       简历根节点
+data-density        简历根节点（"standard" | "compact" | …）
+data-section-type   每个 section 元素
+data-item-id        每个 item 元素
+data-bullet-id      每个 bullet 元素
+```
+
+前端如忽略这些属性，渲染行为不变。前端如需在简历预览里做"高亮某条 bullet / 跳转锚点 / 显示 AI 编辑徽章"，建议用 `data-item-id` / `data-bullet-id` 选择器。
+
+兼容性：`optional`、`legacy-preserved`。
+
+## 18.5 ResumeExport.fitReport（阶段 5）
+
+来源：`src/exports/ResumeFitService.ts:31`。仅在导出 `status="completed"` 之后被填充；阶段 5 之前创建的旧 export 该字段为 `undefined`。
+
+```ts
+type ResumeFitReport = {
+  targetPages: number;
+  estimatedPages: number;
+  overflowPx: number;
+  underflowPx?: number;
+  contentHeightPx: number;
+  pageUsableHeightPx: number;
+  templateId: string;
+  density: string;
+  measurer: "playwright" | "heuristic";
+  measuredAt: string;          // ISO-8601
+};
+```
+
+兼容性：`optional`、`frontend-recommended`。建议前端做成"折叠的'排版适配'面板"——非必要不展开，避免干扰主流程。
+
+## 18.6 ResumeExport.compressionReport（阶段 6）
+
+来源：`src/exports/ResumeCompressionService.ts:15`。仅在确实跑了规则压缩路径时被填充——`templateId="one-page-modern"` 且 `targetPages=1` 且初始 `overflowPx > 0`。否则为 `undefined`。
+
+```ts
+type ResumeCompressionAction =
+  | { type: "drop_bullet"; itemId: string; bulletId: string }
+  | { type: "shorten_bullet"; itemId: string; bulletId?: string; before: string; after: string }
+  | { type: "merge_bullets"; itemId: string; bulletIds: string[]; mergedText: string }
+  | { type: "hide_item"; itemId: string; sectionType: string; reason: "low_relevance" }
+  | { type: "drop_density"; from: string; to: string };
+
+type ResumeCompressionReport = {
+  applied: boolean;
+  initialEstimatedPages: number;
+  finalEstimatedPages: number;
+  initialOverflowPx: number;
+  finalOverflowPx: number;
+  iterations: number;
+  actions: ResumeCompressionAction[];
+  densityBefore: string;
+  densityAfter: string;
+  stillOverflowing: boolean;
+  reason: "overflow_resolved" | "no_more_strategies" | "iteration_limit";
+};
+```
+
+阶段 6 是 warn-only：`stillOverflowing=true` **不会**阻断导出。
+
+兼容性：`optional`、`frontend-recommended`。建议前端用"小字说明"展示，例如："为了适配一页，AI 自动隐藏了 1 条经历的 2 个 bullet"，**不要**用大 banner 干扰主流程。
+
+## 18.7 ResumeExport.editReport（阶段 7）
+
+来源：`src/exports/ResumeLLMFitEditor.ts:71`。仅在 LLM Fit Editor 真正运行时被填充——需要 (a) `ENABLE_LLM_FIT_EDITOR=true`、(b) 已注入 frontDesk 模型客户端、(c) 阶段 6 之后简历仍 overflow 或 underflow ≥ 240 px。否则为 `undefined`。
+
+```ts
+type ResumeFitEditorReason =
+  | "no_model_client" | "no_actions" | "schema_invalid"
+  | "model_error" | "regression" | "edits_applied" | "all_rejected";
+
+type ResumeFitEditorReport = {
+  applied: boolean;
+  fallback: boolean;
+  trigger: "shrink_to_fit" | "fill_underflow" | null;
+  reason: ResumeFitEditorReason;
+  initialEstimatedPages: number;
+  finalEstimatedPages: number;
+  initialOverflowPx: number;
+  finalOverflowPx: number;
+  initialUnderflowPx: number;
+  finalUnderflowPx: number;
+  actions: Array<{
+    type: "shorten_bullet" | "rephrase_bullet" | "drop_bullet" | "expand_bullet";
+    itemId: string;
+    bulletId: string;
+    before?: string;
+    after?: string;
+  }>;
+  rejectedActions?: Array<{ type: string; itemId?: string; bulletId?: string; reason: string }>;
+  notes?: string;
+  llmReason?: string;
+  measuredAt: string;
+};
+```
+
+阶段 7 同样是 warn-only。LLM 失败时 `applied=false` / `fallback=true` / `reason` 给出诊断枚举。
+
+兼容性：`optional`、`env-gated`（`ENABLE_LLM_FIT_EDITOR`）、`frontend-recommended`。建议前端做成"AI 自动调整记录"折叠区，列出每条 `actions` 的 before/after。
+
+## 18.8 ResumeExport.qualityReport（阶段 8）
+
+来源：`src/exports/ResumeQualityService.ts:47`。仅在导出 `status="completed"` 且产生了 `fitReport` 时被填充。**始终是建议性的**——即使 `hasCriticalRisks=true` 也**不会**阻断导出。
+
+```ts
+type ResumeQualityDimension =
+  | "authenticity" | "jd_match" | "evidence" | "metric" | "expression" | "layout";
+
+type ResumeQualityRiskLevel = "low" | "medium" | "high" | "critical";
+
+type ResumeQualityRisk = {
+  id: string;
+  level: ResumeQualityRiskLevel;
+  dimension: ResumeQualityDimension;
+  message: string;
+  itemId?: string;
+  bulletId?: string;
+};
+
+type ResumeQualitySuggestion = {
+  id: string;
+  dimension: ResumeQualityDimension;
+  message: string;
+  itemId?: string;
+  bulletId?: string;
+};
+
+type ResumeQualityReport = {
+  overallScore: number;            // 0..100，权重 auth25/jd25/ev20/metric10/expr10/layout10
+  authenticityScore: number;
+  jdMatchScore: number;
+  evidenceScore: number;
+  metricScore: number;
+  expressionScore: number;
+  layoutScore: number;
+  risks: ResumeQualityRisk[];
+  suggestions: ResumeQualitySuggestion[];
+  unsupportedClaims: string[];
+  hasCriticalRisks: boolean;
+  generatedAt: string;
+  criticReview?: ResumeQualityCriticReview;   // 见 §18.9
+};
+```
+
+持久化：存放于 `resume_export.quality_report JSONB` 列（迁移 `0015_resume_quality_report.sql`）。
+
+兼容性：`optional`、`frontend-recommended`。建议前端：
+- 顶部用 `overallScore` 做主指标；
+- 下方用 6 个 0–100 数值条展示六个维度；
+- `hasCriticalRisks=true` 时给一条**显眼但非阻断**的 banner，把 `risks.filter(r => r.level === "critical")` 渲染成可点击的 itemId/bulletId 锚点；
+- `suggestions` 折叠在"还可以更好"小节；
+- `unsupportedClaims` 在简历预览里给命中 bullet 一个浅黄底色 + tooltip "无证据支撑"。
+
+## 18.9 qualityReport.criticReview（阶段 8b）
+
+来源：`src/exports/ResumeQualityCriticService.ts:70`。**与 `qualityReport` 共享同一 `quality_report JSONB` 列**，无新数据库迁移。仅在 `ENABLE_LLM_QUALITY_CRITIC=true` 且模型客户端已注入且规则评分（§18.8）成功产出时才会被填充，否则 `undefined`。
+
+```ts
+type ResumeQualityCriticReason =
+  | "no_model_client"
+  | "disabled_by_env"
+  | "no_rule_report"
+  | "schema_invalid"
+  | "model_error"
+  | "ok";
+
+type ResumeQualityCriticReview = {
+  applied: boolean;     // true ⇒ LLM 成功产出可解析的 JSON
+  fallback: boolean;    // true ⇒ 走了任意 fallback 路径
+  reason: ResumeQualityCriticReason;
+  semanticJdMatchScore?: number;
+  expressionQualityScore?: number;
+  authenticityRisks: Array<{
+    id: string;
+    level: "low" | "medium" | "high" | "critical";
+    message: string;
+    itemId?: string;
+    bulletId?: string;
+    evidenceMissing?: boolean;
+  }>;
+  rewriteSuggestions: Array<{
+    id: string;
+    itemId?: string;
+    bulletId?: string;
+    before?: string;
+    suggestion: string;
+    reason: string;
+  }>;
+  missingEvidence: Array<{ id: string; bulletId?: string; claim: string; reason: string }>;
+  overallComment?: string;
+  rejectedReferences?: Array<{
+    kind: "risk" | "suggestion" | "missingEvidence";
+    itemId?: string;
+    bulletId?: string;
+    why: "unknown_item" | "unknown_bullet";
+  }>;
+  llmReason?: string;
+  generatedAt: string;
+};
+```
+
+`hasCriticalRisks` 语义微扩展：单独由 LLM 给出的 `critical` 风险**不会**自动把 `hasCriticalRisks` 翻为 `true`。只有当 LLM 风险与规则层"互相印证"时才升格——具体当 LLM 风险的 `bulletId` 出现在规则层 `unsupportedBulletIds` 或 `noEvidenceBulletIds`，或 LLM 风险 message 与规则层 `unsupportedClaims` 文本互相包含。结果**永远不会比规则层更激进**。
+
+兼容性：`optional`、`env-gated`（`ENABLE_LLM_QUALITY_CRITIC`）、`frontend-recommended`。
+
+前端建议：
+- `criticReview.applied===true` 时在质量面板里开"AI 评审"折叠区；
+- `semanticJdMatchScore` / `expressionQualityScore` 与规则层并排展示，差异较大时做"两位评审意见不一致"小提示；
+- `rewriteSuggestions` 折叠成纯文本提示卡片，**不要**直接调 mutation 改简历，等阶段 9/10 给出明确入口；
+- `missingEvidence` 与阶段 1 的"补充经历"路径打通；
+- `rejectedReferences` 是诊断信号（LLM 在编 id），**不要**展示给最终用户。
+
+## 18.10 新增可选环境变量
+
+| 变量 | 默认 | 打开时效果 | 关闭时行为 |
+|------|------|-----------|-----------|
+| `ENABLE_NARRATOR` | unset（关） | 4 个 success 分支的 `assistantMessage.content` 改为动态撰文（§18.2） | 模板字符串，逐字节复刻阶段 2 之前的输出 |
+| `ENABLE_LLM_FIT_EDITOR` | unset（关） | 检测到导出仍 overflow / underflow 时可能填充 `editReport`（§18.7） | `editReport` 始终为 `undefined` |
+| `ENABLE_LLM_QUALITY_CRITIC` | unset（关） | 在 `qualityReport` 上追加 `criticReview` 第二意见（§18.9） | `criticReview` 始终为 `undefined` |
+
+三个变量相互独立。任意一个的开/关都不会改变既有字段的 shape。任意一个都**不是**后端启动或既有路由可用的必要条件。
+
+## 18.11 前端展示推荐（非强制）
+
+| 数据 | 推荐 UI 位置 |
+|------|------------|
+| `assistantMessage.content`（Narrator） | 聊天气泡（保持现状） |
+| `raw.toolResults[].summaryFacts` / `entities` / `evidence` | 可选调试面板，无需用户可见卡片 |
+| `raw.toolResults[].nextActionHints` | 在 assistant 消息下方做"快捷回复 chip" |
+| `variants[].resumeDocument` | 存在时优先用结构化 editor；否则 fallback 到 `content` markdown |
+| `templateId` | 导出对话框的模板选择器；当前内置 `default` 与 `one-page-modern` |
+| `fitReport` | 导出详情页"排版适配"折叠面板 |
+| `compressionReport` | 小字 footer：「为了适配一页，AI 自动……」，不要打断主流程 |
+| `editReport` | 折叠的 LLM 编辑差异列表，与简历预览的 `data-bullet-id` 高亮联动 |
+| `qualityReport` | 6 条 0–100 分数条；`hasCriticalRisks` 时给非阻断 banner；suggestions 折叠 |
+| `qualityReport.criticReview` | 在质量面板下追加"AI 评审"子区，仅作建议文本，不要做"一键应用" |
+
+## 18.12 阶段 9 测试
+
+新增 `tests/phase9ContractAdditive.test.ts`，断言：
+
+1. 既有 envelope / endpoint / export 字段全部保持不变。
+2. 阶段 1–8b 全部新增字段**要么不存在，要么 shape 与本节定义匹配**——从不必填，从不出现意外类型。
+3. 三个环境变量（`ENABLE_NARRATOR` / `ENABLE_LLM_FIT_EDITOR` / `ENABLE_LLM_QUALITY_CRITIC`）全部 unset 时，所有新增字段为 `undefined`，行为与阶段 1 之前 byte-for-byte 一致（在适用维度上）。
+
+测试**不**强制任何新字段必须存在，符合阶段 9 的"不引入 required 字段"指令。
