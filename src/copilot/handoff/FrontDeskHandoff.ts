@@ -51,6 +51,9 @@ export type FrontDeskHandoff = {
     experienceId?: string;
     resumeId?: string;
     resumeItemId?: string;
+    fileId?: string;
+    resumeFileId?: string;
+    originalName?: string;
     variantId?: string;
     title?: string;
     company?: string;

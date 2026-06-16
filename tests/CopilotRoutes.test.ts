@@ -3,6 +3,7 @@ import { createServer } from "../src/api/createServer.js";
 import type { ApiSuccess } from "../src/api/response.js";
 import type { ApiKernel } from "../src/api/types.js";
 import type { CopilotChatResponse } from "../src/copilot/types.js";
+import type { UploadedFile } from "../src/files/types.js";
 import { createP12Kernel } from "./p12Helpers.js";
 
 function setupEnv() {
@@ -33,6 +34,21 @@ describe("Copilot routes on agent-core runtime", () => {
     await kernel.close();
   });
 
+  async function uploadTextFile(text: string, fileName = "resume.txt"): Promise<UploadedFile> {
+    const response = await server.inject({
+      method: "POST",
+      url: "/files/upload",
+      headers: { "x-user-id": "user-1", "content-type": "application/json" },
+      payload: {
+        fileName,
+        mimeType: "text/plain",
+        base64: Buffer.from(text, "utf8").toString("base64"),
+      },
+    });
+    expect(response.statusCode).toBe(200);
+    return (response.json() as ApiSuccess<UploadedFile>).data;
+  }
+
   it("POST /copilot/chat returns the compatibility envelope with agentTrace", async () => {
     const response = await server.inject({
       method: "POST",
@@ -58,6 +74,114 @@ describe("Copilot routes on agent-core runtime", () => {
       },
     });
     expect(JSON.stringify(body.data.raw.agentTrace)).toContain("list_experiences");
+  });
+
+  it("POST /copilot/chat imports an uploaded resume file from clientState fileId", async () => {
+    const resumeText = [
+      "李四",
+      "教育经历",
+      "2020.09-2024.06 香港科技大学 计算机科学 本科",
+      "实习经历",
+      "2023.06-2023.09 腾讯科技有限公司 数据分析实习生",
+      "项目经历",
+      "项目一：智能简历解析系统",
+      "2023.10-2024.01 角色：负责人",
+      "项目二：校园二手交易平台",
+      "2022.03-2022.06 角色：后端开发者",
+      "获奖经历",
+      "2023 校级一等奖学金",
+      "技能栈",
+      "TypeScript, Vue, Node, Python, SQL",
+    ].join("\n");
+    const file = await uploadTextFile(resumeText, "resume.txt");
+
+    const response = await server.inject({
+      method: "POST",
+      url: "/copilot/chat",
+      headers: { "x-user-id": "user-1" },
+      payload: {
+        message: "import resume: resume.txt",
+        clientState: {
+          resumeUpload: {
+            fileId: file.id,
+            originalName: file.originalName,
+            mimeType: file.mimeType,
+            size: file.sizeBytes,
+          },
+        },
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+    const body = response.json() as ApiSuccess<CopilotChatResponse>;
+    const toolResults = body.data.raw.toolResults as Array<Record<string, unknown>>;
+    const importResult = toolResults.find((result) => (result.actionResult as Record<string, unknown> | undefined)?.actionType === "import_resume_file_as_candidates");
+    expect(importResult).toBeTruthy();
+    expect((importResult!.data as Record<string, unknown>).candidateCount).toBeGreaterThan(1);
+    expect((importResult!.data as Record<string, unknown>).fileId).toBe(file.id);
+    expect(body.data.workspace.handoffs?.at(-1)?.routeTo).toBe("experience_receiver");
+    expect(body.data.workspace.handoffs?.at(-1)?.extracted).toMatchObject({
+      fileId: file.id,
+      resumeFileId: file.id,
+      originalName: file.originalName,
+    });
+    expect(body.data.assistantMessage.metadata?.productBlocks?.some((block) => block.type === "experience_candidate_form")).toBe(true);
+    expect(body.data.assistantMessage.metadata?.displaySnapshot?.productBlocks?.some((block) => block.type === "experience_candidate_form")).toBe(true);
+    expect(body.data.assistantMessage.metadata?.displaySnapshot?.toolResults?.some((result) => {
+      const data = result.data as Record<string, unknown> | undefined;
+      return Array.isArray(data?.candidates) && data.fileId === file.id;
+    })).toBe(true);
+    expect(JSON.stringify(body.data.raw.agentTrace)).toContain("experience_receiver");
+
+    const detail = await server.inject({
+      method: "GET",
+      url: `/copilot/sessions/${body.data.sessionId}`,
+      headers: { "x-user-id": "user-1" },
+    });
+    expect(detail.statusCode).toBe(200);
+    const detailBody = detail.json() as ApiSuccess<{
+      messages: Array<{ role: string; metadata?: { attachments?: Array<Record<string, unknown>>; displaySnapshot?: { productBlocks?: Array<{ type: string }> } } }>;
+    }>;
+    const userMessage = detailBody.data.messages.find((message) => message.role === "user");
+    expect(userMessage?.metadata?.attachments).toEqual([
+      expect.objectContaining({
+        fileId: file.id,
+        originalName: file.originalName,
+        mimeType: file.mimeType,
+        size: file.sizeBytes,
+        kind: "resume_upload",
+      }),
+    ]);
+    const assistantMessage = detailBody.data.messages.find((message) => message.role === "assistant");
+    expect(assistantMessage?.metadata?.displaySnapshot?.productBlocks?.some((block) => block.type === "experience_candidate_form")).toBe(true);
+  });
+
+  it("POST /copilot/chat asks for a resume fileId when import is requested without upload metadata", async () => {
+    const response = await server.inject({
+      method: "POST",
+      url: "/copilot/chat",
+      headers: { "x-user-id": "user-1" },
+      payload: {
+        message: "import resume from uploaded file",
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+    const body = response.json() as ApiSuccess<CopilotChatResponse>;
+    const actionResult = body.data.raw.actionResults?.find((result) => result.actionType === "import_resume_file_as_candidates");
+    expect(actionResult).toMatchObject({
+      status: "needs_input",
+      reason: "missing_required_input",
+      missingInputs: ["fileId"],
+    });
+    expect(body.data.raw.toolResults?.[0]).toMatchObject({
+      status: "needs_input",
+      actionResult: {
+        actionType: "import_resume_file_as_candidates",
+        status: "needs_input",
+      },
+    });
+    expect(body.data.assistantMessage.content).not.toContain("started");
   });
 
   it("save experience chat creates a pending action and confirm endpoint executes it", async () => {
@@ -308,6 +432,8 @@ describe("Copilot routes on agent-core runtime", () => {
     expect(detail.statusCode).toBe(200);
     const detailBody = detail.json() as ApiSuccess<Record<string, unknown>>;
     const messages = detailBody.data.messages as Array<Record<string, unknown>>;
+    const user = messages.find((item) => item.role === "user");
+    expect(user?.metadata).toBeUndefined();
     const assistant = messages.find((item) => item.role === "assistant");
     const restoredMetadata = assistant?.metadata as Record<string, unknown> | undefined;
     expect(restoredMetadata?.productBlocks).toBeTruthy();
@@ -462,6 +588,9 @@ describe("Copilot routes on agent-core runtime", () => {
     const actionBody = actionResponse.json() as ApiSuccess<CopilotChatResponse>;
     const pending = actionBody.data.raw.pendingActions?.[0] as { id: string; toolName: string } | undefined;
     expect(pending).toMatchObject({ toolName: "generate_resume_from_jd" });
+    expect(actionBody.data.assistantMessage.metadata?.productBlocks?.some((block) => block.type === "experience_candidate_form") ?? false).toBe(false);
+    expect(actionBody.data.assistantMessage.metadata?.displaySnapshot?.productBlocks?.some((block) => block.type === "experience_candidate_form") ?? false).toBe(false);
+    expect(actionBody.data.agentRoomEvents?.some((event) => event.agentName === "experience_receiver" && event.specialInfo?.kind === "experience_candidate_form") ?? false).toBe(false);
 
     const confirmed = await server.inject({
       method: "POST",
@@ -478,6 +607,9 @@ describe("Copilot routes on agent-core runtime", () => {
     expect(confirmBody.data.assistantMessage.kind).toBe("plain_text");
     expect(confirmBody.data.assistantMessage.content).toContain("Resume generation has started");
     expect(confirmBody.data.raw.pendingActions ?? []).toHaveLength(0);
+    expect(confirmBody.data.assistantMessage.metadata?.productBlocks?.some((block) => block.type === "experience_candidate_form") ?? false).toBe(false);
+    expect(confirmBody.data.assistantMessage.metadata?.displaySnapshot?.productBlocks?.some((block) => block.type === "experience_candidate_form") ?? false).toBe(false);
+    expect(confirmBody.data.agentRoomEvents?.some((event) => event.agentName === "experience_receiver" && event.specialInfo?.kind === "experience_candidate_form") ?? false).toBe(false);
     expect(confirmBody.data.raw.actionResults?.some((item) => item.status === "needs_confirmation")).toBe(false);
     expect(generateSpy).not.toHaveBeenCalled();
     expect(confirmBody.data.raw.toolResults?.[0]).toMatchObject({
@@ -569,6 +701,15 @@ describe("Copilot routes on agent-core runtime", () => {
       headers: { "x-user-id": "user-1" },
     });
     expect(confirmResponse.statusCode).toBe(200);
+    expect(await kernel.productServices.experienceService.listExperiences("user-1")).toHaveLength(1);
+
+    const repeatedConfirmResponse = await server.inject({
+      method: "POST",
+      url: `/copilot/pending-actions/${pendingId}/confirm`,
+      headers: { "x-user-id": "user-1" },
+    });
+    expect(repeatedConfirmResponse.statusCode).toBe(200);
+    expect(await kernel.productServices.experienceService.listExperiences("user-1")).toHaveLength(1);
 
     // 4. Re-read history — pending action status should be "executed", preview still present
     const detailAfter = await server.inject({

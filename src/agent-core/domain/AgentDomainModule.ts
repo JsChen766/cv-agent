@@ -3,6 +3,8 @@ import type { PromptRegistry } from "../prompts/PromptRegistry.js";
 import type { Agent } from "../agents/BaseAgent.js";
 import type { AgentName } from "../validation/AgentOutputSchemas.js";
 import type { ToolDefinition } from "../tools/Tool.js";
+import type { AgentCapabilityModule } from "../capabilities/AgentCapabilityModule.js";
+import type { AgentManifest } from "./AgentManifest.js";
 
 export type AgentFactoryDeps = {
   modelClient?: ModelClient;
@@ -26,4 +28,8 @@ export type AgentDomainModule = {
   agents?: readonly AgentFactory[];
   /** Tool definitions — must have unique name */
   tools?: readonly ToolDefinition[];
+  /** Optional agent metadata for internal discovery and future routing. */
+  manifests?: readonly AgentManifest[];
+  /** Optional capability modules contributed by this domain. */
+  capabilities?: readonly AgentCapabilityModule[];
 };

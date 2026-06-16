@@ -6,6 +6,7 @@ import type {
   ListCopilotSessionsOptions,
 } from "./CopilotPersistence.js";
 import type { CopilotMessage, CopilotSession, CopilotTurn, CopilotWorkspace } from "../types.js";
+import { applySessionDisplay } from "../SessionDisplayProjector.js";
 
 export class InMemoryCopilotPersistence implements CopilotPersistence {
   public readonly sessions = new InMemoryCopilotSessionRepository();
@@ -20,26 +21,27 @@ export class InMemoryCopilotSessionRepository {
 
   public async createSession(session: CopilotSession): Promise<CopilotSession> {
     this.sessions.set(session.id, session);
-    return session;
+    return applySessionDisplay(session);
   }
 
   public async getSession(userId: string, sessionId: string): Promise<CopilotSession | null> {
     const session = this.sessions.get(sessionId);
-    return session?.userId === userId ? session : null;
+    return session?.userId === userId ? applySessionDisplay(session) : null;
   }
 
   public async updateSession(userId: string, sessionId: string, patch: Partial<CopilotSession>): Promise<CopilotSession | null> {
-    const current = await this.getSession(userId, sessionId);
-    if (!current) return null;
+    const current = this.sessions.get(sessionId);
+    if (!current || current.userId !== userId) return null;
     const next = { ...current, ...patch, id: current.id, userId: current.userId, updatedAt: patch.updatedAt ?? new Date().toISOString() };
     this.sessions.set(sessionId, next);
-    return next;
+    return applySessionDisplay(next);
   }
 
   public async listSessions(userId: string, options: ListCopilotSessionsOptions = {}): Promise<CopilotSession[]> {
     return limit(Array.from(this.sessions.values())
       .filter((session) => session.userId === userId && (!options.status || session.status === options.status))
-      .sort(descUpdated), options.limit);
+      .sort(descUpdated)
+      .map((session) => applySessionDisplay(session)), options.limit);
   }
 
   public archiveSession(userId: string, sessionId: string): Promise<CopilotSession | null> {

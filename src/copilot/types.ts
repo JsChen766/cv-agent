@@ -26,6 +26,15 @@ export type CopilotSession = {
   resumeArtifactIds?: string[];
   createdAt: string;
   updatedAt: string;
+  // ── Backend-derived display fields (see SessionDisplayProjector). ────
+  // The frontend renders these directly. It does NOT infer titles from
+  // message bodies or run keyword heuristics. If the API leaves these
+  // unset for some legacy code path, they are simply absent — never
+  // backfilled on the client.
+  displayTitle?: string | null;
+  displaySubtitle?: string | null;
+  sessionType?: string | null;
+  displayStatus?: string | null;
 };
 
 export type CopilotTurn = {
@@ -46,7 +55,17 @@ export type ProductBlock = {
   data: Record<string, unknown>;
 };
 
+export type CopilotMessageAttachment = {
+  id?: string;
+  fileId?: string;
+  originalName: string;
+  mimeType?: string;
+  size?: number;
+  kind?: "resume_upload" | "file";
+};
+
 export type CopilotMessageMetadata = {
+  attachments?: CopilotMessageAttachment[];
   productBlocks?: ProductBlock[];
   actionResult?: CopilotActionResult;
   /** Full workspace snapshot at this assistant turn for high-fidelity history restore. */
@@ -233,6 +252,15 @@ export type ProductVariant = {
   actions: ProductAction[];
   raw: Record<string, unknown>;
   createdAt: string;
+  // ── Product-level display metadata (mirrors ProductGeneratedVariant). ──
+  // Backend-generated; the frontend never infers these.
+  variantName?: string;
+  summary?: string;
+  scenario?: string;
+  advantages?: string[];
+  risks?: string[];
+  recommended?: boolean;
+  rank?: number;
   // Backward-compat aliases for migration
   /** @deprecated use content */
   after?: string;
@@ -258,6 +286,10 @@ export type ProductActionType =
   | "save_experience_from_text"
   | "save_experience_candidate"
   | "reject_experience_candidate"
+  | "acceptImportCandidate"
+  | "rejectImportCandidate"
+  | "accept_import_candidate"
+  | "reject_import_candidate"
   | "save_jd_from_text"
   | "update_experience"
   | "generate_from_jd"
@@ -311,6 +343,16 @@ export type CopilotClientState = {
   visibleArtifactIds?: string[];
   intentSource?: "composer" | "sidebar" | "artifact_action" | "asset_detail" | "system";
   sourceComponent?: string;
+  resumeUpload?: {
+    fileId: string;
+    originalName?: string;
+    mimeType?: string;
+    size?: number;
+    source?: string;
+  };
+  activeFileId?: string;
+  resumeFileId?: string;
+  uploadedFileId?: string;
   [key: string]: unknown;
 };
 

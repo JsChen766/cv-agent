@@ -250,7 +250,8 @@ describe("LLM generation error visibility and tolerant parsing", () => {
     });
     const genService = new LLMGenerationService(fakeModelClient(chatSpy));
 
-    const variants = await genService.generateVariants("user-1", "Vue role.", "Frontend Engineer", []);
+    const result = await genService.generateVariants("user-1", "Vue role.", "Frontend Engineer", []);
+    const variants = result.variants;
 
     expect(variants).toHaveLength(1);
     expect(variants[0].scores?.overall).toBe(0.85);
@@ -266,7 +267,8 @@ describe("LLM generation error visibility and tolerant parsing", () => {
     });
     const genService = new LLMGenerationService(fakeModelClient(chatSpy));
 
-    const variants = await genService.generateVariants("user-1", "Vue role.", undefined, []);
+    const result = await genService.generateVariants("user-1", "Vue role.", undefined, []);
+    const variants = result.variants;
 
     expect(variants).toHaveLength(1);
     expect(variants[0].content).toContain("Array-wrapped");
@@ -283,7 +285,8 @@ describe("LLM generation error visibility and tolerant parsing", () => {
     });
     const genService = new LLMGenerationService(fakeModelClient(chatSpy));
 
-    const variants = await genService.generateVariants("user-1", "Vue role.", undefined, []);
+    const result = await genService.generateVariants("user-1", "Vue role.", undefined, []);
+    const variants = result.variants;
 
     expect(variants).toHaveLength(1);
     expect(variants[0].content).toContain("Markdown wrapped");
@@ -295,7 +298,8 @@ describe("LLM generation error visibility and tolerant parsing", () => {
       .mockResolvedValueOnce({ content: JSON.stringify({ variants: [{ content: "Repaired resume variant.", score: { overall: 80 } }] }) });
     const genService = new LLMGenerationService(fakeModelClient(chatSpy));
 
-    const variants = await genService.generateVariants("user-1", "Vue role.", undefined, []);
+    const result = await genService.generateVariants("user-1", "Vue role.", undefined, []);
+    const variants = result.variants;
 
     expect(chatSpy).toHaveBeenCalledTimes(2);
     expect(variants).toHaveLength(1);

@@ -69,11 +69,13 @@ export async function registerAgentDebugRoutes(
       }, meta(kernel, ctx));
     }
     try {
-      const variants = await generationService.generateVariants(ctx.user.id, jdText, targetRole, []);
+      const result = await generationService.generateVariants(ctx.user.id, jdText, targetRole, []);
       return success({
         ok: true,
-        variantCount: variants.length,
-        variants,
+        variantCount: result.variants.length,
+        variants: result.variants,
+        recommendedVariantId: result.recommendedVariantId,
+        comparisonMatrix: result.comparisonMatrix,
         modelSource: resolved.source,
         ...(resolved.configSummary ? { modelConfig: resolved.configSummary } : {}),
       }, meta(kernel, ctx));

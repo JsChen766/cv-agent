@@ -281,7 +281,7 @@ describe("Copilot confirm contract", () => {
     expect(acceptBody.ok).toBe(true);
   });
 
-  it("confirm accept produces resumeId and workspace switches to resume_editor", async () => {
+  it("confirm accept produces resumeId, workspace switches to resume_editor, and returns export_resume nextAction", async () => {
     // Full setup
     const chatResponse = await server.inject({
       method: "POST",
@@ -345,6 +345,23 @@ describe("Copilot confirm contract", () => {
       const acceptWorkspace = confirmAcceptBody.data.workspace;
       expect(acceptWorkspace.activePanel).toBe("resume_editor");
       expect(acceptWorkspace.resumeId).toBeTruthy();
+
+      // Verify actionResult metadata includes resumeId + nextAction
+      const acceptActionResult = confirmAcceptBody.data.raw.actionResults?.find(
+        (item) => item.actionType === "accept_generation_variant",
+      );
+      expect(acceptActionResult).toBeTruthy();
+      expect(acceptActionResult?.metadata?.resumeId).toBeTruthy();
+      expect(acceptActionResult?.metadata?.generationId).toBeTruthy();
+      expect(acceptActionResult?.metadata?.variantId).toBeTruthy();
+      expect(acceptActionResult?.metadata?.nextAction).toBe("export_resume");
+
+      // Verify nextActions includes export_resume
+      const nextActions = confirmAcceptBody.data.nextActions ?? [];
+      const exportAction = nextActions.find((item) => item.type === "export_resume");
+      expect(exportAction).toBeTruthy();
+      expect(exportAction?.payload?.resumeId).toBeTruthy();
+      expect(exportAction?.primary).toBe(true);
     }
   });
 

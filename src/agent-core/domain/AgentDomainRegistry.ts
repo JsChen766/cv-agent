@@ -2,6 +2,8 @@ import type { AgentFactoryDeps, AgentDomainModule } from "./AgentDomainModule.js
 import type { Agent } from "../agents/BaseAgent.js";
 import type { AgentName } from "../validation/AgentOutputSchemas.js";
 import type { ToolDefinition } from "../tools/Tool.js";
+import type { AgentCapabilityModule } from "../capabilities/AgentCapabilityModule.js";
+import type { AgentManifest } from "./AgentManifest.js";
 
 export class AgentDomainRegistry {
   public constructor(private readonly domains: readonly AgentDomainModule[]) {}
@@ -20,6 +22,10 @@ export class AgentDomainRegistry {
   }
 
   public createTools(): ToolDefinition[] {
+    return this.listTools();
+  }
+
+  public listTools(): ToolDefinition[] {
     const seen = new Set<string>();
     const tools: ToolDefinition[] = [];
     for (const domain of this.domains) {
@@ -32,6 +38,14 @@ export class AgentDomainRegistry {
       }
     }
     return tools;
+  }
+
+  public listAgentManifests(): AgentManifest[] {
+    return this.domains.flatMap((domain) => [...(domain.manifests ?? [])]);
+  }
+
+  public listCapabilities(): AgentCapabilityModule[] {
+    return this.domains.flatMap((domain) => [...(domain.capabilities ?? [])]);
   }
 
   public listDomainIds(): string[] {

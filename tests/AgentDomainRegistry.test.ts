@@ -4,6 +4,7 @@ import { careerDomain } from "../src/agent-domains/career/index.js";
 import { createAgentTools } from "../src/agent-tools/index.js";
 import type { AgentDomainModule } from "../src/agent-core/domain/AgentDomainModule.js";
 import { PromptRegistry } from "../src/agent-core/prompts/PromptRegistry.js";
+import type { AgentCapabilityModule } from "../src/agent-core/capabilities/AgentCapabilityModule.js";
 
 describe("AgentDomainRegistry", () => {
   const promptRegistry = new PromptRegistry();
@@ -33,6 +34,47 @@ describe("AgentDomainRegistry", () => {
   it("listDomainIds returns domain ids", () => {
     const registry = new AgentDomainRegistry([careerDomain]);
     expect(registry.listDomainIds()).toEqual(["career"]);
+  });
+
+  it("lists tools through the domain registry without changing createTools output", () => {
+    const registry = new AgentDomainRegistry([careerDomain]);
+    const listed = registry.listTools();
+    const created = registry.createTools();
+
+    expect(listed.map((tool) => tool.name)).toEqual(created.map((tool) => tool.name));
+  });
+
+  it("returns empty manifests and capabilities when optional fields are absent", () => {
+    const registry = new AgentDomainRegistry([careerDomain]);
+
+    expect(registry.listAgentManifests()).toEqual([]);
+    expect(registry.listCapabilities()).toEqual([]);
+  });
+
+  it("lists optional manifests and capabilities without creating agents", () => {
+    const capability: AgentCapabilityModule = { id: "domain.capability" };
+    const domain: AgentDomainModule = {
+      id: "manifested",
+      manifests: [
+        {
+          name: "frontdesk",
+          domainId: "manifested",
+          roleLabel: { "zh-CN": "前台接待 Agent", en: "Front Desk Agent" },
+          description: "Routes incoming requests.",
+          promptKey: "frontdesk",
+          allowedTools: [],
+          capabilities: ["routing"],
+          intents: ["request.route"],
+        },
+      ],
+      capabilities: [capability],
+    };
+    const registry = new AgentDomainRegistry([domain]);
+
+    expect(registry.listAgentManifests()).toEqual(domain.manifests);
+    expect(registry.listCapabilities()).toEqual([capability]);
+    expect(registry.createAgents({ promptRegistry })).toEqual({});
+    expect(registry.createTools()).toEqual([]);
   });
 });
 

@@ -67,6 +67,11 @@ export async function registerExportRoutes(app: FastifyInstance, kernel: ApiKern
     const result = await kernel.exportService.readDownload(ctx.user.id, param(request, "id"));
     const contentType = result.exportRecord.format === "pdf" ? "application/pdf" : "text/html; charset=utf-8";
     reply.header("content-type", contentType);
+    if (result.exportRecord.format === "pdf" && result.fileBuffer) {
+      const filename = await buildDownloadFilename(kernel, ctx.user.id, result.exportRecord.resumeId, "pdf");
+      reply.header("content-disposition", `attachment; filename="${filename}"`);
+      return result.fileBuffer;
+    }
     return result.fileText;
   });
 
@@ -84,4 +89,25 @@ function readFormat(value: unknown): ResumeExportFormat {
   if (value === undefined || value === "html") return "html";
   if (value === "pdf") return "pdf";
   throw new ApiError(ErrorCodes.INVALID_BODY, "format must be html or pdf.", 400);
+}
+
+async function buildDownloadFilename(kernel: ApiKernel, userId: string, resumeId: string, extension: string): Promise<string> {
+  try {
+    const resume = await kernel.productServices.resumeService.getResume(userId, resumeId);
+    const base = sanitizeForContentDisposition(resume?.title) || resumeId;
+    return `${base}.${extension}`;
+  } catch {
+    return `${resumeId}.${extension}`;
+  }
+}
+
+function sanitizeForContentDisposition(title: string | undefined): string {
+  if (!title) return "";
+  // RFC 6266: keep ASCII-safe characters in the unquoted-style filename, and
+  // collapse anything else to underscores so curl / browsers don't choke.
+  return title
+    .replace(/[\\/:*?"<>|\r\n]/g, "_")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 80);
 }

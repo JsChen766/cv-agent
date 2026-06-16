@@ -3,7 +3,7 @@ import { z } from "zod";
 import type { ModelClient } from "../agent-core/model/ModelClient.js";
 import { PromptRegistry } from "../agent-core/prompts/PromptRegistry.js";
 import { extractJsonCandidates } from "../infrastructure/llm/JsonOutputParser.js";
-import type { ProductExperienceSummary, ProductGeneratedVariant } from "./types.js";
+import type { ProductExperienceSummary, ProductGeneratedVariant, VariantComparisonMatrixRow } from "./types.js";
 import type { EvidencePack } from "../rag/evidence/index.js";
 import type { InstructionPack } from "../rag/guideline/index.js";
 import type { GroundingContext } from "../rag/types.js";
@@ -145,10 +145,74 @@ function normalizeMissingInfo(raw: unknown): string[] | undefined {
   return items.length > 0 ? items : undefined;
 }
 
+
+function normalizeStringArray(raw: unknown, max: number, perItemMax: number): string[] | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  const items = raw
+    .filter((v): v is string => typeof v === "string")
+    .map((v) => v.trim())
+    .filter(Boolean)
+    .slice(0, max)
+    .map((v) => (v.length > perItemMax ? `${v.slice(0, perItemMax - 1).trimEnd()}…` : v));
+  return items.length > 0 ? items : undefined;
+}
+
+function normalizeShortString(raw: unknown, max: number): string | undefined {
+  if (typeof raw !== "string") return undefined;
+  const trimmed = raw.trim();
+  if (!trimmed) return undefined;
+  return trimmed.length > max ? `${trimmed.slice(0, max - 1).trimEnd()}…` : trimmed;
+}
+
+function normalizeBool(raw: unknown): boolean | undefined {
+  if (typeof raw === "boolean") return raw;
+  if (typeof raw === "string") {
+    const lower = raw.trim().toLowerCase();
+    if (lower === "true" || lower === "yes" || lower === "1") return true;
+    if (lower === "false" || lower === "no" || lower === "0") return false;
+  }
+  return undefined;
+}
+
+function normalizeRank(raw: unknown): number | undefined {
+  if (typeof raw === "number" && Number.isFinite(raw) && raw > 0) return Math.floor(raw);
+  if (typeof raw === "string") {
+    const parsed = Number(raw);
+    if (Number.isFinite(parsed) && parsed > 0) return Math.floor(parsed);
+  }
+  return undefined;
+}
+
+function normalizeComparisonMatrix(raw: unknown): VariantComparisonMatrixRow[] | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  const rows: VariantComparisonMatrixRow[] = [];
+  for (const entry of raw) {
+    if (!isRecord(entry)) continue;
+    const dimension = typeof entry.dimension === "string" ? entry.dimension.trim() : "";
+    if (!dimension) continue;
+    const valuesRaw = entry.values;
+    if (!isRecord(valuesRaw)) continue;
+    const values: Record<string, string> = {};
+    for (const [key, value] of Object.entries(valuesRaw)) {
+      if (typeof value === "string") values[key] = value.trim();
+      else if (typeof value === "number") values[key] = String(value);
+    }
+    if (Object.keys(values).length === 0) continue;
+    rows.push({ dimension: dimension.length > 12 ? `${dimension.slice(0, 11)}…` : dimension, values });
+  }
+  return rows.length > 0 ? rows.slice(0, 8) : undefined;
+}
+
+function normalizeSourceExperienceIds(raw: unknown): string[] {
+  if (!Array.isArray(raw)) return [];
+  return Array.from(new Set(raw.filter((v): v is string => typeof v === "string" && v.trim().length > 0).map((v) => v.trim())));
+}
+
 function normalizeStringIds(raw: unknown): string[] {
   if (!Array.isArray(raw)) return [];
   return Array.from(new Set(raw.filter((v): v is string => typeof v === "string" && v.trim().length > 0).map((v) => v.trim())));
 }
+
 
 function normalizeGroundingTrace(raw: unknown): ProductGeneratedVariant["groundingTrace"] | undefined {
   if (!Array.isArray(raw)) return undefined;
@@ -194,11 +258,20 @@ function normalizeVariant(raw: unknown, index: number): NormalizedVariant | null
     riskSummary: normalizeRiskSummary(raw.riskSummary),
     missingInfo: normalizeMissingInfo(raw.missingInfo),
     groundingTrace: normalizeGroundingTrace(raw.groundingTrace),
+    variantName: normalizeShortString(raw.variantName ?? raw.name, 12),
+    summary: normalizeShortString(raw.summary ?? raw.summaryLine, 32),
+    scenario: normalizeShortString(raw.scenario ?? raw.position, 14),
+    advantages: normalizeStringArray(raw.advantages ?? raw.strengths ?? raw.pros, 4, 14),
+    risks: normalizeStringArray(raw.risks ?? raw.cautions ?? raw.cons, 3, 18),
+    recommended: normalizeBool(raw.recommended ?? raw.preferred ?? raw.isRecommended),
+    rank: normalizeRank(raw.rank),
   };
 }
 
 function normalizeGenerationResult(raw: unknown): {
   variants: NormalizedVariant[];
+  recommendedVariantKey?: string;
+  comparisonMatrix?: VariantComparisonMatrixRow[];
 } {
   if (Array.isArray(raw)) {
     return { variants: normalizeVariantList(raw) };
@@ -207,7 +280,11 @@ function normalizeGenerationResult(raw: unknown): {
     const variants = Array.isArray(raw.variants)
       ? normalizeVariantList(raw.variants)
       : [];
-    return { variants };
+    const recommendedVariantKey = typeof raw.recommendedVariantId === "string"
+      ? raw.recommendedVariantId.trim() || undefined
+      : undefined;
+    const comparisonMatrix = normalizeComparisonMatrix(raw.comparisonMatrix);
+    return { variants, recommendedVariantKey, comparisonMatrix };
   }
   return { variants: [] };
 }
@@ -249,6 +326,13 @@ type NormalizedVariant = {
   };
   missingInfo?: string[];
   groundingTrace?: ProductGeneratedVariant["groundingTrace"];
+  variantName?: string;
+  summary?: string;
+  scenario?: string;
+  advantages?: string[];
+  risks?: string[];
+  recommended?: boolean;
+  rank?: number;
 };
 
 // ═══════════════════════════════════════════════════════════════
@@ -293,10 +377,24 @@ const NormalizedVariantSchema = z.object({
     confidence: z.number().min(0).max(1),
     reason: z.string(),
   })).optional(),
+  variantName: z.string().optional(),
+  summary: z.string().optional(),
+  scenario: z.string().optional(),
+  advantages: z.array(z.string()).optional(),
+  risks: z.array(z.string()).optional(),
+  recommended: z.boolean().optional(),
+  rank: z.number().int().positive().optional(),
+});
+
+const ComparisonMatrixRowSchema = z.object({
+  dimension: z.string(),
+  values: z.record(z.string(), z.string()),
 });
 
 const NormalizedGenerationResultSchema = z.object({
   variants: z.array(NormalizedVariantSchema).min(1).max(5),
+  recommendedVariantKey: z.string().optional(),
+  comparisonMatrix: z.array(ComparisonMatrixRowSchema).optional(),
 });
 
 // ═══════════════════════════════════════════════════════════════
@@ -457,6 +555,12 @@ function buildEvidenceGroundedUserPrompt(input: {
 // Service
 // ═══════════════════════════════════════════════════════════════
 
+export type LLMGeneratedVariantsResult = {
+  variants: ProductGeneratedVariant[];
+  recommendedVariantId?: string;
+  comparisonMatrix?: VariantComparisonMatrixRow[];
+};
+
 export class LLMGenerationService {
   public constructor(private readonly modelClient: ModelClient) {}
 
@@ -465,9 +569,9 @@ export class LLMGenerationService {
     jdText: string,
     targetRole: string | undefined,
     experiences: ProductExperienceSummary[],
-  ): Promise<ProductGeneratedVariant[]> {
+  ): Promise<LLMGeneratedVariantsResult> {
     const result = await this.tryGenerate(jdText, targetRole, experiences);
-    return this.toGeneratedVariants(userId, result.variants);
+    return this.toGeneratedResult(userId, result);
   }
 
   public async generateVariantsWithEvidenceContext(input: {
@@ -475,7 +579,7 @@ export class LLMGenerationService {
     jdText: string;
     targetRole?: string;
     evidencePack: EvidencePack;
-  }): Promise<ProductGeneratedVariant[]> {
+  }): Promise<LLMGeneratedVariantsResult> {
     return this.generateVariantsWithGroundingContext(input);
   }
 
@@ -486,14 +590,18 @@ export class LLMGenerationService {
     evidencePack?: EvidencePack;
     instructionPack?: InstructionPack;
     groundingContext?: GroundingContext;
-  }): Promise<ProductGeneratedVariant[]> {
+  }): Promise<LLMGeneratedVariantsResult> {
     if (!input.evidencePack) {
-      const result = await this.tryGenerateFromPrompt(buildUserPrompt(input.jdText, input.targetRole, []), {
-        targetRole: input.targetRole,
-        guidelineOnly: Boolean(input.instructionPack),
-      });
-      return this.toGeneratedVariants(input.userId, result.variants);
+      const result = await this.tryGenerateFromPrompt(
+        buildUserPrompt(input.jdText, input.targetRole, []),
+        {
+          targetRole: input.targetRole,
+          guidelineOnly: Boolean(input.instructionPack),
+        },
+      );
+      return this.toGeneratedResult(input.userId, result);
     }
+
     const evidencePack = input.evidencePack;
     const userPrompt = buildEvidenceGroundedUserPrompt({
       jdText: input.jdText,
@@ -508,26 +616,46 @@ export class LLMGenerationService {
       guidelineRuleCount: input.instructionPack?.writingRules.length ?? 0,
       targetRole: input.targetRole,
     });
-    const variants = this.toGeneratedVariants(input.userId, result.variants);
-    const fallbackExperienceIds = Array.from(new Set(evidencePack.allowedClaims.map((claim) => claim.experienceId))).slice(0, 12);
-    const fallbackEvidenceIds = evidencePack.allowedClaims.map((claim) => claim.claimId ?? claim.id).slice(0, 20);
-    return variants.map((variant) => ({
-      ...variant,
-      sourceExperienceIds: variant.sourceExperienceIds && variant.sourceExperienceIds.length > 0
-        ? variant.sourceExperienceIds
-        : fallbackExperienceIds,
-      sourceEvidenceIds: variant.sourceEvidenceIds && variant.sourceEvidenceIds.length > 0
-        ? variant.sourceEvidenceIds
-        : fallbackEvidenceIds,
-      evidenceSummary: variant.evidenceSummary ?? buildDefaultEvidenceSummary(evidencePack),
-      riskSummary: variant.riskSummary ?? buildDefaultRiskSummary(evidencePack),
-      missingInfo: variant.missingInfo ?? evidencePack.missingRequirements.map((item) => `Confirm or add evidence for: ${item.requirementText}`).slice(0, 8),
-    }));
+
+    const generated = this.toGeneratedResult(input.userId, result);
+    const fallbackExperienceIds = Array.from(
+      new Set(evidencePack.allowedClaims.map((claim) => claim.experienceId)),
+    ).slice(0, 12);
+    const fallbackEvidenceIds = evidencePack.allowedClaims
+      .map((claim) => claim.claimId ?? claim.id)
+      .slice(0, 20);
+
+    return {
+      ...generated,
+      variants: generated.variants.map((variant) => ({
+        ...variant,
+        sourceExperienceIds:
+          variant.sourceExperienceIds && variant.sourceExperienceIds.length > 0
+            ? variant.sourceExperienceIds
+            : fallbackExperienceIds,
+        sourceEvidenceIds:
+          variant.sourceEvidenceIds && variant.sourceEvidenceIds.length > 0
+            ? variant.sourceEvidenceIds
+            : fallbackEvidenceIds,
+        evidenceSummary:
+          variant.evidenceSummary ?? buildDefaultEvidenceSummary(evidencePack),
+        riskSummary:
+          variant.riskSummary ?? buildDefaultRiskSummary(evidencePack),
+        missingInfo:
+          variant.missingInfo ??
+          evidencePack.missingRequirements
+            .map((item) => `Confirm or add evidence for: ${item.requirementText}`)
+            .slice(0, 8),
+      })),
+    };
   }
 
-  private toGeneratedVariants(userId: string, variants: NormalizedVariant[]): ProductGeneratedVariant[] {
+  private toGeneratedResult(
+    userId: string,
+    result: z.infer<typeof NormalizedGenerationResultSchema>,
+  ): LLMGeneratedVariantsResult {
     const now = new Date().toISOString();
-    return variants.map((variant) => ({
+    const variants: ProductGeneratedVariant[] = result.variants.map((variant) => ({
       id: `pvar-${randomUUID()}`,
       userId,
       content: variant.content,
@@ -538,15 +666,85 @@ export class LLMGenerationService {
         overall: variant.scores.overall,
         relevance: variant.scores.relevance,
         evidenceStrength: variant.scores.evidenceStrength,
-        ...(variant.scores.quantifiedImpact != null ? { quantifiedImpact: variant.scores.quantifiedImpact } : {}),
-        ...(variant.scores.clarity != null ? { clarity: variant.scores.clarity } : {}),
+        ...(variant.scores.quantifiedImpact != null
+          ? { quantifiedImpact: variant.scores.quantifiedImpact }
+          : {}),
+        ...(variant.scores.clarity != null
+          ? { clarity: variant.scores.clarity }
+          : {}),
       },
       evidenceSummary: variant.evidenceSummary,
       riskSummary: variant.riskSummary,
       missingInfo: variant.missingInfo,
       groundingTrace: variant.groundingTrace,
+      variantName: variant.variantName,
+      summary: variant.summary,
+      scenario: variant.scenario,
+      advantages: variant.advantages,
+      risks: variant.risks,
+      recommended: variant.recommended,
+      rank: variant.rank,
       createdAt: now,
     }));
+
+    const idByKey = new Map<string, string>();
+    variants.forEach((variant, index) => {
+      idByKey.set(`v${index}`, variant.id);
+      idByKey.set(String(index), variant.id);
+      idByKey.set(variant.id, variant.id);
+    });
+
+    const recommendedFromLlm = result.recommendedVariantKey
+      ? idByKey.get(result.recommendedVariantKey)
+      : undefined;
+    const recommendedFromFlag = variants.find((variant) => variant.recommended)?.id;
+    const recommendedByScore = (() => {
+      if (variants.length === 0) return undefined;
+      let best = variants[0];
+      for (const variant of variants) {
+        if ((variant.scores?.overall ?? 0) > (best.scores?.overall ?? 0)) {
+          best = variant;
+        }
+      }
+      return best.id;
+    })();
+    const recommendedVariantId =
+      recommendedFromLlm ?? recommendedFromFlag ?? recommendedByScore;
+
+    if (recommendedVariantId) {
+      for (const variant of variants) {
+        variant.recommended = variant.id === recommendedVariantId;
+      }
+    }
+
+    const ranked = [...variants].sort((a, b) => {
+      if (a.id === recommendedVariantId) return -1;
+      if (b.id === recommendedVariantId) return 1;
+      return (b.scores?.overall ?? 0) - (a.scores?.overall ?? 0);
+    });
+    ranked.forEach((variant, index) => {
+      if (variant.rank == null) variant.rank = index + 1;
+    });
+
+    const comparisonMatrix = result.comparisonMatrix
+      ?.map((row) => ({
+        dimension: row.dimension,
+        values: Object.fromEntries(
+          Object.entries(row.values)
+            .map(([key, value]) => [idByKey.get(key) ?? key, value])
+            .filter(([key]) => variants.some((variant) => variant.id === key)),
+        ),
+      }))
+      .filter((row) => Object.keys(row.values).length > 0);
+
+    return {
+      variants,
+      recommendedVariantId,
+      comparisonMatrix:
+        comparisonMatrix && comparisonMatrix.length > 0
+          ? comparisonMatrix
+          : undefined,
+    };
   }
 
   private async tryGenerate(

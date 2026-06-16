@@ -121,6 +121,22 @@ export type ProductGeneratedVariant = {
     confidence: number;
     reason: string;
   }>;
+  // ── Product-level display metadata (filled by LLM, defaulted by helpers) ──
+  // The frontend renders these directly in VariantCompareBoard. They are
+  // never inferred from content keywords or scores on the client.
+  variantName?: string;       // e.g. "技术栈强化版"
+  summary?: string;           // ≤30 chars, one-sentence pitch
+  scenario?: string;          // ≤12 chars, role-fit positioning
+  advantages?: string[];      // 2-4 short positive points
+  risks?: string[];           // 1-3 short user-facing caveats
+  recommended?: boolean;      // exactly one variant true within a generation
+  rank?: number;              // 1 = top recommendation
+};
+
+export type VariantComparisonMatrixRow = {
+  dimension: string;
+  /** Maps variant id → cell text. Empty/missing cells render as "—". */
+  values: Record<string, string>;
 };
 
 export type ProductGeneration = {

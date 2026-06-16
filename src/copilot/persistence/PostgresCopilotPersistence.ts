@@ -2,6 +2,7 @@ import type { PostgresDatabase } from "../../persistence/postgres/PostgresDataba
 import { jsonValue, optionalText, text, timestamp, type PgRow } from "../../persistence/postgres/rowUtils.js";
 import type { CopilotMessage, CopilotSession, CopilotTurn, CopilotWorkspace } from "../types.js";
 import { normalizeCopilotMessage, normalizeCopilotWorkspace, normalizeCopilotTurn } from "../normalize.js";
+import { applySessionDisplay } from "../SessionDisplayProjector.js";
 import type {
   CopilotActivity,
   CopilotPersistence,
@@ -48,7 +49,7 @@ export class PostgresCopilotSessionRepository {
         JSON.stringify(session.resumeArtifactIds ?? []), session.createdAt, session.updatedAt,
       ],
     );
-    return session;
+    return applySessionDisplay(session);
   }
 
   public async getSession(userId: string, sessionId: string): Promise<CopilotSession | null> {
@@ -232,7 +233,7 @@ export class PostgresCopilotActivityRepository {
 }
 
 function toSession(row: PgRow): CopilotSession {
-  return {
+  return applySessionDisplay({
     id: text(row, "id"),
     userId: text(row, "user_id"),
     title: optionalText(row, "title") ?? null,
@@ -246,7 +247,7 @@ function toSession(row: PgRow): CopilotSession {
     resumeArtifactIds: jsonValue<string[]>(row, "resume_artifact_ids_json", []),
     createdAt: timestamp(row, "created_at"),
     updatedAt: timestamp(row, "updated_at"),
-  };
+  });
 }
 
 function toMessage(row: PgRow): CopilotMessage {

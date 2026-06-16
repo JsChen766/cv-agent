@@ -1,7 +1,7 @@
 import type { ToolDefinition } from "../../agent-core/tools/Tool.js";
 import { TextInputSchema, ToolResultSchema } from "../../agent-core/validation/ToolInputSchemas.js";
 import { extractExperienceDraftFromText } from "./helpers.js";
-import { extractedCandidateToDraft } from "../../product/LLMExperienceExtractor.js";
+import { detectDominantLanguage, extractedCandidateToDraft } from "../../product/LLMExperienceExtractor.js";
 import { buildNormalizedExperiencePreview } from "../../product/experiencePreview.js";
 import { isDeterministicFallbackAllowed, llmNotAvailableResult } from "../../product/deterministicFallbackGuard.js";
 
@@ -17,13 +17,14 @@ export function prepareSaveExperienceFromTextTool(): ToolDefinition {
     riskLevel: "low",
     execute: async (input, context) => {
       const text = String(input.text);
+      const inputLanguage = detectDominantLanguage(text);
       const llmExtractor = context.kernel.llmExperienceExtractor;
 
       // Primary path: LLM extraction
       if (llmExtractor) {
         const candidates = await llmExtractor.extractCandidates(text);
         if (candidates.length > 0) {
-          const converted = extractedCandidateToDraft(candidates[0]);
+          const converted = extractedCandidateToDraft(candidates[0], inputLanguage);
           const draft = {
             category: converted.category,
             title: converted.title,
@@ -35,7 +36,7 @@ export function prepareSaveExperienceFromTextTool(): ToolDefinition {
             tags: converted.tags,
             structured: converted.structured as ReturnType<typeof extractExperienceDraftFromText>["structured"],
             confidence: converted.confidence,
-            warnings: converted.warnings,
+            warnings: withExternalLookupWarning(converted.warnings, text),
           };
           return {
             status: "success",
@@ -70,6 +71,8 @@ export function prepareSaveExperienceFromTextTool(): ToolDefinition {
 
       // Deterministic fallback (test mode only)
       const draft = extractExperienceDraftFromText(text);
+      draft.structured = { ...(draft.structured as Record<string, unknown>), inputLanguage } as unknown as ReturnType<typeof extractExperienceDraftFromText>["structured"];
+      draft.warnings = withExternalLookupWarning(draft.warnings, text);
       return {
         status: "success",
         message: "Prepared structured experience draft preview.",
@@ -90,4 +93,11 @@ export function prepareSaveExperienceFromTextTool(): ToolDefinition {
       };
     },
   };
+}
+
+function withExternalLookupWarning(warnings: string[] | undefined, text: string): string[] {
+  const base = warnings ?? [];
+  if (!/online|web|internet|search|google|find more|learn more|more details|上网|网上|联网|搜索|更多细节|了解.*细节/i.test(text)) return base;
+  const warning = "External details are unverified and can be added later.";
+  return base.includes(warning) ? base : [...base, warning];
 }
