@@ -1499,7 +1499,46 @@ function agentLabel(agentName: AgentName, locale: CopilotLocale = "zh-CN"): stri
 }
 
 function localeFor(run: RunState): CopilotLocale {
-  return detectLocale(run.context.userMessage, run.context.clientState);
+  return inferLocaleForRun(run);
+}
+
+/**
+ * Locale inference for system-injected userMessages.
+ *
+ * `request_explicit_action` and confirmation flows synthesise userMessages
+ * like `[action] generate_resume_from_jd` or `[confirm] save_jd`, which are
+ * pure ASCII and would always trip `detectLocale` into picking "en" — even
+ * for sessions whose entire chat history has been Chinese. To avoid that we:
+ *   1. Honour an explicit `clientState.locale` first (most reliable signal).
+ *   2. If the current `userMessage` is a `[action] ...` / `[confirm] ...`
+ *      placeholder, walk back through `workspace.handoffs[].userGoal` for the
+ *      most recent natural-language turn and detect from that instead.
+ *   3. Otherwise fall back to `detectLocale(userMessage, clientState)`.
+ *
+ * Public contract is unchanged: only this internal helper now knows about
+ * the placeholder convention; `detectLocale` keeps its existing signature.
+ */
+export function inferLocaleForRun(run: RunState): CopilotLocale {
+  const clientState = run.context.clientState;
+  const requested = clientState?.locale?.toLowerCase();
+  if (requested?.startsWith("zh")) return "zh-CN";
+  if (requested?.startsWith("en")) return "en";
+
+  const message = run.context.userMessage ?? "";
+  if (isSystemInjectedUserMessage(message)) {
+    const handoffs = run.workspace?.handoffs ?? [];
+    for (let i = handoffs.length - 1; i >= 0; i -= 1) {
+      const goal = handoffs[i]?.userGoal;
+      if (typeof goal === "string" && goal.trim() && !isSystemInjectedUserMessage(goal)) {
+        return detectLocale(goal, clientState);
+      }
+    }
+  }
+  return detectLocale(message, clientState);
+}
+
+function isSystemInjectedUserMessage(message: string): boolean {
+  return /^\[(action|confirm)\]\s/.test(message);
 }
 
 function t(run: RunState, key: RuntimeTextKey): string {
