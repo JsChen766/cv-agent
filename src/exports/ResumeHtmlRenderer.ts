@@ -1,12 +1,14 @@
 import type { ProductResumeDetail } from "../product/types.js";
 import type { ResumeTemplate } from "./templates/defaultTemplate.js";
 import { defaultTemplate } from "./templates/defaultTemplate.js";
+import { onePageModernTemplate } from "./templates/onePageModernTemplate.js";
 
 export class ResumeHtmlRenderer {
   private readonly templates = new Map<string, ResumeTemplate>();
 
   public constructor() {
     this.register(defaultTemplate());
+    this.register(onePageModernTemplate());
   }
 
   public register(template: ResumeTemplate): void {

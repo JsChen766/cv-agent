@@ -741,6 +741,75 @@ tests/pdfExportPipeline.test.ts
 
 ---
 
+## 阶段 4 完成情况记录（执行回顾）
+
+阶段 4 已落地，HEAD = 阶段 4 commit；working tree clean。下面是给前端 / 接入方的对外回顾（基于本次实际改动）。
+
+### 4.1 改动清单
+
+- 新增 `src/exports/templates/onePageModernTemplate.ts`：A4 单栏 sans-serif 模板，配套 PRINT_CSS（@page A4 / 18mm margin / 深灰 `#1f2937` 强调 / `Segoe UI · PingFang SC · Microsoft YaHei` 字体栈 / standard 行高 1.5），`page-break-inside: avoid` 用于 item / bullet。
+- `src/exports/ResumeHtmlRenderer.ts` 构造函数追加 `this.register(onePageModernTemplate())`；`render(resume, templateId?)` 签名不变；未知 `templateId` 仍 fallback 到 `default`。
+- `src/exports/index.ts` barrel 导出 `onePageModernTemplate`，方便外部以 `import { onePageModernTemplate } from "../src/exports/index.js"` 引用。
+- 新增 `tests/onePageModernTemplate.test.ts`，10 个用例，分六组：注册契约、defaultTemplate 零回归、A4 视觉契约、中文渲染、Phase 3 结构化数据路径、旧路径 + skill section + PDF e2e（FakePdfRenderer）。
+- defaultTemplate.ts 字节不变；阶段 4 不修改任何阶段 0-3 文件。
+
+### 4.2 关键设计
+
+1. **两条数据路径并存（硬性约束）**
+   - **结构化路径（Phase 3+）**：模板按 `item.metadata.sectionType` 分组 → 按 `metadata.sectionOrder` 排序 → 渲染 header（`<title> · <subtitle> · <period> · <location>`）+ `<ul class="bullets">`，并把 `metadata.itemId` / `bulletIds[i]` 映射成 `data-item-id` / `data-bullet-id`，供未来 Fit Engine、AB 高亮、可点击锚点等场景使用。
+   - **旧路径（Phase ≤ 2）**：缺 metadata 结构化键 + 单段 contentSnapshot 时，模板把整段文本作为 `<p class="item-body">` 渲染，不输出 `data-item-id`，不强行拆分 header。
+   - 两条路径使用同一 `parseContentSnapshot` 解析器：识别行首 `- / • / *` 为 bullet，否则首行作为 header。
+2. **section 排序硬编码**：`summary → experience → project → education → skill → award → other`。前端如需自定义顺序，请在阶段 6 引入 `templateOptions.sectionOrder`。
+3. **density 仅作预留**：`<main class="resume density-${d}" data-density="${d}">` 三档（`comfortable / standard / compact`）CSS 已写好，但本阶段**不做**自动切换。当前总是 `standard`（来源：`resume.metadata?.density`，今天总是 undefined）。Fit Engine（阶段 5）将通过传入 `resume.metadata.density` 切档。
+4. **不做的事（边界严格遵守）**：DOM 高度测量、自动压缩、删 bullet、动态字号、自动换页 — 全部留给阶段 5。本模板对超长内容**自然换页到第二页**，仅靠 `page-break-inside: avoid` 防止 item / bullet 被切。
+5. **defaultTemplate 字节不变**：测试 `renders byte-identical HTML to defaultTemplate() when templateId is omitted` 直接断言 `renderer.render(resume) === defaultTemplate().render({ resume })`，确保旧客户端零回归。
+
+### 4.3 验收
+
+- `npm run typecheck`：通过。
+- `npm test`：70 文件 / 646 用例全绿（阶段 3 是 69/636 → 阶段 4 +1 文件 / +10 用例）。
+- 新模板测试覆盖：
+  - 注册：`listTemplateIds()` 返回 `["default", "one-page-modern"]`。
+  - Fallback：未知 `templateId` 走 default。
+  - 零回归：HTML 输出与 `defaultTemplate().render({ resume })` 字节相同。
+  - 视觉契约：`@page` / `size: A4` / `data-template="one-page-modern"` / `data-density="standard"` / `page-break-inside: avoid` 全部命中。
+  - 中文渲染：标题、header、bullet、period 区域中文字符无 escape 错误。
+  - Phase 3 结构化路径：experience 在 education 之前；`sectionOrder` 1 在 2 之前；`data-item-id` / `data-bullet-id` 全部输出；period 被正确从 header 拆出。
+  - 旧路径：单段 contentSnapshot → `<p class="item-body">`，不输出 bullets / itemId。
+  - hidden=true 的 item 被剔除。
+  - skill section：按 `, ， ; ； 、` 五种分隔符切割成 `<span class="skill-chip">`。
+  - PDF e2e（FakePdfRenderer）：`POST /exports/resumes/:id { format: "pdf", templateId: "one-page-modern" }` 通过 JobRunner 跑通，`ResumeExport.templateId === "one-page-modern"`，adapter 收到的 HTML 含 `data-template="one-page-modern"`，下载二进制以 `%PDF-` 开头。
+
+### 4.4 对外 API 与契约影响（前端 / 接入方必读）
+
+**新增能力**
+
+- `POST /exports/resumes/:resumeId` 的 body 现在可选传 `templateId: "one-page-modern"`：
+  ```json
+  { "format": "pdf", "templateId": "one-page-modern" }
+  { "format": "html", "templateId": "one-page-modern" }
+  ```
+  HTML 与 PDF 两种 format 通用。`ResumeExport.templateId` 字段会回写为请求的 templateId（持久化到 `resume_export.template_id` 列）。
+- 新模板的 HTML 在每个结构化（Phase 3+）item 上输出 `data-item-id="<itemId>"`、每条 bullet 上输出 `data-bullet-id="<bulletId>"`，每个 section 上输出 `data-section-type="experience|project|..."`。前端可以基于这些 hook 实现：item 锚点跳转、bullet 级 AB 对比高亮、section 级折叠预览。
+- 模板根节点 `<main class="resume density-standard" data-template="one-page-modern" data-density="standard">` 是稳定 hook。
+
+**未变化（保证零回归）**
+
+- 不传 `templateId` 或传未知值仍走 `defaultTemplate`，HTML 字节与阶段 0-3 完全相同。
+- 现有 `GET /exports/:id/download` 行为不变（PDF 走 `application/pdf`，HTML 走 `text/html`，Content-Disposition 仍保留阶段 3 的 RFC 5987 处理）。
+- 旧 ProductResumeItem（无结构化 metadata）在新模板下也能渲染，不需要任何数据迁移。
+- defaultTemplate 字节级不变（有零回归测试守护）。
+
+**前端建议**
+
+- 简历预览下拉框可以新增 "One Page Modern (A4)" 选项，与默认模板并列。
+- 切换模板时只需把 `templateId` 透传给 export API；不需要任何额外字段。
+- 想抓 print 预览，可在浏览器 DevTools 里通过 `[data-template="one-page-modern"]` 选择器定位根节点。
+- 阶段 5 会把 `density` 拨到 `compact` 来实现一页自动适配；前端**不要**预先在 UI 暴露 density 切换 — 那是 Fit Engine 的职责。
+- 如果当前列表里用户的简历是阶段 3 之前生成的（`metadata` 为空对象），新模板会自动走旧路径，不会爆掉，但 bullet / period 拆分会受限；这是预期行为。
+
+---
+
 # 阶段 5：实现一页 Fit Engine v1：测量是否超页
 
 ## 目标
