@@ -8,6 +8,7 @@ export * from "./ResumeFitService.js";
 export * from "./ResumeHtmlRenderer.js";
 export * from "./ResumeLLMFitEditor.js";
 export * from "./ResumeQualityService.js";
+export * from "./ResumeQualityCriticService.js";
 export * from "./templates/defaultTemplate.js";
 export * from "./templates/onePageModernTemplate.js";
 export * from "./types.js";

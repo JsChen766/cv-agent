@@ -28,6 +28,12 @@ import {
   type ResumeFitEditorReport,
 } from "./ResumeLLMFitEditor.js";
 import { ResumeQualityService, type ResumeQualityReport } from "./ResumeQualityService.js";
+import {
+  ResumeQualityCriticService,
+  buildCriticBulletProvenance,
+  mergeCriticReview,
+  type ResumeQualityCriticReview,
+} from "./ResumeQualityCriticService.js";
 import { PromptRegistry } from "../agent-core/prompts/PromptRegistry.js";
 import type { ModelClient } from "../agent-core/model/ModelClient.js";
 import type { ProductJDRecord } from "../product/types.js";
@@ -198,7 +204,25 @@ export class ResumeExportService {
       // the export proceeds without `qualityReport`. Phase 8 is warn-only —
       // even `hasCriticalRisks=true` is metadata only and does NOT block
       // export or trigger a confirmation loop.
-      const qualityReport = await this.maybeEvaluateQuality(resume, record, finalFitReport, compressionReport, editReport);
+      let qualityReport = await this.maybeEvaluateQuality(resume, record, finalFitReport, compressionReport, editReport);
+
+      // Phase 8 Hybrid Resume Critic (LLM add-on): optional semantic second
+      // opinion appended as `qualityReport.criticReview`. Opt-in via
+      // ENABLE_LLM_QUALITY_CRITIC=true AND a configured model client. The
+      // deterministic rule baseline is preserved verbatim; LLM-only "critical"
+      // verdicts cannot flip `hasCriticalRisks` without rule-layer
+      // corroboration. Best-effort: never fails the export, never creates a
+      // pendingAction.
+      if (qualityReport && finalFitReport) {
+        qualityReport = await this.maybeRunCritic(
+          resume,
+          record,
+          qualityReport,
+          finalFitReport,
+          compressionReport,
+          editReport,
+        );
+      }
 
       let fileBuffer: Buffer;
       let originalName: string;
@@ -526,6 +550,101 @@ export class ResumeExportService {
         error: error instanceof Error ? error.message : String(error),
       });
       return undefined;
+    }
+  }
+
+  /**
+   * Phase 8 Hybrid Resume Critic: opt-in LLM second opinion on top of the
+   * deterministic rule report. Mirrors the Phase 7 fit editor envelope:
+   *  - opt-in via `ENABLE_LLM_QUALITY_CRITIC=true` AND a configured `modelClient`,
+   *  - any error / schema-invalid response yields a `fallback=true` review
+   *    appended to the rule report (rule baseline NEVER lost),
+   *  - LLM-only "critical" verdicts cannot flip `hasCriticalRisks` without
+   *    corroborating rule-layer evidence (see `mergeCriticReview`),
+   *  - never creates a pendingAction; never blocks the export.
+   *
+   * Returns the input `ruleReport` unchanged when disabled or unconfigured.
+   */
+  private async maybeRunCritic(
+    resume: ProductResumeDetail,
+    record: ResumeExport,
+    ruleReport: ResumeQualityReport,
+    fitReport: ResumeFitReport,
+    compressionReport: ResumeCompressionReport | undefined,
+    editReport: ResumeFitEditorReport | undefined,
+  ): Promise<ResumeQualityReport> {
+    if (process.env.ENABLE_LLM_QUALITY_CRITIC !== "true") return ruleReport;
+    if (!this.modelClient) return ruleReport;
+
+    let systemPrompt: string;
+    try {
+      systemPrompt = this.promptRegistry.get("product.resumeQualityCritic.system");
+    } catch (error) {
+      console.warn("[exports] resume quality critic system prompt missing (will skip)", {
+        exportId: record.id,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return ruleReport;
+    }
+
+    let jd: ProductJDRecord | undefined;
+    try {
+      const jdId = (resume as { jdId?: string }).jdId;
+      if (jdId && this.jdLookup) {
+        const found = await this.jdLookup(record.userId, jdId);
+        if (found) jd = found;
+      }
+    } catch (error) {
+      console.warn("[exports] resume quality critic JD lookup failed (will critic without JD)", {
+        exportId: record.id,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+
+    const modelClient = this.modelClient;
+    const critic = new ResumeQualityCriticService({
+      prompt: systemPrompt,
+      chat: async ({ systemPrompt: sys, userPayload }) => {
+        const response = await modelClient.chat({
+          messages: [
+            { role: "system", content: sys },
+            { role: "user", content: userPayload },
+          ],
+          responseFormat: "json",
+          temperature: 0,
+        });
+        return { content: response.content };
+      },
+    });
+
+    let review: ResumeQualityCriticReview;
+    try {
+      review = await critic.review({
+        resume,
+        items: resume.items,
+        ruleReport,
+        fitReport,
+        compressionReport,
+        editReport,
+        jd,
+      });
+    } catch (error) {
+      console.warn("[exports] resume quality critic threw unexpectedly (will skip criticReview)", {
+        exportId: record.id,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return ruleReport;
+    }
+
+    try {
+      const provenance = buildCriticBulletProvenance(resume.items, ruleReport);
+      return mergeCriticReview(ruleReport, review, provenance);
+    } catch (error) {
+      console.warn("[exports] resume quality critic merge failed (will skip criticReview)", {
+        exportId: record.id,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return ruleReport;
     }
   }
 

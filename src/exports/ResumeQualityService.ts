@@ -57,6 +57,13 @@ export type ResumeQualityReport = {
   unsupportedClaims: string[];
   hasCriticalRisks: boolean;
   generatedAt: string;
+  /**
+   * Optional Hybrid Resume Critic review appended by
+   * {@link import("./ResumeQualityCriticService.js").mergeCriticReview}.
+   * Always advisory: never overrides the deterministic baseline; presence of
+   * `criticReview.applied=true` does NOT by itself flip `hasCriticalRisks`.
+   */
+  criticReview?: import("./ResumeQualityCriticService.js").ResumeQualityCriticReview;
 };
 
 export type ResumeQualityInput = {

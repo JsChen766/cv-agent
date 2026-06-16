@@ -1337,6 +1337,88 @@ tests/resumeQualityPipeline.test.ts                                # e2e：quali
 
 ---
 
+## 阶段 8 落地补丁：Hybrid Resume Critic（LLM 第二意见，已完成）
+
+> 本节追加阶段 8 之上的 LLM Critic 层，回应 spec 里"Resume Critic 与质量报告"中关于"语义级、JD 关联、改写建议"的部分。规则评分（上节）保留为不变的稳定基线，本节只在其上**追加**一份可选的 LLM 评审。
+
+### 改动清单
+
+```text
+src/exports/ResumeQualityCriticService.ts                                     # 新增：LLM Critic 服务（zod fenced + 引用校验 + 合并函数）
+src/agent-core/prompts/prompts/product/resume-quality-critic-system.md        # 新增：critic system prompt（hard constraints + I/O schema + good/bad 示例）
+src/agent-core/prompts/PromptRegistry.ts                                      # 注册 product.resumeQualityCritic.system
+src/exports/ResumeQualityService.ts                                           # ResumeQualityReport 追加 optional criticReview 字段
+src/exports/ResumeExportService.ts                                            # maybeRunCritic：在 maybeEvaluateQuality 之后可选调用 critic 并 merge
+src/exports/index.ts                                                          # 导出 ResumeQualityCriticService 与相关类型/合并函数
+tests/resumeQualityCriticService.test.ts                                      # 单测：fallback 路径 + happy path + 引用校验 + 合并规则（11 用例）
+tests/resumeQualityCriticPipeline.test.ts                                     # e2e：disabled 时与阶段 8 基线一致；enabled 时持久化 criticReview；不创建 pendingAction（7 用例）
+```
+
+### 关键设计
+
+- **规则评分是不可变基线**：`ResumeQualityService` 一字未改（除了在 `ResumeQualityReport` 末尾追加 optional 的 `criticReview`）。critic 的合并函数 `mergeCriticReview` 只追加字段，永远不会覆盖任何 6 维分数、`risks`、`suggestions`、`unsupportedClaims`。
+- **触发条件**：`process.env.ENABLE_LLM_QUALITY_CRITIC === "true"` AND `modelClient` 已注入 AND 规则评分成功产出 `qualityReport`。任一条件不满足则 `criticReview === undefined`，导出表现与阶段 8 完全一致。
+- **强 schema 围栏**：critic 返回的 JSON 走 zod `ResponseSchema` 校验；任何字段类型 / enum 不符即落入 `fallback=true, reason="schema_invalid"`。`safeParseJsonOutput` 与 Phase 7 共用，对裸文本、Markdown 围栏等也都能 swallow 成 fallback。
+- **ID 来源校验**：`buildItemSnapshots` 把规则层使用过的 `itemId` / `bulletId` 集合送进 prompt，并在解析阶段对每个 LLM 引用都跑一次 `checkReference`：
+  - 不存在的 `itemId` → `rejectedReferences.push({kind, why: "unknown_item"})`，**不进** `authenticityRisks` / `rewriteSuggestions` / `missingEvidence`；
+  - 不存在的 `bulletId` → 同上 `why: "unknown_bullet"`；
+  - 这条等价于 Phase 7 fit editor 的"NEVER invent ids"红线，硬阻断 LLM 的"无中生有"。
+- **重写建议防伪 + sanitize**：`sanitizeSuggestion` 去掉 `- ` / `• ` 行首、压平换行、截断到 240 chars；prompt 里又额外明确要求"MAY use only facts from the source bullet, item header, or jdSummary"。**注意：本层不做语义级新指标检测**——critic 是建议性而不是替换性，前端会以纯文本展示这些建议，候选人/前端可以决定是否采用。
+- **hasCriticalRisks 合并规则（"互相印证"红线）**：
+  - 规则层 critical → 直接 `hasCriticalRisks = true`（任何情况都成立）；
+  - LLM critical → **只有**在以下任一条件下才升格：
+    1. 该 LLM risk 的 `bulletId` 出现在 `bulletProvenance.unsupportedBulletIds`（规则层已认定的不可证伪夸张）；或
+    2. 该 LLM risk 的 `bulletId` 出现在 `bulletProvenance.noEvidenceBulletIds`（规则层认定无 evidence）；或
+    3. LLM 没给 bulletId，但 message 文本与规则层 `unsupportedClaims` 中某条文本互相包含（fallback 文本印证）。
+  - 这恰好实现 spec 里的"hasCriticalRisks 不能只由 LLM 单独决定，除非 LLM 风险和 rule unsupportedClaims / evidence 缺失互相印证"。
+- **永不阻断 / 永不 pending**：`maybeRunCritic` 用 try/catch 包裹整条链路，任何异常都返回 `ruleReport` 原值；merge 失败也只是丢掉 `criticReview` 字段。e2e 用例 #7 显式断言"critic 标 critical 时 `pendingActions.listAll(userId)` 仍返回 `[]`"，强制确认无 confirmation loop。
+- **prompt 工程**：`resume-quality-critic-system.md` 与 `resume-fit-editor-system.md` 同款骨架——HARD CONSTRAINTS / 输入 schema / GOOD vs BAD 示例 / 显式禁止 fabrication 与 second-person UX copy。这让 critic 的输出"看起来"是同一个工程团队产出，前端可以共享渲染逻辑。
+
+### 验收
+
+- 单测：`tests/resumeQualityCriticService.test.ts` 11 用例全绿（5 fallback/路径 + 2 引用校验 / 清洗 + 4 merge 规则）。
+- e2e：`tests/resumeQualityCriticPipeline.test.ts` 7 用例全绿（disabled 一致性 / no model client / happy path / 非法 JSON 回退 / 单独 LLM critical 不升格 / 互相印证升格 / pendingAction === 0）。
+- 全量：`npm run typecheck` + `npm test` ⇒ **80 files / 730 tests passed**（在阶段 8 基线 78/712 之上 +2 文件 / +18 用例）。
+- 阶段 5/6/7 行为不变；阶段 8 规则基线测试**未做任何修改**也仍 100% 通过——这是 spec 要求的"LLM critic disabled 时阶段 8 当前测试完全不变"的硬验证。
+
+### 对外 API 与契约影响
+
+- `ResumeQualityReport` 在尾部追加 optional：
+
+  ```ts
+  type ResumeQualityCriticReview = {
+    applied: boolean;        // true ⇒ LLM 成功产出 JSON
+    fallback: boolean;       // true ⇒ 任何 fallback 路径（disabled / schema_invalid / model_error / merge_failed）
+    reason: "no_model_client" | "disabled_by_env" | "no_rule_report" | "schema_invalid" | "model_error" | "ok";
+    semanticJdMatchScore?: number;    // 0..100，LLM 视角 JD 语义匹配
+    expressionQualityScore?: number;  // 0..100，LLM 视角表达质量
+    authenticityRisks: Array<{ id, level, message, itemId?, bulletId?, evidenceMissing? }>;
+    rewriteSuggestions: Array<{ id, itemId?, bulletId?, before?, suggestion, reason }>;
+    missingEvidence: Array<{ id, bulletId?, claim, reason }>;
+    overallComment?: string;
+    rejectedReferences?: Array<{ kind, itemId?, bulletId?, why }>;  // LLM 引用了不存在的 id
+    llmReason?: string;     // model 错误 / parser 错误的诊断信息
+    generatedAt: string;
+  };
+  type ResumeQualityReport = { /* 上节字段不变 */; criticReview?: ResumeQualityCriticReview };
+  ```
+
+- 新增环境变量 `ENABLE_LLM_QUALITY_CRITIC`（默认未设置=关）；不新增 REST 路由；不新增数据库列（`criticReview` 与 `qualityReport` 共享同一 `quality_report JSONB` 列）。
+- `RestumeQualityReport.hasCriticalRisks` 语义微扩展：现在**可能**因 LLM critical + 规则层印证而被提升为 `true`；不会因 LLM 单独发声被翻盘。前端若已经按 Phase 8 渲染该字段，行为只会更保守，不会更激进。
+
+### 前端建议
+
+- 当 `qualityReport.criticReview && criticReview.applied===true` 时，建议在质量面板里给"AI 评审"开一个折叠区：
+  - `semanticJdMatchScore` / `expressionQualityScore` 与规则层的 `jdMatchScore` / `expressionScore` 并排展示，差异较大时可以触发"两位评审意见不一致"的小提示，让用户自行判断；
+  - `authenticityRisks` 用色块 chip + bullet 锚点；
+  - `rewriteSuggestions` 折叠成"可一键试用"的 diff 卡片（前端层面只是文本提示，不要直接调 mutation 改简历，等阶段 9/10 给出明确的 mutation 入口）；
+  - `missingEvidence` 与阶段 1 的"补充经历"路径打通：点击 `claim` 直接跳到对应 experience 的编辑页或 `match_experiences_against_jd` 入口；
+  - `rejectedReferences` 不要展示给最终用户——这是诊断信号（LLM 在编 id），运维侧或 admin 视图可见即可。
+- `criticReview.fallback === true && reason !== "no_model_client"` 时，可以渲染一行小字："AI 评审离线，仅展示规则评分"。`reason === "no_model_client"` 是预期的（部署没启），不必报警。
+- `hasCriticalRisks === true` 的非阻断 banner 写法保持不变；只是当 `criticReview` 同时给出 critical risk 时，可以在 banner 里多一句"AI 评审同样标记了这条"，让用户感知到"双盲互检"。
+
+---
+
 # 阶段 9：前后端契约整理与 UI 接入准备
 
 ## 目标
