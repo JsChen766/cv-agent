@@ -56,6 +56,29 @@ import { ModelClientFactory, debugModelConfig, describeModelConfig } from "../..
 import { LLMExperienceExtractor } from "../../product/LLMExperienceExtractor.js";
 import { LLMGenerationService } from "../../product/LLMGenerationService.js";
 import { LLMRewriteService } from "../../product/LLMRewriteService.js";
+import {
+  ClaimGraphIndexer,
+  EvidenceIndexMaintenanceService,
+  EvidenceRAGService,
+  InMemoryClaimGraphRepository,
+  LLMEvidenceService,
+  PostgresClaimGraphRepository,
+  type ClaimGraphRepository,
+} from "../../rag/evidence/index.js";
+import {
+  GuidelineRAGService,
+  InMemoryGuidelineRepository,
+  LLMGuidelineService,
+  PostgresGuidelineRepository,
+  type GuidelineRepository,
+} from "../../rag/guideline/index.js";
+import {
+  InMemoryPreferenceRepository,
+  PostgresPreferenceRepository,
+  PreferenceBankService,
+  createPreferenceCapabilityModule,
+  type PreferenceRepository,
+} from "../../self-evolution/preference/index.js";
 import { InMemoryPendingActionRepository } from "../../agent-core/confirmation/InMemoryPendingActionRepository.js";
 import { PendingActionService } from "../../agent-core/confirmation/PendingActionService.js";
 import { PostgresPendingActionRepository } from "../../agent-core/confirmation/PostgresPendingActionRepository.js";
@@ -78,6 +101,9 @@ async function createPostgresKernel(databaseUrl: string, options: { pdfRenderer?
     productResumeRepository: new PostgresProductResumeRepository(database),
     productImportRepository: new PostgresProductImportRepository(database),
     productGenerationRepository: new PostgresProductGenerationRepository(database),
+    claimGraphRepository: new PostgresClaimGraphRepository(database),
+    guidelineRepository: new PostgresGuidelineRepository(database),
+    preferenceRepository: new PostgresPreferenceRepository(database),
     copilotPersistence: new PostgresCopilotPersistence(database),
     platformServices: new PostgresPlatformServices(database),
     authService: new AuthService(new PostgresAuthRepository(database)),
@@ -101,6 +127,9 @@ function createInMemoryKernel(options: { pdfRenderer?: PdfRendererAdapter; layou
     productResumeRepository: new InMemoryProductResumeRepository(),
     productImportRepository: new InMemoryProductImportRepository(),
     productGenerationRepository: new InMemoryProductGenerationRepository(),
+    claimGraphRepository: new InMemoryClaimGraphRepository(),
+    guidelineRepository: new InMemoryGuidelineRepository(),
+    preferenceRepository: new InMemoryPreferenceRepository(),
     copilotPersistence: new InMemoryCopilotPersistence(),
     platformServices: new InMemoryPlatformServices(),
     authService: new AuthService(new InMemoryAuthRepository()),
@@ -116,10 +145,6 @@ function createInMemoryKernel(options: { pdfRenderer?: PdfRendererAdapter; layou
 }
 
 function buildKernel(input: BuildKernelInput): ApiKernel {
-  const experienceService = new ExperienceService(input.productExperienceRepository);
-  const jdService = new JDService(input.productJDRepository);
-  const resumeService = new ResumeService(input.productResumeRepository);
-
   // LLM services
   const modelClientFactory = new ModelClientFactory();
   const model = modelClientFactory.createDefaultModelClient();
@@ -127,14 +152,46 @@ function buildKernel(input: BuildKernelInput): ApiKernel {
   const llmExperienceExtractor = model.client ? new LLMExperienceExtractor(model.client) : undefined;
   const llmGenerationService = model.client ? new LLMGenerationService(model.client) : undefined;
   const llmRewriteService = model.client ? new LLMRewriteService(model.client) : undefined;
+  const llmEvidenceService = model.client ? new LLMEvidenceService(model.client) : undefined;
+  const llmGuidelineService = model.client ? new LLMGuidelineService(model.client) : undefined;
+  const claimGraphIndexer = input.claimGraphRepository
+    ? new ClaimGraphIndexer(input.claimGraphRepository, llmEvidenceService)
+    : undefined;
 
-  const importService = new ImportService(input.productImportRepository, experienceService, llmExperienceExtractor);
+  const experienceService = new ExperienceService(input.productExperienceRepository, claimGraphIndexer);
+  const jdService = new JDService(input.productJDRepository);
+  const resumeService = new ResumeService(input.productResumeRepository);
+  const evidenceIndexMaintenanceService = input.claimGraphRepository && claimGraphIndexer
+    ? new EvidenceIndexMaintenanceService(experienceService, claimGraphIndexer, input.claimGraphRepository)
+    : undefined;
+  const evidenceRAGService = new EvidenceRAGService({
+    experienceService,
+    llmEvidenceService,
+    claimGraphRepository: input.claimGraphRepository,
+    indexMaintenanceService: evidenceIndexMaintenanceService,
+  });
+  const guidelineRAGService = input.guidelineRepository
+    ? new GuidelineRAGService({
+        repository: input.guidelineRepository,
+        llmGuidelineService,
+      })
+    : undefined;
+  const preferenceBankService = new PreferenceBankService({
+    repository: input.preferenceRepository,
+    generationRepository: input.productGenerationRepository,
+  });
+  const preferenceCapabilityModule = createPreferenceCapabilityModule(preferenceBankService);
+
+  const importService = new ImportService(input.productImportRepository, experienceService, llmExperienceExtractor, claimGraphIndexer);
   const generationProductService = new GenerationProductService(
     input.productGenerationRepository,
     jdService,
     resumeService,
     experienceService,
     llmGenerationService,
+    evidenceRAGService,
+    guidelineRAGService,
+    preferenceBankService,
   );
   const productServices = {
     experienceService,
@@ -142,6 +199,9 @@ function buildKernel(input: BuildKernelInput): ApiKernel {
     resumeService,
     importService,
     generationProductService,
+    evidenceRAGService,
+    guidelineRAGService,
+    preferenceBankService,
   };
   const copilotServices = {
     sessionService: new CopilotSessionService(input.copilotPersistence),
@@ -194,6 +254,7 @@ function buildKernel(input: BuildKernelInput): ApiKernel {
     exportService,
     jobRunner,
     pendingActions,
+    capabilityModules: [preferenceCapabilityModule],
     frontDeskModelClient: model.client,
     modelClientFactory,
     resolveUserModelClient,
@@ -213,6 +274,9 @@ type BuildKernelInput = {
   productResumeRepository: ProductResumeRepository;
   productImportRepository: ProductImportRepository;
   productGenerationRepository: ProductGenerationRepository;
+  claimGraphRepository?: ClaimGraphRepository;
+  guidelineRepository?: GuidelineRepository;
+  preferenceRepository: PreferenceRepository;
   copilotPersistence: CopilotPersistence;
   platformServices: PlatformServices;
   authService: AuthService;

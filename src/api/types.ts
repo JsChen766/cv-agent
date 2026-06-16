@@ -11,6 +11,7 @@ import type { FileService } from "../files/index.js";
 import type { ResumeExportService } from "../exports/index.js";
 import type { JobRunner } from "../jobs/index.js";
 import type { PendingActionService } from "../agent-core/confirmation/PendingActionService.js";
+import type { AgentCapabilityModule } from "../agent-core/capabilities/AgentCapabilityModule.js";
 
 export type ApiMode = "postgres" | "in_memory";
 
@@ -36,6 +37,7 @@ export type ApiKernel = {
   exportService: ResumeExportService;
   jobRunner: JobRunner;
   pendingActions: PendingActionService;
+  capabilityModules?: readonly AgentCapabilityModule[];
   frontDeskModelClient?: ModelClient;
   modelClientFactory: ModelClientFactory;
   resolveUserModelClient(userId: string): Promise<{

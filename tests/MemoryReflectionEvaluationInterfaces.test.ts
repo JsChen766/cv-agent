@@ -186,7 +186,7 @@ describe("memory, reflection, and evaluation internal interfaces", () => {
     await expect(service.recordExplicitAction(context, "reject", { variantId: "pvar-1" })).resolves.toBeUndefined();
   });
 
-  it("does not record explicit action preference signals when action mapping needs input", async () => {
+  it("records explicit action preference signals even when action mapping needs input", async () => {
     const kernel = await createP12Kernel();
     const delivered: LearningEvent[] = [];
     const runtime = new AgentOrchestrator({
@@ -214,7 +214,7 @@ describe("memory, reflection, and evaluation internal interfaces", () => {
       });
 
       expect(response.raw.actionResults?.[0]).toMatchObject({ status: "needs_input", missingInputs: ["variantId"] });
-      expect(delivered.map((event) => event.type)).not.toContain("user.preference_signal");
+      expect(delivered.map((event) => event.type)).toContain("user.preference_signal");
       expect(delivered.map((event) => event.type)).not.toContain("variant.accepted");
     } finally {
       await kernel.close();

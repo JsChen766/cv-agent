@@ -101,6 +101,7 @@ export class AgentOrchestrator {
     this.tools.registerMany(createAgentTools());
     this.capabilityRegistry = new AgentCapabilityRegistry([
       ...createDefaultCapabilities(),
+      ...(deps.kernel.capabilityModules ?? []),
       ...domainRegistry.listCapabilities(),
     ]);
     this.learningEventService = new LearningEventService({
@@ -173,6 +174,7 @@ export class AgentOrchestrator {
       },
       streamEmitter,
     });
+    await this.learningEventService.recordUserPreferenceText(run.context, request.message);
     this.emit(run, "agent.turn.started", "开始处理请求", {
       status: "running",
     });
@@ -313,6 +315,15 @@ export class AgentOrchestrator {
       workspace: run.workspace,
       activeAssetContext: run.context.activeAssetContext,
     });
+    await this.learningEventService.recordExplicitAction(run.context, request.action.type, {
+      ...(request.action.payload ?? {}),
+      variantId: request.action.variantId
+        ?? (request.action.payload && typeof request.action.payload.variantId === "string" ? request.action.payload.variantId : undefined)
+        ?? run.workspace?.activeVariantId,
+      generationId: request.action.payload && typeof request.action.payload.generationId === "string"
+        ? request.action.payload.generationId
+        : run.workspace?.productGenerationId,
+    });
     if (mapped.kind === "unsupported") {
       const runLocale = localeFor(run);
       const result = failedActionResult(request.action.type, text(runLocale, "unsupportedAction"));
@@ -346,10 +357,6 @@ export class AgentOrchestrator {
     }
 
     try {
-      await this.learningEventService.recordExplicitAction(run.context, request.action.type, {
-        ...(request.action.payload ?? {}),
-        ...(request.action.variantId ? { variantId: request.action.variantId } : {}),
-      });
       const executed = await this.executePlan(run, [mapped.step]);
       return this.finishRun(ctx.user.id, run, {
         assistantText: assistantFromResults(executed.toolResults, t(run, "done")),

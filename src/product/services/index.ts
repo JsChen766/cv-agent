@@ -20,6 +20,10 @@ import { extractExperienceDraftFromText } from "../experienceDraft.js";
 import type { LLMExperienceExtractor } from "../LLMExperienceExtractor.js";
 import { detectDominantLanguage, extractedCandidateToDraft } from "../LLMExperienceExtractor.js";
 import { LLMGenerationError, type LLMGenerationService } from "../LLMGenerationService.js";
+import type { EvidenceRAGService, EvidencePack, ClaimGraphIndexer } from "../../rag/evidence/index.js";
+import type { GuidelineRAGService } from "../../rag/guideline/index.js";
+import { GroundingContextCoordinator } from "../../rag/GroundingContextCoordinator.js";
+import type { PreferenceBankService, PersonalizationPack } from "../../self-evolution/preference/index.js";
 import { isDeterministicFallbackAllowed } from "../deterministicFallbackGuard.js";
 import type {
   ProductExperienceRepository,
@@ -35,6 +39,9 @@ export type ProductServices = {
   resumeService: ResumeService;
   importService: ImportService;
   generationProductService: GenerationProductService;
+  evidenceRAGService?: EvidenceRAGService;
+  guidelineRAGService?: GuidelineRAGService;
+  preferenceBankService?: PreferenceBankService;
 };
 
 type ImportDraftLike = {
@@ -59,7 +66,10 @@ export class ProductStateConflictError extends Error {
 }
 
 export class ExperienceService {
-  public constructor(private readonly repository: ProductExperienceRepository) {}
+  public constructor(
+    private readonly repository: ProductExperienceRepository,
+    private readonly claimGraphIndexer?: ClaimGraphIndexer,
+  ) {}
 
   public async createExperience(userId: string, input: {
     title: string;
@@ -75,7 +85,9 @@ export class ExperienceService {
     source?: ProductExperienceRevision["source"];
   }): Promise<{ experience: ProductExperience; revision: ProductExperienceRevision }> {
     const { experience, revision } = buildExperienceRecords(userId, input);
-    return this.repository.createExperienceWithRevision(experience, revision);
+    const result = await this.repository.createExperienceWithRevision(experience, revision);
+    await this.indexExperienceBestEffort(userId, result.experience, result.revision);
+    return result;
   }
 
   public async listExperiences(userId: string, filters: { limit?: number; status?: ProductExperience["status"] } = {}): Promise<Array<ProductExperience & { content?: string; structured?: Record<string, unknown> }>> {
@@ -120,11 +132,31 @@ export class ExperienceService {
       createdAt: new Date().toISOString(),
     };
     await this.repository.createRevision(revision);
-    await this.repository.updateExperience(userId, experienceId, {
+    const updatedExperience = await this.repository.updateExperience(userId, experienceId, {
       currentRevisionId: revision.id,
       updatedAt: new Date().toISOString(),
     });
+    if (updatedExperience) {
+      await this.indexExperienceBestEffort(userId, updatedExperience, revision);
+    }
     return revision;
+  }
+
+  public async indexExperienceBestEffort(
+    userId: string,
+    experience: ProductExperience,
+    revision: ProductExperienceRevision,
+  ): Promise<void> {
+    if (!this.claimGraphIndexer) return;
+    try {
+      await this.claimGraphIndexer.indexExperience({ userId, experience, revision });
+    } catch (error) {
+      console.error("[ClaimGraphIndexer] failed to index experience", {
+        experienceId: experience.id,
+        revisionId: revision.id,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
   }
 
   public createVariant(userId: string, experienceId: string, revisionId: string, input: {
@@ -288,6 +320,7 @@ export class ImportService {
     private readonly repository: ProductImportRepository,
     private readonly experienceService: ExperienceService,
     private readonly llmExtractor?: LLMExperienceExtractor,
+    private readonly claimGraphIndexer?: ClaimGraphIndexer,
   ) {}
 
   public createTextImportJob(userId: string, rawText: string, options: { sourceType?: ProductImportJob["sourceType"] } = {}): Promise<ProductImportJob> {
@@ -466,6 +499,7 @@ export class ImportService {
           throw new ProductStateConflictError(`Import candidate cannot be accepted from status ${accepted.candidate.status}.`);
         }
         const result = { candidate: { ...mergedCandidate, ...accepted.candidate, ...pickCandidateEditableFields(mergedCandidate) }, experience: accepted.experience };
+        await this.indexAcceptedExperienceBestEffort(userId, accepted.experience, accepted.revision);
         this.acceptedResults.set(lockKey, result);
         return result;
       }
@@ -487,6 +521,23 @@ export class ImportService {
       return result;
     } finally {
       this.acceptingCandidates.delete(lockKey);
+    }
+  }
+
+  private async indexAcceptedExperienceBestEffort(
+    userId: string,
+    experience: ProductExperience,
+    revision: ProductExperienceRevision,
+  ): Promise<void> {
+    if (!this.claimGraphIndexer) return;
+    try {
+      await this.claimGraphIndexer.indexExperience({ userId, experience, revision });
+    } catch (error) {
+      console.error("[ClaimGraphIndexer] failed to index accepted import candidate", {
+        experienceId: experience.id,
+        revisionId: revision.id,
+        error: error instanceof Error ? error.message : String(error),
+      });
     }
   }
 
@@ -894,12 +945,17 @@ function pickCandidateEditableFields(candidate: ProductImportCandidate): Partial
 }
 
 export class GenerationProductService {
+  private readonly groundingCoordinator = new GroundingContextCoordinator();
+
   public constructor(
     private readonly repository: ProductGenerationRepository,
     private readonly jdService: JDService,
     private readonly resumeService: ResumeService,
     private readonly experienceService: ExperienceService,
     private readonly llmGenerationService?: LLMGenerationService,
+    private readonly evidenceRAGService?: EvidenceRAGService,
+    private readonly guidelineRAGService?: GuidelineRAGService,
+    private readonly preferenceBankService?: PreferenceBankService,
   ) {}
 
   public async generateResumeFromJD(input: {
@@ -918,6 +974,7 @@ export class GenerationProductService {
     if (!input.jdId && !input.jdText?.trim()) {
       throw new Error("JD text or jdId is required.");
     }
+
     const jd = input.jdId
       ? await this.jdService.getJD(input.userId, input.jdId)
       : await this.jdService.saveJD(input.userId, {
@@ -925,33 +982,111 @@ export class GenerationProductService {
           targetRole: input.targetRole,
         });
     if (!jd) throw new Error("JD not found.");
-    const experiences = await this.experienceService.listExperiences(input.userId, { limit: 10, status: "active" });
+
+    const targetRole = input.targetRole ?? jd.targetRole;
+    const baseInstructionPack = this.guidelineRAGService
+      ? await this.guidelineRAGService.buildInstructionPack({
+          userId: input.userId,
+          jdText: jd.rawText,
+          targetRole,
+          limit: 8,
+        })
+      : undefined;
+
+    const personalizationPack: PersonalizationPack | undefined = this.preferenceBankService
+      ? await this.preferenceBankService.buildPersonalizationPack({
+          userId: input.userId,
+          context: {
+            targetRole,
+            roleFamily: baseInstructionPack?.roleFamily,
+            applicationType: baseInstructionPack?.applicationType,
+            language: baseInstructionPack?.language,
+            industry: baseInstructionPack?.industry,
+          },
+          limit: 12,
+        })
+      : undefined;
+
+    const instructionPack = personalizationPack && this.preferenceBankService
+      ? this.preferenceBankService.applyToInstructionPack(baseInstructionPack, personalizationPack)
+      : baseInstructionPack;
+
+    const baseEvidencePack = this.evidenceRAGService
+      ? await this.evidenceRAGService.buildEvidencePack({
+          userId: input.userId,
+          jdText: jd.rawText,
+          targetRole,
+          roleFamily: instructionPack?.roleFamily,
+          limit: 12,
+        })
+      : undefined;
+
+    const evidencePack = personalizationPack && this.preferenceBankService
+      ? this.preferenceBankService.applyToEvidencePack(baseEvidencePack, personalizationPack)
+      : baseEvidencePack;
+
+    const groundingContext = this.groundingCoordinator.build({
+      instructionPack,
+      evidencePack,
+    });
+
+    const experiences = evidencePack
+      ? await this.experienceService
+          .listExperiences(input.userId, { limit: 100, status: "active" })
+          .then((items) => filterExperiencesByEvidencePack(items, evidencePack).slice(0, 12))
+      : await this.experienceService.listExperiences(input.userId, {
+          limit: 10,
+          status: "active",
+        });
 
     let variants: ProductGeneratedVariant[];
     let recommendedVariantId: string | undefined;
     let comparisonMatrix: VariantComparisonMatrixRow[] | undefined;
+
     if (this.llmGenerationService) {
       try {
-        const llmResult = await this.llmGenerationService.generateVariants(
-          input.userId,
-          jd.rawText,
-          input.targetRole ?? jd.targetRole,
-          experiences,
-        );
+        const llmResult = evidencePack || instructionPack
+          ? await this.llmGenerationService.generateVariantsWithGroundingContext({
+              userId: input.userId,
+              jdText: jd.rawText,
+              targetRole,
+              evidencePack,
+              instructionPack,
+              groundingContext,
+              personalizationPack,
+            })
+          : await this.llmGenerationService.generateVariants(
+              input.userId,
+              jd.rawText,
+              targetRole,
+              experiences,
+            );
+
         variants = llmResult.variants;
         recommendedVariantId = llmResult.recommendedVariantId;
         comparisonMatrix = llmResult.comparisonMatrix;
+
+        if (evidencePack && this.evidenceRAGService) {
+          variants = this.evidenceRAGService.verifyGeneratedVariants(variants, evidencePack);
+        }
       } catch (error) {
         throw generationFailureError(error);
       }
+
       if (variants.length === 0) {
-        throw new Error("LLM_GENERATION_FAILED: The AI model call completed but no valid resume variants were produced.");
+        throw new Error(
+          "LLM_GENERATION_FAILED: The AI model call completed but no valid resume variants were produced.",
+        );
       }
     } else if (!isDeterministicFallbackAllowed()) {
-      throw new Error("LLM_PROVIDER_NOT_CONFIGURED: No AI model provider is configured. Set DEEPSEEK_API_KEY or AGENT_API_KEY to enable intelligent resume generation.");
+      throw new Error(
+        "LLM_PROVIDER_NOT_CONFIGURED: No AI model provider is configured. Set DEEPSEEK_API_KEY or AGENT_API_KEY to enable intelligent resume generation.",
+      );
     } else {
-      // No LLM service available, use template fallback (test mode only)
-      variants = buildDraftVariants(input.userId, jd.rawText, input.targetRole ?? jd.targetRole, experiences);
+      variants = buildDraftVariants(input.userId, jd.rawText, targetRole, experiences);
+      if (evidencePack && this.evidenceRAGService) {
+        variants = this.evidenceRAGService.verifyGeneratedVariants(variants, evidencePack);
+      }
     }
 
     const generation: ProductGeneration = {
@@ -959,11 +1094,15 @@ export class GenerationProductService {
       userId: input.userId,
       sessionId: input.sessionId,
       jdId: jd.id,
-      targetRole: input.targetRole ?? jd.targetRole,
+      targetRole,
       inputSnapshot: {
         jdId: jd.id,
-        targetRole: input.targetRole ?? jd.targetRole,
+        targetRole,
         sourceExperienceIds: experiences.map((item) => item.id),
+        ...(instructionPack ? { instructionPack } : {}),
+        ...(evidencePack ? { evidencePack } : {}),
+        ...(personalizationPack ? { personalizationPack } : {}),
+        groundingContext,
       },
       outputSnapshot: {
         variants,
@@ -973,8 +1112,28 @@ export class GenerationProductService {
       selectedVariantIds: [],
       createdAt: new Date().toISOString(),
     };
+
     await this.repository.createGeneration(generation);
-    return { generation, jd, variants, recommendedVariantId, comparisonMatrix };
+
+    if (this.evidenceRAGService && evidencePack) {
+      await this.evidenceRAGService.recordGenerationUsage({
+        userId: input.userId,
+        generationId: generation.id,
+        jdId: jd.id,
+        targetRole,
+        roleFamily: instructionPack?.roleFamily,
+        evidencePack,
+        variants,
+      });
+    }
+
+    return {
+      generation,
+      jd,
+      variants,
+      recommendedVariantId,
+      comparisonMatrix,
+    };
   }
 
   public async saveAcceptedVariantToResume(userId: string, input: {
@@ -984,9 +1143,11 @@ export class GenerationProductService {
   }): Promise<{ generation: ProductGeneration; resume: ProductResume; item: ProductResumeItem; items?: ProductResumeItem[]; variant: ProductGeneratedVariant }> {
     const generation = await this.repository.getGeneration(userId, input.generationId);
     if (!generation) throw new Error("Generation not found.");
+
     const variants = generation.outputSnapshot?.variants ?? [];
     const variant = variants.find((item) => item.id === input.variantId);
     if (!variant) throw new Error("Variant not found in generation.");
+
     const resume = input.resumeId
       ? await this.resumeService.getResume(userId, input.resumeId)
       : null;
@@ -1010,10 +1171,13 @@ export class GenerationProductService {
     const targetResume = resume
       ? resumeToRecord(resume)
       : buildResumeRecord(userId, {
-      targetRole: generation.targetRole,
-      jdId: generation.jdId,
-      title: generation.targetRole ? `${generation.targetRole} draft` : "Copilot resume draft",
-    });
+          targetRole: generation.targetRole,
+          jdId: generation.jdId,
+          title: generation.targetRole
+            ? `${generation.targetRole} draft`
+            : "Copilot resume draft",
+        });
+
     const item = buildResumeItemRecord(userId, targetResume.id, {
       sourceArtifactId: variant.id,
       sectionType: "experience",
@@ -1022,7 +1186,11 @@ export class GenerationProductService {
       orderIndex: resume?.items.length ?? 0,
       metadata: { generationId: generation.id },
     });
-    const selected = Array.from(new Set([...generation.selectedVariantIds, variant.id]));
+
+    const selected = Array.from(
+      new Set([...generation.selectedVariantIds, variant.id]),
+    );
+
     if (this.repository.saveAcceptedVariantToResume) {
       const saved = await this.repository.saveAcceptedVariantToResume({
         userId,
@@ -1031,23 +1199,61 @@ export class GenerationProductService {
         item,
         selectedVariantIds: selected,
       });
-      if (saved) return { ...saved, variant };
+      if (saved) {
+        await this.recordAcceptedVariantEvidence(
+          userId,
+          generation.id,
+          variant,
+          item.contentSnapshot,
+        );
+        return { ...saved, variant };
+      }
     }
-    const savedResume = resume ? targetResume : await this.resumeService.createResume(userId, {
-      targetRole: generation.targetRole,
-      jdId: generation.jdId,
-      title: targetResume.title,
-    });
-    const savedItem = await this.resumeService.addResumeItem(userId, savedResume.id, {
-      sourceArtifactId: variant.id,
-      sectionType: item.sectionType,
-      title: item.title,
-      contentSnapshot: item.contentSnapshot,
-      metadata: item.metadata,
-    });
-    await this.repository.updateGenerationSelection(userId, generation.id, selected);
-    const attached = await this.repository.attachResume(userId, generation.id, savedResume.id);
-    return { generation: attached ?? generation, resume: savedResume, item: savedItem, variant };
+
+    const savedResume = resume
+      ? targetResume
+      : await this.resumeService.createResume(userId, {
+          targetRole: generation.targetRole,
+          jdId: generation.jdId,
+          title: targetResume.title,
+        });
+
+    const savedItem = await this.resumeService.addResumeItem(
+      userId,
+      savedResume.id,
+      {
+        sourceArtifactId: variant.id,
+        sectionType: item.sectionType,
+        title: item.title,
+        contentSnapshot: item.contentSnapshot,
+        metadata: item.metadata,
+      },
+    );
+
+    await this.repository.updateGenerationSelection(
+      userId,
+      generation.id,
+      selected,
+    );
+    const attached = await this.repository.attachResume(
+      userId,
+      generation.id,
+      savedResume.id,
+    );
+
+    await this.recordAcceptedVariantEvidence(
+      userId,
+      generation.id,
+      variant,
+      savedItem.contentSnapshot,
+    );
+
+    return {
+      generation: attached ?? generation,
+      resume: savedResume,
+      item: savedItem,
+      variant,
+    };
   }
 
   /**
@@ -1107,6 +1313,12 @@ export class GenerationProductService {
     const selected = Array.from(new Set([...generation.selectedVariantIds, variant.id]));
     await this.repository.updateGenerationSelection(userId, generation.id, selected);
     const attached = await this.repository.attachResume(userId, generation.id, savedResume.id);
+    await this.recordAcceptedVariantEvidence(
+      userId,
+      generation.id,
+      variant,
+      items.map((item) => item.contentSnapshot).join("\n\n"),
+    );
     void baseOrderIndex; // resumeService manages orderIndex; kept for parity if repo path is added later.
     return {
       generation: attached ?? generation,
@@ -1117,13 +1329,64 @@ export class GenerationProductService {
     };
   }
 
-  public getGeneration(userId: string, id: string): Promise<ProductGeneration | null> {
+  private async recordAcceptedVariantEvidence(
+    userId: string,
+    generationId: string,
+    variant: ProductGeneratedVariant,
+    finalText: string,
+  ): Promise<void> {
+    if (this.evidenceRAGService) {
+      await this.evidenceRAGService.recordVariantDecision({
+        userId,
+        generationId,
+        variantId: variant.id,
+        action: "accepted",
+        finalText,
+        claimIds: variant.sourceEvidenceIds,
+        metadata: { source: "saveAcceptedVariantToResume" },
+      });
+    }
+
+    if (this.preferenceBankService) {
+      await this.preferenceBankService.recordVariantDecision({
+        userId,
+        generationId,
+        variantId: variant.id,
+        action: "accepted",
+        source: "saveAcceptedVariantToResume",
+      });
+    }
+  }
+
+  public getGeneration(
+    userId: string,
+    id: string,
+  ): Promise<ProductGeneration | null> {
     return this.repository.getGeneration(userId, id);
   }
 
-  public listGenerations(userId: string, limit?: number): Promise<ProductGeneration[]> {
+  public listGenerations(
+    userId: string,
+    limit?: number,
+  ): Promise<ProductGeneration[]> {
     return this.repository.listGenerationsByUser(userId, { limit });
   }
+}
+
+function filterExperiencesByEvidencePack<T extends ProductExperienceSummary>(
+  experiences: T[],
+  evidencePack: EvidencePack,
+): T[] {
+  const rankedIds = evidencePack.retrievalTrace.map((item) => item.experienceId);
+  const rank = new Map(rankedIds.map((id, index) => [id, index]));
+
+  return experiences
+    .filter((item) => rank.has(item.id))
+    .sort(
+      (a, b) =>
+        (rank.get(a.id) ?? Number.MAX_SAFE_INTEGER)
+        - (rank.get(b.id) ?? Number.MAX_SAFE_INTEGER),
+    );
 }
 
 function buildExperienceRecords(userId: string, input: {

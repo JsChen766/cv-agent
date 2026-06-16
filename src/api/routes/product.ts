@@ -8,6 +8,8 @@ import { registerJDRoutes } from "./product/jdRoutes.js";
 import { registerResumeRoutes } from "./product/resumeRoutes.js";
 import { registerImportRoutes } from "./product/importRoutes.js";
 import { registerGenerationRoutes } from "./product/generationRoutes.js";
+import { registerRagRoutes } from "./product/ragRoutes.js";
+import { registerPreferenceRoutes } from "./product/preferenceRoutes.js";
 
 export async function registerProductRoutes(
   app: FastifyInstance,
@@ -25,4 +27,6 @@ export async function registerProductRoutes(
   registerResumeRoutes(app, kernel, contextFor, authResolver);
   registerImportRoutes(app, kernel, contextFor, authResolver);
   registerGenerationRoutes(app, kernel, contextFor, authResolver);
+  registerRagRoutes(app, kernel, contextFor, authResolver);
+  registerPreferenceRoutes(app, kernel, contextFor, authResolver);
 }

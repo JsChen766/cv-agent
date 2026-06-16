@@ -113,6 +113,14 @@ export type ProductGeneratedVariant = {
     warnings?: string[];
   };
   missingInfo?: string[];
+  groundingTrace?: Array<{
+    text: string;
+    support: "supported" | "partial" | "unsupported";
+    claimIds: string[];
+    experienceIds: string[];
+    confidence: number;
+    reason: string;
+  }>;
   // ── Product-level display metadata (filled by LLM, defaulted by helpers) ──
   // The frontend renders these directly in VariantCompareBoard. They are
   // never inferred from content keywords or scores on the client.
