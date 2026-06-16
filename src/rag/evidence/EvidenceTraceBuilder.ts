@@ -17,6 +17,8 @@ export class EvidenceTraceBuilder {
       matchedTerms: item.matchedTerms,
       matchedRequirementIds: item.matchedRequirementIds,
       reason: item.reason,
+      strategyScores: item.strategyScores,
+      mode: item.mode,
     }));
   }
 
@@ -26,17 +28,22 @@ export class EvidenceTraceBuilder {
       experienceId: item.claim.experienceId,
       claimId: item.claim.id,
       graphEdgeIds: item.graphEdgeIds,
-      title: item.claim.claim.slice(0, 90),
+      title: String(item.claim.metadata.experienceTitle ?? item.claim.claim.slice(0, 90)),
       score: item.score,
       matchedTerms: item.matchedTerms,
       matchedRequirementIds: item.matchedRequirementIds,
       reason: item.reason,
+      strategyScores: item.strategyScores,
+      mode: item.mode,
     }));
   }
 
   public usageTrace(requirements: JDRequirement[], allowedClaims: AllowedClaim[]): EvidenceUsageTrace[] {
     return requirements.map((requirement) => {
-      const claim = allowedClaims.find((item) => item.requirementIds.includes(requirement.id));
+      const claims = allowedClaims
+        .filter((item) => item.requirementIds.includes(requirement.id))
+        .sort((a, b) => b.confidence - a.confidence);
+      const claim = claims[0];
       if (!claim) {
         return {
           requirementId: requirement.id,
@@ -48,7 +55,7 @@ export class EvidenceTraceBuilder {
         claimId: claim.claimId ?? claim.id,
         experienceId: claim.experienceId,
         evidenceText: claim.evidenceText,
-        status: "available",
+        status: requirement.strictness === "strict" && claim.riskLevel !== "low" ? "needs_user_confirmation" : "available",
       };
     });
   }

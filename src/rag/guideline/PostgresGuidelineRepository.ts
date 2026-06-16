@@ -7,6 +7,8 @@ import type { GuidelineChunk, GuidelineLanguage } from "./types.js";
 type Db = Pick<PostgresDatabase, "query">;
 
 export class PostgresGuidelineRepository implements GuidelineRepository {
+  private defaultsEnsured = false;
+
   public constructor(private readonly database: Db) {}
 
   public async upsertGuidelineChunks(chunks: GuidelineChunk[]): Promise<GuidelineChunk[]> {
@@ -65,9 +67,9 @@ export class PostgresGuidelineRepository implements GuidelineRepository {
   }
 
   private async ensureDefaultGuidelines(): Promise<void> {
-    const result = await this.database.query<{ count: string }>("SELECT COUNT(*)::text AS count FROM product_guideline_chunk");
-    if (Number(result.rows[0]?.count ?? "0") > 0) return;
+    if (this.defaultsEnsured) return;
     await this.upsertGuidelineChunks(DEFAULT_GUIDELINES);
+    this.defaultsEnsured = true;
   }
 }
 

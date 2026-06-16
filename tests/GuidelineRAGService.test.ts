@@ -4,7 +4,7 @@ import {
   InMemoryGuidelineRepository,
 } from "../src/rag/guideline/index.js";
 
-describe("Guideline RAG v1.5", () => {
+describe("Guideline RAG v2", () => {
   it("builds a role-aware instruction pack with retrieved guideline trace", async () => {
     const service = new GuidelineRAGService({ repository: new InMemoryGuidelineRepository() });
     const pack = await service.buildInstructionPack({
@@ -13,7 +13,7 @@ describe("Guideline RAG v1.5", () => {
       jdText: "We need an intern with user research, market analysis, stakeholder communication, and data-driven product decision experience.",
     });
 
-    expect(pack.version).toBe("guideline-rag-v1.5");
+    expect(pack.version).toBe("guideline-rag-v2");
     expect(pack.roleFamily).toBe("product");
     expect(pack.writingRules.length).toBeGreaterThan(0);
     expect(pack.negativeConstraints.some((rule) => rule.toLowerCase().includes("invent"))).toBe(true);

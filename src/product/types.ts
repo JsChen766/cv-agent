@@ -113,6 +113,14 @@ export type ProductGeneratedVariant = {
     warnings?: string[];
   };
   missingInfo?: string[];
+  groundingTrace?: Array<{
+    text: string;
+    support: "supported" | "partial" | "unsupported";
+    claimIds: string[];
+    experienceIds: string[];
+    confidence: number;
+    reason: string;
+  }>;
 };
 
 export type ProductGeneration = {

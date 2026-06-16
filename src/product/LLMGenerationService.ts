@@ -6,6 +6,7 @@ import { extractJsonCandidates } from "../infrastructure/llm/JsonOutputParser.js
 import type { ProductExperienceSummary, ProductGeneratedVariant } from "./types.js";
 import type { EvidencePack } from "../rag/evidence/index.js";
 import type { InstructionPack } from "../rag/guideline/index.js";
+import type { GroundingContext } from "../rag/types.js";
 
 export type LLMGenerationErrorPhase =
   | "initial"
@@ -144,9 +145,28 @@ function normalizeMissingInfo(raw: unknown): string[] | undefined {
   return items.length > 0 ? items : undefined;
 }
 
-function normalizeSourceExperienceIds(raw: unknown): string[] {
+function normalizeStringIds(raw: unknown): string[] {
   if (!Array.isArray(raw)) return [];
-  return raw.filter((v): v is string => typeof v === "string" && v.trim().length > 0);
+  return Array.from(new Set(raw.filter((v): v is string => typeof v === "string" && v.trim().length > 0).map((v) => v.trim())));
+}
+
+function normalizeGroundingTrace(raw: unknown): ProductGeneratedVariant["groundingTrace"] | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  const traces = raw.flatMap((item) => {
+    if (!isRecord(item) || typeof item.text !== "string") return [];
+    const support: "supported" | "partial" | "unsupported" = item.support === "supported" || item.support === "partial" || item.support === "unsupported"
+      ? item.support
+      : "partial";
+    return [{
+      text: item.text.trim(),
+      support,
+      claimIds: normalizeStringIds(item.claimIds),
+      experienceIds: normalizeStringIds(item.experienceIds),
+      confidence: normalizeScore(item.confidence ?? 0.5),
+      reason: typeof item.reason === "string" ? item.reason.trim() : "Provided by the generator.",
+    }];
+  }).filter((item) => item.text.length > 0);
+  return traces.length > 0 ? traces : undefined;
 }
 
 /**
@@ -168,10 +188,12 @@ function normalizeVariant(raw: unknown, index: number): NormalizedVariant | null
     reason: typeof raw.reason === "string" && raw.reason.trim()
       ? raw.reason.trim()
       : "Generated based on JD and experience library.",
-    sourceExperienceIds: normalizeSourceExperienceIds(raw.sourceExperienceIds),
+    sourceExperienceIds: normalizeStringIds(raw.sourceExperienceIds),
+    sourceEvidenceIds: normalizeStringIds(raw.sourceEvidenceIds),
     evidenceSummary: normalizeEvidenceSummary(raw.evidenceSummary),
     riskSummary: normalizeRiskSummary(raw.riskSummary),
     missingInfo: normalizeMissingInfo(raw.missingInfo),
+    groundingTrace: normalizeGroundingTrace(raw.groundingTrace),
   };
 }
 
@@ -214,6 +236,7 @@ type NormalizedVariant = {
   };
   reason: string;
   sourceExperienceIds: string[];
+  sourceEvidenceIds: string[];
   evidenceSummary?: {
     coverageLabel: string;
     items: Array<{ id: string; title: string; explanation: string; confidence: number }>;
@@ -225,6 +248,7 @@ type NormalizedVariant = {
     warnings?: string[];
   };
   missingInfo?: string[];
+  groundingTrace?: ProductGeneratedVariant["groundingTrace"];
 };
 
 // ═══════════════════════════════════════════════════════════════
@@ -249,6 +273,7 @@ const NormalizedVariantSchema = z.object({
   }),
   reason: z.string(),
   sourceExperienceIds: z.array(z.string()),
+  sourceEvidenceIds: z.array(z.string()),
   evidenceSummary: z.object({
     coverageLabel: z.string(),
     items: z.array(NormalizedEvidenceItemSchema),
@@ -260,6 +285,14 @@ const NormalizedVariantSchema = z.object({
     warnings: z.array(z.string()).optional(),
   }).optional(),
   missingInfo: z.array(z.string()).optional(),
+  groundingTrace: z.array(z.object({
+    text: z.string(),
+    support: z.enum(["supported", "partial", "unsupported"]),
+    claimIds: z.array(z.string()),
+    experienceIds: z.array(z.string()),
+    confidence: z.number().min(0).max(1),
+    reason: z.string(),
+  })).optional(),
 });
 
 const NormalizedGenerationResultSchema = z.object({
@@ -312,6 +345,7 @@ function buildEvidenceGroundedUserPrompt(input: {
   targetRole?: string;
   evidencePack: EvidencePack;
   instructionPack?: InstructionPack;
+  groundingContext?: GroundingContext;
 }): string {
   const requirements = input.evidencePack.jdRequirements.map((requirement) => [
     `- [${requirement.id}] ${requirement.text}`,
@@ -320,7 +354,7 @@ function buildEvidenceGroundedUserPrompt(input: {
 
   const allowedClaims = input.evidencePack.allowedClaims.length > 0
     ? input.evidencePack.allowedClaims.map((claim) => [
-        `- [${claim.id}] ${claim.claim}`,
+        `- [${claim.claimId ?? claim.id}] ${claim.claim}`,
         `  sourceExperienceId=${claim.experienceId}; confidence=${claim.confidence}; risk=${claim.riskLevel}`,
         `  evidence: ${claim.evidenceText}`,
       ].join("\n")).join("\n")
@@ -366,6 +400,14 @@ function buildEvidenceGroundedUserPrompt(input: {
     input.instructionPack.examplePatterns.slice(0, 6).map((item) => `- ${item.useCase}: ${item.pattern}`).join("\n") || "No example patterns.",
   ].join("\n") : "No Instruction Pack available. Use only general resume-writing rules and the Evidence Pack.";
 
+  const coordinatedPlan = input.groundingContext ? [
+    `Coverage: supported=${input.groundingContext.coverageSummary.supportedRequirements}, partial=${input.groundingContext.coverageSummary.partiallySupportedRequirements}, missing=${input.groundingContext.coverageSummary.missingRequirements}`,
+    ...input.groundingContext.requirementPlan.slice(0, 20).map((item) =>
+      `- [${item.requirementId}] ${item.action}: ${item.text}; claimIds=${item.claimIds.join(",") || "none"}`
+    ),
+    ...input.groundingContext.executionRules.map((rule) => `RULE: ${rule}`),
+  ].join("\n") : "No coordinated grounding plan available.";
+
   return [
     input.targetRole ? `Target role: ${input.targetRole}` : "",
     "",
@@ -374,6 +416,9 @@ function buildEvidenceGroundedUserPrompt(input: {
     "",
     "Guideline / Instruction Context:",
     instruction,
+    "",
+    "Coordinated Requirement Plan:",
+    coordinatedPlan,
     "",
     "Evidence RAG Version:",
     input.evidencePack.version,
@@ -399,7 +444,9 @@ function buildEvidenceGroundedUserPrompt(input: {
     "- You may rephrase, prioritize, and package only the Allowed Claims.",
     "- Do NOT invent companies, roles, project names, metrics, skills, users, revenue, launches, leadership, or outcomes.",
     "- If a JD requirement has no allowed claim, list it in missingInfo or mark it as needing confirmation. Do not force it into the resume.",
-    "- For each variant, sourceExperienceIds should refer only to experiences in the Evidence Pack.",
+    "- For each variant, sourceExperienceIds must include only experiences actually used in its content.",
+    "- For each variant, sourceEvidenceIds must contain the exact persistent claim IDs shown in square brackets for claims actually used.",
+    "- Do not attach every retrieved claim to every variant. Return only directly used claims.",
     "- Provide evidenceSummary and riskSummary based on the Evidence Pack.",
     "",
     "Generate resume content variants. Return a JSON object with a 'variants' array.",
@@ -438,6 +485,7 @@ export class LLMGenerationService {
     targetRole?: string;
     evidencePack?: EvidencePack;
     instructionPack?: InstructionPack;
+    groundingContext?: GroundingContext;
   }): Promise<ProductGeneratedVariant[]> {
     if (!input.evidencePack) {
       const result = await this.tryGenerateFromPrompt(buildUserPrompt(input.jdText, input.targetRole, []), {
@@ -452,6 +500,7 @@ export class LLMGenerationService {
       targetRole: input.targetRole,
       evidencePack,
       instructionPack: input.instructionPack,
+      groundingContext: input.groundingContext,
     });
     const result = await this.tryGenerateFromPrompt(userPrompt, {
       evidenceClaimCount: evidencePack.allowedClaims.length,
@@ -461,7 +510,7 @@ export class LLMGenerationService {
     });
     const variants = this.toGeneratedVariants(input.userId, result.variants);
     const fallbackExperienceIds = Array.from(new Set(evidencePack.allowedClaims.map((claim) => claim.experienceId))).slice(0, 12);
-    const fallbackEvidenceIds = evidencePack.allowedClaims.map((claim) => claim.id).slice(0, 20);
+    const fallbackEvidenceIds = evidencePack.allowedClaims.map((claim) => claim.claimId ?? claim.id).slice(0, 20);
     return variants.map((variant) => ({
       ...variant,
       sourceExperienceIds: variant.sourceExperienceIds && variant.sourceExperienceIds.length > 0
@@ -484,7 +533,7 @@ export class LLMGenerationService {
       content: variant.content,
       reason: variant.reason,
       sourceExperienceIds: variant.sourceExperienceIds ?? [],
-      sourceEvidenceIds: [],
+      sourceEvidenceIds: variant.sourceEvidenceIds ?? [],
       scores: {
         overall: variant.scores.overall,
         relevance: variant.scores.relevance,
@@ -495,6 +544,7 @@ export class LLMGenerationService {
       evidenceSummary: variant.evidenceSummary,
       riskSummary: variant.riskSummary,
       missingInfo: variant.missingInfo,
+      groundingTrace: variant.groundingTrace,
       createdAt: now,
     }));
   }

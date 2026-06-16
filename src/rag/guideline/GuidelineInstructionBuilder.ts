@@ -1,68 +1,90 @@
-import type { GuidelineRoleAnalysis, InstructionPack, RetrievedGuideline } from "./types.js";
+import type { GuidelineQueryPlan, GuidelineRoleAnalysis, InstructionPack, RetrievedGuideline } from "./types.js";
 import type { LLMGuidelineService } from "./LLMGuidelineService.js";
+import { InstructionPackQualityGate } from "./InstructionPackQualityGate.js";
 import { unique } from "./textUtils.js";
 
 export class GuidelineInstructionBuilder {
+  private readonly qualityGate = new InstructionPackQualityGate();
+
   public constructor(private readonly llmGuidelineService?: LLMGuidelineService) {}
 
   public async build(input: {
     jdText: string;
     targetRole?: string;
     analysis: GuidelineRoleAnalysis;
+    queryPlan: GuidelineQueryPlan;
     retrieved: RetrievedGuideline[];
   }): Promise<InstructionPack> {
+    let pack: InstructionPack | undefined;
     if (this.llmGuidelineService) {
       try {
-        const pack = await this.llmGuidelineService.buildInstructionPack(input);
-        if (pack.writingRules.length > 0 || pack.negativeConstraints.length > 0) return pack;
+        const candidate = await this.llmGuidelineService.buildInstructionPack(input);
+        if (candidate.writingRules.length > 0 || candidate.negativeConstraints.length > 0) pack = candidate;
       } catch (error) {
         if (process.env.DEBUG_GUIDELINE_RAG === "true") {
           console.warn("[GuidelineInstructionBuilder] LLM synthesis failed, using deterministic fallback", error);
         }
       }
     }
-    return this.buildDeterministic(input);
+    pack ??= this.buildDeterministic(input);
+    return this.qualityGate.finalize({
+      pack,
+      analysis: input.analysis,
+      retrieved: input.retrieved,
+      queryPlan: input.queryPlan,
+    });
   }
 
   private buildDeterministic(input: {
-    jdText: string;
     targetRole?: string;
     analysis: GuidelineRoleAnalysis;
+    queryPlan: GuidelineQueryPlan;
     retrieved: RetrievedGuideline[];
   }): InstructionPack {
-    const role = input.targetRole ?? input.analysis.roleFamily ?? "target role";
-    const retrievedRules = input.retrieved.map((item) => item.guideline.content);
+    const role = input.targetRole ?? readableRole(input.analysis.roleFamily);
+    const byKind = (kind: string) => input.retrieved.filter((item) => item.guideline.metadata.ruleKind === kind);
+    const hardConstraints = unique(byKind("hard_constraint").map((item) => item.guideline.content));
     const writingRules = unique([
-      "Use action-context-result structure for resume bullets.",
-      "Prioritize requirements that are important in the JD and supported by evidence.",
-      "Use concise, professional wording and avoid keyword stuffing.",
-      ...retrievedRules.filter((rule) => /should|prioritize|emphasize|prefer|保持|突出|避免/i.test(rule)).slice(0, 5),
-    ]).slice(0, 8);
+      "Use an action-method-scope-result structure and keep one main contribution per bullet.",
+      "Prioritize critical JD requirements only when supported by verified evidence.",
+      "Use concise, natural wording and integrate exact JD terminology without keyword stuffing.",
+      ...byKind("writing_rule").map((item) => item.guideline.content),
+      ...input.retrieved.filter((item) => item.guideline.sourceType === "role_template").map((item) => item.guideline.content),
+    ]).slice(0, 14);
     const negativeConstraints = unique([
-      "Do not invent metrics, roles, companies, leadership, launches, users, or outcomes.",
-      "Do not use strong ownership verbs such as led, owned, or drove unless evidence explicitly supports them.",
-      "If a requirement lacks evidence, mark it as missing or ask for confirmation instead of forcing it into the resume.",
-      ...retrievedRules.filter((rule) => /do not|avoid|不能|不得|避免|unsupported/i.test(rule)).slice(0, 4),
-    ]).slice(0, 8);
+      ...hardConstraints,
+      "Do not turn recommendations into implemented outcomes or prototypes into production deployments.",
+      "Do not infer numbers, scope, authorship, publication status, or leadership from weak semantic similarity.",
+    ]).slice(0, 14);
+    const roleGuidelines = input.retrieved.filter((item) => item.guideline.roleFamily === input.analysis.roleFamily);
     return {
-      version: "guideline-rag-v1.5",
-      targetPositioning: `Position the candidate for ${role} by emphasizing evidence-backed experiences that match the JD without overstating factual claims.`,
+      version: "guideline-rag-v2",
+      targetPositioning: `Position the candidate for ${role} using the strongest evidence-backed technical, analytical, research, or impact signals required by the JD, while preserving factual ownership boundaries.`,
       roleFamily: input.analysis.roleFamily,
       industry: input.analysis.industry,
       applicationType: input.analysis.applicationType,
       language: input.analysis.language,
-      priorityRequirements: input.analysis.priorityRequirements.slice(0, 10),
+      priorityRequirements: input.analysis.priorityRequirements.slice(0, 12),
       sectionStrategy: {
-        summary: "Summarize role fit only when there is strong supporting evidence.",
-        experience: "Rank experiences by JD relevance, evidence strength, and factual support.",
-        project: "For project items, highlight method, responsibility, technical or analytical contribution, and verified outcome.",
-        skills: "List skills only when they are supported by experience evidence or user-provided facts.",
-        education: "Keep education and awards concise unless they directly support the target role.",
+        summary: "Use a concise target-role summary only when several verified claims support a coherent positioning.",
+        experience: roleGuidelines[0]?.guideline.content ?? "Rank experiences by critical-requirement coverage, evidence strength, distinctiveness, and recency.",
+        project: "For each selected project, state the verified problem, method, individual contribution, and outcome; do not overstate deployment or ownership.",
+        skills: "Group only verified and relevant skills; prefer skills demonstrated by selected experiences.",
+        education: "Keep degrees and honors exact and compact; expand only items that materially support role fit.",
+      },
+      sectionBudgets: {
+        summary: "0-3 lines",
+        experience: "2-4 strongest items; 2-4 bullets each",
+        project: "Only distinct, role-relevant projects",
+        skills: "Compact grouped list",
+        education: "Compact factual entries",
       },
       writingRules,
       negativeConstraints,
-      examplePatterns: input.retrieved.slice(0, 5).map((item) => ({
-        pattern: item.guideline.content.slice(0, 220),
+      hardConstraints,
+      softPreferences: writingRules,
+      examplePatterns: byKind("example_pattern").slice(0, 8).map((item) => ({
+        pattern: item.guideline.content,
         useCase: item.guideline.title,
         sourceGuidelineId: item.guideline.id,
       })),
@@ -74,6 +96,20 @@ export class GuidelineInstructionBuilder {
         matchedTags: item.matchedTags,
         reason: item.reason,
       })),
+      queryPlan: input.queryPlan,
     };
   }
+}
+
+function readableRole(role: GuidelineRoleAnalysis["roleFamily"]): string {
+  return ({
+    ai_ml: "AI/ML role",
+    software: "software engineering role",
+    data: "data and analytics role",
+    product: "product role",
+    research: "research role",
+    consulting: "consulting role",
+    finance: "finance role",
+    general: "target role",
+  } as const)[role];
 }

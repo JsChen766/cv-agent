@@ -56,6 +56,7 @@ import { LLMGenerationService } from "../../product/LLMGenerationService.js";
 import { LLMRewriteService } from "../../product/LLMRewriteService.js";
 import {
   ClaimGraphIndexer,
+  EvidenceIndexMaintenanceService,
   EvidenceRAGService,
   InMemoryClaimGraphRepository,
   LLMEvidenceService,
@@ -143,10 +144,14 @@ function buildKernel(input: BuildKernelInput): ApiKernel {
   const experienceService = new ExperienceService(input.productExperienceRepository, claimGraphIndexer);
   const jdService = new JDService(input.productJDRepository);
   const resumeService = new ResumeService(input.productResumeRepository);
+  const evidenceIndexMaintenanceService = input.claimGraphRepository && claimGraphIndexer
+    ? new EvidenceIndexMaintenanceService(experienceService, claimGraphIndexer, input.claimGraphRepository)
+    : undefined;
   const evidenceRAGService = new EvidenceRAGService({
     experienceService,
     llmEvidenceService,
     claimGraphRepository: input.claimGraphRepository,
+    indexMaintenanceService: evidenceIndexMaintenanceService,
   });
   const guidelineRAGService = input.guidelineRepository
     ? new GuidelineRAGService({

@@ -9,7 +9,7 @@ import {
   InMemoryProductExperienceRepository,
 } from "../src/product/index.js";
 
-describe("Evidence RAG v4 long-term evidence memory", () => {
+describe("Evidence RAG v5 long-term evidence memory", () => {
   it("records generation usage and variant acceptance stats for claims", async () => {
     const claimRepository = new InMemoryClaimGraphRepository();
     const indexer = new ClaimGraphIndexer(claimRepository);
@@ -29,7 +29,7 @@ describe("Evidence RAG v4 long-term evidence memory", () => {
       roleFamily: "product",
     });
 
-    expect(pack.version).toBe("evidence-rag-v4");
+    expect(pack.version).toBe("evidence-rag-v5");
     expect(pack.allowedClaims.length).toBeGreaterThan(0);
 
     const variant = {
@@ -67,7 +67,9 @@ describe("Evidence RAG v4 long-term evidence memory", () => {
     });
 
     expect(memory?.claimUsageStats.length).toBeGreaterThan(0);
+    expect(memory?.claimUsageStats[0].generatedCount).toBeGreaterThan(0);
     expect(memory?.claimUsageStats[0].acceptedCount).toBeGreaterThan(0);
+    expect(memory?.claimUsageStats[0].acceptanceRate).toBeGreaterThan(0);
     expect(memory?.roleSpecificEffectiveness.length).toBeGreaterThan(0);
   });
 });

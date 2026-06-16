@@ -23,6 +23,16 @@ export interface ClaimGraphRepository {
     finalText?: string;
     metadata?: Record<string, unknown>;
   }): Promise<number>;
+  appendEvidenceUsageDecision(input: {
+    userId: string;
+    generationId?: string;
+    variantId?: string;
+    claimIds?: string[];
+    action: EvidenceUsageRecord["action"];
+    finalText?: string;
+    metadata?: Record<string, unknown>;
+    decisionIdPrefix: string;
+  }): Promise<number>;
   listClaimUsageStats(userId: string, claimIds?: string[]): Promise<ClaimUsageStats[]>;
   listRoleSpecificClaimEffectiveness(userId: string, roleFamily?: string, claimIds?: string[]): Promise<RoleSpecificClaimEffectiveness[]>;
   recordOutcomeFeedback(feedback: EvidenceOutcomeFeedback): Promise<EvidenceOutcomeFeedback>;
@@ -108,6 +118,64 @@ export class InMemoryClaimGraphRepository implements ClaimGraphRepository {
     return count;
   }
 
+  public async appendEvidenceUsageDecision(input: {
+    userId: string;
+    generationId?: string;
+    variantId?: string;
+    claimIds?: string[];
+    action: EvidenceUsageRecord["action"];
+    finalText?: string;
+    metadata?: Record<string, unknown>;
+    decisionIdPrefix: string;
+  }): Promise<number> {
+    const claimSet = input.claimIds ? new Set(input.claimIds) : undefined;
+    const sourceRecords = Array.from(this.usage.values()).filter((record) => {
+      if (record.userId !== input.userId || record.action !== "generated") return false;
+      if (input.generationId && record.generationId !== input.generationId) return false;
+      if (input.variantId && record.variantId !== input.variantId) return false;
+      if (claimSet && (!record.claimId || !claimSet.has(record.claimId))) return false;
+      return true;
+    });
+    const now = new Date().toISOString();
+    let count = 0;
+    for (const [index, record] of sourceRecords.entries()) {
+      const decision: EvidenceUsageRecord = {
+        ...record,
+        id: `${input.decisionIdPrefix}-${index + 1}`,
+        action: input.action,
+        finalText: input.finalText ?? record.finalText,
+        metadata: { ...record.metadata, ...(input.metadata ?? {}), sourceUsageId: record.id },
+        createdAt: now,
+        updatedAt: now,
+      };
+      this.usage.set(decision.id, decision);
+      count++;
+    }
+    if (count === 0 && claimSet) {
+      for (const [index, claimId] of Array.from(claimSet).entries()) {
+        const claim = this.claims.get(claimId);
+        const decision: EvidenceUsageRecord = {
+          id: `${input.decisionIdPrefix}-fallback-${index + 1}`,
+          userId: input.userId,
+          generationId: input.generationId,
+          variantId: input.variantId,
+          requirementId: "unmapped",
+          claimId,
+          experienceId: claim?.experienceId,
+          evidenceText: claim?.evidenceText,
+          action: input.action,
+          finalText: input.finalText,
+          metadata: { ...(input.metadata ?? {}), fallbackDecision: true },
+          createdAt: now,
+          updatedAt: now,
+        };
+        this.usage.set(decision.id, decision);
+        count++;
+      }
+    }
+    return count;
+  }
+
   public async listClaimUsageStats(userId: string, claimIds?: string[]): Promise<ClaimUsageStats[]> {
     const claimSet = claimIds ? new Set(claimIds) : undefined;
     const grouped = new Map<string, EvidenceUsageRecord[]>();
@@ -171,8 +239,8 @@ function toClaimUsageStats(claimId: string, records: EvidenceUsageRecord[]): Cla
     editedCount,
     rejectedCount,
     ignoredCount,
-    acceptanceRate: records.length > 0 ? acceptedCount / records.length : 0,
-    editRate: records.length > 0 ? editedCount / records.length : 0,
+    acceptanceRate: generatedCount > 0 ? acceptedCount / generatedCount : 0,
+    editRate: generatedCount > 0 ? editedCount / generatedCount : 0,
     lastUsedAt,
   };
 }

@@ -24,10 +24,11 @@ export type RequirementRetrievalPolicy =
   | "claim_verification"
   | "ask_user_required";
 
+export type RetrievalStrictness = "strict" | "balanced" | "exploratory";
+export type RetrievalMode = "initial" | "corrective";
+
 export type EvidenceCoverage = "covered" | "partially_covered" | "no_evidence";
-
 export type EvidenceRecommendedAction = "use" | "ask_user" | "ignore" | "alternative_angle";
-
 export type EvidenceQuality = "strong" | "medium" | "weak" | "missing";
 
 export type JDRequirement = {
@@ -38,6 +39,19 @@ export type JDRequirement = {
   evidenceType: JDRequirementEvidenceType;
   retrievalPolicies: RequirementRetrievalPolicy[];
   keywords: string[];
+  coreTerms: string[];
+  queryVariants: string[];
+  strictness: RetrievalStrictness;
+};
+
+export type RequirementQueryPlan = {
+  requirementId: string;
+  originalText: string;
+  coreTerms: string[];
+  expandedTerms: string[];
+  phrases: string[];
+  policies: RequirementRetrievalPolicy[];
+  strictness: RetrievalStrictness;
 };
 
 export type EvidenceRAGExperience = ProductExperienceSummary & {
@@ -46,12 +60,23 @@ export type EvidenceRAGExperience = ProductExperienceSummary & {
   structured?: Record<string, unknown>;
 };
 
+export type RetrievalStrategyScores = {
+  exactPhrase: number;
+  lexical: number;
+  structured: number;
+  semanticAlias: number;
+  categoryFit: number;
+  longTermEffectiveness?: number;
+};
+
 export type RetrievedExperience = {
   experience: EvidenceRAGExperience;
   score: number;
   matchedTerms: string[];
   matchedRequirementIds: string[];
   reason: string;
+  strategyScores: RetrievalStrategyScores;
+  mode: RetrievalMode;
 };
 
 export type ClaimRiskLevel = "low" | "medium" | "high";
@@ -107,6 +132,8 @@ export type RetrievedPersistentClaim = {
   matchedRequirementIds: string[];
   reason: string;
   graphEdgeIds?: string[];
+  strategyScores: RetrievalStrategyScores;
+  mode: RetrievalMode;
 };
 
 export type EvidenceItem = {
@@ -165,6 +192,8 @@ export type EvidenceRetrievalTrace = {
   matchedTerms: string[];
   matchedRequirementIds: string[];
   reason: string;
+  strategyScores?: RetrievalStrategyScores;
+  mode?: RetrievalMode;
 };
 
 export type EvidenceUsageTrace = {
@@ -176,8 +205,27 @@ export type EvidenceUsageTrace = {
   status: "available" | "missing" | "needs_user_confirmation";
 };
 
+export type RetrievalEvaluation = {
+  overallQuality: "sufficient" | "partial" | "insufficient";
+  coverageRate: number;
+  criticalCoverageRate: number;
+  strongEvidenceRate: number;
+  duplicateRate: number;
+  correctionNeeded: boolean;
+  correctionReasons: string[];
+};
+
+export type EvidenceDiagnostics = {
+  queryPlans: RequirementQueryPlan[];
+  retrievalEvaluation: RetrievalEvaluation;
+  correctionRounds: number;
+  persistentClaimHits: number;
+  dynamicExperienceHits: number;
+  warnings: string[];
+};
+
 export type EvidencePack = {
-  version: "evidence-rag-v1.5" | "evidence-rag-v2" | "evidence-rag-v4";
+  version: "evidence-rag-v1.5" | "evidence-rag-v2" | "evidence-rag-v4" | "evidence-rag-v5";
   jdRequirements: JDRequirement[];
   matchedEvidence: Array<{
     requirementId: string;
@@ -196,6 +244,7 @@ export type EvidencePack = {
   qualitySignals: EvidenceQualitySignal[];
   graphLinks: EvidenceGraphLink[];
   usageTrace: EvidenceUsageTrace[];
+  diagnostics?: EvidenceDiagnostics;
   longTermMemory?: EvidenceLongTermMemory;
 };
 
@@ -266,4 +315,12 @@ export type EvidenceLongTermMemory = {
   claimUsageStats: ClaimUsageStats[];
   roleSpecificEffectiveness: RoleSpecificClaimEffectiveness[];
   outcomeFeedback: EvidenceOutcomeFeedback[];
+};
+
+export type EvidenceReindexReport = {
+  userId: string;
+  scannedExperiences: number;
+  indexedExperiences: number;
+  failedExperiences: Array<{ experienceId: string; reason: string }>;
+  activeClaims: number;
 };

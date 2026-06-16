@@ -1,4 +1,4 @@
-﻿import { randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import type {
   ProductExperience,
   ProductExperienceCategory,
@@ -20,6 +20,7 @@ import { extractedCandidateToDraft } from "../LLMExperienceExtractor.js";
 import { LLMGenerationError, type LLMGenerationService } from "../LLMGenerationService.js";
 import type { EvidenceRAGService, EvidencePack, ClaimGraphIndexer } from "../../rag/evidence/index.js";
 import type { GuidelineRAGService, InstructionPack } from "../../rag/guideline/index.js";
+import { GroundingContextCoordinator } from "../../rag/GroundingContextCoordinator.js";
 import { isDeterministicFallbackAllowed } from "../deterministicFallbackGuard.js";
 import type {
   ProductExperienceRepository,
@@ -516,6 +517,8 @@ function pickCandidateEditableFields(candidate: ProductImportCandidate): Partial
 }
 
 export class GenerationProductService {
+  private readonly groundingCoordinator = new GroundingContextCoordinator();
+
   public constructor(
     private readonly repository: ProductGenerationRepository,
     private readonly jdService: JDService,
@@ -561,6 +564,7 @@ export class GenerationProductService {
           limit: 12,
         })
       : undefined;
+    const groundingContext = this.groundingCoordinator.build({ instructionPack, evidencePack });
     const experiences = evidencePack
       ? await this.experienceService.listExperiences(input.userId, {
           limit: 100,
@@ -578,6 +582,7 @@ export class GenerationProductService {
               targetRole,
               evidencePack,
               instructionPack,
+              groundingContext,
             })
           : await this.llmGenerationService.generateVariants(
               input.userId,
@@ -616,6 +621,7 @@ export class GenerationProductService {
         sourceExperienceIds: experiences.map((item) => item.id),
         ...(instructionPack ? { instructionPack } : {}),
         ...(evidencePack ? { evidencePack } : {}),
+        groundingContext,
       },
       outputSnapshot: {
         variants,

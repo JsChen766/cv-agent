@@ -1,7 +1,17 @@
-import type { ProductExperienceSummary } from "../../product/types.js";
 import type { ExperienceService } from "../../product/services/index.js";
-import type { EvidenceRAGExperience, JDRequirement, RetrievedExperience } from "./types.js";
-import { clamp, scoreTextOverlap, stringifyStructured, unique } from "./textUtils.js";
+import type {
+  EvidenceRAGExperience,
+  JDRequirement,
+  RequirementQueryPlan,
+  RetrievedExperience,
+  RetrievalMode,
+} from "./types.js";
+import {
+  buildExperienceCorpusStats,
+  hasStrongMatch,
+  minimumRetrievalScore,
+  scoreExperience,
+} from "./EvidenceScoring.js";
 
 export class ExperienceRetriever {
   public constructor(private readonly experienceService: ExperienceService) {}
@@ -9,64 +19,89 @@ export class ExperienceRetriever {
   public async retrieve(input: {
     userId: string;
     requirements: JDRequirement[];
+    queryPlans: RequirementQueryPlan[];
     limit?: number;
+    mode?: RetrievalMode;
+    excludeExperienceIds?: string[];
   }): Promise<RetrievedExperience[]> {
-    const experiences = await this.experienceService.listExperiences(input.userId, { limit: 100, status: "active" });
-    const scored = experiences.map((experience) => this.scoreExperience(experience as EvidenceRAGExperience, input.requirements));
-    return scored
-      .filter((item) => item.score > 0 || item.experience.content?.trim())
-      .sort((a, b) => b.score - a.score || b.matchedTerms.length - a.matchedTerms.length)
-      .slice(0, input.limit ?? 12);
-  }
+    const experiences = await this.experienceService.listExperiences(input.userId, { limit: 500, status: "active" });
+    const normalized = experiences as EvidenceRAGExperience[];
+    const corpus = buildExperienceCorpusStats(normalized);
+    const plans = new Map(input.queryPlans.map((plan) => [plan.requirementId, plan]));
+    const mode = input.mode ?? "initial";
+    const excluded = new Set(input.excludeExperienceIds ?? []);
 
-  private scoreExperience(experience: ProductExperienceSummary & { tags?: string[]; content?: string; structured?: Record<string, unknown> }, requirements: JDRequirement[]): RetrievedExperience {
-    const searchable = [
-      experience.title,
-      experience.organization,
-      experience.role,
-      experience.category,
-      experience.content,
-      ...(experience.tags ?? []),
-      stringifyStructured(experience.structured),
-    ].filter(Boolean).join("\n");
+    const scored = normalized
+      .filter((experience) => !excluded.has(experience.id))
+      .map((experience) => {
+        const result = scoreExperience(experience, input.requirements, plans, corpus, mode);
+        return {
+          experience,
+          score: result.score,
+          matchedTerms: result.matchedTerms,
+          matchedRequirementIds: result.matchedRequirementIds,
+          strategyScores: result.strategyScores,
+          mode,
+          reason: buildReason(result.strategyScores, result.matchedTerms, mode),
+          _requirementScores: result.requirementScores,
+        };
+      })
+      .filter((item) => item.score >= minimumRetrievalScore(mode) && hasStrongMatch({ requirementScores: item._requirementScores, matchedTerms: item.matchedTerms }, mode))
+      .sort((a, b) => b.score - a.score || b.matchedRequirementIds.length - a.matchedRequirementIds.length);
 
-    let rawScore = 0;
-    const matchedTerms: string[] = [];
-    const matchedRequirementIds: string[] = [];
-    for (const requirement of requirements) {
-      const { score, matchedTerms: terms } = scoreTextOverlap(requirement.keywords.length > 0 ? requirement.keywords : [requirement.text], searchable);
-      if (score > 0) {
-        rawScore += score * importanceWeight(requirement.importance) * policyWeight(requirement.retrievalPolicies);
-        matchedRequirementIds.push(requirement.id);
-        matchedTerms.push(...terms);
-      }
-    }
-
-    const contentBonus = experience.content && experience.content.trim().length > 60 ? 0.08 : 0;
-    const structuredBonus = experience.structured && Object.keys(experience.structured).length > 0 ? 0.06 : 0;
-    const score = clamp(rawScore / Math.max(1, requirements.length) + contentBonus + structuredBonus);
-    const uniqueTerms = unique(matchedTerms).slice(0, 16);
-    return {
-      experience,
-      score,
-      matchedTerms: uniqueTerms,
-      matchedRequirementIds: unique(matchedRequirementIds),
-      reason: uniqueTerms.length > 0
-        ? `Matched JD terms: ${uniqueTerms.slice(0, 8).join(", ")}`
-        : "Included as available experience evidence.",
-    };
+    return diversitySelect(scored, input.requirements, input.limit ?? 12).map(({ _requirementScores: _ignored, ...item }) => item);
   }
 }
 
-function importanceWeight(value: JDRequirement["importance"]): number {
-  if (value === "critical") return 1.25;
-  if (value === "high") return 1.1;
-  if (value === "low") return 0.7;
-  return 1;
+function diversitySelect<T extends RetrievedExperience & { _requirementScores: Array<{ requirementId: string; score: number }> }>(
+  candidates: T[],
+  requirements: JDRequirement[],
+  limit: number,
+): T[] {
+  const selected: T[] = [];
+  const selectedIds = new Set<string>();
+  const perRequirement = new Map<string, number>();
+  const importantRequirementIds = requirements
+    .filter((requirement) => requirement.importance === "critical" || requirement.importance === "high")
+    .map((requirement) => requirement.id);
+
+  for (const requirementId of importantRequirementIds) {
+    const candidate = candidates.find((item) => !selectedIds.has(item.experience.id) && item.matchedRequirementIds.includes(requirementId));
+    if (!candidate) continue;
+    selected.push(candidate);
+    selectedIds.add(candidate.experience.id);
+    for (const id of candidate.matchedRequirementIds) perRequirement.set(id, (perRequirement.get(id) ?? 0) + 1);
+    if (selected.length >= limit) return selected;
+  }
+
+  for (const candidate of candidates) {
+    if (selectedIds.has(candidate.experience.id)) continue;
+    const novelty = candidate.matchedRequirementIds.filter((id) => (perRequirement.get(id) ?? 0) < 2).length;
+    const duplicateTitle = selected.some((item) => normalizeTitle(item.experience.title) === normalizeTitle(candidate.experience.title));
+    if (duplicateTitle && novelty === 0) continue;
+    if (candidate.matchedRequirementIds.length > 0 && novelty === 0 && selected.length >= Math.ceil(limit / 2)) continue;
+    selected.push(candidate);
+    selectedIds.add(candidate.experience.id);
+    for (const id of candidate.matchedRequirementIds) perRequirement.set(id, (perRequirement.get(id) ?? 0) + 1);
+    if (selected.length >= limit) break;
+  }
+  return selected;
 }
 
-function policyWeight(policies: JDRequirement["retrievalPolicies"]): number {
-  if (policies.includes("keyword_exact") || policies.includes("structured_skill")) return 1.15;
-  if (policies.includes("claim_verification")) return 1.05;
-  return 1;
+function buildReason(
+  scores: RetrievedExperience["strategyScores"],
+  matchedTerms: string[],
+  mode: RetrievalMode,
+): string {
+  const channels = [
+    scores.exactPhrase >= 0.15 ? "exact phrase" : "",
+    scores.structured >= 0.15 ? "structured skill" : "",
+    scores.lexical >= 0.15 ? "lexical" : "",
+    scores.semanticAlias >= 0.15 ? "semantic alias" : "",
+  ].filter(Boolean);
+  return `${mode === "corrective" ? "Corrective retrieval" : "Initial retrieval"} matched ${channels.join(" + ") || "JD evidence"}${matchedTerms.length > 0 ? `: ${matchedTerms.slice(0, 8).join(", ")}` : ""}.`;
+}
+
+function normalizeTitle(value: string): string {
+  return value.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
 }

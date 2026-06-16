@@ -188,6 +188,76 @@ export class PostgresClaimGraphRepository implements ClaimGraphRepository {
     return result.rowCount;
   }
 
+  public async appendEvidenceUsageDecision(input: {
+    userId: string;
+    generationId?: string;
+    variantId?: string;
+    claimIds?: string[];
+    action: EvidenceUsageRecord["action"];
+    finalText?: string;
+    metadata?: Record<string, unknown>;
+    decisionIdPrefix: string;
+  }): Promise<number> {
+    const now = new Date().toISOString();
+    const result = await this.database.query(
+      `INSERT INTO product_evidence_usage (
+        id,user_id,generation_id,variant_id,resume_id,jd_id,target_role,role_family,requirement_id,
+        claim_id,experience_id,evidence_text,generated_text,final_text,action,metadata_json,created_at,updated_at
+      )
+      SELECT
+        $8 || '-' || ROW_NUMBER() OVER (ORDER BY id)::text,
+        user_id,generation_id,variant_id,resume_id,jd_id,target_role,role_family,requirement_id,
+        claim_id,experience_id,evidence_text,generated_text,COALESCE($6, final_text),$5,
+        metadata_json || $7::jsonb || jsonb_build_object('sourceUsageId', id),$9,$9
+      FROM product_evidence_usage
+      WHERE user_id = $1
+        AND action = 'generated'
+        AND ($2::text IS NULL OR generation_id = $2)
+        AND ($3::text IS NULL OR variant_id = $3)
+        AND ($4::text[] IS NULL OR claim_id = ANY($4))
+      ON CONFLICT (id) DO NOTHING`,
+      [
+        input.userId,
+        input.generationId ?? null,
+        input.variantId ?? null,
+        input.claimIds && input.claimIds.length > 0 ? input.claimIds : null,
+        input.action,
+        input.finalText ?? null,
+        JSON.stringify(input.metadata ?? {}),
+        input.decisionIdPrefix,
+        now,
+      ],
+    );
+    if (result.rowCount > 0 || !input.claimIds?.length) return result.rowCount;
+
+    let inserted = 0;
+    for (const [index, claimId] of input.claimIds.entries()) {
+      const fallback = await this.database.query(
+        `INSERT INTO product_evidence_usage (
+          id,user_id,generation_id,variant_id,requirement_id,claim_id,experience_id,evidence_text,
+          final_text,action,metadata_json,created_at,updated_at
+        )
+        SELECT $1,$2,$3,$4,'unmapped',$5,experience_id,evidence_text,$6,$7,$8::jsonb,$9,$9
+        FROM product_experience_claim
+        WHERE id = $5 AND user_id = $2
+        ON CONFLICT (id) DO NOTHING`,
+        [
+          `${input.decisionIdPrefix}-fallback-${index + 1}`,
+          input.userId,
+          input.generationId ?? null,
+          input.variantId ?? null,
+          claimId,
+          input.finalText ?? null,
+          input.action,
+          JSON.stringify({ ...(input.metadata ?? {}), fallbackDecision: true }),
+          now,
+        ],
+      );
+      inserted += fallback.rowCount;
+    }
+    return inserted;
+  }
+
   public async listClaimUsageStats(userId: string, claimIds?: string[]): Promise<ClaimUsageStats[]> {
     const result = await this.database.query<PgRow>(
       `SELECT
