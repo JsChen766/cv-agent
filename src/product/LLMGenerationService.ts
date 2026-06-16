@@ -7,6 +7,7 @@ import type { ProductExperienceSummary, ProductGeneratedVariant, VariantComparis
 import type { EvidencePack } from "../rag/evidence/index.js";
 import type { InstructionPack } from "../rag/guideline/index.js";
 import type { GroundingContext } from "../rag/types.js";
+import type { PersonalizationPack } from "../self-evolution/preference/index.js";
 
 export type LLMGenerationErrorPhase =
   | "initial"
@@ -444,6 +445,7 @@ function buildEvidenceGroundedUserPrompt(input: {
   evidencePack: EvidencePack;
   instructionPack?: InstructionPack;
   groundingContext?: GroundingContext;
+  personalizationPack?: PersonalizationPack;
 }): string {
   const requirements = input.evidencePack.jdRequirements.map((requirement) => [
     `- [${requirement.id}] ${requirement.text}`,
@@ -498,6 +500,28 @@ function buildEvidenceGroundedUserPrompt(input: {
     input.instructionPack.examplePatterns.slice(0, 6).map((item) => `- ${item.useCase}: ${item.pattern}`).join("\n") || "No example patterns.",
   ].join("\n") : "No Instruction Pack available. Use only general resume-writing rules and the Evidence Pack.";
 
+
+  const personalization = input.personalizationPack ? [
+    `PreferenceBank Version: ${input.personalizationPack.version}`,
+    "Stable Preferences:",
+    input.personalizationPack.stablePreferences.map((item) => `- ${item.instruction} (confidence=${item.confidence.toFixed(2)})`).join("\n") || "No stable preferences.",
+    "",
+    "Contextual Preferences:",
+    input.personalizationPack.contextualPreferences.map((item) => `- ${item.instruction} (confidence=${item.confidence.toFixed(2)})`).join("\n") || "No contextual preferences.",
+    "",
+    "Negative Preferences:",
+    input.personalizationPack.negativePreferences.map((item) => `- Avoid or downweight: ${item.instruction}`).join("\n") || "No negative preferences.",
+    "",
+    "Experience Affinities:",
+    input.personalizationPack.experienceAffinities.map((item) => `- ${item.experienceId}: affinity=${item.affinity.toFixed(2)}; ${item.reason}`).join("\n") || "No learned experience affinities.",
+    "",
+    "Preference policy:",
+    "- Treat preferences as soft personalization constraints.",
+    "- Current explicit user instructions override retrieved preferences.",
+    "- Evidence and hard factual constraints always override style or selection preferences.",
+    "- Do not apply uncertain preferences as requirements.",
+  ].join("\n") : "No PreferenceBank context available yet.";
+
   const coordinatedPlan = input.groundingContext ? [
     `Coverage: supported=${input.groundingContext.coverageSummary.supportedRequirements}, partial=${input.groundingContext.coverageSummary.partiallySupportedRequirements}, missing=${input.groundingContext.coverageSummary.missingRequirements}`,
     ...input.groundingContext.requirementPlan.slice(0, 20).map((item) =>
@@ -517,6 +541,9 @@ function buildEvidenceGroundedUserPrompt(input: {
     "",
     "Coordinated Requirement Plan:",
     coordinatedPlan,
+    "",
+    "User Preference Context:",
+    personalization,
     "",
     "Evidence RAG Version:",
     input.evidencePack.version,
@@ -590,6 +617,7 @@ export class LLMGenerationService {
     evidencePack?: EvidencePack;
     instructionPack?: InstructionPack;
     groundingContext?: GroundingContext;
+    personalizationPack?: PersonalizationPack;
   }): Promise<LLMGeneratedVariantsResult> {
     if (!input.evidencePack) {
       const result = await this.tryGenerateFromPrompt(
@@ -609,11 +637,14 @@ export class LLMGenerationService {
       evidencePack,
       instructionPack: input.instructionPack,
       groundingContext: input.groundingContext,
+      personalizationPack: input.personalizationPack,
     });
     const result = await this.tryGenerateFromPrompt(userPrompt, {
       evidenceClaimCount: evidencePack.allowedClaims.length,
       missingRequirementCount: evidencePack.missingRequirements.length,
       guidelineRuleCount: input.instructionPack?.writingRules.length ?? 0,
+      preferenceCount: (input.personalizationPack?.stablePreferences.length ?? 0)
+        + (input.personalizationPack?.contextualPreferences.length ?? 0),
       targetRole: input.targetRole,
     });
 

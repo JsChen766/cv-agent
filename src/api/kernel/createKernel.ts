@@ -71,6 +71,13 @@ import {
   PostgresGuidelineRepository,
   type GuidelineRepository,
 } from "../../rag/guideline/index.js";
+import {
+  InMemoryPreferenceRepository,
+  PostgresPreferenceRepository,
+  PreferenceBankService,
+  createPreferenceCapabilityModule,
+  type PreferenceRepository,
+} from "../../self-evolution/preference/index.js";
 import { InMemoryPendingActionRepository } from "../../agent-core/confirmation/InMemoryPendingActionRepository.js";
 import { PendingActionService } from "../../agent-core/confirmation/PendingActionService.js";
 import { PostgresPendingActionRepository } from "../../agent-core/confirmation/PostgresPendingActionRepository.js";
@@ -95,6 +102,7 @@ async function createPostgresKernel(databaseUrl: string, options: { pdfRenderer?
     productGenerationRepository: new PostgresProductGenerationRepository(database),
     claimGraphRepository: new PostgresClaimGraphRepository(database),
     guidelineRepository: new PostgresGuidelineRepository(database),
+    preferenceRepository: new PostgresPreferenceRepository(database),
     copilotPersistence: new PostgresCopilotPersistence(database),
     platformServices: new PostgresPlatformServices(database),
     authService: new AuthService(new PostgresAuthRepository(database)),
@@ -118,6 +126,7 @@ function createInMemoryKernel(options: { pdfRenderer?: PdfRendererAdapter }): Ap
     productGenerationRepository: new InMemoryProductGenerationRepository(),
     claimGraphRepository: new InMemoryClaimGraphRepository(),
     guidelineRepository: new InMemoryGuidelineRepository(),
+    preferenceRepository: new InMemoryPreferenceRepository(),
     copilotPersistence: new InMemoryCopilotPersistence(),
     platformServices: new InMemoryPlatformServices(),
     authService: new AuthService(new InMemoryAuthRepository()),
@@ -162,6 +171,11 @@ function buildKernel(input: BuildKernelInput): ApiKernel {
         llmGuidelineService,
       })
     : undefined;
+  const preferenceBankService = new PreferenceBankService({
+    repository: input.preferenceRepository,
+    generationRepository: input.productGenerationRepository,
+  });
+  const preferenceCapabilityModule = createPreferenceCapabilityModule(preferenceBankService);
 
   const importService = new ImportService(input.productImportRepository, experienceService, llmExperienceExtractor, claimGraphIndexer);
   const generationProductService = new GenerationProductService(
@@ -172,6 +186,7 @@ function buildKernel(input: BuildKernelInput): ApiKernel {
     llmGenerationService,
     evidenceRAGService,
     guidelineRAGService,
+    preferenceBankService,
   );
   const productServices = {
     experienceService,
@@ -181,6 +196,7 @@ function buildKernel(input: BuildKernelInput): ApiKernel {
     generationProductService,
     evidenceRAGService,
     guidelineRAGService,
+    preferenceBankService,
   };
   const copilotServices = {
     sessionService: new CopilotSessionService(input.copilotPersistence),
@@ -230,6 +246,7 @@ function buildKernel(input: BuildKernelInput): ApiKernel {
     exportService,
     jobRunner,
     pendingActions,
+    capabilityModules: [preferenceCapabilityModule],
     frontDeskModelClient: model.client,
     modelClientFactory,
     resolveUserModelClient,
@@ -251,6 +268,7 @@ type BuildKernelInput = {
   productGenerationRepository: ProductGenerationRepository;
   claimGraphRepository?: ClaimGraphRepository;
   guidelineRepository?: GuidelineRepository;
+  preferenceRepository: PreferenceRepository;
   copilotPersistence: CopilotPersistence;
   platformServices: PlatformServices;
   authService: AuthService;

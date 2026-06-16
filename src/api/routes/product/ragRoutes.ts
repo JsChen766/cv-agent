@@ -33,29 +33,51 @@ export function registerRagRoutes(
           limit: numericLimit(body.guidelineLimit, 14, 4, 30),
         })
       : undefined;
-    const evidencePack = kernel.productServices.evidenceRAGService
+    const personalizationPack = kernel.productServices.preferenceBankService
+      ? await kernel.productServices.preferenceBankService.buildPersonalizationPack({
+          userId: ctx.user.id,
+          context: {
+            targetRole,
+            roleFamily: instructionPack?.roleFamily,
+            applicationType: instructionPack?.applicationType,
+            language: instructionPack?.language,
+            industry: instructionPack?.industry,
+          },
+          limit: numericLimit(body.preferenceLimit, 12, 1, 40),
+        })
+      : undefined;
+    const personalizedInstructionPack = personalizationPack && kernel.productServices.preferenceBankService
+      ? kernel.productServices.preferenceBankService.applyToInstructionPack(instructionPack, personalizationPack)
+      : instructionPack;
+    const baseEvidencePack = kernel.productServices.evidenceRAGService
       ? await kernel.productServices.evidenceRAGService.buildEvidencePack({
           userId: ctx.user.id,
           jdText,
           targetRole,
-          roleFamily: instructionPack?.roleFamily,
+          roleFamily: personalizedInstructionPack?.roleFamily,
           limit: numericLimit(body.evidenceLimit, 12, 3, 40),
         })
       : undefined;
-    const groundingContext = new GroundingContextCoordinator().build({ instructionPack, evidencePack });
+    const evidencePack = personalizationPack && kernel.productServices.preferenceBankService
+      ? kernel.productServices.preferenceBankService.applyToEvidencePack(baseEvidencePack, personalizationPack)
+      : baseEvidencePack;
+    const groundingContext = new GroundingContextCoordinator().build({ instructionPack: personalizedInstructionPack, evidencePack });
     return productSuccess({
-      instructionPack,
+      instructionPack: personalizedInstructionPack,
       evidencePack,
+      personalizationPack,
       groundingContext,
       summary: {
-        guidelineVersion: instructionPack?.version,
+        guidelineVersion: personalizedInstructionPack?.version,
         evidenceVersion: evidencePack?.version,
-        guidelineStatus: instructionPack?.quality?.status,
+        preferenceVersion: personalizationPack?.version,
+        guidelineStatus: personalizedInstructionPack?.quality?.status,
         evidenceQuality: evidencePack?.diagnostics?.retrievalEvaluation.overallQuality,
         allowedClaimCount: evidencePack?.allowedClaims.length ?? 0,
         missingRequirementCount: evidencePack?.missingRequirements.length ?? 0,
         persistentClaimHits: evidencePack?.diagnostics?.persistentClaimHits ?? 0,
         dynamicExperienceHits: evidencePack?.diagnostics?.dynamicExperienceHits ?? 0,
+        appliedPreferenceCount: personalizationPack?.diagnostics.appliedCount ?? 0,
       },
     }, kernel, ctx);
   });

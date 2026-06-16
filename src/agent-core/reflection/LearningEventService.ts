@@ -41,6 +41,14 @@ export class LearningEventService {
       status: result.status,
       actionType: stringValue(result.actionResult?.actionType),
       pendingActionId: result.pendingActionId ?? stringValue(result.actionResult?.pendingActionId),
+      generationId: stringValue(step.arguments.generationId)
+        ?? recordString(result.actionResult?.metadata, "generationId"),
+      variantId: stringValue(step.arguments.variantId)
+        ?? stringValue(result.actionResult?.variantId)
+        ?? recordString(result.actionResult?.metadata, "variantId"),
+      resumeId: stringValue(step.arguments.resumeId)
+        ?? recordString(result.actionResult?.metadata, "resumeId"),
+      ...preferenceScopePayload(context),
     });
     await Promise.allSettled(this.evaluationHooks.map((hook) => hook.onToolResult?.({
       toolName: step.toolName,
@@ -102,6 +110,21 @@ export class LearningEventService {
       actionType,
       variantId: stringValue(payload?.variantId),
       generationId: stringValue(payload?.generationId),
+      preferenceText: stringValue(payload?.preference)
+        ?? stringValue(payload?.instruction)
+        ?? stringValue(payload?.selectedText)
+        ?? stringValue(payload?.text),
+      ...preferenceScopePayload(context),
+    });
+  }
+
+  public async recordUserPreferenceText(context: AgentContext, userMessage: string): Promise<void> {
+    if (!containsPreferenceSignal(userMessage)) return;
+    await this.record(context, "user.preference_signal", "user_message", {
+      actionType: "free_text_preference",
+      userMessage,
+      preferenceText: userMessage,
+      ...preferenceScopePayload(context),
     });
   }
 
@@ -158,6 +181,42 @@ function learningEventTypeForExplicitAction(actionType: ProductActionType): Lear
   if (actionType === "revise_more_conservative") return "user.preference_signal";
   if (actionType === "revise_more_quantified") return "user.preference_signal";
   return undefined;
+}
+
+function preferenceScopePayload(context: AgentContext): Record<string, unknown> {
+  const productContext = context.productContext ?? {};
+  const language = detectLanguage(context.userMessage);
+  return {
+    targetRole: stringValue(productContext.targetRole),
+    roleFamily: stringValue(productContext.roleFamily),
+    applicationType: stringValue(productContext.applicationType),
+    section: stringValue(productContext.section),
+    industry: stringValue(productContext.industry),
+    language,
+  };
+}
+
+function containsPreferenceSignal(value: string): boolean {
+  const normalized = value.toLowerCase();
+  return [
+    /更保守/, /不要夸张/, /不要过度包装/, /更量化/, /不要量化/, /更简洁/, /精简/,
+    /更详细/, /技术细节/, /不要太技术/, /业务影响/, /研究贡献/, /不要虚构/,
+    /我(?:更)?(?:喜欢|偏好)/, /我不喜欢/, /以后.{0,20}(?:请|不要|用|写)/,
+    /more conservative/, /do not overstate/, /more quantified/, /more metrics?/,
+    /concise/, /shorter/, /more detail/, /technical detail/, /business impact/,
+    /research contribution/, /do not invent/, /no fabrication/,
+    /i prefer/, /i like/, /i do not like/, /my preference/, /from now on/,
+  ].some((pattern) => pattern.test(normalized));
+}
+
+function detectLanguage(value: unknown): "zh" | "en" {
+  const text = typeof value === "string" ? value : "";
+  return (text.match(/[\u3400-\u9fff]/g) ?? []).length >= 2 ? "zh" : "en";
+}
+
+function recordString(value: unknown, key: string): string | undefined {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined;
+  return stringValue((value as Record<string, unknown>)[key]);
 }
 
 function stringValue(value: unknown): string | undefined {

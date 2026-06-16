@@ -22,6 +22,7 @@ import { LLMGenerationError, type LLMGenerationService } from "../LLMGenerationS
 import type { EvidenceRAGService, EvidencePack, ClaimGraphIndexer } from "../../rag/evidence/index.js";
 import type { GuidelineRAGService } from "../../rag/guideline/index.js";
 import { GroundingContextCoordinator } from "../../rag/GroundingContextCoordinator.js";
+import type { PreferenceBankService, PersonalizationPack } from "../../self-evolution/preference/index.js";
 import { isDeterministicFallbackAllowed } from "../deterministicFallbackGuard.js";
 import type {
   ProductExperienceRepository,
@@ -39,6 +40,7 @@ export type ProductServices = {
   generationProductService: GenerationProductService;
   evidenceRAGService?: EvidenceRAGService;
   guidelineRAGService?: GuidelineRAGService;
+  preferenceBankService?: PreferenceBankService;
 };
 
 type ImportDraftLike = {
@@ -952,6 +954,7 @@ export class GenerationProductService {
     private readonly llmGenerationService?: LLMGenerationService,
     private readonly evidenceRAGService?: EvidenceRAGService,
     private readonly guidelineRAGService?: GuidelineRAGService,
+    private readonly preferenceBankService?: PreferenceBankService,
   ) {}
 
   public async generateResumeFromJD(input: {
@@ -980,7 +983,7 @@ export class GenerationProductService {
     if (!jd) throw new Error("JD not found.");
 
     const targetRole = input.targetRole ?? jd.targetRole;
-    const instructionPack = this.guidelineRAGService
+    const baseInstructionPack = this.guidelineRAGService
       ? await this.guidelineRAGService.buildInstructionPack({
           userId: input.userId,
           jdText: jd.rawText,
@@ -989,7 +992,25 @@ export class GenerationProductService {
         })
       : undefined;
 
-    const evidencePack = this.evidenceRAGService
+    const personalizationPack: PersonalizationPack | undefined = this.preferenceBankService
+      ? await this.preferenceBankService.buildPersonalizationPack({
+          userId: input.userId,
+          context: {
+            targetRole,
+            roleFamily: baseInstructionPack?.roleFamily,
+            applicationType: baseInstructionPack?.applicationType,
+            language: baseInstructionPack?.language,
+            industry: baseInstructionPack?.industry,
+          },
+          limit: 12,
+        })
+      : undefined;
+
+    const instructionPack = personalizationPack && this.preferenceBankService
+      ? this.preferenceBankService.applyToInstructionPack(baseInstructionPack, personalizationPack)
+      : baseInstructionPack;
+
+    const baseEvidencePack = this.evidenceRAGService
       ? await this.evidenceRAGService.buildEvidencePack({
           userId: input.userId,
           jdText: jd.rawText,
@@ -998,6 +1019,10 @@ export class GenerationProductService {
           limit: 12,
         })
       : undefined;
+
+    const evidencePack = personalizationPack && this.preferenceBankService
+      ? this.preferenceBankService.applyToEvidencePack(baseEvidencePack, personalizationPack)
+      : baseEvidencePack;
 
     const groundingContext = this.groundingCoordinator.build({
       instructionPack,
@@ -1027,6 +1052,7 @@ export class GenerationProductService {
               evidencePack,
               instructionPack,
               groundingContext,
+              personalizationPack,
             })
           : await this.llmGenerationService.generateVariants(
               input.userId,
@@ -1074,6 +1100,7 @@ export class GenerationProductService {
         sourceExperienceIds: experiences.map((item) => item.id),
         ...(instructionPack ? { instructionPack } : {}),
         ...(evidencePack ? { evidencePack } : {}),
+        ...(personalizationPack ? { personalizationPack } : {}),
         groundingContext,
       },
       outputSnapshot: {
@@ -1222,17 +1249,27 @@ export class GenerationProductService {
     variant: ProductGeneratedVariant,
     finalText: string,
   ): Promise<void> {
-    if (!this.evidenceRAGService) return;
+    if (this.evidenceRAGService) {
+      await this.evidenceRAGService.recordVariantDecision({
+        userId,
+        generationId,
+        variantId: variant.id,
+        action: "accepted",
+        finalText,
+        claimIds: variant.sourceEvidenceIds,
+        metadata: { source: "saveAcceptedVariantToResume" },
+      });
+    }
 
-    await this.evidenceRAGService.recordVariantDecision({
-      userId,
-      generationId,
-      variantId: variant.id,
-      action: "accepted",
-      finalText,
-      claimIds: variant.sourceEvidenceIds,
-      metadata: { source: "saveAcceptedVariantToResume" },
-    });
+    if (this.preferenceBankService) {
+      await this.preferenceBankService.recordVariantDecision({
+        userId,
+        generationId,
+        variantId: variant.id,
+        action: "accepted",
+        source: "saveAcceptedVariantToResume",
+      });
+    }
   }
 
   public getGeneration(
