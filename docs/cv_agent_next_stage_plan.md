@@ -1133,6 +1133,64 @@ tests/resumeLLMFitEditor.test.ts
 
 ---
 
+## 阶段 7 落地记录（已完成）
+
+> 本节记录阶段 7 的实际实现与契约，方便阶段 8 之后的工作以此为准。
+
+### 改动清单
+
+```text
+src/exports/ResumeLLMFitEditor.ts                                  # 新增：LLM 适配编辑器（结构化 actions）
+src/agent-core/prompts/prompts/product/resume-fit-editor-system.md # 新增：严格 JSON-only system prompt
+src/agent-core/prompts/PromptRegistry.ts                           # 注册 product.resumeFitEditor.system
+src/exports/ResumeExportService.ts                                 # 在 maybeCompress 之后调用 maybeLlmFitEdit（warn-only）
+src/exports/types.ts                                               # ResumeExport.editReport?: ResumeFitEditorReport
+src/exports/index.ts                                               # 导出 ResumeLLMFitEditor 与相关类型
+src/exports/PostgresResumeExportRepository.ts                      # 新增 edit_report JSONB 列读写
+src/persistence/postgres/schema.sql                                # resume_export 增加 edit_report
+src/persistence/postgres/migrations/0014_resume_edit_report.sql    # 迁移：ALTER TABLE ... ADD COLUMN edit_report JSONB
+src/api/kernel/createKernel.ts                                     # 透传 modelClient 给 ResumeExportService（生产用 model.client，测试可注入）
+tests/resumeLLMFitEditor.test.ts                                   # 单测：触发判定 + actions 应用 + 失败兜底（17 用例）
+tests/resumeLLMFitPipeline.test.ts                                 # e2e：editReport 持久化 + ENABLE_LLM_FIT_EDITOR 关闭旁路
+```
+
+### 关键设计
+
+- **触发严格**：仅 `templateId === "one-page-modern"` 且 `targetPages === 1`，且满足以下之一：
+  - `still_overflowing`：阶段 6 已 `applied===true` 且 `stillOverflowing===true`；
+  - `fill_underflow`：`overflowPx===0` 且 `underflowPx >= 240px`（默认阈值，可注入）。
+- **结构化 actions only**：LLM 仅返回 `{actions, reason, notes}` JSON，`actions` 为 `shorten_bullet / rephrase_bullet / drop_bullet / expand_bullet` 联合类型，全部按 `bulletId` 引用现有 bullet。`expand_bullet` 仅 `fill_underflow` 模式可用，其他三种仅 `still_overflowing` 模式可用，越界 action 直接拒绝。
+- **绝不编造**：服务侧硬约束 + system prompt 双重约束。被拒原因穷尽枚举为 `unknown_bullet | pinned_bullet | pinned_item | expand_in_shrink_mode | shrink_in_fill_mode | shorten_too_small | newtext_invalid | duplicate_target`，均写入 `editReport.rejectedActions[]`。
+- **pinned 双层保护**：`metadata.bulletPinned[bulletId]===true` 与 `pinned===true` 的 item 内 bullets 永远不会被 LLM 改动；越权请求被拒。
+- **MAX_ACTIONS=6**（fill 模式 expand 最多 3 条），并对 `newText` 做 `sanitizeNewText`（去换行、去前导项目符号、压缩空白、按 240 字符硬截断，避免模型注入篇幅炸长）。
+- **回归回滚**：每轮 LLM 编辑后再次调用 `measure()`，使用 `badness = overflowPx*4 + underflowPx`，若 after > before 则整批回滚回原 items / fitReport，`reason="regression"` 写入报告。
+- **fallback 穷尽枚举**：`reason ∈ no_model_client | no_actions | schema_invalid | model_error | regression | edits_applied | all_rejected`；`fallback=true` 表示导出走未编辑路径。
+- **服务可纯化测试**：`ResumeLLMFitEditor` 通过构造函数接收 `chat` 回调（不是直接持有 `ModelClient`），与阶段 6 的 `measure` 回调风格一致；单测中用 `vi.fn` 桩，零依赖 LLM。
+- **默认关闭**：`ENABLE_LLM_FIT_EDITOR !== "true"` 或未注入 `modelClient` 时整段旁路；与阶段 2 narrator 的 `ENABLE_NARRATOR` 形成同款灰度开关。
+- **persistence 兼容旧记录**：`edit_report` 列允许 NULL，旧 export 与未触发 LLM 的 export 都返回 `editReport=undefined`。
+
+### 验收
+
+- 单测：`tests/resumeLLMFitEditor.test.ts` 17 用例全绿（trigger 6 / shrink 应用 2 / 多次 shrink 3 / 失败路径 4 / fill_underflow 2）。
+- e2e：`tests/resumeLLMFitPipeline.test.ts` 2 用例全绿（still_overflowing 持久化 editReport；ENABLE_LLM_FIT_EDITOR 关闭则旁路）。
+- 全量：`npm run typecheck` + `npm test` ⇒ **76 files / 695 tests passed**。
+- DB：迁移 `0014_resume_edit_report.sql` 与 `schema.sql` 同步，Postgres 与 InMemory 仓储读写表现一致。
+- 阶段 5/6 行为不变：阶段 7 仅在阶段 6 之后追加运行，warn-only 契约继承。
+
+### 对外 API 与契约影响
+
+- `ResumeExport.editReport` 新增可选字段，前端可在导出详情页面读取 `editReport.applied / trigger / actions / rejectedActions / fallback / reason / initialOverflowPx / finalOverflowPx / initialUnderflowPx / finalUnderflowPx`。
+- 任何 `ResumeFitEditorActionInput` 新分支需要同步：服务侧 `ActionSchema` 联合 + `applyActions` 分发 + system prompt 示例 + 前端渲染表 + 测试夹具。
+- 阶段 6 输出契约未变更；前端如未读 `editReport` 字段也不会有兼容问题。
+
+### 前端建议
+
+- 在导出详情页同步显示阶段 6 与阶段 7 报告：阶段 6 给出"压缩了什么"，阶段 7 给出"模型在压缩之后又改了什么 / 为什么没有改"。
+- 当 `editReport.fallback === true && editReport.reason !== "no_actions"` 时给一条非阻塞提示："AI 优化未生效，已回退到规则版排版"，并把 `editReport.rejectedActions[].reason` 折叠在详情中，便于运营审计模型行为。
+- `editReport.actions[].type === "expand_bullet"` 出现时，建议给该 bullet 标记一个"AI 充实"小图标，提醒用户复核。
+
+---
+
 # 阶段 8：简历质量 Critic 与导出前质量报告
 
 ## 目标

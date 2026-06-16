@@ -550,7 +550,8 @@ CREATE TABLE IF NOT EXISTS resume_export (
   updated_at TIMESTAMPTZ NOT NULL,
   completed_at TIMESTAMPTZ,
   fit_report JSONB,
-  compression_report JSONB
+  compression_report JSONB,
+  edit_report JSONB
 );
 CREATE INDEX IF NOT EXISTS idx_resume_export_user_id ON resume_export(user_id);
 CREATE INDEX IF NOT EXISTS idx_resume_export_resume_id ON resume_export(resume_id);

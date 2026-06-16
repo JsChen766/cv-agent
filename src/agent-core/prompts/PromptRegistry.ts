@@ -22,6 +22,7 @@ const PRODUCT_PROMPT_FILES = {
   "tools.resume.prepareReviseResumeItem.system": "tools/resume/prepare-revise-resume-item-system.md",
   "tools.experience.jdMatch.system": "tools/experience/jd-match-system.md",
   "product.narrator.system": "product/narrator-system.md",
+  "product.resumeFitEditor.system": "product/resume-fit-editor-system.md",
 } as const;
 
 export type ProductPromptName = keyof typeof PRODUCT_PROMPT_FILES;

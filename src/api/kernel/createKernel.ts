@@ -61,12 +61,12 @@ import { PendingActionService } from "../../agent-core/confirmation/PendingActio
 import { PostgresPendingActionRepository } from "../../agent-core/confirmation/PostgresPendingActionRepository.js";
 import type { PendingActionRepository } from "../../agent-core/confirmation/PendingActionRepository.js";
 
-export async function createKernel(options: { pdfRenderer?: PdfRendererAdapter; layoutMeasurer?: ResumeLayoutMeasurer } = {}): Promise<ApiKernel> {
+export async function createKernel(options: { pdfRenderer?: PdfRendererAdapter; layoutMeasurer?: ResumeLayoutMeasurer; modelClient?: import("../../agent-core/model/ModelClient.js").ModelClient } = {}): Promise<ApiKernel> {
   const databaseUrl = process.env.DATABASE_URL;
   return databaseUrl ? createPostgresKernel(databaseUrl, options) : createInMemoryKernel(options);
 }
 
-async function createPostgresKernel(databaseUrl: string, options: { pdfRenderer?: PdfRendererAdapter; layoutMeasurer?: ResumeLayoutMeasurer }): Promise<ApiKernel> {
+async function createPostgresKernel(databaseUrl: string, options: { pdfRenderer?: PdfRendererAdapter; layoutMeasurer?: ResumeLayoutMeasurer; modelClient?: import("../../agent-core/model/ModelClient.js").ModelClient }): Promise<ApiKernel> {
   const database = new PostgresDatabase({ connectionString: databaseUrl });
   await database.runMigrations();
   await database.initializeSchema();
@@ -87,11 +87,12 @@ async function createPostgresKernel(databaseUrl: string, options: { pdfRenderer?
     fileStorage: createFileStorage(),
     pdfRenderer: options.pdfRenderer,
     layoutMeasurer: options.layoutMeasurer,
+    modelClientOverride: options.modelClient,
     close: () => database.close(),
   });
 }
 
-function createInMemoryKernel(options: { pdfRenderer?: PdfRendererAdapter; layoutMeasurer?: ResumeLayoutMeasurer }): ApiKernel {
+function createInMemoryKernel(options: { pdfRenderer?: PdfRendererAdapter; layoutMeasurer?: ResumeLayoutMeasurer; modelClient?: import("../../agent-core/model/ModelClient.js").ModelClient }): ApiKernel {
   return buildKernel({
     mode: "in_memory",
     warnings: ["DATABASE_URL is not set. API is running in in-memory mode."],
@@ -109,6 +110,7 @@ function createInMemoryKernel(options: { pdfRenderer?: PdfRendererAdapter; layou
     fileStorage: new InMemoryFileStorage(),
     pdfRenderer: options.pdfRenderer,
     layoutMeasurer: options.layoutMeasurer,
+    modelClientOverride: options.modelClient,
     close: async () => {},
   });
 }
@@ -163,6 +165,7 @@ function buildKernel(input: BuildKernelInput): ApiKernel {
     input.platformServices,
     input.pdfRenderer,
     input.layoutMeasurer,
+    input.modelClientOverride ?? model.client,
   );
   const warnings = [...(input.warnings ?? []), ...model.warnings];
 
@@ -218,6 +221,7 @@ type BuildKernelInput = {
   pendingActionRepository: PendingActionRepository;
   pdfRenderer?: PdfRendererAdapter;
   layoutMeasurer?: ResumeLayoutMeasurer;
+  modelClientOverride?: import("../../agent-core/model/ModelClient.js").ModelClient;
   close(): Promise<void>;
 };
 

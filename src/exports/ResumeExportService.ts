@@ -23,6 +23,12 @@ import {
   ResumeCompressionService,
   type ResumeCompressionReport,
 } from "./ResumeCompressionService.js";
+import {
+  ResumeLLMFitEditor,
+  type ResumeFitEditorReport,
+} from "./ResumeLLMFitEditor.js";
+import { PromptRegistry } from "../agent-core/prompts/PromptRegistry.js";
+import type { ModelClient } from "../agent-core/model/ModelClient.js";
 import type { ResumeExport, ResumeExportFormat } from "./types.js";
 
 const PDF_RENDERER_NONE = "none";
@@ -33,6 +39,8 @@ export class ResumeExportService {
   private readonly pdfRenderer?: PdfRendererAdapter;
   private readonly fitService: ResumeFitService;
   private readonly compressionService = new ResumeCompressionService();
+  private readonly promptRegistry = new PromptRegistry();
+  private readonly modelClient?: ModelClient;
 
   public constructor(
     private readonly repository: ResumeExportRepository,
@@ -41,8 +49,10 @@ export class ResumeExportService {
     private readonly platformServices: PlatformServices,
     pdfRenderer?: PdfRendererAdapter,
     layoutMeasurer?: ResumeLayoutMeasurer,
+    modelClient?: ModelClient,
   ) {
     this.pdfRenderer = pdfRenderer;
+    this.modelClient = modelClient;
     // Default to the deterministic heuristic so dev/test never need
     // Chromium just to compute fitReport. Production wiring can swap in
     // `PlaywrightLayoutMeasurer` via the `layoutMeasurer` argument.
@@ -155,9 +165,25 @@ export class ResumeExportService {
       // re-measure. Phase 6 inherits Phase 5's "warn-only on overflow"
       // contract: compression is best-effort and never fails the export.
       const compressionOutput = await this.maybeCompress(resume, html, record, initialFitReport);
-      const finalHtml = compressionOutput.html;
-      const finalFitReport = compressionOutput.fitReport;
+      let finalHtml = compressionOutput.html;
+      let finalFitReport = compressionOutput.fitReport;
       const compressionReport = compressionOutput.compressionReport;
+
+      // Phase 7 Fit Engine v3: when Phase 6 compression ran but the
+      // resume STILL overflows, OR Phase 6 was bypassed and the page
+      // has a large underflow, hand the items to the LLM Resume Fit
+      // Editor for structured edits. Opt-in via ENABLE_LLM_FIT_EDITOR
+      // and a configured model client. Best-effort: never fails the export.
+      const editOutput = await this.maybeLlmFitEdit(
+        resume,
+        finalHtml,
+        record,
+        finalFitReport,
+        compressionReport,
+      );
+      finalHtml = editOutput.html;
+      finalFitReport = editOutput.fitReport;
+      const editReport = editOutput.editReport;
 
       let fileBuffer: Buffer;
       let originalName: string;
@@ -191,6 +217,7 @@ export class ResumeExportService {
         errorMessage: undefined,
         ...(finalFitReport ? { fitReport: finalFitReport } : {}),
         ...(compressionReport ? { compressionReport } : {}),
+        ...(editReport ? { editReport } : {}),
       });
       const finalRecord = completed ?? record;
       console.debug("[exports] renderExportJob done", {
@@ -345,6 +372,93 @@ export class ResumeExportService {
         error: error instanceof Error ? error.message : String(error),
       });
       return { html: initialHtml, fitReport: initialFitReport, compressionReport: undefined };
+    }
+  }
+
+  /**
+   * Phase 7 Fit Engine v3: when Phase 6 compression ran but the page
+   * still overflows OR the page is significantly underfilled and Phase 6
+   * was bypassed, ask the LLM Resume Fit Editor for structured edits.
+   *
+   * Triggers ONLY for the `one-page-modern` template at targetPages=1
+   * AND when {@link ResumeLLMFitEditor.shouldTrigger} reports a trigger.
+   * Opt-in: requires `ENABLE_LLM_FIT_EDITOR=true` AND a configured
+   * `modelClient`; otherwise we skip and return inputs unchanged.
+   *
+   * Like Phase 5/6 this is best-effort: any error is swallowed and the
+   * caller receives the unmodified html/fitReport/editReport=undefined.
+   */
+  private async maybeLlmFitEdit(
+    resume: ProductResumeDetail,
+    currentHtml: string,
+    record: ResumeExport,
+    currentFitReport: ResumeFitReport | undefined,
+    compressionReport: ResumeCompressionReport | undefined,
+  ): Promise<{ html: string; fitReport: ResumeFitReport | undefined; editReport: ResumeFitEditorReport | undefined }> {
+    const unchanged = { html: currentHtml, fitReport: currentFitReport, editReport: undefined as ResumeFitEditorReport | undefined };
+    if (process.env.ENABLE_LLM_FIT_EDITOR !== "true") return unchanged;
+    if (!this.modelClient) return unchanged;
+    if (!currentFitReport) return unchanged;
+    const templateId = record.templateId ?? currentFitReport.templateId;
+    if (templateId !== "one-page-modern") return unchanged;
+    if (currentFitReport.targetPages !== 1) return unchanged;
+
+    let systemPrompt: string;
+    try {
+      systemPrompt = this.promptRegistry.get("product.resumeFitEditor.system");
+    } catch (error) {
+      console.warn("[exports] resume fit editor system prompt missing (will skip)", {
+        exportId: record.id,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return unchanged;
+    }
+
+    const modelClient = this.modelClient;
+    const editor = new ResumeLLMFitEditor({
+      prompt: systemPrompt,
+      chat: async ({ systemPrompt: sys, userPayload }) => {
+        const response = await modelClient.chat({
+          messages: [
+            { role: "system", content: sys },
+            { role: "user", content: userPayload },
+          ],
+          responseFormat: "json",
+          temperature: 0,
+        });
+        return { content: response.content };
+      },
+    });
+
+    const trigger = editor.shouldTrigger(currentFitReport, compressionReport);
+    if (!trigger) return unchanged;
+
+    try {
+      const measure = async (items: ProductResumeItem[], density: string): Promise<ResumeFitReport> => {
+        const synthetic = withDensity(resume, items, density);
+        const nextHtml = this.renderer.render(synthetic, templateId);
+        return this.fitService.measure({ html: nextHtml, templateId, density });
+      };
+      const result = await editor.edit({
+        items: resume.items,
+        density: currentFitReport.density,
+        fitReport: currentFitReport,
+        compressionReport,
+        measure,
+      });
+      if (!result.editReport.applied) {
+        return { html: currentHtml, fitReport: currentFitReport, editReport: result.editReport };
+      }
+      const synthetic = withDensity(resume, result.items, result.density);
+      const nextHtml = this.renderer.render(synthetic, templateId);
+      const nextFitReport = result.fitReport ?? currentFitReport;
+      return { html: nextHtml, fitReport: nextFitReport, editReport: result.editReport };
+    } catch (error) {
+      console.warn("[exports] resume LLM fit editor threw unexpectedly (will skip editReport)", {
+        exportId: record.id,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return unchanged;
     }
   }
 

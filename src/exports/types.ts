@@ -1,5 +1,6 @@
 import type { ResumeFitReport } from "./ResumeFitService.js";
 import type { ResumeCompressionReport } from "./ResumeCompressionService.js";
+import type { ResumeFitEditorReport } from "./ResumeLLMFitEditor.js";
 
 export type ResumeExportFormat = "pdf" | "html" | "docx";
 export type ResumeExportStatus = "pending" | "rendering" | "completed" | "failed" | "expired" | "deleted";
@@ -33,4 +34,13 @@ export type ResumeExport = {
    * older export, or for exports that fit on first measure.
    */
   compressionReport?: ResumeCompressionReport;
+  /**
+   * Phase 7: LLM-driven fit editor record. Present only when the export
+   * pipeline invoked `ResumeLLMFitEditor` — that is, only when (a) Phase 6
+   * compression ran and exhausted its strategies but the resume STILL
+   * overflows, OR (b) the page fits but uses too little space (large
+   * underflow). The editor is opt-in via `ENABLE_LLM_FIT_EDITOR=true` and
+   * a configured frontDeskModelClient; otherwise this field is undefined.
+   */
+  editReport?: ResumeFitEditorReport;
 };
