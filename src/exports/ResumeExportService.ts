@@ -11,6 +11,13 @@ import {
   PlaywrightPdfRenderer,
   type PdfRendererAdapter,
 } from "./PdfRendererAdapter.js";
+import {
+  HeuristicLayoutMeasurer,
+  ResumeFitMeasureError,
+  ResumeFitService,
+  type ResumeFitReport,
+  type ResumeLayoutMeasurer,
+} from "./ResumeFitService.js";
 import type { ResumeExport, ResumeExportFormat } from "./types.js";
 
 const PDF_RENDERER_NONE = "none";
@@ -19,6 +26,7 @@ const PDF_RENDERER_PLAYWRIGHT = "playwright";
 export class ResumeExportService {
   private readonly renderer = new ResumeHtmlRenderer();
   private readonly pdfRenderer?: PdfRendererAdapter;
+  private readonly fitService: ResumeFitService;
 
   public constructor(
     private readonly repository: ResumeExportRepository,
@@ -26,8 +34,13 @@ export class ResumeExportService {
     private readonly fileService: FileService,
     private readonly platformServices: PlatformServices,
     pdfRenderer?: PdfRendererAdapter,
+    layoutMeasurer?: ResumeLayoutMeasurer,
   ) {
     this.pdfRenderer = pdfRenderer;
+    // Default to the deterministic heuristic so dev/test never need
+    // Chromium just to compute fitReport. Production wiring can swap in
+    // `PlaywrightLayoutMeasurer` via the `layoutMeasurer` argument.
+    this.fitService = new ResumeFitService(layoutMeasurer ?? new HeuristicLayoutMeasurer());
   }
 
   public async createExport(userId: string, input: { resumeId: string; format: ResumeExportFormat; templateId?: string }): Promise<{ exportRecord: ResumeExport; job: Awaited<ReturnType<PlatformServices["backgroundJobs"]["createJob"]>>; workerDisabled?: boolean }> {
@@ -123,6 +136,13 @@ export class ResumeExportService {
       });
       const html = this.renderer.render(resume, record.templateId);
 
+      // Phase 5 Fit Engine v1: measure the rendered HTML so the export
+      // record can answer "did this resume fit on one page?" without a
+      // re-render. Failures are logged but never block the export — Phase
+      // 5 explicitly does NOT cause downstream work to fail just because
+      // a measurement is unavailable. (Phase 6 will react to the report.)
+      const fitReport = await this.measureFitReport(html, record);
+
       let fileBuffer: Buffer;
       let originalName: string;
       let mimeType: string;
@@ -153,6 +173,7 @@ export class ResumeExportService {
         downloadExpiresAt: new Date(Date.now() + readDownloadTtlMinutes() * 60_000).toISOString(),
         completedAt: new Date().toISOString(),
         errorMessage: undefined,
+        ...(fitReport ? { fitReport } : {}),
       });
       const finalRecord = completed ?? record;
       console.debug("[exports] renderExportJob done", {
@@ -161,7 +182,26 @@ export class ResumeExportService {
         fileId: finalRecord.fileId,
         format: finalRecord.format,
         status: finalRecord.status,
+        fitReport: fitReport
+          ? {
+              estimatedPages: fitReport.estimatedPages,
+              overflowPx: fitReport.overflowPx,
+              templateId: fitReport.templateId,
+              density: fitReport.density,
+              measurer: fitReport.measurer,
+            }
+          : undefined,
       });
+      if (fitReport && fitReport.overflowPx > 0) {
+        console.warn("[exports] resume overflows one A4 page (Phase 5: warn-only)", {
+          exportId,
+          resumeId: finalRecord.resumeId,
+          estimatedPages: fitReport.estimatedPages,
+          overflowPx: fitReport.overflowPx,
+          templateId: fitReport.templateId,
+          density: fitReport.density,
+        });
+      }
       return finalRecord;
     } catch (error) {
       const message = pdfErrorMessage(error);
@@ -184,6 +224,30 @@ export class ResumeExportService {
   private async renderPdf(html: string): Promise<Buffer> {
     const renderer = this.resolvePdfRenderer();
     return renderer.render(html);
+  }
+
+  /**
+   * Phase 5: measure the rendered HTML and return a `ResumeFitReport`.
+   * Returns `undefined` when measurement fails — measurement is best-effort
+   * and must NEVER cause the export to fail.
+   */
+  private async measureFitReport(
+    html: string,
+    record: ResumeExport,
+  ): Promise<ResumeFitReport | undefined> {
+    const templateId = record.templateId ?? "default";
+    const density = resolveDensityFromHtml(html);
+    try {
+      return await this.fitService.measure({ html, templateId, density });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (error instanceof ResumeFitMeasureError) {
+        console.warn("[exports] fit measurement failed (will skip fitReport)", { exportId: record.id, error: message });
+      } else {
+        console.warn("[exports] fit measurement threw unexpectedly (will skip fitReport)", { exportId: record.id, error: message });
+      }
+      return undefined;
+    }
   }
 
   private resolvePdfRenderer(): PdfRendererAdapter {
@@ -243,8 +307,21 @@ function sanitizeFilenameTitle(title: string | undefined): string {
   // Keep unicode, but strip path separators / control / quote chars that break
   // content-disposition or filesystem paths.
   return title
-    .replace(/[\\/:*?"<>| -]/g, "_")
+    .replace(/[\\/:*?"<>| -]/g, "_")
     .replace(/\s+/g, " ")
     .trim()
     .slice(0, 80);
+}
+
+/**
+ * Resolve the active density label for `fitReport`. We read the value the
+ * template baked into the rendered HTML (`data-density="..."`) so a
+ * measurer never disagrees with what was actually rendered. Falls back to
+ * `"standard"` for templates that do not emit the attribute (e.g. the
+ * legacy default template).
+ */
+function resolveDensityFromHtml(html: string): string {
+  const match = /data-density="([^"]+)"/.exec(html);
+  if (match && match[1]) return match[1];
+  return "standard";
 }

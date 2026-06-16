@@ -873,6 +873,91 @@ fitReport: {
 
 ---
 
+## 阶段 5 完成情况记录（执行回顾）
+
+阶段 5 已落地，HEAD = 阶段 5 commit；working tree clean。下面是给前端 / 接入方的对外回顾（基于本次实际改动）。
+
+### 5.1 改动清单
+
+- 新增 `src/exports/ResumeFitService.ts`：
+  - 类型 `ResumeFitReport`（targetPages / estimatedPages / overflowPx / underflowPx / contentHeightPx / pageUsableHeightPx / templateId / density / measurer / measuredAt）。
+  - 接口 `ResumeLayoutMeasurer`，输入 `{ html, templateId, density, pageUsableHeightPx? }` → 输出 `{ contentHeightPx, pageUsableHeightPx, measurer }`。
+  - 实现 `PlaywrightLayoutMeasurer`：lazy-import `playwright`，在 794×1123 viewport 下打开 HTML 并读 `.resume` 的 `getBoundingClientRect().height` / `scrollHeight`。
+  - 实现 `HeuristicLayoutMeasurer`：纯字符串解析 + density 系数表，零依赖；为 `onePageModernTemplate` 校准（masthead/section/item-header/bullet/skill-row 各档单价）。
+  - 服务编排器 `ResumeFitService`，纯函数 `buildFitReport(...)` 推导 estimatedPages/overflow/underflow。
+  - A4 几何常量 `A4_PAGE_WIDTH_PX=794` / `A4_PAGE_HEIGHT_PX=1123` / 18mm 边距 → `A4_USABLE_HEIGHT_PX=987` / `A4_USABLE_WIDTH_PX=658`。
+- `src/exports/types.ts`：`ResumeExport` 加可选 `fitReport?: ResumeFitReport`。
+- `src/exports/PostgresResumeExportRepository.ts`：`createExport` / `updateExport` 读写 `fit_report` 列（jsonb），`updateExport` 用 `COALESCE($n::jsonb,fit_report)` 保持"未提供则不覆盖"语义。
+- `src/exports/InMemoryResumeExportRepository.ts`：spread 行为天然支持新字段，无需改动。
+- 新增 migration `src/persistence/postgres/migrations/0012_resume_fit_report.sql` + `src/persistence/postgres/schema.sql` 加 `fit_report JSONB` 列。
+- `src/exports/ResumeExportService.ts`：构造函数新增可选 `layoutMeasurer?: ResumeLayoutMeasurer`，默认 `new HeuristicLayoutMeasurer()`。`renderExportJob` 在 HTML 渲染后驱动 `fitService.measure(...)`，把 `fitReport` 与 `status:"completed"` 一起写入。测量失败仅 `console.warn`，**绝不**让导出失败；超过一页仅 `console.warn("[exports] resume overflows one A4 page (Phase 5: warn-only)")`。
+- `src/exports/index.ts` barrel 导出 `ResumeFitService` 全套类型 / 类。
+- `src/api/kernel/createKernel.ts`：`createKernel({ pdfRenderer?, layoutMeasurer? })` 透传到 `ResumeExportService`。
+- 新增 `tests/resumeFitService.test.ts`（9 用例）：`buildFitReport` 边界、Heuristic 短/长 resume、密度单调性、skill 行计数、Service 委派契约、错误传播。
+- 新增 `tests/resumeFitPipeline.test.ts`（5 e2e 用例）：完整 PDF / HTML 导出链路注入 FakePdfRenderer + FakeMeasurer，断言 fitReport 字段全集、超页不失败、measurer 抛错时 fitReport 不写、缺省 measurer 时也能完成。
+
+### 5.2 关键设计决策
+
+1. **测量在渲染之后、`completed` 写入之前**：`fitReport` 与 `status:"completed"` 在同一个 `updateExport` 调用里落库，保证消费者一旦看到 `status="completed"` 就能立即读取 `fitReport`，不会出现"已完成但 fitReport 还没写"的中间态。
+2. **fitReport 是软可选字段**：测量失败、Chromium 异常、未来未知 measurer 抛错 — 任何情况都只 `console.warn`，导出仍走通；消费者必须把 `fitReport` 当作 optional 处理（schema 上也是 optional）。Phase 5 验收标准里"不要让导出因为超过一页失败"被严格遵守。
+3. **默认 measurer 是 Heuristic 而非 Playwright**：避免任何 dev/test 路径意外触发 Chromium。`PlaywrightLayoutMeasurer` 仅当生产环境通过 `createKernel({ layoutMeasurer: new PlaywrightLayoutMeasurer() })` 显式注入时才会用上。Heuristic 估算虽然没有真 layout 精准，但对"一页 vs 超过一页"的判别足够稳定，且为 Phase 6 的规则压缩提供了可解释的数字（密度 / overflowPx）。
+4. **density 来源 = HTML 中的 `data-density`**：阶段 4 已经把 density 烧进 HTML 根节点。fitReport.density 直接 `RegExp.exec` 读出，绝不会和实际渲染时使用的 density 不一致；`default` 模板没这个属性时回落到 `"standard"`。
+5. **Heuristic 调校偏保守**：单价表见 `DENSITY_TABLE`，故意稍微高估 — 让 Phase 6 宁可压缩一份原本"刚刚好够"的简历，也不让一份真正超页的偷溜过去。
+6. **Postgres 迁移幂等**：`ALTER TABLE ... ADD COLUMN IF NOT EXISTS fit_report JSONB`。Postgres 12+ 支持，无需 DO 块。
+7. **API 调用形态完全不变**：`POST /exports/resumes/:id` 请求体未变；阶段 5 是纯输出侧增量。
+
+### 5.3 验收
+
+- `npm run typecheck`：通过。
+- `npm test`：72 文件 / 660 用例全绿（阶段 4 是 70/646 → 阶段 5 +2 文件 / +14 用例）。
+- 验收标准对齐：
+  - **PDF 导出记录中能看到 fitReport** 已达成（`tests/resumeFitPipeline.test.ts` 第 1 用例断言 8 个字段）。
+  - **能区分一页内 / 超过一页** 已达成（buildFitReport 单元测试 + 注入超页 measurer 的 e2e 用例双重覆盖）。
+  - **测试不依赖真实浏览器也能通过** 已达成（默认 Heuristic measurer，所有测试零 Chromium 调用，`PlaywrightLayoutMeasurer` 仅在阶段 5 的代码中存在但 0 次调用）。
+- 阶段 5 边界严格遵守："不要做"清单（自动删除内容、超过一页时失败、改 LLM 生成逻辑）全部未触发。
+
+### 5.4 对外 API 与契约影响（前端 / 接入方必读）
+
+**新增能力**
+
+- `ResumeExport` 响应对象现在可选携带：
+  ```ts
+  fitReport?: {
+    targetPages: number;          // 阶段 5 永远是 1
+    estimatedPages: number;       // >= 1
+    overflowPx: number;           // 0 表示一页内；> 0 表示超页
+    underflowPx?: number;         // overflowPx === 0 时存在
+    contentHeightPx: number;      // 测得的内容高度
+    pageUsableHeightPx: number;   // A4 减边距后的可用高度
+    templateId: string;
+    density: "comfortable" | "standard" | "compact" | string;
+    measurer: "playwright" | "heuristic";
+    measuredAt: string;           // ISO-8601 UTC
+  }
+  ```
+- 该字段出现在 `GET /exports/:id`、`GET /exports`（list）、以及 `POST /exports/resumes/:id` 的回写记录中，但**仅** `status === "completed"` 后才稳定（之前 status 期间为 undefined）。
+- 前端可以基于 `fitReport.overflowPx > 0` 给用户一个明确的"该简历超过一页"提示；可以基于 `fitReport.estimatedPages` 显示"约 N 页"；可以基于 `fitReport.density` 在简历预览侧栏标注当前密度档位。
+
+**未变化（保证零回归）**
+
+- 请求体 schema 不变：`POST /exports/resumes/:id` 仍是 `{ format, templateId? }`，没有任何新增必填项。
+- 响应 schema 是**纯增量**：所有阶段 5 之前生成的导出记录 fitReport 仍为 undefined，前端必须把它当 optional 字段处理。
+- 阶段 5 之前已有的状态机不变：`pending → rendering → completed | failed`，`fitReport` 只在 completed 时写入，且失败时**绝不**触发额外 status。
+- 文件下载（`GET /exports/:id/download`）行为完全不变：返回的 PDF/HTML 字节没动，Content-Disposition 没动。
+- defaultTemplate / onePageModernTemplate 渲染输出字节级不变（双重零回归测试守护）。
+
+**前端建议**
+
+- 简历预览页可以加一个"页面适配"指示器，读 `fitReport`：
+  - `overflowPx === 0` → 绿色"一页内"图标，可显示 `underflowPx` 表示剩余空间。
+  - `overflowPx > 0` → 黄色警告"将超过一页（多 X 像素）"，并提示"阶段 6 会自动压缩"或"考虑手动隐藏部分内容"。
+- 不要假设老导出记录都有 `fitReport` —— 必须 `if (record.fitReport) ...` 守护。
+- `fitReport.measurer` 字段对终端用户没价值，仅供 debug 视图显示（区分是 Chromium 真测还是启发式估算）。
+- 不要在 UI 把 `fitReport.contentHeightPx` 和 `pageUsableHeightPx` 数字直接展示给用户 —— 它们是内部 CSS 像素，单位语义对最终用户是不透明的。如果想展示进度条，用 `min(1, contentHeightPx / pageUsableHeightPx)`。
+- 阶段 6 上线后，对超页简历会先尝试规则压缩然后重新计算 fitReport。前端如果想区分"已压缩后仍超页"vs"未压缩超页"，需要等阶段 6 引入 `compressionReport` 字段配合判断 —— 阶段 5 暂不暴露。
+
+---
+
 # 阶段 6：实现一页 Fit Engine v2：规则压缩
 
 ## 目标
