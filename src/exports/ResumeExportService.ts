@@ -27,9 +27,13 @@ import {
   ResumeLLMFitEditor,
   type ResumeFitEditorReport,
 } from "./ResumeLLMFitEditor.js";
+import { ResumeQualityService, type ResumeQualityReport } from "./ResumeQualityService.js";
 import { PromptRegistry } from "../agent-core/prompts/PromptRegistry.js";
 import type { ModelClient } from "../agent-core/model/ModelClient.js";
+import type { ProductJDRecord } from "../product/types.js";
 import type { ResumeExport, ResumeExportFormat } from "./types.js";
+
+export type ResumeExportJdLookup = (userId: string, jdId: string) => Promise<ProductJDRecord | null>;
 
 const PDF_RENDERER_NONE = "none";
 const PDF_RENDERER_PLAYWRIGHT = "playwright";
@@ -40,7 +44,9 @@ export class ResumeExportService {
   private readonly fitService: ResumeFitService;
   private readonly compressionService = new ResumeCompressionService();
   private readonly promptRegistry = new PromptRegistry();
+  private readonly qualityService = new ResumeQualityService();
   private readonly modelClient?: ModelClient;
+  private readonly jdLookup?: ResumeExportJdLookup;
 
   public constructor(
     private readonly repository: ResumeExportRepository,
@@ -50,9 +56,11 @@ export class ResumeExportService {
     pdfRenderer?: PdfRendererAdapter,
     layoutMeasurer?: ResumeLayoutMeasurer,
     modelClient?: ModelClient,
+    jdLookup?: ResumeExportJdLookup,
   ) {
     this.pdfRenderer = pdfRenderer;
     this.modelClient = modelClient;
+    this.jdLookup = jdLookup;
     // Default to the deterministic heuristic so dev/test never need
     // Chromium just to compute fitReport. Production wiring can swap in
     // `PlaywrightLayoutMeasurer` via the `layoutMeasurer` argument.
@@ -185,6 +193,13 @@ export class ResumeExportService {
       finalFitReport = editOutput.fitReport;
       const editReport = editOutput.editReport;
 
+      // Phase 8 Resume Quality: deterministic, rule-based assessment of the
+      // (post-Phase-7) resume. Always best-effort: any error is swallowed and
+      // the export proceeds without `qualityReport`. Phase 8 is warn-only —
+      // even `hasCriticalRisks=true` is metadata only and does NOT block
+      // export or trigger a confirmation loop.
+      const qualityReport = await this.maybeEvaluateQuality(resume, record, finalFitReport, compressionReport, editReport);
+
       let fileBuffer: Buffer;
       let originalName: string;
       let mimeType: string;
@@ -218,6 +233,7 @@ export class ResumeExportService {
         ...(finalFitReport ? { fitReport: finalFitReport } : {}),
         ...(compressionReport ? { compressionReport } : {}),
         ...(editReport ? { editReport } : {}),
+        ...(qualityReport ? { qualityReport } : {}),
       });
       const finalRecord = completed ?? record;
       console.debug("[exports] renderExportJob done", {
@@ -459,6 +475,57 @@ export class ResumeExportService {
         error: error instanceof Error ? error.message : String(error),
       });
       return unchanged;
+    }
+  }
+
+  /**
+   * Phase 8 Resume Quality: deterministic, rule-based assessment of the
+   * post-Phase-7 resume content + layout. Phase 8 is warn-only:
+   *  - never throws (all errors swallowed and `undefined` returned),
+   *  - never blocks the export — even `hasCriticalRisks=true`,
+   *  - never starts a confirmation loop. The "critical 风险触发阻断或确认"
+   *    contract from the spec is honored as **opt-in metadata** only.
+   *
+   * Returns `undefined` if no fitReport is available (can't score layout)
+   * or if scoring throws unexpectedly.
+   */
+  private async maybeEvaluateQuality(
+    resume: ProductResumeDetail,
+    record: ResumeExport,
+    fitReport: ResumeFitReport | undefined,
+    compressionReport: ResumeCompressionReport | undefined,
+    editReport: ResumeFitEditorReport | undefined,
+  ): Promise<ResumeQualityReport | undefined> {
+    if (!fitReport) return undefined;
+    let jd: ProductJDRecord | undefined;
+    try {
+      const jdId = (resume as { jdId?: string }).jdId;
+      if (jdId && this.jdLookup) {
+        const found = await this.jdLookup(record.userId, jdId);
+        if (found) jd = found;
+      }
+    } catch (error) {
+      console.warn("[exports] resume quality JD lookup failed (will score without JD)", {
+        exportId: record.id,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+    try {
+      return this.qualityService.evaluate({
+        resume,
+        items: resume.items,
+        density: fitReport.density,
+        fitReport,
+        compressionReport,
+        editReport,
+        jd,
+      });
+    } catch (error) {
+      console.warn("[exports] resume quality evaluation threw unexpectedly (will skip qualityReport)", {
+        exportId: record.id,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return undefined;
     }
   }
 

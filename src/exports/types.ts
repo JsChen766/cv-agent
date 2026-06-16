@@ -1,6 +1,7 @@
 import type { ResumeFitReport } from "./ResumeFitService.js";
 import type { ResumeCompressionReport } from "./ResumeCompressionService.js";
 import type { ResumeFitEditorReport } from "./ResumeLLMFitEditor.js";
+import type { ResumeQualityReport } from "./ResumeQualityService.js";
 
 export type ResumeExportFormat = "pdf" | "html" | "docx";
 export type ResumeExportStatus = "pending" | "rendering" | "completed" | "failed" | "expired" | "deleted";
@@ -43,4 +44,11 @@ export type ResumeExport = {
    * a configured frontDeskModelClient; otherwise this field is undefined.
    */
   editReport?: ResumeFitEditorReport;
+  /**
+   * Phase 8: deterministic resume quality report. Always populated when the
+   * export reaches `status="completed"`. Phase 8 is warn-only — no risk
+   * level, including `critical`, will block export. Risks of level
+   * `critical` may be surfaced to the UI for explicit user attention.
+   */
+  qualityReport?: ResumeQualityReport;
 };

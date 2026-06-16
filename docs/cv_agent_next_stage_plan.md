@@ -1260,6 +1260,83 @@ qualityReport: {
 
 ---
 
+## 阶段 8 落地记录（已完成）
+
+> 本节记录阶段 8 的实际实现与契约，方便阶段 9 contract 整理时直接引用。
+
+### 改动清单
+
+```text
+src/exports/ResumeQualityService.ts                                # 新增：纯函数式 quality 评分（六维 + risks/suggestions）
+src/exports/ResumeExportService.ts                                 # 在 maybeLlmFitEdit 之后追加 maybeEvaluateQuality（warn-only）
+src/exports/types.ts                                               # ResumeExport.qualityReport?: ResumeQualityReport
+src/exports/index.ts                                               # 导出 ResumeQualityService 与相关类型
+src/exports/PostgresResumeExportRepository.ts                      # 新增 quality_report JSONB 列读写
+src/persistence/postgres/schema.sql                                # resume_export 增加 quality_report
+src/persistence/postgres/migrations/0015_resume_quality_report.sql # 迁移：ALTER TABLE ... ADD COLUMN quality_report JSONB
+src/api/kernel/createKernel.ts                                     # 透传 (userId, jdId) => jdService.getJD 给 ResumeExportService
+tests/resumeQualityService.test.ts                                 # 单测：六维评分边界 + risk 等级 + critical 触发条件（15 用例）
+tests/resumeQualityPipeline.test.ts                                # e2e：qualityReport 持久化 + critical 风险不阻断导出（2 用例）
+```
+
+### 关键设计
+
+- **完全确定性 / 不调用 LLM**：阶段 8 评分是纯规则的（正则 + 关键词命中 + 评分公式）。这与阶段 7 的 LLM 编辑器形成互补：编辑器（Phase 7）做"能不能在版面上改"，质量服务（Phase 8）做"成品有没有风险"，前者会失败回退、后者保证可复现可单测。
+- **六个维度 + 加权 overallScore**：
+  - `authenticity`（25%）：bullet 命中夸张词正则（`100%` / `perfect` / `industry-first` / `世界第一` / `顶尖` / `完美` / `业界首创` ……）且无 evidence ⇒ 列为 `unsupportedClaims`；若该 bullet 所在 item 的 `relevanceScore >= 0.6` 则为 `critical` 风险，否则 `medium`。
+  - `jd_match`（25%）：从 JD 文本提取技术 token（去停用词），统计 bullet 命中比例 → 评分。<0.3 ⇒ `high`，<0.5 ⇒ `medium`，缺 JD 时回中性 60 分且不报风险。
+  - `evidence`（20%）：bullet 是否有 `metadata.bulletEvidence[bulletId]` 或 item 级 `sourceExperienceId` 或 `metadata.sourceExperienceId`；覆盖率 <0.25 ⇒ `high`，<0.5 ⇒ `medium`。
+  - `metric`（10%）：bullet 含数字 / 百分比 / 单位（`%` / `x` / `倍` / `万` / `k` 等）的比例 <0.3 ⇒ 一条 metric 建议（不报 risk）。
+  - `expression`（10%）：bullet 长度 <20 字符或 >220 字符，或不以行动动词开头（中英双语动词正则） ⇒ 一条 expression 建议（不报 risk）。
+  - `layout`（10%）：`overflowPx > 0` ⇒ risk；当 `compression.stillOverflowing && edit.fallback` 同时为 true（即阶段 6/7 已用尽）⇒ `high`；其他超页 ⇒ `medium`。`underflowPx >= 240 && !edit.applied` ⇒ 一条 layout 建议。
+- **critical 等级专属于"高 relevance + 不可证伪夸张"**：这是产品上唯一可能阻断或要求确认的事件类型，对应 spec 里"只对 critical 风险触发阻断或确认"。**阶段 8 实现保持 warn-only**——`hasCriticalRisks=true` 仅作为元数据上抛，不在后端创建 pending action 也不阻断 export 完成；这道关是否真正"阻断/确认"由阶段 10 默认链路切换或前端 UI 决定，避免阶段 8 自行制造"无限循环确认"。
+- **JD 关联**：仅当 `resume.jdId` 存在且 kernel 注入了 `jdLookup` 时拉取 JD；任何 JD 查询失败都被 swallow 成 "no JD" 路径，不污染评分。
+- **服务零 IO**：`ResumeQualityService.evaluate(...)` 是同步纯函数，所有 IO 由 `ResumeExportService.maybeEvaluateQuality` 在外面做（JD 读取 + 异常吞没）。这让 service 端可被任意调用方在内存中复用（例如未来前端 SSR、CLI 导出、合并差异预览）而无需关心 kernel。
+- **persistence 兼容旧记录**：`quality_report` 列允许 NULL，旧 export 与未触发评分的 export（如缺 fitReport）都返回 `qualityReport=undefined`。InMemory / Postgres 两份仓储读写一致。
+
+### 验收
+
+- 单测：`tests/resumeQualityService.test.ts` 15 用例全绿（baseline 1 + authenticity 2 + jd_match 3 + evidence 2 + metric 2 + expression 1 + layout 3 + 空数组 1）。
+- e2e：`tests/resumeQualityPipeline.test.ts` 2 用例全绿（健康简历 → `hasCriticalRisks=false`；含夸张未证伪 bullet 的高 relevance 简历 → `hasCriticalRisks=true` 但 `status="completed"`）。
+- 全量：`npm run typecheck` + `npm test` ⇒ **78 files / 712 tests passed**。
+- DB：迁移 `0015_resume_quality_report.sql` 与 `schema.sql` 同步。
+- 阶段 5/6/7 行为不变：阶段 8 仅在阶段 7 之后追加运行，warn-only 契约继承；任何评分异常被 swallow 后只缺 `qualityReport` 一个字段。
+
+### 对外 API 与契约影响
+
+- **新增 optional 字段** `ResumeExport.qualityReport?: ResumeQualityReport`；shape 见下：
+
+  ```ts
+  type ResumeQualityReport = {
+    overallScore: number;         // 0..100，按权重 auth25/jd25/ev20/metric10/expr10/layout10 计算
+    authenticityScore: number;
+    jdMatchScore: number;
+    evidenceScore: number;
+    metricScore: number;
+    expressionScore: number;
+    layoutScore: number;
+    risks: Array<{ id, level: "low"|"medium"|"high"|"critical", dimension, message, itemId?, bulletId? }>;
+    suggestions: Array<{ id, dimension, message, itemId?, bulletId? }>;
+    unsupportedClaims: string[];  // 命中夸张正则但缺 evidence 的 bullet 原文
+    hasCriticalRisks: boolean;    // 是否存在 level === "critical" 的 risk
+    generatedAt: string;          // ISO-8601
+  };
+  ```
+
+- 阶段 7 的 `editReport` 与阶段 6 的 `compressionReport` 字段未变更；前端如未读 `qualityReport` 字段也完全兼容（旧导出该字段就是 undefined）。
+- 不新增任何环境变量、不新增任何 REST 路由、不新增任何 LLM 依赖。
+- 数据库新增一列 `resume_export.quality_report JSONB`，迁移 `0015` 必须随后端部署执行。
+
+### 前端建议
+
+- 在导出详情页的"质量"区块以六个 0–100 数值条显示六维分数；`overallScore` 可作为顶部主指标。
+- `qualityReport.hasCriticalRisks === true` 时，建议在导出按钮旁给一条**显眼但非阻断**的 banner："检测到 X 条无证据的高风险表述，建议在分享前确认"，并把 `risks.filter(r => r.level === "critical")` 渲染成可点击的 itemId/bulletId 锚点。**不要**在前端自己创建 confirmation 弹窗——阶段 8 后端不会等你确认，导出已经完成。
+- `risks` 与 `suggestions` 区分：risks 用色 chip 突出显示，suggestions 折叠在"还可以更好"小节；这与阶段 6/7 的 actions 视图风格保持一致。
+- `unsupportedClaims` 适合做内联高亮：在简历预览里把命中的 bullet 用浅黄底色 + tooltip "无证据支撑" 标出，给用户一个直接的修改入口。
+- `jdMatchScore < 60` 时，可以提示用户回去做 `match_experiences_against_jd` 重新选材；这条建议与阶段 1 的 `nextActionHints` 路径天然衔接。
+
+---
+
 # 阶段 9：前后端契约整理与 UI 接入准备
 
 ## 目标

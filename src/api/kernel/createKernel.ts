@@ -166,6 +166,7 @@ function buildKernel(input: BuildKernelInput): ApiKernel {
     input.pdfRenderer,
     input.layoutMeasurer,
     input.modelClientOverride ?? model.client,
+    (userId, jdId) => jdService.getJD(userId, jdId),
   );
   const warnings = [...(input.warnings ?? []), ...model.warnings];
 
