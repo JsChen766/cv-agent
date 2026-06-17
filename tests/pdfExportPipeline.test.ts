@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createServer } from "../src/api/createServer.js";
 import { createKernel } from "../src/api/kernel/createKernel.js";
-import { FakePdfRenderer, type PdfRendererAdapter } from "../src/exports/index.js";
+import { FakePdfRenderer, type PdfRendererAdapter, buildChromiumLaunchOptions } from "../src/exports/index.js";
 import type { ApiSuccess } from "../src/api/response.js";
 import type { ApiKernel } from "../src/api/types.js";
 import type { BackgroundJob } from "../src/platform/index.js";
@@ -209,5 +209,21 @@ describe("resume export — PDF pipeline", () => {
       headers: { "x-user-id": "user-1" },
     });
     expect(download.statusCode).toBe(404);
+  });
+});
+
+describe("buildChromiumLaunchOptions", () => {
+  it("reads PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH when set", () => {
+    const opts = buildChromiumLaunchOptions({ PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH: "/usr/bin/chromium-browser" });
+    expect(opts.executablePath).toBe("/usr/bin/chromium-browser");
+    expect(opts.headless).toBe(true);
+    expect(opts.args).toContain("--no-sandbox");
+    expect(opts.args).toContain("--disable-dev-shm-usage");
+  });
+
+  it("omits executablePath when env is not set", () => {
+    const opts = buildChromiumLaunchOptions({});
+    expect(opts.executablePath).toBeUndefined();
+    expect(opts.headless).toBe(true);
   });
 });

@@ -171,4 +171,37 @@ describe("LLMGenerationService — resumeDocument schema", () => {
     expect(result.variants[0].resumeDocument).toBeUndefined();
     expect(result.variants[0].content).toBe("Resume content for Acme.");
   });
+
+  it("returns fallback comparisonMatrix when LLM does not provide one", async () => {
+    const service = new LLMGenerationService(
+      fakeModelClient({
+        variants: [
+          {
+            content: "Variant A content",
+            reason: "Generated from JD",
+            scores: { overall: 0.85, relevance: 0.9, evidenceStrength: 0.8 },
+            variantName: "通用版",
+            summary: "适合全栈投递",
+            scenario: "通用全栈",
+            riskSummary: { level: "medium" },
+          },
+          {
+            content: "Variant B content",
+            reason: "Generated from JD",
+            scores: { overall: 0.72, relevance: 0.7, evidenceStrength: 0.75 },
+            variantName: "精简版",
+            summary: "突出项目",
+            scenario: "项目导向",
+            riskSummary: { level: "low" },
+          },
+        ],
+      }),
+    );
+    const result = await service.generateVariants("u-1", jdText, targetRole, fakeExperiences());
+    expect(result.recommendedVariantId).toBeDefined();
+    expect(result.comparisonMatrix).toBeDefined();
+    expect(result.comparisonMatrix!.length).toBeGreaterThanOrEqual(3);
+    expect(result.comparisonMatrix![0].dimension).toBeDefined();
+    expect(Object.keys(result.comparisonMatrix![0].values).length).toBe(2);
+  });
 });

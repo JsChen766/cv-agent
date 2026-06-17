@@ -48,6 +48,8 @@ export type PlatformConfig = {
   pdfRenderer: PdfRenderer;
   exportStorageDir: string;
   exportDownloadTtlMinutes: number;
+  defaultResumeTemplate: string;
+  defaultTargetPages: number;
 
   // user api key encryption
   userApiKeyEncryptionSecret?: string;
@@ -99,6 +101,8 @@ export function readPlatformConfig(env: NodeJS.ProcessEnv = process.env): Platfo
     pdfRenderer: readPdfRenderer(env, nodeEnv),
     exportStorageDir: env.EXPORT_STORAGE_DIR?.trim() || ".data/exports",
     exportDownloadTtlMinutes: readPositiveNumber(env.EXPORT_DOWNLOAD_TTL_MINUTES) ?? 60,
+    defaultResumeTemplate: env.DEFAULT_RESUME_TEMPLATE?.trim() || "one-page-modern",
+    defaultTargetPages: readPositiveNumber(env.DEFAULT_TARGET_PAGES) ?? 1,
 
     // user api key encryption
     userApiKeyEncryptionSecret: env.USER_API_KEY_ENCRYPTION_SECRET?.trim() || undefined,

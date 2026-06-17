@@ -183,7 +183,7 @@ describe("Phase 6 fit-engine v2 — rule-based compression on overflow", () => {
       method: "POST",
       url: `/exports/resumes/${resume.id}`,
       headers: { "x-user-id": "user-1", "content-type": "application/json" },
-      payload: { format: "pdf" },
+      payload: { format: "pdf", templateId: "default" },
     });
     const data = (created.json() as ApiSuccess<{ exportRecord: ResumeExport; job: BackgroundJob }>).data;
     await kernel.jobRunner.runJob(data.job.id, "user-1");

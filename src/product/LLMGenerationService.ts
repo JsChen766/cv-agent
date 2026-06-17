@@ -640,6 +640,45 @@ export type LLMGeneratedVariantsResult = {
   comparisonMatrix?: VariantComparisonMatrixRow[];
 };
 
+function buildFallbackComparisonMatrix(
+  variants: ProductGeneratedVariant[],
+  recommendedVariantId: string | undefined,
+): VariantComparisonMatrixRow[] {
+  if (variants.length === 0) return [];
+  const dimensions = [
+    { key: "recommendation", label: "推荐理由" },
+    { key: "jdMatch", label: "JD 匹配度" },
+    { key: "evidence", label: "证据强度" },
+    { key: "risk", label: "风险" },
+    { key: "scenario", label: "适用场景" },
+  ];
+  return dimensions.map((dim) => {
+    const values: Record<string, string> = {};
+    for (const v of variants) {
+      switch (dim.key) {
+        case "recommendation":
+          values[v.id] = v.id === recommendedVariantId ? "推荐" : v.summary?.slice(0, 8) ?? "备选";
+          break;
+        case "jdMatch":
+          values[v.id] = v.scores?.relevance != null ? `${Math.round(v.scores.relevance * 100)}%` : "—";
+          break;
+        case "evidence":
+          values[v.id] = v.scores?.evidenceStrength != null ? `${Math.round(v.scores.evidenceStrength * 100)}%` : "—";
+          break;
+        case "risk":
+          values[v.id] = v.riskSummary?.level ?? "—";
+          break;
+        case "scenario":
+          values[v.id] = v.scenario?.slice(0, 8) ?? v.variantName?.slice(0, 8) ?? "—";
+          break;
+        default:
+          values[v.id] = "—";
+      }
+    }
+    return { dimension: dim.label, values };
+  });
+}
+
 export class LLMGenerationService {
   public constructor(private readonly modelClient: ModelClient) {}
 
@@ -821,13 +860,14 @@ export class LLMGenerationService {
       }))
       .filter((row) => Object.keys(row.values).length > 0);
 
+    const fallbackComparisonMatrix = comparisonMatrix && comparisonMatrix.length > 0
+      ? comparisonMatrix
+      : buildFallbackComparisonMatrix(variants, recommendedVariantId);
+
     return {
       variants,
       recommendedVariantId,
-      comparisonMatrix:
-        comparisonMatrix && comparisonMatrix.length > 0
-          ? comparisonMatrix
-          : undefined,
+      comparisonMatrix: fallbackComparisonMatrix,
     };
   }
 

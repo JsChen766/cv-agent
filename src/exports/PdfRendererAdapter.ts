@@ -18,6 +18,17 @@ export class PdfRenderError extends Error {
   }
 }
 
+export function buildChromiumLaunchOptions(env: NodeJS.ProcessEnv = process.env): Record<string, unknown> {
+  const options: Record<string, unknown> = {
+    headless: true,
+    args: ["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"],
+  };
+  if (env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH) {
+    options.executablePath = env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH;
+  }
+  return options;
+}
+
 /**
  * Production renderer that uses Playwright Chromium. Lazy-imports `playwright`
  * so the test/process-startup path does not require chromium binaries to be
@@ -36,10 +47,7 @@ export class PlaywrightPdfRenderer implements PdfRendererAdapter {
     }
     let browser;
     try {
-      browser = await chromium.launch({
-        headless: true,
-        args: ["--no-sandbox", "--disable-setuid-sandbox"],
-      });
+      browser = await chromium.launch(buildChromiumLaunchOptions());
     } catch (error) {
       throw new PdfRenderError(
         "Playwright Chromium is not installed or cannot start. Run: npx playwright install chromium",

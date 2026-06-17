@@ -47,6 +47,7 @@ describe("resume export pipeline", () => {
     expect(created.statusCode).toBe(200);
     const data = (created.json() as ApiSuccess<{ exportRecord: ResumeExport; job: BackgroundJob; workerDisabled?: boolean }>).data;
     expect(data.exportRecord.status).toBe("pending");
+    expect(data.exportRecord.templateId).toBe("one-page-modern");
     expect(data.job.type).toBe("export_resume_html");
     expect(data.workerDisabled).toBe(true);
 
@@ -106,5 +107,35 @@ describe("resume export pipeline", () => {
     const record = (rendered.json() as ApiSuccess<ResumeExport>).data;
     expect(record.status).toBe("completed");
     expect(record.fileId).toEqual(expect.any(String));
+  });
+
+  it("defaults templateId to one-page-modern when not specified", async () => {
+    const resume = await kernel.productServices.resumeService.createResume("user-1", { title: "Template test" });
+    const created = await kernel.exportService.createExport("user-1", {
+      resumeId: resume.id,
+      format: "html",
+    });
+    expect(created.exportRecord.templateId).toBe("one-page-modern");
+  });
+
+  it("respects explicit templateId override", async () => {
+    const resume = await kernel.productServices.resumeService.createResume("user-1", { title: "Override test" });
+    const created = await kernel.exportService.createExport("user-1", {
+      resumeId: resume.id,
+      format: "html",
+      templateId: "default",
+    });
+    expect(created.exportRecord.templateId).toBe("default");
+  });
+
+  it("respects DEFAULT_RESUME_TEMPLATE env override", async () => {
+    process.env.DEFAULT_RESUME_TEMPLATE = "default";
+    const resume = await kernel.productServices.resumeService.createResume("user-1", { title: "Env override test" });
+    const created = await kernel.exportService.createExport("user-1", {
+      resumeId: resume.id,
+      format: "html",
+    });
+    expect(created.exportRecord.templateId).toBe("default");
+    delete process.env.DEFAULT_RESUME_TEMPLATE;
   });
 });

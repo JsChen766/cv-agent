@@ -37,7 +37,14 @@ export function registerGenerationRoutes(
     if (!generation) throw new ApiError(ErrorCodes.NOT_FOUND, "Generation not found.", 404);
     const rawVariants = extractVariantsFromOutputSnapshot(generation.outputSnapshot);
     const variants = await convertToWorkspaceVariants(rawVariants, generation, ctx.user.id, kernel);
-    return productSuccess({ ...generation, variants }, kernel, ctx);
+    const recommendedVariantId = generation.outputSnapshot?.recommendedVariantId as string | undefined;
+    const comparisonMatrix = generation.outputSnapshot?.comparisonMatrix;
+    return productSuccess({
+      ...generation,
+      variants,
+      ...(recommendedVariantId ? { recommendedVariantId } : {}),
+      ...(comparisonMatrix && Array.isArray(comparisonMatrix) && comparisonMatrix.length > 0 ? { comparisonMatrix } : {}),
+    }, kernel, ctx);
   });
 
   app.post("/product/generations/from-jd", async (request, reply) => {

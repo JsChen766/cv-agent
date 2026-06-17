@@ -88,7 +88,7 @@ export class ResumeExportService {
       userId,
       resumeId: input.resumeId,
       format: input.format,
-      templateId: input.templateId ?? "default",
+      templateId: input.templateId ?? readPlatformConfig().defaultResumeTemplate,
       status: "pending",
       createdAt: now,
       updatedAt: now,
