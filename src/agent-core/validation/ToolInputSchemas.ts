@@ -67,6 +67,33 @@ export const ShowEvidenceInputSchema = z.object({
   generationId: z.string().optional(),
 }).passthrough();
 
+/**
+ * Phase 2 (asset-grounded writing): input schema for `compose_career_text`.
+ *
+ * All fields are optional so the model can call the tool with whatever
+ * subset of grounding signals is available; the tool itself decides
+ * needs_input vs success based on whether enough assets resolved.
+ */
+export const ComposeCareerTextInputSchema = z.object({
+  goal: z.string().optional(),
+  userInstruction: z.string().optional(),
+  outputType: z.string().optional(),
+  assetScope: z.object({
+    experienceIds: z.array(z.string()).optional(),
+    resumeId: z.string().optional(),
+    jdId: z.string().optional(),
+  }).partial().optional(),
+  experienceQuery: z.string().optional(),
+  jdText: z.string().optional(),
+  constraints: z.object({
+    length: z.enum(["short", "medium", "long"]).optional(),
+    language: z.enum(["zh", "en", "auto"]).optional(),
+    tone: z.string().optional(),
+    audience: z.string().optional(),
+    format: z.enum(["paragraph", "bullets", "script", "email", "answer"]).optional(),
+  }).partial().optional(),
+}).passthrough();
+
 export const ToolResultEntitySchema = z.object({
   type: z.string().min(1),
   id: z.string().optional(),

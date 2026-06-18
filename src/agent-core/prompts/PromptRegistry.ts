@@ -25,6 +25,7 @@ const PRODUCT_PROMPT_FILES = {
   "product.guideline.instructionSystem": "product/guideline-instruction-system.md",
   "tools.resume.prepareReviseResumeItem.system": "tools/resume/prepare-revise-resume-item-system.md",
   "tools.experience.jdMatch.system": "tools/experience/jd-match-system.md",
+  "tools.writing.composeCareerText.system": "tools/writing/compose-career-text-system.md",
   "product.narrator.system": "product/narrator-system.md",
   "product.resumeFitEditor.system": "product/resume-fit-editor-system.md",
   "product.resumeQualityCritic.system": "product/resume-quality-critic-system.md",

@@ -9,6 +9,7 @@ import { createJDAgentTools } from "../../agent-tools/jd/index.js";
 import { createResumeAgentTools } from "../../agent-tools/resume/index.js";
 import { createExportAgentTools } from "../../agent-tools/export/index.js";
 import { createEvidenceAgentTools } from "../../agent-tools/evidence/index.js";
+import { createWritingAgentTools } from "../../agent-tools/writing/index.js";
 
 export const careerDomain: AgentDomainModule = {
   id: "career",
@@ -25,5 +26,12 @@ export const careerDomain: AgentDomainModule = {
     ...createResumeAgentTools(),
     ...createExportAgentTools(),
     ...createEvidenceAgentTools(),
+    // Phase 2: register `compose_career_text` in the tool pool. NOT yet in
+    // any specialist's allowedTools — Phase 3 will open Architect /
+    // ExperienceReceiver to invoke it. Registration here makes the tool
+    // available to ToolRegistry.list() so smoke tests, manual invocation,
+    // and the Phase 6 LLM probe can exercise it without touching agent
+    // contracts.
+    ...createWritingAgentTools(),
   ],
 };

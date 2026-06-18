@@ -20,6 +20,16 @@ export function tasksFromHandoff(
   if (handoff.intent === "general.chat" || handoff.intent === "clarify") {
     return { suggestedTasks: workspace?.suggestedTasks ?? [] };
   }
+  // Phase 1 (asset-grounded writing): the writing flow is read-only and does
+  // not mutate workspace state, so it intentionally produces no currentTask.
+  // Same for experience.match_against_jd, which the existing
+  // match_experiences_against_jd tool models as a transient read-only
+  // operation; the workspace already surfaces match_results via toolResults
+  // and ProductBlocks. Keeping these intents task-less avoids confusing
+  // history rendering with phantom "in-progress" cards.
+  if (handoff.intent === "asset_grounded.write" || handoff.intent === "experience.match_against_jd") {
+    return { suggestedTasks: workspace?.suggestedTasks ?? [] };
+  }
   if (handoff.intent === "jd.intake") {
     return {
       currentTask: makeTask("JD_INTAKE", "completed", "strategist", refs, now),

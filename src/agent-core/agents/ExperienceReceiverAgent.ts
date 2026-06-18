@@ -22,6 +22,11 @@ export class ExperienceReceiverAgent extends BaseAgent {
     "update_experience",
     "prepare_delete_experience",
     "delete_experience",
+    // Phase 3: allow asset-grounded writing centred on a single experience
+    // (e.g. "根据 WEEX 实习写一段项目介绍 / 面试可以说的话"). Read-only and
+    // strictly scoped by experience-receiver.md — does NOT replace
+    // experience.rewrite / save / update / delete flows.
+    "compose_career_text",
   ];
 
   public constructor(deps: { modelClient?: ModelClient; promptRegistry: PromptRegistry }) {
