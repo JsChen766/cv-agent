@@ -2190,7 +2190,9 @@ This section consolidates **every** additive, optional, backward-compatible fiel
 | `additive-enum` | Existing enum extended with new values; consumers should treat unknown values defensively. |
 | `env-gated` | Field is only populated when the listed environment variable is set. |
 
-Every field in §16.1–§16.10 is `optional` and `frontend-recommended`. Nothing below is `required`. A frontend that ignores Section 16 entirely continues to behave exactly as before Phase 1.
+Every field in §16.1–§16.11 is `optional` and `frontend-recommended`. Nothing below is `required`. A frontend that ignores Section 16 entirely continues to behave exactly as before Phase 1.
+
+Phase 5 asset-grounded writing extends this optional/additive set with the Section 16.10 `writing_result` SpecialInfo contract.
 
 ### 16.1 ToolResult Structured Fields (Phase 1)
 
@@ -2516,7 +2518,73 @@ type ResumeQualityCriticReview = {
 
 Compatibility: `optional`, `env-gated` (`ENABLE_LLM_QUALITY_CRITIC`), `frontend-recommended`. FE that already renders Phase 8 `qualityReport` is forward-compatible — `criticReview` simply augments the panel.
 
-### 16.10 New optional environment variables
+### 16.10 Asset-grounded writing result SpecialInfo (Agent internal generalization Phase 5)
+
+Source: `compose_career_text` ToolResult projected by `src/agent-core/events/AgentRoomEventProjector.ts`.
+
+No request shape, response envelope, REST API, Agent, Task Layer, pendingAction, workspacePatch, ProductBlock, generation, export, or existing SpecialInfo semantics change. This is an additive `SpecialInfoKind` value on existing `agentRoomEvents[]`.
+
+Frontend recognition signals:
+
+- `raw.toolResults[i].resultKind === "asset_grounded_text_completed"`
+- `raw.toolResults[i].resultKind === "asset_grounded_text_needs_input"`
+- `raw.toolResults[i].actionResult.actionType === "compose_career_text"`
+- `agentRoomEvents[i].specialInfo.kind === "writing_result"`
+- `agentRoomEvents[i].relatedToolName === "compose_career_text"`
+
+```ts
+type WritingResultSpecialInfo = {
+  kind: "writing_result";
+  title?: string;
+  summary?: string;
+  data?: {
+    title?: string;
+    content?: string;
+    outputType?: string;
+    alternatives?: Array<{ title?: string; content: string; scenario?: string }>;
+    usedExperienceIds?: string[];
+    usedResumeIds?: string[];
+    usedJDIds?: string[];
+    usedEvidenceIds?: string[];
+    groundingNotes?: string[];
+    riskNotes?: string[];
+    suggestions?: string[];
+    groundingDiagnostics?: {
+      evidenceRag?: Record<string, unknown>;
+      guidelineRag?: Record<string, unknown>;
+      preferenceBank?: Record<string, unknown>;
+    };
+    resultKind?: "asset_grounded_text_completed" | "asset_grounded_text_needs_input";
+    styleReferenceSignals?: {
+      guidelineRagApplied?: boolean;
+      personalizationApplied?: number;
+      appliedPreferenceIds?: string[];
+    };
+    factSourceFields?: string[];
+    styleOnlyFields?: string[];
+  };
+  relatedResourceIds?: {
+    experienceIds?: string[];
+    jdIds?: string[];
+    resumeIds?: string[];
+  };
+  actions?: Array<{
+    id: string;
+    type: string;
+    label: string;
+    payload?: Record<string, unknown>;
+  }>;
+  source?: { toolName?: "compose_career_text" };
+};
+```
+
+Fact-source boundary: `content`, `usedExperienceIds`, `usedEvidenceIds`, `groundingNotes`, and `riskNotes` are the primary display contract for grounded writing. `groundingDiagnostics.evidenceRag` may explain evidence retrieval status. `groundingDiagnostics.guidelineRag`, `groundingDiagnostics.preferenceBank`, and `styleReferenceSignals` are style/reference diagnostics only; frontends must not render GuidelineRAG or PreferenceBank as factual proof.
+
+Fallback strategy: older frontends can ignore `specialInfo.kind="writing_result"` and continue rendering `assistantMessage.content`, `raw.toolResults[i].message`, or `raw.toolResults[i].data.content`. Unknown SpecialInfo kinds should degrade to a generic card or be skipped, never block the chat.
+
+Compatibility: `optional`, `frontend-recommended`, `additive-enum`. The existing 14 SpecialInfo kinds keep their semantics unchanged.
+
+### 16.11 New optional environment variables
 
 | Variable | Default | Effect when ON | Effect when OFF |
 |----------|---------|----------------|-----------------|
@@ -2526,7 +2594,7 @@ Compatibility: `optional`, `env-gated` (`ENABLE_LLM_QUALITY_CRITIC`), `frontend-
 
 Each variable is independent. None of them changes existing field shapes. None of them is required for backend startup or for any existing route to function.
 
-### 16.11 Frontend rendering recommendations (non-binding)
+### 16.12 Frontend rendering recommendations (non-binding)
 
 | Surface | Recommended UI placement |
 |---------|-------------------------|
@@ -2540,8 +2608,9 @@ Each variable is independent. None of them changes existing field shapes. None o
 | `editReport` | Collapsible diff list of LLM-applied bullet edits. Show `data-bullet-id` highlight in the live preview. |
 | `qualityReport` | Six 0–100 score bars; non-blocking banner when `hasCriticalRisks=true`; suggestions in a "Could be better" subsection. |
 | `qualityReport.criticReview` | Optional "AI review" sub-panel under quality. Treat as advisory text, not as a one-click mutation. |
+| `agentRoomEvents[].specialInfo.kind === "writing_result"` | Chat special-info card for asset-grounded writing. Render `data.content`; show `usedExperienceIds` / `usedEvidenceIds` as attribution; keep GuidelineRAG and PreferenceBank as style/reference diagnostics only. |
 
-### 16.12 Phase 9 testing summary
+### 16.13 Phase 9 testing summary
 
 A new contract test (`tests/phase9ContractAdditive.test.ts`) asserts that:
 

@@ -185,6 +185,97 @@ describe("AgentRoomEventProjector", () => {
     expect(events).toHaveLength(0);
   });
 
+  it("projects compose_career_text success as writing_result special info", () => {
+    const events = projectAgentRoomEvents({
+      toolResults: [{
+        status: "success",
+        message: "Draft ready.",
+        visibility: "user_summary",
+        actionResult: { status: "success", actionType: "compose_career_text" },
+        resultKind: "asset_grounded_text_completed",
+        data: {
+          title: "Self introduction",
+          outputType: "self_intro",
+          content: "I turn SQL and Power BI work into product insights.",
+          alternatives: [{ title: "Short", content: "Short version." }],
+          usedExperienceIds: ["pexp-11111111-1111-4111-8111-111111111111"],
+          usedEvidenceIds: ["pexp-11111111-1111-4111-8111-111111111111"],
+          groundingNotes: ["Used WEEX dashboard evidence."],
+          riskNotes: ["No unsupported metrics added."],
+          suggestions: ["Ask for an English version."],
+          groundingDiagnostics: {
+            evidenceRag: { status: "ok", trigger: "experience" },
+            guidelineRag: { status: "ok", filteredFactBearingCount: 0 },
+            preferenceBank: { status: "ok", appliedCount: 1 },
+          },
+          guidelineRagApplied: true,
+          personalizationApplied: 1,
+          appliedPreferenceIds: ["pref-1"],
+        },
+        nextActionHints: [{
+          type: "compose_career_text_variant",
+          label: "Generate a shorter version",
+          payload: { outputType: "self_intro" },
+        }],
+      }],
+    });
+
+    expect(events).toHaveLength(1);
+    expect(events[0].eventKind).toBe("special_info");
+    expect(events[0].agentName).toBe("architect");
+    expect(events[0].relatedToolName).toBe("compose_career_text");
+    expect(events[0].specialInfo?.kind).toBe("writing_result");
+    expect(events[0].specialInfo?.title).toBe("Self introduction");
+    expect(events[0].specialInfo?.data?.content).toContain("SQL and Power BI");
+    expect(events[0].specialInfo?.data?.usedExperienceIds).toEqual(["pexp-11111111-1111-4111-8111-111111111111"]);
+    expect(events[0].specialInfo?.data?.usedEvidenceIds).toEqual(["pexp-11111111-1111-4111-8111-111111111111"]);
+    expect(events[0].specialInfo?.data?.groundingDiagnostics).toMatchObject({
+      evidenceRag: { status: "ok", trigger: "experience" },
+    });
+    expect(events[0].specialInfo?.data?.styleOnlyFields).toEqual(expect.arrayContaining([
+      "groundingDiagnostics.guidelineRag",
+      "groundingDiagnostics.preferenceBank",
+    ]));
+    expect(events[0].specialInfo?.relatedResourceIds?.experienceIds).toEqual(["pexp-11111111-1111-4111-8111-111111111111"]);
+    expect(events[0].specialInfo?.actions?.[0]?.type).toBe("compose_career_text_variant");
+  });
+
+  it("projects compose_career_text needs_input as writing_result special info", () => {
+    const events = projectAgentRoomEvents({
+      toolResults: [{
+        status: "needs_input",
+        message: "Please add an experience first.",
+        visibility: "error_user_visible",
+        actionResult: {
+          status: "needs_input",
+          actionType: "compose_career_text",
+          reason: "no_assets",
+          missingInputs: ["experienceText"],
+        },
+        resultKind: "asset_grounded_text_needs_input",
+        data: {
+          title: "Writing input needed",
+          outputType: "self_intro",
+          content: "",
+          alternatives: [],
+          usedExperienceIds: [],
+          usedEvidenceIds: [],
+          groundingNotes: [],
+          riskNotes: ["No saved experiences were available."],
+          suggestions: ["Save a real experience first."],
+        },
+      }],
+    });
+
+    expect(events).toHaveLength(1);
+    expect(events[0].eventKind).toBe("special_info");
+    expect(events[0].visibility).toBe("visible");
+    expect(events[0].specialInfo?.kind).toBe("writing_result");
+    expect(events[0].specialInfo?.data?.resultKind).toBe("asset_grounded_text_needs_input");
+    expect(events[0].specialInfo?.data?.riskNotes).toEqual(["No saved experiences were available."]);
+    expect(events[0].specialInfo?.data?.suggestions).toEqual(["Save a real experience first."]);
+  });
+
   it("projects pending experience action with structured draft as decision_panel", () => {
     const pendingAction: PendingAction = {
       id: "pa-1",

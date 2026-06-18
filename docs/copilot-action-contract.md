@@ -158,3 +158,24 @@ Frontend actions can include:
 ```
 
 `ProductAction.payload` is optional so existing actions without payload remain valid.
+
+## Asset-Grounded Writing Display Contract
+
+`compose_career_text` is not a `/copilot/actions` product action and does not add a new REST API. It is an internal read-only tool reached through `/copilot/chat` routing (`asset_grounded.write`) and exposed through the existing response envelope.
+
+Frontend recognition signals:
+
+- `raw.toolResults[i].resultKind === "asset_grounded_text_completed"`
+- `raw.toolResults[i].resultKind === "asset_grounded_text_needs_input"`
+- `raw.toolResults[i].actionResult.actionType === "compose_career_text"`
+- `agentRoomEvents[i].specialInfo.kind === "writing_result"`
+- `agentRoomEvents[i].relatedToolName === "compose_career_text"`
+
+`writing_result` card data may include `title`, `content`, `outputType`, `alternatives`, `usedExperienceIds`, `usedEvidenceIds`, `groundingNotes`, `riskNotes`, `suggestions`, and `groundingDiagnostics`.
+
+Fact boundary:
+
+- Treat `content`, `usedExperienceIds`, `usedEvidenceIds`, `groundingNotes`, and `riskNotes` as the user-facing grounded-writing payload.
+- Treat `groundingDiagnostics.guidelineRag`, `groundingDiagnostics.preferenceBank`, and `styleReferenceSignals` as expression/style references only. They must not be shown as factual evidence.
+
+Compatibility fallback: if the frontend does not recognize `writing_result`, render `assistantMessage.content`, `raw.toolResults[i].message`, or `raw.toolResults[i].data.content` as ordinary chat text. Unknown SpecialInfo kinds must not block chat rendering.

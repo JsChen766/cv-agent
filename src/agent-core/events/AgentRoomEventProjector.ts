@@ -41,6 +41,18 @@ export function projectAgentRoomEvents(input: {
     if (result.visibility === "internal") continue;
     const toolName = typeof result.actionResult?.actionType === "string" ? result.actionResult.actionType : undefined;
     const agentName = toolName ? agentNameForToolName(toolName) : "system";
+    const writingEvent = projectWritingToolResult(result, {
+      agentName,
+      locale,
+      now,
+      sessionId: input.sessionId,
+      turnId: input.turnId,
+      toolName,
+    });
+    if (writingEvent) {
+      events.push(writingEvent);
+      continue;
+    }
     events.push({
       id: `evt-${randomUUID()}`,
       sessionId: input.sessionId,
@@ -199,10 +211,106 @@ function agentNameForPendingAction(toolName: string): AgentRoomAgentName {
 }
 
 function agentNameForToolName(toolName: string): AgentRoomAgentName {
+  if (toolName === "compose_career_text") return "architect";
   if (toolName.includes("experience")) return "experience_receiver";
   if (toolName.includes("jd") || toolName.includes("match")) return "strategist";
   if (toolName.includes("resume") || toolName.includes("variant")) return "architect";
   return "system";
+}
+
+function projectWritingToolResult(
+  result: ToolResult,
+  input: {
+    agentName: AgentRoomAgentName;
+    locale: CopilotLocale;
+    now: string;
+    sessionId?: string;
+    turnId?: string;
+    toolName?: string;
+  },
+): AgentRoomEvent | null {
+  const resultKind = result.resultKind;
+  if (
+    resultKind !== "asset_grounded_text_completed"
+    && resultKind !== "asset_grounded_text_needs_input"
+  ) {
+    return null;
+  }
+  const data = isRecord(result.data) ? result.data : {};
+  const title = stringValue(data.title) ?? (resultKind === "asset_grounded_text_needs_input" ? "Writing input needed" : "Writing draft");
+  const content = stringValue(data.content) ?? result.message ?? title;
+  const usedExperienceIds = stringArray(data.usedExperienceIds);
+  const usedResumeIds = stringArray(data.usedResumeIds);
+  const usedJDIds = stringArray(data.usedJDIds);
+  const usedEvidenceIds = stringArray(data.usedEvidenceIds);
+  const groundingDiagnostics = isRecord(data.groundingDiagnostics)
+    ? sanitizeMetadataObject(data.groundingDiagnostics)
+    : undefined;
+  const specialData = sanitizeMetadataObject({
+    title,
+    content,
+    outputType: stringValue(data.outputType),
+    alternatives: Array.isArray(data.alternatives) ? data.alternatives : [],
+    usedExperienceIds,
+    usedResumeIds,
+    usedJDIds,
+    usedEvidenceIds,
+    groundingNotes: stringArray(data.groundingNotes),
+    riskNotes: stringArray(data.riskNotes),
+    suggestions: stringArray(data.suggestions),
+    groundingDiagnostics,
+    resultKind,
+    // These references are style-only; frontends must not render them as factual proof.
+    styleReferenceSignals: {
+      guidelineRagApplied: data.guidelineRagApplied === true,
+      personalizationApplied: typeof data.personalizationApplied === "number" ? data.personalizationApplied : 0,
+      appliedPreferenceIds: stringArray(data.appliedPreferenceIds),
+    },
+    factSourceFields: ["content", "usedExperienceIds", "usedEvidenceIds", "groundingNotes"],
+    styleOnlyFields: ["groundingDiagnostics.guidelineRag", "groundingDiagnostics.preferenceBank", "styleReferenceSignals"],
+  }) ?? {};
+
+  return {
+    id: `evt-${randomUUID()}`,
+    sessionId: input.sessionId,
+    turnId: input.turnId,
+    agentName: input.agentName,
+    agentRoleLabel: agentLabel(input.agentName, input.locale),
+    eventKind: "special_info",
+    visibility: result.status === "failed" ? "error_visible" : "visible",
+    content: result.message ?? title,
+    specialInfo: {
+      kind: "writing_result",
+      title,
+      summary: result.message,
+      data: specialData,
+      relatedResourceIds: {
+        experienceIds: usedExperienceIds.length > 0 ? usedExperienceIds : undefined,
+        jdIds: usedJDIds.length > 0 ? usedJDIds : undefined,
+        resumeIds: usedResumeIds.length > 0 ? usedResumeIds : undefined,
+      },
+      actions: (result.nextActionHints ?? []).map((hint, index) => ({
+        id: `writing-action-${index + 1}`,
+        type: hint.type,
+        label: hint.label,
+        payload: hint.payload,
+      })),
+      source: {
+        toolName: input.toolName,
+      },
+    },
+    relatedToolName: input.toolName,
+    relatedResourceIds: {
+      experienceIds: usedExperienceIds.length > 0 ? usedExperienceIds : undefined,
+      jdIds: usedJDIds.length > 0 ? usedJDIds : undefined,
+      resumeIds: usedResumeIds.length > 0 ? usedResumeIds : undefined,
+    },
+    createdAt: input.now,
+    metadata: {
+      resultKind,
+      usedEvidenceIds,
+    },
+  };
 }
 
 function sanitizePendingAction(action: PendingAction): Record<string, unknown> {
@@ -226,6 +334,11 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function stringValue(value: unknown): string | undefined {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
+}
+
+function stringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter((item): item is string => typeof item === "string" && item.trim().length > 0);
 }
 
 function projectBlock(
