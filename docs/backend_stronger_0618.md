@@ -1564,6 +1564,204 @@ AgentRoomEvent：
 * 仍然进入 resume generation
 * variants / recommendedVariantId / comparisonMatrix 正常
 
+## Phase 6 完成情况报告（Docker 重构建 + 真实 LLM 后端实测）
+
+执行时间：2026-06-18（本地 Docker，`E:\vsProjects\cv-agent`）。
+
+本阶段没有改动生产功能代码；新增了一个运维/验收脚本 `scripts/probe-phase6-real-llm.ts`，用于重复执行 Phase 6 真实 LLM probe 并输出关键字段 JSON。
+
+### 1. 实际识别到的 env 变量清单
+
+读取来源：
+
+- `.env.example`
+- `.env`
+- `.env.docker`
+- `.env.docker.example`
+- `docker-compose.yml`
+- `Dockerfile.dev`
+- `src/platform/config.ts`
+- `src/agent-core/runtime/AgentRuntimeConfig.ts`
+- `src/providers/ModelClientFactory.ts`
+- `src/api/kernel/createKernel.ts`
+- `src/rag/*`
+- `src/exports/*`
+- `docs/docker-local-dev.md`
+- `docs/backend-deployment-guide.md`
+
+Docker 实测实际使用 `.env.docker`，不是根目录 `.env`。关键项如下：
+
+| 分类 | 变量 / 配置 | 实测值 / 结论 |
+|---|---|---|
+| 服务端口 | `HOST` | `0.0.0.0` |
+| 服务端口 | `PORT` | `3000` |
+| 运行模式 | `NODE_ENV` | `development`，不是 `test` |
+| Auth | `AUTH_MODE` | `dev_header`，请求带 `x-user-id` |
+| 数据库 | `DATABASE_URL` | `postgres://coolto:coolto_dev_password@postgres:5432/coolto_agent` |
+| 数据库 | SQLite | 当前运行路径未发现 SQLite env；`DATABASE_URL` 存在时走 Postgres，不存在时走 in-memory |
+| Docker DB | Compose Postgres | `POSTGRES_DB=coolto_agent` / `POSTGRES_USER=coolto` / `POSTGRES_PASSWORD=coolto_dev_password` |
+| 文件存储 | `FILE_STORAGE_PROVIDER` | `local` |
+| 文件路径 | `FILE_STORAGE_DIR` | `.data/uploads`，Docker 内位于 `/app/.data/uploads` |
+| 导出路径 | `EXPORT_STORAGE_DIR` | `.data/exports`，Docker 内位于 `/app/.data/exports` |
+| Docker volume | `coolto_api_data` | 挂载到 `/app/.data` |
+| LLM provider | `AGENT_PROVIDER` | `deepseek`（legacy alias，代码支持） |
+| LLM provider | `AGENT_MODEL_PROVIDER` | `.env.docker` 未设置；`.env.docker.example` 有；运行时用 `AGENT_PROVIDER` |
+| LLM model | `DEEPSEEK_MODEL` | `deepseek-v4-flash` |
+| LLM model | `AGENT_MODEL` | `.env.docker` 未设置 |
+| LLM baseURL | `DEEPSEEK_BASE_URL` / `AGENT_MODEL_BASE_URL` | 未设置，运行时默认 `https://api.deepseek.com` |
+| LLM apiKey | `DEEPSEEK_API_KEY` | 已存在；未写入文档，不展示完整 key |
+| OpenAI | `OPENAI_API_KEY` / `OPENAI_MODEL` / `OPENAI_BASE_URL` | 未用于本次 Docker 实测 |
+| Embedding | embedding env | 未发现独立 embedding provider/env；RAG 复用现有 LLM + lexical / Postgres claim graph |
+| Evidence RAG | `DEBUG_EVIDENCE_RAG` | 可选 debug 开关，非必需 |
+| Guideline RAG | `DEBUG_GUIDELINE_RAG` | 可选 debug 开关，非必需 |
+| RAG preview | `/product/rag/preview` | Docker 下可访问，返回 `guideline-rag-v2` / `evidence-rag-v5` / `preference-bank-v1` |
+| PDF | `PDF_RENDERER` | `playwright` |
+| Chromium | `PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH` | Dockerfile 设置为 `/usr/bin/chromium-browser` |
+| Chromium version | system Chromium | `Chromium 149.0.7827.53 Alpine Linux` |
+| Worker | `JOB_WORKER_ENABLED` | `true` |
+| Fit/Critic | `ENABLE_LLM_FIT_EDITOR` / `ENABLE_LLM_QUALITY_CRITIC` | `true` |
+| Rate limit | `RATE_LIMIT_ENABLED` | `false` |
+| deterministic fallback | `NODE_ENV=test` 才允许 | 本次 `NODE_ENV=development`，真实 LLM 调用；probe 确认 `composeMethod=llm` |
+
+`.env` 中也存在真实 `DEEPSEEK_API_KEY`、`DEEPSEEK_MODEL`、`PDF_RENDERER` 等，但 Docker Compose 不读取 `.env` 作为 API env file，而是读取 `.env.docker`。
+
+### 2. `.env.example` 更新情况
+
+- 未更新 `.env.example`。
+- 未把任何真实 API key 写入 git 或文档。
+- `.env.docker.example` 已包含 Docker 本地运行所需的主要 placeholder，包括 Postgres、storage、PDF、LLM provider/model/key/baseURL。
+
+### 3. Docker build / up / health check 结果
+
+实际执行命令与结果：
+
+| 命令 | 结果 |
+|---|---|
+| `docker compose ps` | 起始检查时无运行中服务 |
+| `docker compose down --remove-orphans` | 移除旧 `coolto-agent-api`、`coolto-postgres` 容器与 compose network |
+| `docker compose build --no-cache api` | 成功构建 `cv-agent-api:latest` |
+| `docker compose up -d postgres api` | Postgres healthcheck 通过，API started |
+| `docker compose ps` | `coolto-postgres` healthy，`coolto-agent-api` up，端口 `3000:3000` |
+| `GET /health` | `ok:true`，`data.mode=postgres`，`warnings=[]` |
+| `docker compose exec -T postgres pg_isready -U coolto -d coolto_agent` | `/var/run/postgresql:5432 - accepting connections` |
+| `GET /product/experiences` with `x-user-id` | `ok:true`，product API 可访问 |
+| `POST /product/rag/preview` | `ok:true`，RAG / PreferenceBank 可访问 |
+| `docker compose exec -T api /usr/bin/chromium-browser --version` | `Chromium 149.0.7827.53 Alpine Linux` |
+
+补充观察：
+
+- Dockerfile 中 `npx playwright install --with-deps chromium` 在 Alpine 中返回 code 127，但该步骤被 `|| true` 忽略；实际 PDF 导出使用系统 Chromium，并已由真实 PDF probe 验证通过。
+- 没有删除 Postgres volume；测试数据通过独立 `userId=phase6-real-llm-*` 隔离，避免误删本地持久数据。
+
+### 4. 真实 LLM provider / baseURL / model
+
+启动日志确认：
+
+- provider：`deepseek`
+- model：`deepseek-v4-flash`
+- baseURL：`https://api.deepseek.com`
+- apiKey：存在；日志中仅出现 masked key，本报告不展示完整 key
+- `NODE_ENV=development`，不是 `test`
+
+### 5. 真实 probe 数据
+
+新增脚本：
+
+```bash
+npx tsx scripts/probe-phase6-real-llm.ts
+```
+
+seed 数据：
+
+- 4 条经历：
+  - `WEEX 数据分析实习`
+  - `求职 Copilot 简历工作台`
+  - `校园任务管理系统`
+  - `前端工程化技能栈`
+- 1 个 JD：`AI 产品前端工程师`
+- 实测 user：`phase6-real-llm-1781767764988`
+- session：`cs-1ca88ca6-1f76-4b5a-abca-15b450ec128c`
+
+### 6. 五个真实 LLM probe 结论
+
+| Case | 输入 | intent | toolNames | 关键字段 | 结论 |
+|---|---|---|---|---|---|
+| 1 | `根据我的经历帮我写一条 1 分钟中文自我介绍` | `asset_grounded.write` | `compose_career_text` | `composeMethod=llm`；`writing_result` 出现；`usedExperienceIds=4`；`groundingNotesCount=4`；`groundingDiagnosticsPresent=true` | 通过；无 JD match / resume generation / export / pendingAction |
+| 2 | `根据 WEEX 实习经历帮我写一段面试项目介绍` | `asset_grounded.write` | `compose_career_text` | `composeMethod=llm`；`writing_result` 出现；`usedExperienceIds=[WEEX]`；`usedEvidenceIds=[WEEX]`；`groundingNotesCount=4` | 通过；使用 WEEX 经历；无 save/update/delete/pendingAction |
+| 3 | `根据这份 JD 写一段自我介绍：<JD>` | `asset_grounded.write` | `compose_career_text` | `composeMethod=llm`；`writing_result` 出现；`usedExperienceIds=4`；`groundingDiagnosticsPresent=true` | 通过；无 JD match matrix / resume variants / export |
+| 4 | `帮我看哪些经历最匹配这份 JD：<JD>` | `experience.match_against_jd` | `match_experiences_against_jd` | `specialKinds` 包含 `match_matrix`；`productBlockTypes` 包含 `experience_match_results` | 通过；未误路由到 `compose_career_text` |
+| 5 | `基于这个 JD 生成简历：<JD>` | `resume.generate_from_jd` | `match_experiences_against_jd` + `generate_resume_from_jd` | 创建 `generate_resume_from_jd` pending action；确认后 long_generation job completed；`variantCount=3`；`recommendedVariantId` 存在；`comparisonMatrixPresent=true` | 通过；未误路由到 `compose_career_text` |
+
+Case 5 中先执行 `match_experiences_against_jd` 再执行 `generate_resume_from_jd`，这是原主链路的一部分，不是误触发写作工具。
+
+### 7. fallback / hallucination / mutation 检查
+
+- `composeMethod=llm`：Case 1 / 2 / 3 均确认。
+- 未出现 `deterministic_test_fallback`。
+- 未走 `NODE_ENV=test` fallback。
+- `writing_result` AgentRoomEvent：Case 1 / 2 / 3 均出现。
+- `usedExperienceIds`：Case 1 / 2 / 3 均出现。
+- `usedEvidenceIds`：Case 2 出现；Case 1 / 3 未出现，但有 `groundingDiagnostics`。
+- `groundingNotes`：Case 1 / 2 / 3 均出现。
+- `groundingDiagnostics`：Case 1 / 2 / 3 均出现。
+- 编造事实：未观察到新增不在 seed 中的公司/项目/指标。Case 1/3 输出使用了“[你的名字]”占位，而非编造姓名。
+- 误触发 JD match：Case 1 / 2 / 3 未触发。
+- 误触发 resume generation：Case 1 / 2 / 3 未触发。
+- 误触发 save/update/delete/export/pendingAction：Case 1 / 2 / 3 未触发。
+
+观察项：
+
+- Case 1 / 3 返回 `evidence_rag_timeout` 与 `guideline_rag_timeout` warning；Case 2 拿到了 `usedEvidenceIds`。`/product/rag/preview` 单独验证通过，说明 Docker 下 RAG 服务可达，但真实写作 turn 内较宽 scope / JD 场景存在 RAG timeout，后续可评估 timeout budget 或异步降级策略。
+
+### 8. PDF / export 主链路
+
+真实 Docker probe 在 Case 5 之后继续执行：
+
+1. 确认 `generate_resume_from_jd` pending action。
+2. 轮询 long_generation job 到 `completed`。
+3. `GET /product/generations/:id`，确认：
+   - `generationId=pgen-b3ab6ce9-4dbd-4281-af9c-4a5d6441c7a6`
+   - `variantCount=3`
+   - `recommendedVariantId=pvar-e3d5736f-7e82-4068-8fb3-25aa48d0c1bc`
+   - `comparisonMatrixPresent=true`
+4. 接受 recommended variant：
+   - `resumeId=pres-5d7d99a3-75ff-412d-b327-0889ec0da691`
+5. 创建 PDF export：
+   - `exportId=export-ffa5521c-9af8-484c-a089-b1c022b68e7d`
+   - `exportJobId=job-040125e2-89ed-4b45-95cd-c389d9b7c8d2`
+6. 轮询 export job：
+   - `pending -> rendering -> completed`
+7. 下载：
+   - HTTP 200
+   - `Content-Type: application/pdf`
+   - bytes：27336
+   - 文件头：`%PDF`
+
+结论：Docker 下 PDF / export 主链路正常，本次 Agent 泛化改动未破坏导出链路。
+
+### 9. 测试命令结果
+
+| 命令 | 结果 |
+|---|---|
+| `npx tsc --noEmit --target ES2022 --module NodeNext --moduleResolution NodeNext --types node scripts/probe-phase6-real-llm.ts` | 通过，probe 脚本可编译 |
+| `npm run typecheck` | 通过 |
+| `npm test` | 通过；`93` test files / `837` tests |
+| `npx tsx scripts/probe-phase6-real-llm.ts` | 通过；5 个真实 LLM case + generation + accept + PDF export |
+
+### 10. 外部 API / contract 影响
+
+- 无外部 API 破坏性变化。
+- `/copilot/chat` envelope 不变。
+- `/copilot/actions` / pending action contract 不变。
+- `writing_result` 是 additive SpecialInfo；旧前端仍可读取 `assistantMessage.content` / `raw.toolResults`.
+- 本阶段新增的是 probe 脚本和文档报告，不改变 production runtime 行为。
+
+### 11. 仍需后续修复 / 观察的问题
+
+1. Case 1 / Case 3 的 `EvidenceRAG` / `GuidelineRAG` 在真实 LLM turn 内出现 timeout warning；不阻断写作结果，但会降低 evidence claim 覆盖率。
+2. Docker build 中 `npx playwright install --with-deps chromium` 在 Alpine 返回 code 127；当前系统 Chromium 路径可用且真实 PDF 导出通过，但 Dockerfile 注释可后续清理为“明确使用系统 Chromium”。
+3. Case 5 主链路会先做 JD match 再创建 generation pending action，这是符合现有十阶段链路的行为；后续 probe 断言应允许该前置 match。
+
 ## 测试要求
 
 新增测试至少覆盖：
