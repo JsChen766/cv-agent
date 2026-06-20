@@ -3,6 +3,7 @@ import type { ApiKernel } from "../../api/types.js";
 import type { ActiveAssetContext } from "../../copilot/ActiveAssetContextBuilder.js";
 import { applyHandoffToDrafts } from "../../copilot/context/DraftContext.js";
 import { normalizeFrontDeskHandoff } from "../../copilot/handoff/HandoffNormalizer.js";
+import type { FrontDeskHandoff } from "../../copilot/handoff/FrontDeskHandoff.js";
 import type {
   CopilotActionRequest,
   CopilotChatRequest,
@@ -211,6 +212,10 @@ export class AgentOrchestrator {
         clientState: request.clientState,
         workspace: run.workspace,
       });
+      if (shouldRouteFromHandoff(normalizedHandoff.handoff)) {
+        frontDeskDecision.responseType = "route";
+        frontDeskDecision.routeTo = normalizedHandoff.handoff.routeTo;
+      }
       this.applyHandoff(run, normalizedHandoff.handoff, normalizedHandoff.repaired ? normalizedHandoff.reason : undefined);
       this.decisionRunner.completeDecisionTrace({
         trace: run.trace,
@@ -758,6 +763,11 @@ export class AgentOrchestrator {
         payload: { loopStep: run.loopController.state.stepCount },
       });
       const decision = await this.decisionRunner.decide({ agent: specialist, context: run.context, routeHint });
+      const recoveredPlan = maybeRecoverPlanFromHandoff(decision, run.context, specialist.name);
+      if (recoveredPlan) {
+        decision.responseType = "plan";
+        decision.plan = recoveredPlan;
+      }
       lastAssistantMessage = decision.assistantMessage || lastAssistantMessage;
       this.addPublicAgentMessage(run, {
         from: specialist.name,
@@ -1963,6 +1973,39 @@ function shouldSaveJDFromMessage(message: string): boolean {
   const mentionsJD = text.includes("jd") || text.includes("岗位");
   if (!mentionsJD) return false;
   return text.includes("保存") || text.includes("入库") || text.includes("记录") || text.includes("save");
+}
+
+function shouldRouteFromHandoff(handoff: FrontDeskHandoff): boolean {
+  return handoff.routeTo !== "frontdesk"
+    && handoff.next !== "answer_directly"
+    && handoff.intent !== "general.chat"
+    && handoff.intent !== "clarify";
+}
+
+function maybeRecoverPlanFromHandoff(
+  decision: { plan: PlanStep[] },
+  context: AgentContext,
+  specialistName: AgentName,
+): PlanStep[] | undefined {
+  if (specialistName !== "architect" || decision.plan.length > 0) return undefined;
+  const handoff = context.productContext.frontDeskHandoff as FrontDeskHandoff | undefined;
+  if (handoff?.intent !== "resume.generate_from_jd") return undefined;
+
+  const jdText = stringValue(handoff.extracted.jdText) ?? stringValue(context.productContext.requestJDText);
+  const jdId = stringValue(handoff.extracted.jdId);
+  if (!jdText && !jdId) return undefined;
+
+  return [{
+    id: "step-recovered-generate-resume-from-jd",
+    agentName: "architect",
+    toolName: "generate_resume_from_jd",
+    arguments: {
+      ...(jdText ? { jdText } : {}),
+      ...(jdId ? { jdId } : {}),
+      ...(handoff.extracted.targetRole ? { targetRole: handoff.extracted.targetRole } : {}),
+    },
+    summary: "Generate resume from JD after routing recovery.",
+  }];
 }
 
 function legacyGuardToolIds(toolName: string, args: Record<string, unknown>): ToolResult | undefined {

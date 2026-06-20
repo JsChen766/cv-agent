@@ -29,14 +29,17 @@ export function normalizeFrontDeskHandoff(input: HandoffNormalizeInput): {
   const now = new Date().toISOString();
   const parsed = FrontDeskHandoffSchema.safeParse(input.raw);
   if (parsed.success) {
+    const normalized = enrichHandoffWithUpload(input, {
+      ...parsed.data,
+      sessionId: parsed.data.sessionId || input.sessionId,
+      turnId: parsed.data.turnId || input.turnId,
+      createdAt: parsed.data.createdAt || now,
+    });
+    const reconciled = reconcileParsedHandoffWithTextSignals(input, normalized);
     return {
-      handoff: enrichHandoffWithUpload(input, {
-        ...parsed.data,
-        sessionId: parsed.data.sessionId || input.sessionId,
-        turnId: parsed.data.turnId || input.turnId,
-        createdAt: parsed.data.createdAt || now,
-      }),
-      repaired: false,
+      handoff: reconciled.handoff,
+      repaired: reconciled.repaired,
+      reason: reconciled.reason,
     };
   }
 
@@ -56,11 +59,14 @@ function inferFallback(input: HandoffNormalizeInput, now: string): FrontDeskHand
   const rawExtracted = isRecord(raw?.extracted) ? raw.extracted : {};
   const rawConstraints = isRecord(raw?.constraints) ? raw.constraints : undefined;
   const intentFromRaw = asIntent(raw?.intent);
-  const intent = intentFromRaw ?? textSignals.intent;
-  const routeTo = asRoute(raw?.routeTo as string | undefined)
-    ?? explicitRoute
-    ?? defaultRouteForIntent(intent)
-    ?? textSignals.routeTo;
+  const promotedByTextSignals = shouldPromoteIntent(intentFromRaw, textSignals.intent);
+  const intent = promotedByTextSignals ? textSignals.intent : (intentFromRaw ?? textSignals.intent);
+  const routeTo = promotedByTextSignals
+    ? (defaultRouteForIntent(intent) ?? textSignals.routeTo)
+    : (asRoute(raw?.routeTo as string | undefined)
+      ?? explicitRoute
+      ?? defaultRouteForIntent(intent)
+      ?? textSignals.routeTo);
   const active = input.clientState ?? {};
   const workspaceActive = input.workspace?.active;
 
@@ -95,23 +101,82 @@ function inferFallback(input: HandoffNormalizeInput, now: string): FrontDeskHand
       keywords: stringArray(rawExtracted.keywords) ?? textSignals.keywords,
     },
     missingInputs: stringArray(raw?.missingInputs) ?? input.missingInputs,
-    suggestedActions: suggestedActions(raw?.suggestedActions) ?? textSignals.suggestedActions,
-    next: asNext(raw?.next) ?? textSignals.next,
+    suggestedActions: promotedByTextSignals
+      ? textSignals.suggestedActions
+      : (suggestedActions(raw?.suggestedActions) ?? textSignals.suggestedActions),
+    next: promotedByTextSignals
+      ? textSignals.next
+      : (asNext(raw?.next) ?? textSignals.next),
     createdAt: now,
     raw,
   };
 
-  if (input.responseType === "final") {
+  if (input.responseType === "final" && textSignals.intent === "general.chat") {
     handoff.intent = "general.chat";
     handoff.routeTo = "frontdesk";
     handoff.next = "answer_directly";
   }
-  if (input.responseType === "ask_clarification") {
+  if (input.responseType === "ask_clarification" && textSignals.intent === "general.chat") {
     handoff.intent = "clarify";
     handoff.next = "ask_clarification";
     handoff.missingInputs = handoff.missingInputs?.length ? handoff.missingInputs : ["intent"];
   }
   return handoff;
+}
+
+function reconcileParsedHandoffWithTextSignals(
+  input: HandoffNormalizeInput,
+  handoff: FrontDeskHandoff,
+): { handoff: FrontDeskHandoff; repaired: boolean; reason?: string } {
+  const textSignals = classifyMessage(input.userMessage.trim());
+  if (!shouldPromoteParsedHandoff(handoff, textSignals.intent)) {
+    return { handoff, repaired: false };
+  }
+
+  const active = input.clientState ?? {};
+  const workspaceActive = input.workspace?.active;
+  return {
+    handoff: {
+      ...handoff,
+      intent: textSignals.intent,
+      routeTo: textSignals.routeTo,
+      confidence: Math.max(handoff.confidence, textSignals.confidence),
+      goal: handoff.goal ?? textSignals.goal,
+      outputType: handoff.outputType ?? textSignals.outputType,
+      constraints: handoff.constraints ?? textSignals.constraints,
+      extracted: {
+        ...handoff.extracted,
+        jdText: handoff.extracted.jdText ?? textSignals.jdText,
+        experienceText: handoff.extracted.experienceText ?? textSignals.experienceText,
+        resumeText: handoff.extracted.resumeText ?? textSignals.resumeText,
+        jdId: handoff.extracted.jdId ?? active.activeJDId ?? input.workspace?.jdId ?? workspaceActive?.jdId,
+        experienceId: handoff.extracted.experienceId ?? active.activeExperienceId ?? workspaceActive?.experienceId,
+        experienceQuery: handoff.extracted.experienceQuery ?? textSignals.experienceQuery,
+        resumeId: handoff.extracted.resumeId ?? active.activeResumeId ?? input.workspace?.resumeId ?? workspaceActive?.resumeId,
+        resumeItemId: handoff.extracted.resumeItemId ?? active.activeResumeItemId ?? workspaceActive?.resumeItemId,
+        variantId: handoff.extracted.variantId ?? active.activeVariantId ?? input.workspace?.activeVariantId ?? workspaceActive?.variantId,
+        targetRole: handoff.extracted.targetRole ?? textSignals.targetRole,
+        company: handoff.extracted.company ?? textSignals.company,
+        title: handoff.extracted.title ?? textSignals.title,
+        keywords: handoff.extracted.keywords ?? textSignals.keywords,
+      },
+      suggestedActions: textSignals.suggestedActions ?? handoff.suggestedActions,
+      next: textSignals.next,
+    },
+    repaired: true,
+    reason: "text_signal_route_override",
+  };
+}
+
+function shouldPromoteParsedHandoff(handoff: FrontDeskHandoff, textIntent: FrontDeskIntent): boolean {
+  return shouldPromoteIntent(handoff.intent, textIntent);
+}
+
+function shouldPromoteIntent(rawIntent: FrontDeskIntent | undefined, textIntent: FrontDeskIntent): boolean {
+  if (!rawIntent || rawIntent === textIntent || textIntent === "general.chat") return false;
+  if (rawIntent === "general.chat" || rawIntent === "clarify") return true;
+  return rawIntent === "jd.intake"
+    && (textIntent === "resume.generate_from_jd" || textIntent === "experience.match_against_jd");
 }
 
 function enrichHandoffWithUpload(input: HandoffNormalizeInput, handoff: FrontDeskHandoff): FrontDeskHandoff {

@@ -21,6 +21,12 @@ Requirements:
 - 5+ years frontend engineering experience.
 - Strong ownership of complex user-facing systems.`;
 
+const CN_GENERATE_JD_TEXT = `我要生成简历：岗位职责：
+1.负责核心教学平台全栈开发：独立完成前端、后端、数据库全链路开发；2.负责系统部署与运维：使用Docker部署应用，监控系统性能并优化。
+任职要求：
+岗位要求
+1.本科及以上学历，计算机相关专业；2.熟练掌握Vue/React前端框架及至少一门后端语言(Node.js/Python/Java/Go);3.精通MySQL/PostgreSQL数据库设计与SQL优化；4.熟练使用Docker进行容器化部署，掌握Linux常用命令与Nginx配置。`;
+
 describe("FrontDeskHandoff and DraftContext", () => {
   it("normalizes ordinary chat, JD text, and experience rewrite intents", () => {
     const chat = normalizeFrontDeskHandoff({
@@ -209,6 +215,21 @@ describe("/copilot chat kernel refactor flows", () => {
     await kernel.close();
   });
 
+  it("routes explicit JD generation even when the frontdesk model wrongly returns final chat", async () => {
+    const kernel = await createP12Kernel();
+    kernel.frontDeskModelClient = new ModelClient({ provider: new FinalChatMisrouteProvider(), defaultModel: "misroute-test" });
+    const orchestrator = new AgentOrchestrator({ kernel });
+    const ctx = createTestKernelContext({ user: { id: "user-1" }, request: { requestId: "req-1", traceId: "trace-1" } });
+
+    const generated = await orchestrator.handleChat(ctx, { message: CN_GENERATE_JD_TEXT });
+
+    expect(generated.workspace.handoffs?.at(-1)?.intent).toBe("resume.generate_from_jd");
+    expect(generated.workspace.handoffs?.at(-1)?.routeTo).toBe("architect");
+    expect(generated.raw.pendingActions?.[0]).toMatchObject({ toolName: "generate_resume_from_jd" });
+    expect(generated.raw.actionResults?.[0]?.status).toBe("needs_confirmation");
+    await kernel.close();
+  });
+
   it("hydrates current experience rewrite from activeExperienceId", async () => {
     const kernel = await createP12Kernel();
     kernel.frontDeskModelClient = new ModelClient({ provider: new KernelRefactorProvider(), defaultModel: "kernel-refactor-test" });
@@ -230,6 +251,39 @@ describe("/copilot chat kernel refactor flows", () => {
     await kernel.close();
   });
 });
+
+class FinalChatMisrouteProvider implements LLMProvider {
+  public readonly name = "misroute-test";
+
+  public async chat(request: LLMChatRequest): Promise<LLMChatResponse> {
+    const agentName = request.metadata?.agentName;
+    const payload = readPayload(request);
+    const message = String(payload.userMessage ?? "");
+    if (agentName === "agent-core:frontdesk") {
+      return json({
+        agentName: "frontdesk",
+        responseType: "final",
+        routeTo: "frontdesk",
+        assistantMessage: "我是你的求职经历 Copilot，可以帮你整理经历、分析 JD、生成和修改简历。",
+        plan: [],
+        missingInputs: [],
+        confidence: 0.8,
+        handoff: { intent: "general.chat", routeTo: "frontdesk", extracted: {}, next: "answer_directly" },
+      });
+    }
+    if (agentName === "agent-core:architect") {
+      return json({
+        agentName: "architect",
+        responseType: "ask_clarification",
+        assistantMessage: "我来处理你的请求。",
+        plan: [],
+        missingInputs: [],
+        confidence: 0.4,
+      });
+    }
+    return json(plan("strategist", "analyze_jd", { text: message }, "Analyze JD."));
+  }
+}
 
 class KernelRefactorProvider implements LLMProvider {
   public readonly name = "kernel-refactor-test";

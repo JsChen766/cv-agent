@@ -14,6 +14,12 @@ Company: Example Tech
 - 5+ years frontend engineering experience.
 - Strong ownership of complex user-facing systems.`;
 
+const CN_GENERATE_JD_TEXT = `我要生成简历：岗位职责：
+1.负责核心教学平台全栈开发：独立完成前端、后端、数据库全链路开发；2.负责系统部署与运维：使用Docker部署应用，监控系统性能并优化。
+任职要求：
+岗位要求
+1.本科及以上学历，计算机相关专业；2.熟练掌握Vue/React前端框架及至少一门后端语言(Node.js/Python/Java/Go);3.精通MySQL/PostgreSQL数据库设计与SQL优化；4.熟练使用Docker进行容器化部署，掌握Linux常用命令与Nginx配置。`;
+
 function bare(message: string, opts: { sessionId?: string; turnId?: string } = {}) {
   return normalizeFrontDeskHandoff({
     raw: undefined,
@@ -99,6 +105,47 @@ describe("Phase 1 — FrontDeskIntentSchema additive enums", () => {
       createdAt: now,
     });
     expect(parsed.success).toBe(true);
+  });
+
+  it("promotes an invalid raw final/general handoff when text clearly asks to generate from a pasted JD", () => {
+    const result = normalizeFrontDeskHandoff({
+      raw: { intent: "general.chat", routeTo: "frontdesk", extracted: {}, next: "answer_directly" },
+      sessionId: "cs-1",
+      turnId: "ct-1",
+      userMessage: CN_GENERATE_JD_TEXT,
+      routeTo: "frontdesk",
+      responseType: "final",
+    });
+    expect(result.handoff.intent).toBe("resume.generate_from_jd");
+    expect(result.handoff.routeTo).toBe("architect");
+    expect(result.handoff.next).toBe("execute_task");
+    expect(result.handoff.extracted.jdText).toContain("岗位职责");
+  });
+
+  it("promotes a valid jd.intake handoff when the pasted JD request explicitly says generate resume", () => {
+    const now = new Date().toISOString();
+    const result = normalizeFrontDeskHandoff({
+      raw: {
+        id: "handoff-1",
+        sessionId: "cs-1",
+        turnId: "ct-1",
+        intent: "jd.intake",
+        confidence: 0.9,
+        routeTo: "strategist",
+        extracted: { jdText: CN_GENERATE_JD_TEXT },
+        suggestedActions: ["save_jd", "analyze_jd", "generate_resume"],
+        next: "handoff",
+        createdAt: now,
+      },
+      sessionId: "cs-1",
+      turnId: "ct-1",
+      userMessage: CN_GENERATE_JD_TEXT,
+    });
+    expect(result.repaired).toBe(true);
+    expect(result.reason).toBe("text_signal_route_override");
+    expect(result.handoff.intent).toBe("resume.generate_from_jd");
+    expect(result.handoff.routeTo).toBe("architect");
+    expect(result.handoff.extracted.jdText).toContain("岗位职责");
   });
 });
 
