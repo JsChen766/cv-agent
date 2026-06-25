@@ -138,6 +138,11 @@ describe("Phase 1 structured tool results — export & match tools", () => {
       // Legacy contract preserved
       expect(result.actionResult?.actionType).toBe("match_experiences_against_jd");
       expect(result.workspacePatch?.activePanel).toBe("jd_matching");
+      const data = result.data as { jdAnalysis?: unknown } | undefined;
+      expect(data?.jdAnalysis).toMatchObject({
+        hardRequirements: expect.any(Array),
+        responsibilities: expect.any(Array),
+      });
       // Phase 1 structured fields (success path → match_completed)
       expect(result.resultKind).toBe("match_completed");
       expect(result.summaryFacts?.length).toBeGreaterThan(0);

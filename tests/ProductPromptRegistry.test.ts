@@ -296,7 +296,9 @@ describe("JD match prompt in PromptRegistry", () => {
 
     const prompt = registry.get("tools.experience.jdMatch.system");
 
-    expect(prompt).toContain("You are a resume-to-JD matching assistant.");
+    expect(prompt).toContain("senior recruiting analyst and resume-to-JD matching assistant");
+    expect(prompt).toContain("using evidence, not keyword coincidence");
+    expect(prompt).toContain("A matched requirement is valid ONLY");
     expect(prompt).toContain("experienceIndex");
     expect(prompt).toContain("matchScore: 0.0-1.0");
     expect(prompt).toContain("matchLevel: \"high\" | \"medium\" | \"low\"");

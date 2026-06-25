@@ -37,6 +37,16 @@ type MatchTopResults = {
   low: MatchResult[];
 };
 
+type JDAnalysis = {
+  targetRole?: string;
+  responsibilities: string[];
+  hardRequirements: string[];
+  softRequirements: string[];
+  niceToHave: string[];
+  domainSignals: string[];
+  negativeSignals: string[];
+};
+
 // ── Thresholds ─────────────────────────────────────────────────
 const HIGH_THRESHOLD = 0.75;
 const MEDIUM_THRESHOLD = 0.45;
@@ -79,6 +89,7 @@ export function matchExperiencesAgainstJDTool(): ToolDefinition {
           },
         };
       }
+      const jdAnalysis = analyzeJD(targetText);
 
       // List experiences
       const experiences = await context.kernel.productServices.experienceService.listExperiences(
@@ -98,7 +109,7 @@ export function matchExperiencesAgainstJDTool(): ToolDefinition {
       let matches: MatchResult[] | null = null;
       if (modelClient) {
         try {
-          matches = await llmBatchMatch(modelClient, enriched, targetText);
+          matches = await llmBatchMatch(modelClient, enriched, targetText, jdAnalysis);
         } catch {
           llmFailed = true;
         }
@@ -107,7 +118,7 @@ export function matchExperiencesAgainstJDTool(): ToolDefinition {
           llmFailed = true;
         }
         if (!llmFailed && matches && matches.length > 0) {
-          return buildSuccessResponse(matches, enriched.length, jd?.id ?? jdId, targetText, "llm");
+          return buildSuccessResponse(matches, enriched.length, jd?.id ?? jdId, targetText, "llm", jdAnalysis);
         }
         // LLM produced nothing useful — fall through to keyword if allowed
         if (!isDeterministicFallbackAllowed()) {
@@ -121,7 +132,7 @@ export function matchExperiencesAgainstJDTool(): ToolDefinition {
 
       // ── Fallback: keyword-based matching ──────────────────
       const kwMatches = keywordBatchMatch(enriched, targetText);
-      return buildSuccessResponse(kwMatches, enriched.length, jd?.id ?? jdId, targetText, "keyword");
+      return buildSuccessResponse(kwMatches, enriched.length, jd?.id ?? jdId, targetText, "keyword", jdAnalysis);
     },
   };
 }
@@ -202,6 +213,7 @@ async function llmBatchMatch(
   modelClient: import("../../agent-core/model/ModelClient.js").ModelClient,
   experiences: EnrichedExperience[],
   jdText: string,
+  jdAnalysis: JDAnalysis,
 ): Promise<MatchResult[]> {
   // Build rich experience summaries including content
   const expList = experiences.slice(0, 20).map((exp, i) => {
@@ -211,8 +223,12 @@ async function llmBatchMatch(
     if (exp.role) parts.push(` as ${exp.role}`);
     if (exp.category) parts.push(` (${exp.category})`);
     if (exp.tags.length > 0) parts.push(` tags: ${exp.tags.join(", ")}`);
-    // Include content preview for LLM to match against
-    const contentPreview = exp.content.slice(0, 400);
+    const structured = compactStructuredExperience(exp.structured);
+    if (structured.techStack.length > 0) parts.push(` techStack: ${structured.techStack.join(", ")}`);
+    if (structured.metrics.length > 0) parts.push(` metrics: ${structured.metrics.join("; ")}`);
+    if (structured.highlights.length > 0) parts.push(` highlights: ${structured.highlights.join(" | ")}`);
+    // Include enough original content for evidence quotes without flooding the prompt.
+    const contentPreview = exp.content.slice(0, 650);
     if (contentPreview) parts.push(` content: ${contentPreview}`);
     return parts.join("\n");
   }).join("\n\n");
@@ -223,6 +239,9 @@ async function llmBatchMatch(
   const userPrompt = [
     "JD:",
     jdText.slice(0, 4000),
+    "",
+    "Structured JD analysis (use this to calibrate scoring; if it conflicts with the raw JD, trust the raw JD):",
+    JSON.stringify(jdAnalysis, null, 2),
     "",
     "Experiences (with content):",
     expList || "No experiences available.",
@@ -236,7 +255,7 @@ async function llmBatchMatch(
       { role: "user", content: userPrompt },
     ],
     temperature: 0.2,
-    maxTokens: 4096,
+    maxTokens: 6000,
     responseFormat: "json",
   };
   const response = await modelClient.chat(chatRequest);
@@ -248,7 +267,8 @@ async function llmBatchMatch(
     const idx = typeof item.experienceIndex === "number" ? item.experienceIndex - 1 : i;
     const exp = experiences[idx] ?? experiences[i];
     const score = typeof item.matchScore === "number" ? clampScore(item.matchScore) : 0;
-    return {
+    const matchedRequirements = sanitizeMatchedRequirements(stringArray(item.matchedRequirements), exp);
+    const match: MatchResult = {
       experienceId: exp?.id ?? `unknown-${i}`,
       title: exp?.title ?? "Unknown",
       category: exp?.category,
@@ -259,13 +279,14 @@ async function llmBatchMatch(
       matchLevel: (typeof item.matchLevel === "string" && ["high", "medium", "low"].includes(item.matchLevel as string))
         ? (item.matchLevel as "high" | "medium" | "low")
         : classifyLevel(score),
-      matchedRequirements: stringArray(item.matchedRequirements),
+      matchedRequirements,
       missingRequirements: stringArray(item.missingRequirements),
       evidenceFromExperience: stringArray(item.evidenceFromExperience),
       reason: typeof item.reason === "string" ? item.reason : buildDefaultReason(score),
       suggestedUsage: typeof item.suggestedUsage === "string" ? item.suggestedUsage : "可用于简历中相关经历部分。",
       rewriteSuggestion: typeof item.rewriteSuggestion === "string" ? item.rewriteSuggestion : "",
     };
+    return calibrateMatch(match, exp, jdAnalysis);
   });
 }
 
@@ -336,6 +357,7 @@ function buildSuccessResponse(
   jdId: string | undefined,
   jdText: string,
   matchMethod: string,
+  jdAnalysis: JDAnalysis,
 ) {
   // Sort by score descending
   const sorted = [...matches].sort((a, b) => b.matchScore - a.matchScore);
@@ -396,6 +418,7 @@ function buildSuccessResponse(
   const summaryFacts: string[] = [
     `Matched ${totalExperienceCount} experience(s) against JD.`,
     `High: ${high.length}, medium: ${medium.length}, low: ${low.length}.`,
+    `JD hard requirements: ${jdAnalysis.hardRequirements.length}; responsibilities: ${jdAnalysis.responsibilities.length}.`,
     `Match method: ${matchMethod}.`,
   ];
   const warnings: string[] = [];
@@ -432,6 +455,7 @@ function buildSuccessResponse(
       transientJD: !jdId,
       jdText: jdText.slice(0, 8000),
       jdSummary,
+      jdAnalysis,
       summary,
       highMatches: high.length,
       mediumMatches: medium.length,
@@ -505,6 +529,190 @@ function emptyResult(jdId: string | undefined) {
 }
 
 // ── Helpers ────────────────────────────────────────────────────
+
+function analyzeJD(jdText: string): JDAnalysis {
+  const lines = jdText
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  const clauses = lines
+    .flatMap((line) => line.split(/[。；;.!?？]/))
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+  const targetLine = lines.find((line) => /岗位|职位|role|position/i.test(line)) ?? lines[0];
+  const targetRole = targetLine?.replace(/^(岗位|职位|role|position)[:：]\s*/i, "").trim();
+  const hardRequirements = pickClauses(clauses, [
+    /需要|要求|熟练|掌握|使用|具备|经验|SQL|Python|Spark|Hadoop|Power BI|Tableau|机器学习|数据工程|模型|算法|BI/i,
+  ]);
+  const responsibilities = pickClauses(clauses, [
+    /负责|支持|完成|搭建|构建|分析|协助|参与|沉淀|跟进|复盘|处理|评估|维护|接待|执行/i,
+  ]);
+  const softRequirements = pickClauses(clauses, [
+    /沟通|协作|客户|服务|审美|文档|表达|团队|业务|跨部门|关系维护|适应/i,
+  ]);
+  const niceToHave = pickClauses(clauses, [/加分|优先|plus|preferred|nice/i]);
+  const negativeSignals = pickClauses(clauses, [/不涉及|不要求|无需|不需要|not required|not involve/i]);
+  const domainSignals = extractDomainSignals(jdText);
+  return {
+    ...(targetRole ? { targetRole } : {}),
+    responsibilities,
+    hardRequirements,
+    softRequirements,
+    niceToHave,
+    domainSignals,
+    negativeSignals,
+  };
+}
+
+function pickClauses(clauses: string[], patterns: RegExp[]): string[] {
+  const picked = clauses.filter((clause) => patterns.some((pattern) => pattern.test(clause)));
+  return uniqueStrings(picked).slice(0, 10);
+}
+
+function extractDomainSignals(text: string): string[] {
+  const knownSignals = [
+    "金融科技",
+    "交易",
+    "用户增长",
+    "活动运营",
+    "数据分析",
+    "商业智能",
+    "机器学习",
+    "数据工程",
+    "语料库",
+    "传感器",
+    "多模态",
+    "医疗",
+    "智能座舱",
+    "建筑监测",
+    "零售",
+    "奢侈品",
+    "门店运营",
+    "品牌活动",
+  ];
+  return knownSignals.filter((signal) => text.includes(signal)).slice(0, 12);
+}
+
+function compactStructuredExperience(structured: Record<string, unknown> | undefined): {
+  techStack: string[];
+  highlights: string[];
+  metrics: string[];
+} {
+  if (!structured) return { techStack: [], highlights: [], metrics: [] };
+  const techStack = stringList(structured.techStack).slice(0, 10);
+  const highlights = stringList(structured.highlights).slice(0, 5).map((item) => item.slice(0, 150));
+  const metrics = Array.isArray(structured.metrics)
+    ? structured.metrics.flatMap((item) => {
+        if (!isRecord(item)) return [];
+        const name = typeof item.name === "string" ? item.name.trim() : "";
+        const value = typeof item.value === "string" || typeof item.value === "number" ? String(item.value).trim() : "";
+        const context = typeof item.context === "string" ? item.context.trim() : "";
+        const text = [name, value, context].filter(Boolean).join(": ");
+        return text ? [text.slice(0, 140)] : [];
+      }).slice(0, 8)
+    : [];
+  return { techStack, highlights, metrics };
+}
+
+function sanitizeMatchedRequirements(requirements: string[], exp: EnrichedExperience | undefined): string[] {
+  if (!exp) return requirements;
+  const expText = [
+    exp.title,
+    exp.organization ?? "",
+    exp.role ?? "",
+    exp.content,
+    ...exp.tags,
+    ...stringList(exp.structured?.techStack),
+    ...stringList(exp.structured?.highlights),
+  ].join(" ").toLowerCase();
+  return requirements.flatMap((requirement) => {
+    const techTerms = extractTechTerms(requirement);
+    if (techTerms.length === 0) return [requirement];
+    const supported = techTerms.filter((term) => expText.includes(term.toLowerCase()));
+    if (supported.length === 0) return [];
+    if (supported.length === techTerms.length) return [requirement];
+    const cleaned = supported.join(" / ");
+    return cleaned ? [cleaned] : [];
+  });
+}
+
+function extractTechTerms(text: string): string[] {
+  const terms = [
+    "SQL",
+    "Python",
+    "Spark",
+    "Hadoop",
+    "Power BI",
+    "Datawind",
+    "Tableau",
+    "Scala",
+    "Java",
+    "NodeJs",
+    "R",
+  ];
+  return terms.filter((term) => new RegExp(`(^|[^A-Za-z0-9])${escapeRegex(term)}([^A-Za-z0-9]|$)`, "i").test(text));
+}
+
+function escapeRegex(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function calibrateMatch(match: MatchResult, exp: EnrichedExperience | undefined, jdAnalysis: JDAnalysis): MatchResult {
+  let score = match.matchScore;
+  const evidenceCount = match.evidenceFromExperience.filter((item) => item.trim().length > 0).length;
+  const matchedCount = match.matchedRequirements.length;
+  const missingCount = match.missingRequirements.length;
+  if (evidenceCount === 0 && score >= MEDIUM_THRESHOLD) score = Math.min(score, 0.44);
+  if (matchedCount === 0 && score >= MEDIUM_THRESHOLD) score = Math.min(score, 0.44);
+  if ((exp?.category === "skill" || exp?.category === "education" || exp?.category === "award") && score >= HIGH_THRESHOLD) {
+    score = Math.min(score, 0.74);
+  }
+  if (score > 0.88 && missingCount >= 3 && missingCount >= matchedCount) {
+    score = 0.84;
+  }
+  if (score <= 0.6 && score >= MEDIUM_THRESHOLD && isCrossDomainWeakMatch(exp, jdAnalysis)) {
+    score = 0.44;
+  }
+  const calibrated = clampScore(score);
+  return {
+    ...match,
+    matchScore: calibrated,
+    matchLevel: classifyLevel(calibrated),
+  };
+}
+
+function isCrossDomainWeakMatch(exp: EnrichedExperience | undefined, jdAnalysis: JDAnalysis): boolean {
+  if (!exp || jdAnalysis.domainSignals.length === 0) return false;
+  const expText = [
+    exp.title,
+    exp.organization ?? "",
+    exp.role ?? "",
+    exp.category ?? "",
+    exp.content.slice(0, 1200),
+    ...stringList(exp.structured?.techStack),
+    ...stringList(exp.structured?.highlights),
+  ].join(" ");
+  const directOverlap = jdAnalysis.domainSignals.some((signal) => expText.includes(signal));
+  if (directOverlap) return false;
+  const hasExplicitExclusion = jdAnalysis.negativeSignals.length > 0;
+  const softOnly = jdAnalysis.softRequirements.length > 0
+    && jdAnalysis.hardRequirements.length > 0
+    && exp.category !== "work";
+  return hasExplicitExclusion || softOnly;
+}
+
+function stringList(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter((item): item is string => typeof item === "string" && item.trim().length > 0).map((item) => item.trim());
+}
+
+function uniqueStrings(values: string[]): string[] {
+  return Array.from(new Set(values.map((value) => value.trim()).filter(Boolean)));
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
 
 function formatDateRange(startDate?: string, endDate?: string): string | undefined {
   const start = typeof startDate === "string" ? startDate.trim() : "";
