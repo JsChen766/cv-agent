@@ -179,7 +179,9 @@ describe("Generation prompts in PromptRegistry", () => {
     const repairPrompt = registry.get("product.generation.resumeRepair");
 
     // System prompt contains key instructions
-    expect(systemPrompt).toContain("You are a professional resume writer.");
+    expect(systemPrompt).toContain("senior resume content strategist and professional resume writer");
+    expect(systemPrompt).toContain("QUALITY BAR");
+    expect(systemPrompt).toContain("Never write placeholders");
     expect(systemPrompt).toContain("ONLY use facts, metrics, and experiences that are present");
     expect(systemPrompt).toContain("sourceExperienceIds");
     expect(systemPrompt).toContain("evidenceSummary");

@@ -1025,19 +1025,22 @@ export class GenerationProductService {
       ? this.preferenceBankService.applyToEvidencePack(baseEvidencePack, personalizationPack)
       : baseEvidencePack;
 
+    const allActiveExperiences = await this.experienceService.listExperiences(input.userId, {
+      limit: 100,
+      status: "active",
+    });
+    const experiences = evidencePack
+      ? buildResumeSourceExperienceSet(allActiveExperiences, evidencePack).slice(0, 14)
+      : allActiveExperiences.slice(0, 10);
+
+    const evidencePackForGeneration = evidencePack
+      ? enrichEvidencePackWithSourceExperienceFacts(evidencePack, experiences)
+      : undefined;
+
     const groundingContext = this.groundingCoordinator.build({
       instructionPack,
-      evidencePack,
+      evidencePack: evidencePackForGeneration,
     });
-
-    const experiences = evidencePack
-      ? await this.experienceService
-          .listExperiences(input.userId, { limit: 100, status: "active" })
-          .then((items) => filterExperiencesByEvidencePack(items, evidencePack).slice(0, 12))
-      : await this.experienceService.listExperiences(input.userId, {
-          limit: 10,
-          status: "active",
-        });
 
     let variants: ProductGeneratedVariant[];
     let recommendedVariantId: string | undefined;
@@ -1045,12 +1048,13 @@ export class GenerationProductService {
 
     if (this.llmGenerationService) {
       try {
-        const llmResult = evidencePack || instructionPack
+        const llmResult = evidencePackForGeneration || instructionPack
           ? await this.llmGenerationService.generateVariantsWithGroundingContext({
               userId: input.userId,
               jdText: jd.rawText,
               targetRole,
-              evidencePack,
+              evidencePack: evidencePackForGeneration,
+              sourceExperiences: experiences,
               instructionPack,
               groundingContext,
               personalizationPack,
@@ -1066,8 +1070,8 @@ export class GenerationProductService {
         recommendedVariantId = llmResult.recommendedVariantId;
         comparisonMatrix = llmResult.comparisonMatrix;
 
-        if (evidencePack && this.evidenceRAGService) {
-          variants = this.evidenceRAGService.verifyGeneratedVariants(variants, evidencePack);
+        if (evidencePackForGeneration && this.evidenceRAGService) {
+          variants = this.evidenceRAGService.verifyGeneratedVariants(variants, evidencePackForGeneration);
         }
       } catch (error) {
         throw generationFailureError(error);
@@ -1084,8 +1088,8 @@ export class GenerationProductService {
       );
     } else {
       variants = buildDraftVariants(input.userId, jd.rawText, targetRole, experiences);
-      if (evidencePack && this.evidenceRAGService) {
-        variants = this.evidenceRAGService.verifyGeneratedVariants(variants, evidencePack);
+      if (evidencePackForGeneration && this.evidenceRAGService) {
+        variants = this.evidenceRAGService.verifyGeneratedVariants(variants, evidencePackForGeneration);
       }
     }
 
@@ -1100,7 +1104,7 @@ export class GenerationProductService {
         targetRole,
         sourceExperienceIds: experiences.map((item) => item.id),
         ...(instructionPack ? { instructionPack } : {}),
-        ...(evidencePack ? { evidencePack } : {}),
+        ...(evidencePackForGeneration ? { evidencePack: evidencePackForGeneration } : {}),
         ...(personalizationPack ? { personalizationPack } : {}),
         groundingContext,
       },
@@ -1115,14 +1119,14 @@ export class GenerationProductService {
 
     await this.repository.createGeneration(generation);
 
-    if (this.evidenceRAGService && evidencePack) {
+    if (this.evidenceRAGService && evidencePackForGeneration) {
       await this.evidenceRAGService.recordGenerationUsage({
         userId: input.userId,
         generationId: generation.id,
         jdId: jd.id,
         targetRole,
         roleFamily: instructionPack?.roleFamily,
-        evidencePack,
+        evidencePack: evidencePackForGeneration,
         variants,
       });
     }
@@ -1389,6 +1393,29 @@ function filterExperiencesByEvidencePack<T extends ProductExperienceSummary>(
     );
 }
 
+function buildResumeSourceExperienceSet<T extends ProductExperienceSummary>(
+  experiences: T[],
+  evidencePack: EvidencePack,
+): T[] {
+  const relevant = filterExperiencesByEvidencePack(experiences, evidencePack);
+  const foundation = experiences
+    .filter((item) => item.category === "education" || item.category === "skill" || item.category === "award")
+    .sort((a, b) => foundationCategoryRank(a.category) - foundationCategoryRank(b.category)
+      || a.createdAt.localeCompare(b.createdAt));
+  const merged = new Map<string, T>();
+  for (const item of [...foundation, ...relevant]) {
+    if (!merged.has(item.id)) merged.set(item.id, item);
+  }
+  return [...merged.values()];
+}
+
+function foundationCategoryRank(category: ProductExperienceSummary["category"]): number {
+  if (category === "education") return 0;
+  if (category === "skill") return 1;
+  if (category === "award") return 2;
+  return 3;
+}
+
 function buildExperienceRecords(userId: string, input: {
   title: string;
   category?: ProductExperienceCategory;
@@ -1562,6 +1589,55 @@ function formatExperienceLine(item: ProductExperienceSummary): string {
     context ? `（${context}）` : "",
     content ? `：${content}` : "：可作为候选素材，建议补充具体成果和指标。",
   ].join("");
+}
+
+function enrichEvidencePackWithSourceExperienceFacts(
+  evidencePack: EvidencePack,
+  experiences: ProductExperienceSummary[],
+): EvidencePack {
+  if (experiences.length === 0) return evidencePack;
+  const existingClaimIds = new Set(
+    evidencePack.allowedClaims.map((claim) => claim.claimId ?? claim.id),
+  );
+  const sourceClaims: EvidencePack["allowedClaims"] = [];
+  for (const exp of experiences.slice(0, 12)) {
+    const claimId = `source-card-${exp.id}`;
+    if (existingClaimIds.has(claimId)) continue;
+    const parts = [
+      exp.title,
+      exp.organization,
+      exp.role,
+      formatResumeDateRange(exp.startDate, exp.endDate),
+      exp.category,
+    ].filter((item): item is string => Boolean(item && item.trim()));
+    const metadataClaim = `Source resume fact: ${parts.join(" | ")}`;
+    sourceClaims.push({
+      id: claimId,
+      claimId,
+      claim: metadataClaim,
+      requirementIds: ["source-experience-metadata"],
+      experienceId: exp.id,
+      revisionId: exp.currentRevisionId,
+      evidenceText: [
+        metadataClaim,
+        exp.content ? exp.content.replace(/\s+/g, " ").trim().slice(0, 500) : "",
+      ].filter(Boolean).join(" — "),
+      confidence: 0.99,
+      riskLevel: "low",
+    });
+  }
+  if (sourceClaims.length === 0) return evidencePack;
+  return {
+    ...evidencePack,
+    allowedClaims: [...sourceClaims, ...evidencePack.allowedClaims].slice(0, 72),
+  };
+}
+
+function formatResumeDateRange(startDate?: string, endDate?: string): string | undefined {
+  const start = startDate?.trim();
+  const end = endDate?.trim();
+  if (!start && !end) return undefined;
+  return `${start || "?"} - ${end || "present"}`;
 }
 
 function optional(value: string | undefined): string | undefined {

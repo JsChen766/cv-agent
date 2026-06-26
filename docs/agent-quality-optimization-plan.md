@@ -92,6 +92,34 @@
 - 人工严格判定：简历是否有明确定位；每条 bullet 是否像可投递简历；是否有无证据夸大；整体是否接近参考 PDF 的专业度。
 - 若只是“能生成”但不像好简历，不进入阶段三。
 
+## 阶段二完成记录（2026-06-26）
+
+本阶段已完成第一轮简历内容生成能力优化，并通过本机真实 Docker 后端与真实 LLM 调用验收。测试使用 `scripts/phase2-resume-generation-smoke.ts`，链路覆盖 `/copilot/chat`、`/copilot/actions`、`/copilot/pending-actions/:id/confirm`、`/jobs/:id`、`/product/generations/:id`、`/product/resumes/:id`，用户为 `dev-user`。详细报告保存在 `docs/agent-quality-phase2-resume-generation-report-2026-06-26.md`。
+
+基线问题：
+
+- 简历正文偏短，像松散总结，不像可投递的一页简历。
+- 部分结果出现“某公司/某大学”等占位式编造，且存在日期、机构细节不稳的问题。
+- RAG 已在链路中使用，但 generation 输入缺少足够权威的候选人 source cards，导致模型有时根据 JD 猜事实。
+- 生成内容没有稳定形成结构化简历条目，后续保存和 PDF 阶段可用性不足。
+
+已完成的 Agent 内部优化：
+
+- 升级 `generation-resume-system.md`，要求参考样例简历的信息密度、量化 bullet、真实学校/公司/日期、JD 偏向改写和无占位词输出。
+- 在 `LLMGenerationService` 中加入候选人 source cards，把经历标题、机构、角色、日期、分类、标签、结构化字段和正文摘要作为权威事实传给 LLM。
+- 调整 `GenerationProductService` 的素材选择：在 RAG 相关经历之外，固定带入教育、技能、奖项等基础素材，避免生成时缺少简历骨架。
+- 增加中文 RAG guideline，强化“动作 + 方法/技术 + 范围 + 量化结果”的简历表达标准。
+- 为内部 `resumeDocument` 增加 fallback 解析，使确认保存后的简历能拆成 education、skill、experience、project、award 等 item。
+- 改进 evidence sentence split，减少小数、日期、单位被切碎后造成的无效 unsupported claim。
+
+真实 LLM 验收结果：
+
+- `data_bi` 金融科技数据分析/BI JD：最终生成 `pgen-66867406-c9a1-478a-b94b-508275a74c0d`，正文约 710 字，7 条 bullet，9 个量化指标，0 个占位词；保存为 `pres-df6500a3-d222-485c-8dc0-99f0e1c987ae`，落成 7 个结构化 resume items。内容聚焦 WEEX SQL、Datawind/BI 看板、核心指标口径、交易/活跃/留存分析和 Wikipedia 大规模数据项目，符合 JD 偏向。
+- `ml_data` 机器学习数据工程 JD：最终生成 `pgen-9376c7c8-0420-41a0-a69f-d2267a3843b7`，正文约 929 字，10 条 bullet，14 个量化指标，0 个占位词；保存为 `pres-a3aa1f2a-4edb-43d4-afd6-77a51b358114`，落成 11 个结构化 resume items。内容突出语料清洗、标注质量、关键词库管理、Spark/Hadoop 大数据处理、传感器/流量数据项目和技术奖项。
+- `ai_product` AI 产品数据分析 JD：最终生成 `pgen-6235f59b-d3cf-4db2-ad49-47b44bb39af8`，正文约 908 字，11 条 bullet，22 个量化指标，0 个占位词；保存为 `pres-94655adf-0d96-4222-b6ac-18a3f9b4735a`，落成 7 个结构化 resume items。内容把 WEEX 数据分析、新华云 AI 文档/数据治理和 3D 艾灸项目要求分析组合成偏产品数据方向的履历。
+
+严格判断：阶段二达到进入阶段三的最低质量要求，满意度约 90%。最终结果已经明显接近参考简历的内容密度和量化表达，能根据不同 JD 做偏向性组织，未再出现明显占位编造。剩余问题主要是 `riskSummary` 对部分真实改写句仍偏保守，以及 PDF 版式/一页压缩尚未优化；这些不阻塞阶段三，但阶段三需要继续利用结构化 resume items 做最终成品质量控制。
+
 ## 阶段三：PDF 导出格式与最终成品
 
 目标：导出的 PDF 在内容与版式上都像可投递的一页简历，默认模板质量接近参考 PDF，不再只是“把文本塞进 PDF”。

@@ -283,6 +283,100 @@ function normalizeResumeDocument(raw: unknown): ResumeDocument | undefined {
   return parsed.data;
 }
 
+function inferResumeDocumentFromContent(
+  content: string,
+  sourceExperienceIds: string[],
+  sourceEvidenceIds: string[],
+): ResumeDocument | undefined {
+  const lines = content
+    .split(/\r?\n/)
+    .map((line) => line.trim().replace(/^\*\*(.+)\*\*$/, "$1"))
+    .filter(Boolean);
+  const sections: ResumeDocument["sections"] = [];
+  let current: ResumeDocument["sections"][number] | undefined;
+  let currentItem: ResumeDocument["sections"][number]["items"][number] | undefined;
+  let recognizedHeadingCount = 0;
+
+  const ensureSection = (title: string): ResumeDocument["sections"][number] => {
+    const type = sectionTypeFromTitle(title);
+    const section: ResumeDocument["sections"][number] = {
+      id: `sec-${sections.length + 1}`,
+      type,
+      title,
+      order: sections.length,
+      items: [],
+    };
+    sections.push(section);
+    current = section;
+    currentItem = undefined;
+    return section;
+  };
+
+  for (const line of lines) {
+    const heading = normalizeSectionHeading(line);
+    if (heading) {
+      recognizedHeadingCount += 1;
+      ensureSection(heading);
+      continue;
+    }
+    if (!current) ensureSection("其他");
+    const bullet = line.replace(/^[-*•]\s*/, "").trim();
+    if (/^[-*•]\s+/.test(line)) {
+      if (!currentItem) {
+        currentItem = makeResumeDocumentItem(current!, current!.title, sourceExperienceIds[0]);
+        current!.items.push(currentItem);
+      }
+      currentItem.bullets.push({
+        id: `b-${currentItem.bullets.length + 1}`,
+        text: bullet,
+        evidenceIds: sourceEvidenceIds.slice(0, 4),
+      });
+      continue;
+    }
+    currentItem = makeResumeDocumentItem(current!, line, sourceExperienceIds[current!.items.length] ?? sourceExperienceIds[0]);
+    current!.items.push(currentItem);
+  }
+
+  const usableSections = sections
+    .map((section) => ({
+      ...section,
+      items: section.items.filter((item) => item.title.trim() || item.bullets.length > 0),
+    }))
+    .filter((section) => section.items.length > 0);
+  if (usableSections.length === 0 || recognizedHeadingCount < 2) return undefined;
+  return { schemaVersion: 1, sections: usableSections };
+}
+
+function normalizeSectionHeading(line: string): string | undefined {
+  const normalized = line.replace(/[:：]$/, "").trim();
+  const headings = ["教育经历", "技能与兴趣", "技能", "实习经历", "工作经历", "项目经历", "荣誉奖项", "个人总结", "求职亮点"];
+  return headings.find((heading) => normalized === heading);
+}
+
+function sectionTypeFromTitle(title: string): ResumeDocument["sections"][number]["type"] {
+  if (title.includes("教育")) return "education";
+  if (title.includes("技能")) return "skill";
+  if (title.includes("实习") || title.includes("工作")) return "experience";
+  if (title.includes("项目")) return "project";
+  if (title.includes("荣誉") || title.includes("奖")) return "award";
+  if (title.includes("总结") || title.includes("亮点")) return "summary";
+  return "other";
+}
+
+function makeResumeDocumentItem(
+  section: ResumeDocument["sections"][number],
+  title: string,
+  sourceExperienceId: string | undefined,
+): ResumeDocument["sections"][number]["items"][number] {
+  const item: ResumeDocument["sections"][number]["items"][number] = {
+    id: `item-${section.items.length + 1}`,
+    title: title.slice(0, 120) || section.title,
+    bullets: [],
+  };
+  if (sourceExperienceId) item.sourceExperienceId = sourceExperienceId;
+  return item;
+}
+
 /**
  * Normalize a single variant from raw LLM output.
  * Never throws — returns null only if content is completely missing.
@@ -295,6 +389,10 @@ function normalizeVariant(raw: unknown, index: number): NormalizedVariant | null
   if (!content) return null; // content is the only hard requirement
 
   const scores = normalizeScoreObject(raw.score ?? raw.scores);
+  const sourceExperienceIds = normalizeStringIds(raw.sourceExperienceIds);
+  const sourceEvidenceIds = normalizeStringIds(raw.sourceEvidenceIds);
+  const resumeDocument = normalizeResumeDocument(raw.resumeDocument ?? raw.document ?? raw.structuredResume)
+    ?? inferResumeDocumentFromContent(content, sourceExperienceIds, sourceEvidenceIds);
 
   return {
     content,
@@ -302,8 +400,8 @@ function normalizeVariant(raw: unknown, index: number): NormalizedVariant | null
     reason: typeof raw.reason === "string" && raw.reason.trim()
       ? raw.reason.trim()
       : "Generated based on JD and experience library.",
-    sourceExperienceIds: normalizeStringIds(raw.sourceExperienceIds),
-    sourceEvidenceIds: normalizeStringIds(raw.sourceEvidenceIds),
+    sourceExperienceIds,
+    sourceEvidenceIds,
     evidenceSummary: normalizeEvidenceSummary(raw.evidenceSummary),
     riskSummary: normalizeRiskSummary(raw.riskSummary),
     missingInfo: normalizeMissingInfo(raw.missingInfo),
@@ -315,7 +413,7 @@ function normalizeVariant(raw: unknown, index: number): NormalizedVariant | null
     risks: normalizeStringArray(raw.risks ?? raw.cautions ?? raw.cons, 3, 18),
     recommended: normalizeBool(raw.recommended ?? raw.preferred ?? raw.isRecommended),
     rank: normalizeRank(raw.rank),
-    resumeDocument: normalizeResumeDocument(raw.resumeDocument ?? raw.document ?? raw.structuredResume),
+    resumeDocument,
   };
 }
 
@@ -495,6 +593,7 @@ function buildEvidenceGroundedUserPrompt(input: {
   jdText: string;
   targetRole?: string;
   evidencePack: EvidencePack;
+  sourceExperiences?: ProductExperienceSummary[];
   instructionPack?: InstructionPack;
   groundingContext?: GroundingContext;
   personalizationPack?: PersonalizationPack;
@@ -520,6 +619,8 @@ function buildEvidenceGroundedUserPrompt(input: {
     `- ${item.title} [${item.experienceId}] score=${item.score}`,
     `  matched=${item.matchedTerms.join(", ") || "none"}; reason=${item.reason}`,
   ].join("\n")).join("\n");
+
+  const sourceCards = buildSourceExperienceCards(input.sourceExperiences ?? []);
 
   const longTermMemory = input.evidencePack.longTermMemory ? [
     "Claim Usage Stats:",
@@ -606,6 +707,9 @@ function buildEvidenceGroundedUserPrompt(input: {
     "Allowed Claims:",
     allowedClaims,
     "",
+    "Candidate Source Cards (authoritative resume facts):",
+    sourceCards || "No source cards were provided. Use only Allowed Claims.",
+    "",
     "Missing or Weakly Supported Requirements:",
     missing,
     "",
@@ -625,9 +729,59 @@ function buildEvidenceGroundedUserPrompt(input: {
     "- For each variant, sourceEvidenceIds must contain the exact persistent claim IDs shown in square brackets for claims actually used.",
     "- Do not attach every retrieved claim to every variant. Return only directly used claims.",
     "- Provide evidenceSummary and riskSummary based on the Evidence Pack.",
+    "- Use exact organization, role/title, school, dates, and project names from Candidate Source Cards. If a field is missing, omit it; never write placeholders such as 某公司, 某科技公司, or guessed dates.",
+    "- The recommended variant must read like a complete one-page resume body, not a short analysis summary. Use plain Chinese section headings such as 教育经历, 技能与兴趣, 实习经历, 项目经历.",
+    "- Match the reference resume density: concise high-signal bullets, action + method/technology + scope + verified metric/result, usually 2-5 bullets per selected experience/project.",
+    "- Tailor selection and bullet ordering to the JD. Prefer the most relevant 4-6 source experiences over listing everything.",
+    "- Avoid obvious AI resume filler such as 具备较强, 良好的, 扎实的, 积极主动, 学习能力强 unless directly supported by evidence.",
+    "- Include a valid resumeDocument for every variant whenever possible; it must mirror the plain content and preserve sourceExperienceId/evidenceIds.",
     "",
     "Generate resume content variants. Return a JSON object with a 'variants' array.",
   ].join("\n");
+}
+
+function buildSourceExperienceCards(experiences: ProductExperienceSummary[]): string {
+  return experiences.slice(0, 12).map((exp) => {
+    const structured = compactStructuredExperience(exp.structured);
+    const dates = [exp.startDate, exp.endDate].filter(Boolean).join(" - ");
+    return [
+      `- sourceExperienceId=${exp.id}`,
+      `  category=${exp.category}; title=${exp.title}`,
+      exp.organization ? `  organization=${exp.organization}` : "",
+      exp.role ? `  role=${exp.role}` : "",
+      dates ? `  dates=${dates}` : "",
+      structured.techStack.length > 0 ? `  techStack=${structured.techStack.join(", ")}` : "",
+      structured.metrics.length > 0 ? `  metrics=${structured.metrics.join(" | ")}` : "",
+      structured.highlights.length > 0 ? `  highlights=${structured.highlights.join(" | ")}` : "",
+      exp.content ? `  content=${exp.content.replace(/\s+/g, " ").trim().slice(0, 900)}` : "",
+    ].filter(Boolean).join("\n");
+  }).join("\n\n");
+}
+
+function compactStructuredExperience(structured: Record<string, unknown> | undefined): {
+  techStack: string[];
+  metrics: string[];
+  highlights: string[];
+} {
+  if (!structured) return { techStack: [], metrics: [], highlights: [] };
+  const techStack = stringList(structured.techStack).slice(0, 12);
+  const highlights = stringList(structured.highlights).map((item) => item.slice(0, 180)).slice(0, 6);
+  const metrics = Array.isArray(structured.metrics)
+    ? structured.metrics.flatMap((item) => {
+        if (!isRecord(item)) return [];
+        const name = typeof item.name === "string" ? item.name.trim() : "";
+        const value = typeof item.value === "string" || typeof item.value === "number" ? String(item.value).trim() : "";
+        const context = typeof item.context === "string" ? item.context.trim() : "";
+        const text = [name, value, context].filter(Boolean).join(": ");
+        return text ? [text.slice(0, 160)] : [];
+      }).slice(0, 10)
+    : [];
+  return { techStack, metrics, highlights };
+}
+
+function stringList(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter((item): item is string => typeof item === "string" && item.trim().length > 0).map((item) => item.trim());
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -706,6 +860,7 @@ export class LLMGenerationService {
     jdText: string;
     targetRole?: string;
     evidencePack?: EvidencePack;
+    sourceExperiences?: ProductExperienceSummary[];
     instructionPack?: InstructionPack;
     groundingContext?: GroundingContext;
     personalizationPack?: PersonalizationPack;
@@ -726,6 +881,7 @@ export class LLMGenerationService {
       jdText: input.jdText,
       targetRole: input.targetRole,
       evidencePack,
+      sourceExperiences: input.sourceExperiences,
       instructionPack: input.instructionPack,
       groundingContext: input.groundingContext,
       personalizationPack: input.personalizationPack,
@@ -895,7 +1051,7 @@ export class LLMGenerationService {
           { role: "user", content: userPrompt },
         ],
         temperature: 0.4,
-        maxTokens: 8192,
+        maxTokens: 12000,
         responseFormat: "json",
       });
       responseContent = response.content;
@@ -960,7 +1116,7 @@ export class LLMGenerationService {
           { role: "user", content: REPAIR_PROMPT.replace("{{errors}}", errorSummary) },
         ],
         temperature: 0.3,
-        maxTokens: 8192,
+        maxTokens: 12000,
         responseFormat: "json",
       });
       responseContent = response.content;

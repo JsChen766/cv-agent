@@ -94,6 +94,15 @@ export const DEFAULT_GUIDELINES: GuidelineChunk[] = [
     section: "experience",
   }),
   guideline({
+    id: "guideline-zh-reference-resume-density",
+    title: "参考简历式一页内容密度",
+    content: "面向中文一页简历时，优先生成接近正式投递稿的正文：教育、技能、实习/工作、项目等栏目清晰，每段经历保留真实组织、角色、时间和项目名；bullet 要高密度呈现技术方法、业务场景、范围和可验证指标，不写“某公司”等占位，不用泛泛 AI 套话。",
+    tags: ["中文简历", "一页简历", "内容密度", "参考样式", "bullet"],
+    language: "zh",
+    ruleKind: "writing_rule",
+    section: "resume",
+  }),
+  guideline({
     id: "guideline-en-ats-keywords",
     title: "Evidence-backed ATS keyword use",
     content: "Use exact JD terminology for supported skills and responsibilities, but integrate keywords naturally into evidence-backed bullets. Do not copy large JD passages or add unsupported keywords solely for ATS coverage.",

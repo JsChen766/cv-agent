@@ -158,7 +158,7 @@ export function splitSentences(value: string | undefined, limit = 12): string[] 
   const text = (value ?? "").replace(/\r/g, "").trim();
   if (!text) return [];
   const pieces = text
-    .split(/(?<=[。！？.!?])\s*|[\n;；]+|(?:^|\s)[-*•]\s+/u)
+    .split(/(?<=[。！？!?])\s*|(?<=[.!?])\s+|[\n;；]+|(?:^|\s)[-*•]\s+/u)
     .map((item) => item.replace(/\s+/g, " ").trim())
     .filter((item) => item.length >= 4);
   return unique(pieces).slice(0, limit);
