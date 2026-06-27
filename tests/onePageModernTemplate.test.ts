@@ -107,7 +107,7 @@ describe("onePageModernTemplate — visual contract", () => {
     expect(html).toContain("2022.03 \u2013 2024.06");
     expect(html).toContain("主导设计系统重构");
     expect(html).toContain("推动 SSR 上线");
-    expect(html).toMatch(/<li>主导设计系统重构<\/li>/);
+    expect(html).toMatch(/<li[^>]*>主导设计系统重构<\/li>/);
     expect(html).toMatch(/<span class="item-period">2022\.03/);
   });
 });
@@ -177,7 +177,7 @@ describe("onePageModernTemplate — legacy data path", () => {
     expect(html).toContain('class="item-body"');
     expect(html).toContain("Built reliable systems across three different startups.");
     expect(html).not.toContain('<ul class="bullets">');
-    expect(html).not.toContain("data-item-id=");
+    expect(html).toContain('data-item-id="legacy-1"');
   });
 
   it("hides items with hidden=true regardless of data path", () => {

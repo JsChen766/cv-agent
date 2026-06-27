@@ -2,6 +2,7 @@
 import type { ResumeFitReport } from "./ResumeFitService.js";
 import type { ResumeCompressionReport } from "./ResumeCompressionService.js";
 import type { ResumeFitEditorReport } from "./ResumeLLMFitEditor.js";
+import type { ResumeLayoutReport } from "./layout/ResumeLayoutOracle.js";
 
 /**
  * Phase 8: Resume quality report. Deterministic / rule-based.
@@ -64,6 +65,7 @@ export type ResumeQualityReport = {
    * `criticReview.applied=true` does NOT by itself flip `hasCriticalRisks`.
    */
   criticReview?: import("./ResumeQualityCriticService.js").ResumeQualityCriticReview;
+  layoutReport?: ResumeLayoutReport;
 };
 
 export type ResumeQualityInput = {

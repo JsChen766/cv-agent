@@ -16,6 +16,7 @@ import {
   HeuristicLayoutMeasurer,
   ResumeFitMeasureError,
   ResumeFitService,
+  buildFitReport,
   type ResumeFitReport,
   type ResumeLayoutMeasurer,
 } from "./ResumeFitService.js";
@@ -28,6 +29,9 @@ import {
   type ResumeFitEditorReport,
 } from "./ResumeLLMFitEditor.js";
 import { ResumeQualityService, type ResumeQualityReport } from "./ResumeQualityService.js";
+import { ResumeLayoutComposer, type ResumeLayoutComposerResult } from "./layout/ResumeLayoutComposer.js";
+import { LayoutSessionManager } from "./layout/LayoutSessionManager.js";
+import type { ResumeLayoutReport } from "./layout/ResumeLayoutOracle.js";
 import {
   ResumeQualityCriticService,
   buildCriticBulletProvenance,
@@ -49,6 +53,8 @@ export class ResumeExportService {
   private readonly pdfRenderer?: PdfRendererAdapter;
   private readonly fitService: ResumeFitService;
   private readonly compressionService = new ResumeCompressionService();
+  private readonly layoutComposer = new ResumeLayoutComposer();
+  private readonly layoutSessionManager = new LayoutSessionManager();
   private readonly promptRegistry = new PromptRegistry();
   private readonly qualityService = new ResumeQualityService();
   private readonly modelClient?: ModelClient;
@@ -164,21 +170,26 @@ export class ResumeExportService {
         status: "rendering",
         errorMessage: undefined,
       });
-      const html = this.renderer.render(resume, record.templateId);
+      const layoutOutput = await this.maybeComposeOnePageResume(resume, record);
+      const resumeForExport = layoutOutput.resume;
+      const html = layoutOutput.html;
+      const layoutReport = layoutOutput.layoutReport;
 
       // Phase 5 Fit Engine v1: measure the rendered HTML so the export
       // record can answer "did this resume fit on one page?" without a
       // re-render. Failures are logged but never block the export — Phase
       // 5 explicitly does NOT cause downstream work to fail just because
       // a measurement is unavailable. (Phase 6 reacts to the report.)
-      const initialFitReport = await this.measureFitReport(html, record);
+      const initialFitReport = layoutReport
+        ? fitReportFromLayoutReport(layoutReport)
+        : await this.measureFitReport(html, record);
 
       // Phase 6 Fit Engine v2: when the resume overflows one A4 page on
       // the `one-page-modern` template, run rule-based compression on a
       // clone of the items, re-render with the compressed snapshot, and
       // re-measure. Phase 6 inherits Phase 5's "warn-only on overflow"
       // contract: compression is best-effort and never fails the export.
-      const compressionOutput = await this.maybeCompress(resume, html, record, initialFitReport);
+      const compressionOutput = await this.maybeCompress(resumeForExport, html, record, initialFitReport);
       let finalHtml = compressionOutput.html;
       let finalFitReport = compressionOutput.fitReport;
       const compressionReport = compressionOutput.compressionReport;
@@ -189,7 +200,7 @@ export class ResumeExportService {
       // Editor for structured edits. Opt-in via ENABLE_LLM_FIT_EDITOR
       // and a configured model client. Best-effort: never fails the export.
       const editOutput = await this.maybeLlmFitEdit(
-        resume,
+        resumeForExport,
         finalHtml,
         record,
         finalFitReport,
@@ -198,13 +209,21 @@ export class ResumeExportService {
       finalHtml = editOutput.html;
       finalFitReport = editOutput.fitReport;
       const editReport = editOutput.editReport;
+      const finalLayoutReport = await this.maybeMeasureFinalLayout(finalHtml, record);
+      if (finalLayoutReport) {
+        finalFitReport = fitReportFromLayoutReport(finalLayoutReport);
+      }
 
       // Phase 8 Resume Quality: deterministic, rule-based assessment of the
       // (post-Phase-7) resume. Always best-effort: any error is swallowed and
       // the export proceeds without `qualityReport`. Phase 8 is warn-only —
       // even `hasCriticalRisks=true` is metadata only and does NOT block
       // export or trigger a confirmation loop.
-      let qualityReport = await this.maybeEvaluateQuality(resume, record, finalFitReport, compressionReport, editReport);
+      let qualityReport = await this.maybeEvaluateQuality(resumeForExport, record, finalFitReport, compressionReport, editReport);
+      const qualityLayoutReport = finalLayoutReport ?? layoutReport;
+      if (qualityLayoutReport && qualityReport) {
+        qualityReport = { ...qualityReport, layoutReport: qualityLayoutReport };
+      }
 
       // Phase 8 Hybrid Resume Critic (LLM add-on): optional semantic second
       // opinion appended as `qualityReport.criticReview`. Opt-in via
@@ -215,7 +234,7 @@ export class ResumeExportService {
       // pendingAction.
       if (qualityReport && finalFitReport) {
         qualityReport = await this.maybeRunCritic(
-          resume,
+          resumeForExport,
           record,
           qualityReport,
           finalFitReport,
@@ -352,6 +371,84 @@ export class ResumeExportService {
       } else {
         console.warn("[exports] fit measurement threw unexpectedly (will skip fitReport)", { exportId: record.id, error: message });
       }
+      return undefined;
+    }
+  }
+
+  private async maybeComposeOnePageResume(
+    resume: ProductResumeDetail,
+    record: ResumeExport,
+  ): Promise<{ resume: ProductResumeDetail; html: string; layoutReport?: ResumeLayoutReport }> {
+    const templateId = record.templateId ?? "default";
+    const baseHtml = this.renderer.render(resume, templateId);
+    const useComposer = shouldUseIncrementalLayoutComposer(record, templateId);
+    console.debug("[exports] incremental layout composer decision", {
+      exportId: record.id,
+      resumeId: record.resumeId,
+      format: record.format,
+      templateId,
+      enabled: useComposer,
+      envFlag: process.env.ENABLE_INCREMENTAL_LAYOUT_COMPOSER,
+      nodeEnv: process.env.NODE_ENV,
+    });
+    if (!useComposer) {
+      return { resume, html: baseHtml };
+    }
+    const density = resolveDensityFromHtml(baseHtml);
+    try {
+      const result: ResumeLayoutComposerResult = await this.layoutComposer.compose({
+        layoutSessionId: record.id,
+        resume,
+        templateId,
+        density,
+        renderHtml: (candidate) => this.renderer.render(candidate, templateId),
+      });
+      if (result.report.fitsPage && result.report.passesBulletWidthRule) {
+        const html = this.renderer.render(result.resume, templateId);
+        console.debug("[exports] incremental layout composer applied", {
+          exportId: record.id,
+          resumeId: record.resumeId,
+          contentHeightPx: result.report.contentHeightPx,
+          remainingHeightPx: result.report.remainingHeightPx,
+          actions: result.actions.length,
+        });
+        return { resume: result.resume, html, layoutReport: result.report };
+      }
+      console.warn("[exports] incremental layout composer could not satisfy constraints; using original resume", {
+        exportId: record.id,
+        resumeId: record.resumeId,
+        overflowPx: result.report.overflowPx,
+        invalidBullets: result.report.invalidBullets.length,
+      });
+      return { resume, html: baseHtml, layoutReport: result.report };
+    } catch (error) {
+      console.warn("[exports] incremental layout composer failed; using original resume", {
+        exportId: record.id,
+        resumeId: record.resumeId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return { resume, html: baseHtml };
+    }
+  }
+
+  private async maybeMeasureFinalLayout(
+    html: string,
+    record: ResumeExport,
+  ): Promise<ResumeLayoutReport | undefined> {
+    const templateId = record.templateId ?? "default";
+    if (!shouldUseIncrementalLayoutComposer(record, templateId)) return undefined;
+    const density = resolveDensityFromHtml(html);
+    try {
+      return await this.layoutSessionManager.withSession(
+        { layoutSessionId: `${record.id}:final`, templateId, density },
+        async (session) => session.measure(html),
+      );
+    } catch (error) {
+      console.warn("[exports] final layout oracle failed; falling back to fitReport only", {
+        exportId: record.id,
+        resumeId: record.resumeId,
+        error: error instanceof Error ? error.message : String(error),
+      });
       return undefined;
     }
   }
@@ -722,6 +819,25 @@ function resolveDensityFromHtml(html: string): string {
   const match = /data-density="([^"]+)"/.exec(html);
   if (match && match[1]) return match[1];
   return "standard";
+}
+
+function shouldUseIncrementalLayoutComposer(record: ResumeExport, templateId: string): boolean {
+  if (record.format !== "pdf") return false;
+  if (templateId !== "one-page-modern") return false;
+  if (process.env.ENABLE_INCREMENTAL_LAYOUT_COMPOSER === "false") return false;
+  if (process.env.ENABLE_INCREMENTAL_LAYOUT_COMPOSER === "true") return true;
+  return process.env.NODE_ENV !== "test";
+}
+
+function fitReportFromLayoutReport(report: ResumeLayoutReport): ResumeFitReport {
+  return buildFitReport({
+    contentHeightPx: report.contentHeightPx,
+    pageUsableHeightPx: report.usableHeightPx,
+    templateId: report.templateId,
+    density: report.density,
+    measurer: report.measurer,
+    targetPages: report.targetPages,
+  });
 }
 
 /**

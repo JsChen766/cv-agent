@@ -30,7 +30,7 @@ function render({ resume }: ResumeTemplateContext): string {
   <meta charset="utf-8">
   <title>${escapeHtml(resume.title)}</title>
   <style>
-    body { font-family: Arial, sans-serif; max-width: 760px; margin: 40px auto; color: #1f2937; line-height: 1.5; }
+    body { font-family: "Noto Sans CJK SC", "Noto Sans SC", "Source Han Sans SC", "Microsoft YaHei", "PingFang SC", Arial, sans-serif; max-width: 760px; margin: 40px auto; color: #1f2937; line-height: 1.5; }
     h1 { font-size: 28px; margin-bottom: 4px; }
     .role { color: #4b5563; margin-bottom: 24px; }
     section { border-top: 1px solid #e5e7eb; padding: 16px 0; }

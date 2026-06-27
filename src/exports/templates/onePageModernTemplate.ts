@@ -1,4 +1,5 @@
 import type { ProductResumeItem } from "../../product/types.js";
+import { A4_ONE_PAGE_SPEC } from "../layout/PageSpec.js";
 import type { ResumeTemplate, ResumeTemplateContext } from "./defaultTemplate.js";
 
 export type OnePageModernDensity = "comfortable" | "standard" | "compact";
@@ -13,6 +14,7 @@ export function onePageModernTemplate(): ResumeTemplate {
 
 const DEFAULT_DENSITY: OnePageModernDensity = "standard";
 const MIDDOT = "\u00B7";
+const PAGE = A4_ONE_PAGE_SPEC;
 
 const SECTION_ORDER: ProductResumeItem["sectionType"][] = [
   "summary",
@@ -126,8 +128,38 @@ function renderSection(
   const label = SECTION_LABELS[type];
   if (type === "skill") return renderSkillSection(label, items);
   if (type === "summary") return renderSummarySection(label, items);
+  if (type === "education" || type === "award") return renderInfoSection(type, label, items);
   const body = items.map((item) => renderItem(item)).join("\n");
-  return `<section class="section section--${type}" data-section-type="${type}">
+  const sectionId = sectionIdFor(type, items);
+  return `<section class="section section--${type}" data-section-type="${type}" data-section-id="${escapeHtml(sectionId)}">
+  <h2 class="section-title">${escapeHtml(label)}</h2>
+  ${body}
+</section>`;
+}
+
+function renderInfoSection(
+  type: ProductResumeItem["sectionType"],
+  label: string,
+  items: ProductResumeItem[],
+): string {
+  const body = items.map((item) => {
+    const parsed = parseContentSnapshot(item.contentSnapshot);
+    const headerLine = parsed.header || item.title;
+    const headerHtml = renderItemHeader(headerLine, item);
+    const dataItemId = stringMetadata(item, "itemId");
+    const stableItemId = dataItemId ?? item.id;
+    const itemAttrs = ` data-item-id="${escapeHtml(stableItemId)}"`;
+    const details = [...parsed.bullets, parsed.fallbackBody]
+      .flatMap((value) => value.split(/\r?\n/))
+      .map((value) => value.trim())
+      .filter(Boolean);
+    const detailHtml = details.length > 0
+      ? `<p class="item-body">${escapeHtml(details.join(" · "))}</p>`
+      : "";
+    return `<article class="item"${itemAttrs}>${headerHtml}${detailHtml}</article>`;
+  }).join("\n");
+  const sectionId = sectionIdFor(type, items);
+  return `<section class="section section--${type}" data-section-type="${type}" data-section-id="${escapeHtml(sectionId)}">
   <h2 class="section-title">${escapeHtml(label)}</h2>
   ${body}
 </section>`;
@@ -138,7 +170,8 @@ function renderItem(item: ProductResumeItem): string {
   const headerLine = parsed.header || item.title;
   const headerHtml = renderItemHeader(headerLine, item);
   const dataItemId = stringMetadata(item, "itemId");
-  const itemAttrs = dataItemId ? ` data-item-id="${escapeHtml(dataItemId)}"` : "";
+  const stableItemId = dataItemId ?? item.id;
+  const itemAttrs = ` data-item-id="${escapeHtml(stableItemId)}"`;
   if (parsed.bullets.length === 0) {
     const body = parsed.fallbackBody.trim();
     if (!body) return `<article class="item"${itemAttrs}>${headerHtml}</article>`;
@@ -147,8 +180,8 @@ function renderItem(item: ProductResumeItem): string {
   const metadataBulletIds = bulletIdsMetadata(item);
   const bullets = parsed.bullets
     .map((b, i) => {
-      const bid = metadataBulletIds[i];
-      const battr = bid ? ` data-bullet-id="${escapeHtml(bid)}"` : "";
+      const bid = metadataBulletIds[i] ?? `${stableItemId}-bullet-${i + 1}`;
+      const battr = ` data-bullet-id="${escapeHtml(bid)}"`;
       return `<li${battr}>${escapeHtml(b)}</li>`;
     })
     .join("");
@@ -199,7 +232,7 @@ function renderSummarySection(label: string, items: ProductResumeItem[]): string
     .map((t) => `<p class="summary-paragraph">${escapeHtml(t)}</p>`)
     .join("");
   if (!paragraphs) return "";
-  return `<section class="section section--summary" data-section-type="summary">
+  return `<section class="section section--summary" data-section-type="summary" data-section-id="${escapeHtml(sectionIdFor("summary", items))}">
   <h2 class="section-title">${escapeHtml(label)}</h2>
   ${paragraphs}
 </section>`;
@@ -216,10 +249,17 @@ function renderSkillSection(label: string, items: ProductResumeItem[]): string {
   });
   if (skills.length === 0) return "";
   const chips = skills.map((s) => `<span class="skill-chip">${escapeHtml(s)}</span>`).join("");
-  return `<section class="section section--skill" data-section-type="skill">
+  return `<section class="section section--skill" data-section-type="skill" data-section-id="${escapeHtml(sectionIdFor("skill", items))}">
   <h2 class="section-title">${escapeHtml(label)}</h2>
   <p class="skills-line">${chips}</p>
 </section>`;
+}
+
+function sectionIdFor(type: ProductResumeItem["sectionType"], items: ProductResumeItem[]): string {
+  const explicit = items
+    .map((item) => stringMetadata(item, "sectionId"))
+    .find(Boolean);
+  return explicit ?? `section-${type}`;
 }
 
 type ParsedSnapshot = {
@@ -269,13 +309,18 @@ const PRINT_CSS = `
   --muted: #4b5563;
   --rule: #e5e7eb;
   --accent: #1f2937;
-  --page-width: 210mm;
-  --page-height: 297mm;
-  --page-margin: 18mm;
+  --page-width: ${PAGE.pageWidthPx}px;
+  --page-height: ${PAGE.pageHeightPx}px;
+  --content-width: ${PAGE.contentWidthPx}px;
+  --usable-height: ${PAGE.usableHeightPx}px;
+  --page-margin-top: ${PAGE.marginTopMm}mm;
+  --page-margin-right: ${PAGE.marginRightMm}mm;
+  --page-margin-bottom: ${PAGE.marginBottomMm}mm;
+  --page-margin-left: ${PAGE.marginLeftMm}mm;
 }
 @page {
   size: A4;
-  margin: 18mm;
+  margin: ${PAGE.marginTopMm}mm ${PAGE.marginRightMm}mm ${PAGE.marginBottomMm}mm ${PAGE.marginLeftMm}mm;
 }
 * { box-sizing: border-box; }
 html, body {
@@ -283,7 +328,7 @@ html, body {
   padding: 0;
   background: #ffffff;
   color: var(--ink);
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Helvetica Neue", Arial, sans-serif;
+  font-family: "Noto Sans CJK SC", "Noto Sans SC", "Source Han Sans SC", "Microsoft YaHei", "PingFang SC", "Hiragino Sans GB", -apple-system, BlinkMacSystemFont, "Segoe UI", "Helvetica Neue", Arial, sans-serif;
   font-size: 10.5pt;
   line-height: 1.5;
   -webkit-font-smoothing: antialiased;

@@ -22,11 +22,10 @@
  * The default usable area mirrors `onePageModernTemplate`'s 18mm @page
  * margin: a content box of roughly 174 x 261 mm.
  */
-export const A4_PAGE_HEIGHT_PX = 1123;
-export const A4_PAGE_WIDTH_PX = 794;
-const DEFAULT_PAGE_MARGIN_PX = 68;
-export const A4_USABLE_HEIGHT_PX = A4_PAGE_HEIGHT_PX - DEFAULT_PAGE_MARGIN_PX * 2;
-export const A4_USABLE_WIDTH_PX = A4_PAGE_WIDTH_PX - DEFAULT_PAGE_MARGIN_PX * 2;
+export const A4_PAGE_HEIGHT_PX = A4_ONE_PAGE_SPEC.pageHeightPx;
+export const A4_PAGE_WIDTH_PX = A4_ONE_PAGE_SPEC.pageWidthPx;
+export const A4_USABLE_HEIGHT_PX = A4_ONE_PAGE_SPEC.usableHeightPx;
+export const A4_USABLE_WIDTH_PX = A4_ONE_PAGE_SPEC.contentWidthPx;
 
 export type ResumeFitReport = {
   targetPages: number;
@@ -94,6 +93,7 @@ export class PlaywrightLayoutMeasurer implements ResumeLayoutMeasurer {
     try {
       page = await browser.newPage({ viewport: { width: A4_PAGE_WIDTH_PX, height: A4_PAGE_HEIGHT_PX } });
       await page.setContent(input.html, { waitUntil: "networkidle" });
+      await page.evaluate("document.fonts ? document.fonts.ready.then(() => true) : true");
       const contentHeightPx = await page.evaluate(() => {
         // Runs inside Chromium where `document` exists; cast through unknown
         // to avoid pulling the DOM lib into the Node tsconfig.
@@ -291,3 +291,4 @@ export function buildFitReport(input: {
   if (underflowPx !== undefined) report.underflowPx = underflowPx;
   return report;
 }
+import { A4_ONE_PAGE_SPEC } from "./layout/PageSpec.js";

@@ -122,7 +122,7 @@
 
 ## 阶段三：PDF 导出格式与最终成品
 
-目标：导出的 PDF 在内容与版式上都像可投递的一页简历，默认模板质量接近参考 PDF，不再只是“把文本塞进 PDF”。
+目标：导出的 PDF 必须在固定 HTML 模板约束下稳定落在一页 A4 内，并接近参考 PDF 的专业密度与版式观感。第三阶段不再以“整份生成后循环压缩”为主，而是建设一个内部增量式 `Layout Oracle / ResumeLayoutComposer`：每添加一个 section、item 或 bullet，就能知道当前高度、剩余高度、该 bullet 每一行真实宽度是否达标，从而像改代码一样逐块构建最终简历。
 
 主要改造范围：
 
@@ -133,20 +133,62 @@
 - `src/exports/ResumeCompressionService.ts`
 - `src/exports/ResumeLLMFitEditor.ts`
 - `src/exports/ResumeQualityService.ts`
+- 新增内部 `src/exports/layout/PageSpec.ts`
+- 新增内部 `src/exports/layout/ResumeLayoutOracle.ts`
+- 新增内部 `src/exports/layout/ResumeLayoutComposer.ts`
+- 新增内部 `src/exports/layout/LayoutSessionManager.ts`
 
 实施要点：
 
-- 先从参考 PDF 提炼版式原则：页边距、姓名/联系信息、section 顺序、标题层级、项目 bullet 密度、技能展示方式。
-- 保持 `one-page-modern` 作为默认高质量路径；如需新增模板，只新增内部模板 ID，不改变导出 API。
-- PDF 不只检查 `%PDF`，还要检查页面数量、文本可复制性、关键 section 存在、溢出/留白、标题与 bullet 层级。
-- fit/compression/LLM fit editor 必须服务于可读性，不能为了塞进一页牺牲内容质量。
+- 统一 `PageSpec` 作为唯一版式真相：A4 尺寸、页边距、内容区宽高、字体、字号、行高、section 间距、bullet 样式、默认 density、目标页数。HTML 模板、测量器和 Playwright PDF 渲染必须读取同一份 `PageSpec`，避免“测量时一页，打印时溢出”。
+- 固定 `one-page-modern` 为阶段三高质量默认模板，先不新增公开模板 API。模板内每个 section、item、bullet 必须带稳定 `data-section-id`、`data-item-id`、`data-bullet-id`，供浏览器真实测量。
+- 新增 `ResumeLayoutOracle`：基于 Playwright 在隔离 page 中渲染固定模板，返回当前总高度、剩余高度、每个 block 高度、每条 bullet 的真实换行数与每行宽度。bullet 宽度不按字符数估算，必须用浏览器布局结果，例如 `Range.getClientRects()`。
+- 建立 bullet 硬约束：每条 bullet 至少占页面内容宽度的 `2/3`；如果 bullet 换成两行，第二行也必须达到内容宽度的 `2/3`；超过两行默认判为不合格，除非后续明确允许特例。
+- 新增 `ResumeLayoutComposer`：以结构化 `resumeDocument` / `ProductResumeItem` 为输入，逐块尝试 `tryAppendSection`、`tryAppendItem`、`tryAppendBullet`。工具只提交通过测量的块；失败时返回具体原因、当前高度、预计增量、剩余高度和不合格 bullet 的行宽数据。
+- 生成侧不做整份重写循环。LLM 可以为每条 bullet 提供 2-3 个候选表达，Composer 逐条试排；不合格时只要求改当前 bullet 或当前 item，不允许反向大改已 commit 内容。
+- 多用户并发必须隔离：每个 export job 使用独立 `layoutSessionId = exportId`，独立 Playwright `BrowserContext` 或 page，DOM 状态、临时 HTML、测量缓存和文件路径按 `userId/exportId` 隔离。浏览器进程可复用，但 session/page/context 不能共享 mutable state。
+- `ResumeCompressionService` 保留为 fallback，但阶段三主路径应优先使用增量 Composer 产出天然一页的 items。压缩不能再粗暴牺牲关键内容；只能处理少量边界溢出。
+- `ResumeQualityService` 增加版式质量维度：页面数、剩余高度区间、section 完整性、bullet 行宽合格率、短 bullet/碎片化 item、过度压缩、可复制文本、参考模板关键元素。
+
+建议实施顺序：
+
+1. 基线审计：用阶段二的 3 个真实生成 resumeId 导出当前 PDF，记录页数、高度、section、bullet 行宽、人工观感问题。
+2. 抽出 `PageSpec`：让 `onePageModernTemplate`、`ResumeFitService`、`PdfRendererAdapter` 使用同一版式参数。
+3. 实现 `ResumeLayoutOracle`：用 Playwright 对固定 HTML 模板做真实测量，输出总高度、内容区宽度、block 高度、bullet 每行宽度。
+4. 实现 `LayoutSessionManager`：按 `userId/exportId` 创建和清理隔离 layout session，限制并发、超时和资源释放。
+5. 实现 `ResumeLayoutComposer`：逐 section/item/bullet 增量试排，返回通过/失败原因，生成可直接导出的最终 items。
+6. 接入导出主链路：PDF 导出优先使用 Composer 产出的布局稳定版本；保留旧路径作为兼容 fallback，不改公开导出接口。
+7. 增加质量报告：导出记录持久化 `layoutReport` / 扩展 `qualityReport`，便于前端和后续调试看到单页与 bullet 宽度是否达标。
+8. 用真实 Docker 后端跑 3 个 JD 完整链路：生成、接受版本、增量排版、导出 PDF、下载、解析 PDF、人工审阅。
 
 验收门槛：
 
 - 真实 Docker 后端完成生成、接受版本、导出 PDF、下载文件。
-- 对导出 PDF 做机器检查：content-type、PDF header、页数、文本提取、关键 section。
-- 做人工严格判断：是否像参考 PDF 一样可投递；是否存在拥挤、断行、缺 section、内容重复、格式廉价感。
-- 若 PDF 只是技术上可下载但观感不达标，继续阶段三。
+- 对导出 PDF 做机器检查：content-type、PDF header、页数必须为 1、文本可复制、关键 section 存在、无明显溢出。
+- 对 HTML/PDF 前置布局报告做机器检查：`contentHeightPx <= usableHeightPx`；每条 bullet 的每一行宽度 `>= contentWidthPx * 2/3`；默认无三行 bullet；保留合理剩余高度，避免过度稀疏或过度拥挤。
+- 并发验收：至少模拟多个用户/多个 export job 同时排版，证明 layout session、临时 DOM、缓存和文件互不串扰，完成后能清理资源。
+- 做人工严格判断：是否像参考 PDF 一样可投递；是否存在拥挤、断行、缺 section、内容重复、格式廉价感；bullet 是否有专业简历的饱满度。
+- 若 PDF 只是技术上可下载，或虽然一页但 bullet 过短/碎片化/压缩痕迹明显，则继续阶段三，不进入后续优化。
+
+## 阶段三完成记录（2026-06-26）
+
+本阶段已完成第一轮 PDF 导出格式与最终成品优化，并通过本机真实 Docker 后端与真实 LLM 调用验收。测试使用 `scripts/phase3-pdf-layout-smoke.ts`，链路覆盖 `/copilot/chat`、`/copilot/actions`、`/copilot/pending-actions/:id/confirm`、`/jobs/:id`、`/product/generations/:id`、`/product/generations/:id/accept-variant`、`/exports/resumes/:resumeId`、`/exports/:id`、`/exports/:id/download`，用户为 `dev-user`。所有过程 PDF 和 JSON 均保存在 `docs/temp_pdf/`，包括失败迭代版本。
+
+已完成的 Agent 内部优化：
+- 新增 `PageSpec` 统一 A4 页面、18mm 页边距、内容宽高、目标页数和 bullet 宽度阈值，并让 HTML 模板、fit report 和 Playwright PDF 渲染读取同一版式参数。
+- 新增 `ResumeLayoutOracle`、`LayoutSessionManager`、`ResumeLayoutComposer`。导出时为每个 export 使用独立 Playwright layout session，真实测量总高度、剩余高度、section/item 高度和每条 bullet 的 `Range.getClientRects()` 行宽。
+- PDF 导出主链路在 `one-page-modern` 下优先使用增量 composer；原始简历若已满足一页和 bullet 宽度则不裁剪，否则逐 item/bullet 试排，保留旧 compression / LLM fit editor 作为 fallback。
+- `qualityReport` 持久化 `layoutReport`，同时用最终 HTML 再测一次，确保实际导出版本的 `fitReport.measurer=playwright`、`contentHeightPx`、`invalidBullets` 可追踪。
+- Education/Awards 改为信息段落，不再把 GPA、排名、奖项日期等天然短信息误判为项目 bullet；经历/项目 bullet 才执行严格行宽规则。
+- Composer 增加中文语义分句候选，避免省略号和生硬截断；优先保留完整原文，不合格时按逗号、分号、顿号等自然边界收束。
+
+真实 LLM/PDF 验收结果：
+- `data_bi` 金融科技数据分析/BI JD：`pgen-957ce064-d014-40d4-a16d-7a78e0935193`，导出 `export-844dd361-8333-4002-8c10-f0b61bee8698`，PDF `docs/temp_pdf/2026-06-26T16-34-19-652Z_01_data_bi_pass_pgen-957ce064-d014-40d4-a16d-7a78e0935193_export-844dd361-8333-4002-8c10-f0b61bee8698.pdf`。结果：1 页，`contentHeightPx=724/987`，7 条 bullet，`invalidBullets=0`，critic semantic score 85。
+- `ml_data` 机器学习数据工程 JD：`pgen-17847686-26de-48c9-926f-06ad14581c41`，导出 `export-981014d4-2a6a-4c2c-9a0a-ef8e4a1d69aa`，PDF `docs/temp_pdf/2026-06-26T16-36-24-962Z_02_ml_data_pass_pgen-17847686-26de-48c9-926f-06ad14581c41_export-981014d4-2a6a-4c2c-9a0a-ef8e4a1d69aa.pdf`。结果：1 页，`contentHeightPx=778/987`，核心 bullet 数和页面使用率达标，`invalidBullets=0`。
+- `ai_product` AI 产品数据分析 JD：`pgen-557ba35c-5f7f-41c3-a9a7-340cd92cc10e`，导出 `export-d83ea3fc-9b06-4f79-a076-06991262d0ea`，PDF `docs/temp_pdf/2026-06-26T16-38-57-356Z_03_ai_product_pass_pgen-557ba35c-5f7f-41c3-a9a7-340cd92cc10e_export-d83ea3fc-9b06-4f79-a076-06991262d0ea.pdf`。结果：1 页，`contentHeightPx=824/987`，9 条 bullet，`invalidBullets=0`，critic semantic score 75。
+- 汇总报告：`docs/temp_pdf/2026-06-26T16-41-51-998Z_phase3_summary_pass.json`，三次不同 JD 连续通过。收紧后的验收要求包括：PDF 页数为 1、layoutReport 存在且 `fitsPage=true`、bullet 行宽全部达标、核心 bullet 数不少于 4、页面使用率不低于 58%、critic semantic score 不低于 70。
+
+严格判断：阶段三达到当前可进入后续优化的最低质量要求，满意度约 90% 以上。最终 PDF 已能稳定控制在一页，并能保存可审计 layout report；内容不再因为排版被粗暴压缩到只剩教育/技能，经历和项目 bullet 保留较完整。剩余可继续优化点：PDF 中文文本抽取在 `pdfjs-dist` 下仍有部分 `\u0000` 字符（视觉 PDF 正常，机器文本提取不完美）；并发压力测试本轮只完成了 session 隔离设计和单 job 实测，后续若要上线高并发导出，应补充多 export job 并发烟测。
 
 ## 真实 LLM 验收记录要求
 

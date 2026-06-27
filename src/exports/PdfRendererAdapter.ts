@@ -1,4 +1,5 @@
 import { ApiError, ErrorCodes } from "../api/errors.js";
+import { A4_ONE_PAGE_SPEC, pdfMarginOptions } from "./layout/PageSpec.js";
 
 /**
  * Renders a self-contained HTML document to a PDF buffer.
@@ -58,10 +59,11 @@ export class PlaywrightPdfRenderer implements PdfRendererAdapter {
     try {
       page = await browser.newPage();
       await page.setContent(html, { waitUntil: "networkidle" });
+      await page.evaluate("document.fonts ? document.fonts.ready.then(() => true) : true");
       const pdfBuffer = await page.pdf({
         format: "A4",
         printBackground: true,
-        margin: { top: "20mm", right: "15mm", bottom: "20mm", left: "15mm" },
+        margin: pdfMarginOptions(A4_ONE_PAGE_SPEC),
       });
       return Buffer.from(pdfBuffer);
     } catch (error) {

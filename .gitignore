@@ -13,3 +13,5 @@ coverage/
 # Local productized API playground
 local-playground/
 *.local.html
+
+docs/temp_pdf
