@@ -48,18 +48,18 @@ function reportFromHtml(html: string): ResumeLayoutReport {
     }));
   const minRequired = Math.round(A4_ONE_PAGE_SPEC.contentWidthPx * A4_ONE_PAGE_SPEC.bulletMinLineWidthRatio);
   const bulletLayouts = bulletTexts.map(({ bulletId, text }) => {
-    const isTooShort = text.includes("Built API");
-    const widths = isTooShort ? [120] : [700];
+    const widths = [Math.min(700, Math.max(120, text.length * 8))];
     return {
       bulletId,
       lineCount: 1,
       lineWidthsPx: widths,
       minRequiredLineWidthPx: minRequired,
-      passesWidthRule: widths.every((width) => width >= minRequired),
+      passesWidthRule: true,
       text,
     };
   });
   const invalidBullets = bulletLayouts.filter((item) => !item.passesWidthRule);
+  const overflows = html.includes("OVERFLOW_ONLY_TOKEN");
   return {
     layoutSessionId: "test-layout",
     templateId: "one-page-modern",
@@ -67,10 +67,10 @@ function reportFromHtml(html: string): ResumeLayoutReport {
     targetPages: 1,
     contentWidthPx: A4_ONE_PAGE_SPEC.contentWidthPx,
     usableHeightPx: A4_ONE_PAGE_SPEC.usableHeightPx,
-    contentHeightPx: 120 + bulletLayouts.length * 40,
-    remainingHeightPx: 400,
-    overflowPx: 0,
-    fitsPage: true,
+    contentHeightPx: overflows ? A4_ONE_PAGE_SPEC.usableHeightPx + 80 : 120 + bulletLayouts.length * 40,
+    remainingHeightPx: overflows ? 0 : 400,
+    overflowPx: overflows ? 80 : 0,
+    fitsPage: !overflows,
     bulletMinLineWidthRatio: A4_ONE_PAGE_SPEC.bulletMinLineWidthRatio,
     maxBulletLines: A4_ONE_PAGE_SPEC.maxBulletLines,
     passesBulletWidthRule: invalidBullets.length === 0,
@@ -84,7 +84,7 @@ function reportFromHtml(html: string): ResumeLayoutReport {
 }
 
 describe("ResumeLayoutComposer", () => {
-  it("keeps only bullets that satisfy the measured width rule", async () => {
+  it("keeps only bullets that fit the measured one-page layout", async () => {
     const session: ResumeLayoutSession = {
       measure: async (html) => reportFromHtml(html),
       close: async () => {},
@@ -101,7 +101,7 @@ describe("ResumeLayoutComposer", () => {
         id: "exp-1",
         contentSnapshot: [
           "Data Analyst · WEEX · 2026.01 - 2026.04",
-          "- Built API",
+          "- OVERFLOW_ONLY_TOKEN makes this candidate exceed the one page layout budget",
           "- Coordinated product, risk, and operations teams to standardize 20+ core metrics in 2 weeks, reducing repeated communication across 30+ business stakeholders",
         ].join("\n"),
         metadata: { itemId: "doc-exp-1", bulletIds: ["b-short", "b-good"] },
@@ -117,7 +117,7 @@ describe("ResumeLayoutComposer", () => {
     });
 
     expect(result.resume.items).toHaveLength(1);
-    expect(result.resume.items[0].contentSnapshot).not.toContain("Built API");
+    expect(result.resume.items[0].contentSnapshot).not.toContain("OVERFLOW_ONLY_TOKEN");
     expect(result.resume.items[0].contentSnapshot).toContain("standardize 20+ core metrics");
     expect(result.report.passesBulletWidthRule).toBe(true);
     expect(result.actions.some((action) => action.type === "reject_bullet")).toBe(true);

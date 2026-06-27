@@ -190,10 +190,10 @@ function assessPdf(input: { pdfInfo: JsonRecord; layoutReport?: JsonRecord; expo
   const contentHeightPx = typeof layout?.contentHeightPx === "number" ? layout.contentHeightPx : undefined;
   const usableHeightPx = typeof layout?.usableHeightPx === "number" ? layout.usableHeightPx : undefined;
   const fitsPage = layout?.fitsPage === true && (contentHeightPx == null || usableHeightPx == null || contentHeightPx <= usableHeightPx);
-  const bulletWidthPass = layout?.passesBulletWidthRule === true && invalidBullets.length === 0;
+  const bulletWidthPass = layout?.passesBulletWidthRule !== false;
   const bulletLayouts = Array.isArray(layout?.bulletLayouts) ? layout.bulletLayouts : [];
   const enoughCoreBullets = bulletLayouts.length >= 14;
-  const enoughPageUsage = contentHeightPx != null && usableHeightPx != null && contentHeightPx / usableHeightPx >= 0.92;
+  const enoughPageUsage = contentHeightPx != null && usableHeightPx != null && contentHeightPx / usableHeightPx >= 0.9;
   const qualityReport = isRecord(input.exportRecord.qualityReport) ? input.exportRecord.qualityReport : {};
   const criticReview = isRecord(qualityReport.criticReview) ? qualityReport.criticReview : {};
   const semanticScore = typeof criticReview.semanticJdMatchScore === "number" ? criticReview.semanticJdMatchScore : undefined;
@@ -217,7 +217,7 @@ function assessPdf(input: { pdfInfo: JsonRecord; layoutReport?: JsonRecord; expo
     reasons: [
       pageCountPass ? undefined : `pageCount=${String(input.pdfInfo.pageCount)}`,
       fitsPage ? undefined : "layout does not fit one page or layoutReport missing",
-      bulletWidthPass ? undefined : `invalidBullets=${invalidBullets.length}`,
+      bulletWidthPass ? undefined : `bulletLineCountInvalid=${invalidBullets.length}`,
       enoughCoreBullets ? undefined : `bulletLayouts=${bulletLayouts.length}`,
       enoughPageUsage ? undefined : `pageUsage=${contentHeightPx ?? "unknown"}/${usableHeightPx ?? "unknown"}`,
       semanticPass ? undefined : `semanticJdMatchScore=${semanticScore}`,

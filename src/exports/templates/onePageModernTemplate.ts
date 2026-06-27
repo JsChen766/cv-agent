@@ -539,16 +539,29 @@ html, body {
 }
 .bullets {
   margin: 1px 0 0 0;
-  padding-left: 12px;
-  list-style: disc;
+  padding-left: 0;
+  list-style: none;
 }
 .bullets li {
+  position: relative;
   margin: 0;
+  padding-left: 9px;
   page-break-inside: avoid;
   break-inside: avoid;
-  text-align: justify;
-  text-align-last: justify;
-  text-justify: inter-character;
+  text-align: left;
+  letter-spacing: 0;
+  word-spacing: normal;
+}
+.bullets li::before {
+  content: "";
+  position: absolute;
+  left: 1px;
+  top: 0.74em;
+  width: 3px;
+  height: 3px;
+  border-radius: 50%;
+  background: var(--ink);
+  transform: translateY(-50%);
 }
 .item-body {
   margin: 1px 0 0 0;

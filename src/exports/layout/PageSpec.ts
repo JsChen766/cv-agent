@@ -42,7 +42,7 @@ export const A4_ONE_PAGE_SPEC: ResumePageSpec = {
   },
   contentWidthPx: 794 - mmToPx(8) * 2,
   usableHeightPx: 1123 - mmToPx(8) * 2,
-  bulletMinLineWidthRatio: 0.8,
+  bulletMinLineWidthRatio: 0,
   maxBulletLines: 2,
   defaultDensity: "standard",
   targetPages: 1,

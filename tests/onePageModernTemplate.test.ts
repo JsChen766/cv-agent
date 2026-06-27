@@ -110,6 +110,25 @@ describe("onePageModernTemplate — visual contract", () => {
     expect(html).toMatch(/<li[^>]*>主导设计系统重构<\/li>/);
     expect(html).toMatch(/<span class="item-period">2022\.03/);
   });
+
+  it("uses normal bullet text spacing and a fixed custom dot marker", () => {
+    const html = onePageModernTemplate().render({
+      resume: buildResume([
+        buildItem({
+          contentSnapshot: "数据分析实习生 \u00B7 WEEX \u00B7 2026.01 - 2026.04\n- 编写95个复杂SQL脚本并沉淀指标口径",
+        }),
+      ]),
+    });
+    expect(html).toContain(".bullets li::before");
+    expect(html).toContain('content: ""');
+    expect(html).toContain("border-radius: 50%");
+    expect(html).toContain("letter-spacing: 0");
+    expect(html).toContain("word-spacing: normal");
+    expect(html).not.toContain("text-align: justify");
+    expect(html).not.toContain("text-align-last: justify");
+    expect(html).not.toContain("text-justify:");
+    expect(html).not.toContain("list-style: disc");
+  });
 });
 
 describe("onePageModernTemplate — structured (Phase 3) data path", () => {

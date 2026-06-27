@@ -128,14 +128,16 @@ export class ResumeLayoutOracle {
                 range.selectNodeContents(li);
                 const widths = mergeRects(Array.from(range.getClientRects()) as Array<{ top: number; width: number; height: number }>);
                 range.detach();
-                const passesLineWidth = widths.length > 0 && widths.every((width) => width >= bulletMin);
+                // Natural line widths are diagnostic only. Do not fail a bullet
+                // just because the browser lays out a short final line; forcing
+                // that to pass with CSS justification creates uneven CJK spacing.
                 const passesLineCount = widths.length > 0 && widths.length <= spec.maxBulletLines;
                 return {
                   bulletId: li.getAttribute("data-bullet-id") || "",
                   lineCount: widths.length,
                   lineWidthsPx: widths,
                   minRequiredLineWidthPx: bulletMin,
-                  passesWidthRule: passesLineWidth && passesLineCount,
+                  passesWidthRule: passesLineCount,
                   text: (li.textContent || "").trim(),
                 };
               });
