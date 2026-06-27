@@ -403,13 +403,17 @@ export class ResumeExportService {
         density,
         renderHtml: (candidate) => this.renderer.render(candidate, templateId),
       });
-      if (result.report.fitsPage && result.report.passesBulletWidthRule) {
+      const pageUsage = result.report.usableHeightPx > 0
+        ? result.report.contentHeightPx / result.report.usableHeightPx
+        : 1;
+      if (result.report.fitsPage && result.report.passesBulletWidthRule && pageUsage >= 0.92) {
         const html = this.renderer.render(result.resume, templateId);
         console.debug("[exports] incremental layout composer applied", {
           exportId: record.id,
           resumeId: record.resumeId,
           contentHeightPx: result.report.contentHeightPx,
           remainingHeightPx: result.report.remainingHeightPx,
+          pageUsage,
           actions: result.actions.length,
         });
         return { resume: result.resume, html, layoutReport: result.report };
@@ -418,6 +422,9 @@ export class ResumeExportService {
         exportId: record.id,
         resumeId: record.resumeId,
         overflowPx: result.report.overflowPx,
+        contentHeightPx: result.report.contentHeightPx,
+        usableHeightPx: result.report.usableHeightPx,
+        pageUsage,
         invalidBullets: result.report.invalidBullets.length,
       });
       return { resume, html: baseHtml, layoutReport: result.report };

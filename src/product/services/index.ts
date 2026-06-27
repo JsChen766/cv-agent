@@ -13,6 +13,7 @@ import type {
   ProductResume,
   ProductResumeDetail,
   ProductResumeItem,
+  ResumeDocument,
   ResumeDocumentSection,
   VariantComparisonMatrixRow,
 } from "../types.js";
@@ -1029,12 +1030,13 @@ export class GenerationProductService {
       limit: 100,
       status: "active",
     });
-    const experiences = evidencePack
-      ? buildResumeSourceExperienceSet(allActiveExperiences, evidencePack).slice(0, 14)
-      : allActiveExperiences.slice(0, 10);
+    const experiences = buildResumeSourceExperienceSet(allActiveExperiences, evidencePack, jd.rawText);
 
     const evidencePackForGeneration = evidencePack
-      ? enrichEvidencePackWithSourceExperienceFacts(evidencePack, experiences)
+      ? enrichEvidencePackWithSourceExperienceFacts(
+          narrowEvidencePackToSourceExperiences(evidencePack, experiences),
+          experiences,
+        )
       : undefined;
 
     const groundingContext = this.groundingCoordinator.build({
@@ -1073,6 +1075,11 @@ export class GenerationProductService {
         if (evidencePackForGeneration && this.evidenceRAGService) {
           variants = this.evidenceRAGService.verifyGeneratedVariants(variants, evidencePackForGeneration);
         }
+        variants = densifyGeneratedResumeVariants({
+          variants,
+          sourceExperiences: experiences,
+          recommendedVariantId,
+        });
       } catch (error) {
         throw generationFailureError(error);
       }
@@ -1177,9 +1184,7 @@ export class GenerationProductService {
       : buildResumeRecord(userId, {
           targetRole: generation.targetRole,
           jdId: generation.jdId,
-          title: generation.targetRole
-            ? `${generation.targetRole} draft`
-            : "Copilot resume draft",
+          title: buildGeneratedResumeTitle(generation.targetRole),
         });
 
     const item = buildResumeItemRecord(userId, targetResume.id, {
@@ -1285,7 +1290,7 @@ export class GenerationProductService {
       : await this.resumeService.createResume(userId, {
         targetRole: generation.targetRole,
         jdId: generation.jdId,
-        title: generation.targetRole ? `${generation.targetRole} draft` : "Copilot resume draft",
+        title: buildGeneratedResumeTitle(generation.targetRole),
       });
     const baseOrderIndex = resume?.items.length ?? 0;
     const items: ProductResumeItem[] = [];
@@ -1299,6 +1304,8 @@ export class GenerationProductService {
         sectionOrder: entry.sectionOrder,
         itemId: entry.itemId,
         bulletIds: entry.bulletIds,
+        bulletTexts: entry.bulletTexts,
+        bulletEvidence: entry.bulletEvidence,
       };
       if (entry.sourceExperienceId) itemMetadata.sourceExperienceId = entry.sourceExperienceId;
       if (entry.evidenceStrength) itemMetadata.evidenceStrength = entry.evidenceStrength;
@@ -1395,25 +1402,146 @@ function filterExperiencesByEvidencePack<T extends ProductExperienceSummary>(
 
 function buildResumeSourceExperienceSet<T extends ProductExperienceSummary>(
   experiences: T[],
-  evidencePack: EvidencePack,
+  evidencePack?: EvidencePack,
+  jdText?: string,
 ): T[] {
-  const relevant = filterExperiencesByEvidencePack(experiences, evidencePack);
   const foundation = experiences
     .filter((item) => item.category === "education" || item.category === "skill" || item.category === "award")
     .sort((a, b) => foundationCategoryRank(a.category) - foundationCategoryRank(b.category)
       || a.createdAt.localeCompare(b.createdAt));
+  const rankedCareer = rankCareerExperiencesForJD(experiences, evidencePack, jdText);
+  const workLike = rankedCareer
+    .filter((item) => item.experience.category === "internship" || item.experience.category === "work")
+    .slice(0, 3)
+    .map((item) => item.experience);
+  const projects = rankedCareer
+    .filter((item) => item.experience.category === "project")
+    .slice(0, 3)
+    .map((item) => item.experience);
   const merged = new Map<string, T>();
-  for (const item of [...foundation, ...relevant]) {
+  for (const item of [...foundation, ...workLike, ...projects]) {
     if (!merged.has(item.id)) merged.set(item.id, item);
   }
   return [...merged.values()];
 }
 
+type RankedResumeExperience<T extends ProductExperienceSummary> = {
+  experience: T;
+  evidenceScore: number;
+  evidenceRank: number;
+  keywordScore: number;
+};
+
+function rankCareerExperiencesForJD<T extends ProductExperienceSummary>(
+  experiences: T[],
+  evidencePack: EvidencePack | undefined,
+  jdText: string | undefined,
+): RankedResumeExperience<T>[] {
+  const traceRank = new Map<string, { score: number; rank: number }>();
+  if (evidencePack) {
+    evidencePack.retrievalTrace.forEach((trace, index) => {
+      const existing = traceRank.get(trace.experienceId);
+      const score = Number.isFinite(trace.score) ? trace.score : 0;
+      if (!existing || score > existing.score || (score === existing.score && index < existing.rank)) {
+        traceRank.set(trace.experienceId, { score, rank: index });
+      }
+    });
+  }
+
+  return experiences
+    .filter((item) => item.category === "internship" || item.category === "work" || item.category === "project")
+    .map((experience) => {
+      const trace = traceRank.get(experience.id);
+      return {
+        experience,
+        evidenceScore: trace?.score ?? 0,
+        evidenceRank: trace?.rank ?? Number.MAX_SAFE_INTEGER,
+        keywordScore: keywordResumeMatchScore(experience, jdText),
+      };
+    })
+    .sort((a, b) => {
+      const evidenceDiff = b.evidenceScore - a.evidenceScore;
+      if (Math.abs(evidenceDiff) > 0.0001) return evidenceDiff;
+      const traceDiff = a.evidenceRank - b.evidenceRank;
+      if (traceDiff !== 0) return traceDiff;
+      const keywordDiff = b.keywordScore - a.keywordScore;
+      if (Math.abs(keywordDiff) > 0.0001) return keywordDiff;
+      return compareResumeSourceCandidate(a.experience, b.experience);
+    });
+}
+
+function keywordResumeMatchScore(experience: ProductExperienceSummary, jdText: string | undefined): number {
+  const jdTerms = extractResumeMatchTerms(jdText ?? "");
+  if (jdTerms.length === 0) return 0;
+  const sourceText = [
+    experience.title,
+    experience.organization ?? "",
+    experience.role ?? "",
+    experience.content ?? "",
+    ...collectResumeStructuredTerms(experience.structured),
+  ].join(" ").toLowerCase();
+  const matched = jdTerms.filter((term) => sourceText.includes(term));
+  return matched.length / Math.min(jdTerms.length, 48);
+}
+
+function extractResumeMatchTerms(text: string): string[] {
+  const lower = text.toLowerCase();
+  const ascii = lower.match(/[a-z][a-z0-9+#.-]{1,}/g) ?? [];
+  const cjk = lower.match(/[\u3400-\u9fff]{2,}/g) ?? [];
+  return Array.from(new Set([...ascii, ...cjk]))
+    .filter((term) => !RESUME_MATCH_STOPWORDS.has(term))
+    .slice(0, 80);
+}
+
+function collectResumeStructuredTerms(value: unknown): string[] {
+  if (typeof value === "string") return [value];
+  if (Array.isArray(value)) return value.flatMap((item) => collectResumeStructuredTerms(item));
+  if (value && typeof value === "object") {
+    return Object.values(value as Record<string, unknown>).flatMap((item) => collectResumeStructuredTerms(item));
+  }
+  return [];
+}
+
+const RESUME_MATCH_STOPWORDS = new Set([
+  "with",
+  "and",
+  "the",
+  "for",
+  "from",
+  "this",
+  "that",
+  "your",
+  "岗位",
+  "要求",
+  "负责",
+  "能力",
+  "相关",
+  "经验",
+  "熟悉",
+  "优先",
+]);
+
 function foundationCategoryRank(category: ProductExperienceSummary["category"]): number {
   if (category === "education") return 0;
-  if (category === "skill") return 1;
-  if (category === "award") return 2;
+  if (category === "award") return 1;
+  if (category === "skill") return 2;
   return 3;
+}
+
+function compareResumeSourceCandidate<T extends ProductExperienceSummary>(a: T, b: T): number {
+  const categoryDiff = resumeSourceCategoryRank(a.category) - resumeSourceCategoryRank(b.category);
+  if (categoryDiff !== 0) return categoryDiff;
+  return resumeSourceRecencyKey(b).localeCompare(resumeSourceRecencyKey(a));
+}
+
+function resumeSourceCategoryRank(category: ProductExperienceSummary["category"]): number {
+  if (category === "internship" || category === "work") return 0;
+  if (category === "project") return 1;
+  return 2;
+}
+
+function resumeSourceRecencyKey(item: ProductExperienceSummary): string {
+  return item.endDate || item.startDate || item.createdAt || "";
 }
 
 function buildExperienceRecords(userId: string, input: {
@@ -1478,6 +1606,11 @@ function buildResumeRecord(userId: string, input: {
     createdAt: now,
     updatedAt: now,
   };
+}
+
+function buildGeneratedResumeTitle(targetRole: string | undefined): string {
+  const role = targetRole?.trim();
+  return role ? `${role}简历` : "个人简历";
 }
 
 function buildResumeItemRecord(userId: string, resumeId: string, input: {
@@ -1600,7 +1733,7 @@ function enrichEvidencePackWithSourceExperienceFacts(
     evidencePack.allowedClaims.map((claim) => claim.claimId ?? claim.id),
   );
   const sourceClaims: EvidencePack["allowedClaims"] = [];
-  for (const exp of experiences.slice(0, 12)) {
+  for (const exp of experiences.slice(0, 20)) {
     const claimId = `source-card-${exp.id}`;
     if (existingClaimIds.has(claimId)) continue;
     const parts = [
@@ -1629,7 +1762,35 @@ function enrichEvidencePackWithSourceExperienceFacts(
   if (sourceClaims.length === 0) return evidencePack;
   return {
     ...evidencePack,
-    allowedClaims: [...sourceClaims, ...evidencePack.allowedClaims].slice(0, 72),
+    allowedClaims: [...sourceClaims, ...evidencePack.allowedClaims].slice(0, 96),
+  };
+}
+
+function narrowEvidencePackToSourceExperiences(
+  evidencePack: EvidencePack,
+  experiences: ProductExperienceSummary[],
+): EvidencePack {
+  const sourceIds = new Set(experiences.map((item) => item.id));
+  const allowedClaimIds = new Set<string>();
+  const allowedClaims = evidencePack.allowedClaims.filter((claim) => {
+    const keep = sourceIds.has(claim.experienceId);
+    if (keep) allowedClaimIds.add(claim.claimId ?? claim.id);
+    return keep;
+  });
+  return {
+    ...evidencePack,
+    matchedEvidence: evidencePack.matchedEvidence.map((match) => ({
+      ...match,
+      evidenceItems: match.evidenceItems.filter((item) => sourceIds.has(item.experienceId)),
+    })),
+    allowedClaims,
+    retrievalTrace: evidencePack.retrievalTrace.filter((item) => sourceIds.has(item.experienceId)),
+    graphLinks: evidencePack.graphLinks.filter((link) =>
+      allowedClaimIds.has(link.sourceId) || allowedClaimIds.has(link.targetId),
+    ),
+    usageTrace: evidencePack.usageTrace.filter((item) =>
+      !item.experienceId || sourceIds.has(item.experienceId),
+    ),
   };
 }
 
@@ -1666,12 +1827,271 @@ function inferTitle(content: string, fallback: string): string {
 // ResumeDocument → ProductResumeItem entries
 // ───────────────────────────────────────────────────────────────
 
+const DENSITY_MIN_CAREER_BULLETS = 20;
+const DENSITY_MAX_SUPPLEMENTAL_ITEMS = 10;
+const SECTION_ORDER_FOR_DENSITY: Record<ProductResumeItem["sectionType"], number> = {
+  education: 0,
+  experience: 1,
+  project: 2,
+  award: 3,
+  skill: 4,
+  summary: 5,
+  other: 6,
+};
+
+function densifyGeneratedResumeVariants(input: {
+  variants: ProductGeneratedVariant[];
+  sourceExperiences: ProductExperienceSummary[];
+  recommendedVariantId?: string;
+}): ProductGeneratedVariant[] {
+  const recommendedId = input.recommendedVariantId
+    ?? input.variants.find((variant) => variant.recommended)?.id
+    ?? input.variants[0]?.id;
+  return input.variants.map((variant) => {
+    if (variant.id !== recommendedId) return variant;
+    return densifyGeneratedResumeVariant(variant, input.sourceExperiences);
+  });
+}
+
+function densifyGeneratedResumeVariant(
+  variant: ProductGeneratedVariant,
+  sourceExperiences: ProductExperienceSummary[],
+): ProductGeneratedVariant {
+  const doc = variant.resumeDocument;
+  if (!doc || !Array.isArray(doc.sections) || doc.sections.length === 0) return variant;
+  const nextDoc: ResumeDocument = {
+    ...doc,
+    sections: doc.sections.map((section) => ({
+      ...section,
+      items: section.items.map((item) => ({ ...item, bullets: item.bullets.map((bullet) => ({ ...bullet })) })),
+    })),
+  };
+  const usedSourceIds = new Set<string>();
+  for (const section of nextDoc.sections) {
+    for (const item of section.items) {
+      if (item.sourceExperienceId) usedSourceIds.add(item.sourceExperienceId);
+    }
+  }
+
+  let careerBulletCount = countCareerBullets(nextDoc);
+  if (careerBulletCount >= DENSITY_MIN_CAREER_BULLETS) return variant;
+
+  const sourcesById = new Map(sourceExperiences.map((source) => [source.id, source]));
+  for (const section of nextDoc.sections) {
+    if (careerBulletCount >= DENSITY_MIN_CAREER_BULLETS) break;
+    if (section.type !== "experience" && section.type !== "project") continue;
+    for (const item of section.items) {
+      if (careerBulletCount >= DENSITY_MIN_CAREER_BULLETS) break;
+      if (!item.sourceExperienceId) continue;
+      const source = sourcesById.get(item.sourceExperienceId);
+      if (!source) continue;
+      const existingTexts = new Set(item.bullets.map((bullet) => bullet.text.trim()));
+      for (const text of denseBulletsFromSourceExperience(source, DENSITY_MIN_CAREER_BULLETS - careerBulletCount)) {
+        if (item.bullets.length >= 4) break;
+        if (existingTexts.has(text)) continue;
+        item.bullets.push({
+          id: `density-${source.id}-b${item.bullets.length + 1}`,
+          text,
+          evidenceIds: [`source-card-${source.id}`],
+        });
+        existingTexts.add(text);
+        careerBulletCount += 1;
+        usedSourceIds.add(source.id);
+      }
+    }
+  }
+
+  let supplementalItems = 0;
+  for (const source of sourceExperiences) {
+    if (careerBulletCount >= DENSITY_MIN_CAREER_BULLETS) break;
+    if (supplementalItems >= DENSITY_MAX_SUPPLEMENTAL_ITEMS) break;
+    const sectionType = resumeSectionTypeForExperience(source);
+    if (sectionType !== "experience" && sectionType !== "project") continue;
+    if (usedSourceIds.has(source.id)) continue;
+    const bullets = denseBulletsFromSourceExperience(source, DENSITY_MIN_CAREER_BULLETS - careerBulletCount);
+    if (bullets.length === 0) continue;
+    const section = ensureResumeDocumentSection(nextDoc, sectionType);
+    section.items.push({
+      id: `density-${source.id}`,
+      title: source.role || source.title,
+      subtitle: source.organization,
+      period: formatResumeDateRange(source.startDate, source.endDate),
+      bullets: bullets.map((text, index) => ({
+        id: `density-${source.id}-b${index + 1}`,
+        text,
+        evidenceIds: [`source-card-${source.id}`],
+      })),
+      sourceExperienceId: source.id,
+      evidenceStrength: "medium",
+      relevanceScore: 0.55,
+    });
+    usedSourceIds.add(source.id);
+    careerBulletCount += bullets.length;
+    supplementalItems += 1;
+  }
+
+  if (careerBulletCount === countCareerBullets(doc)) return variant;
+  const sourceExperienceIds = Array.from(new Set([
+    ...(variant.sourceExperienceIds ?? []),
+    ...Array.from(usedSourceIds),
+  ]));
+  return {
+    ...variant,
+    resumeDocument: sortResumeDocument(nextDoc),
+    sourceExperienceIds,
+    reason: [
+      variant.reason,
+      `Density completion added evidence-backed internship/project items from ${supplementalItems} source experiences.`,
+    ].filter(Boolean).join(" "),
+  };
+}
+
+function countCareerBullets(doc: ResumeDocument): number {
+  return doc.sections
+    .filter((section) => section.type === "experience" || section.type === "project")
+    .reduce((sum, section) => sum + section.items.reduce((inner, item) => inner + item.bullets.length, 0), 0);
+}
+
+function ensureResumeDocumentSection(
+  doc: ResumeDocument,
+  type: ProductResumeItem["sectionType"],
+): ResumeDocumentSection {
+  const found = doc.sections.find((section) => section.type === type);
+  if (found) return found;
+  const section: ResumeDocumentSection = {
+    id: `density-sec-${type}`,
+    type,
+    title: type === "project" ? "项目经历" : "实习经历",
+    order: SECTION_ORDER_FOR_DENSITY[type],
+    items: [],
+  };
+  doc.sections.push(section);
+  return section;
+}
+
+function sortResumeDocument(doc: ResumeDocument): ResumeDocument {
+  return {
+    ...doc,
+    sections: doc.sections
+      .map((section) => ({
+        ...section,
+        order: SECTION_ORDER_FOR_DENSITY[section.type] ?? section.order,
+      }))
+      .sort((a, b) => a.order - b.order),
+  };
+}
+
+function resumeSectionTypeForExperience(source: ProductExperienceSummary): ProductResumeItem["sectionType"] {
+  if (source.category === "internship" || source.category === "work") return "experience";
+  if (source.category === "project") return "project";
+  if (source.category === "education") return "education";
+  if (source.category === "award") return "award";
+  if (source.category === "skill") return "skill";
+  return "other";
+}
+
+function denseBulletsFromSourceExperience(source: ProductExperienceSummary, remainingNeeded: number): string[] {
+  const candidates = sourceEvidencePhrases(source);
+  const bullets: string[] = [];
+  for (const candidate of candidates) {
+    const bullet = normalizeDenseBullet(candidate);
+    if (!bullet || bullets.includes(bullet)) continue;
+    bullets.push(bullet);
+    if (bullets.length >= Math.min(4, Math.max(1, remainingNeeded))) break;
+  }
+  return bullets;
+}
+
+function sourceEvidencePhrases(source: ProductExperienceSummary): string[] {
+  const phrases: string[] = [];
+  const structured = source.structured ?? {};
+  for (const key of ["highlights", "achievements", "responsibilities", "metrics", "description", "content"]) {
+    phrases.push(...collectStructuredStrings(structured[key]));
+  }
+  if (source.content) {
+    phrases.push(...splitEvidenceText(source.content));
+    phrases.push(...splitLongEvidencePhrase(source.content));
+  }
+  return phrases
+    .map((item) => item.replace(/\s+/g, " ").trim())
+    .flatMap((item) => splitLongEvidencePhrase(item))
+    .filter((item, index, list) => item.length >= 18 && list.indexOf(item) === index);
+}
+
+function collectStructuredStrings(value: unknown): string[] {
+  if (typeof value === "string") return splitEvidenceText(value);
+  if (Array.isArray(value)) return value.flatMap((item) => collectStructuredStrings(item));
+  if (value && typeof value === "object") {
+    return Object.values(value as Record<string, unknown>).flatMap((item) => collectStructuredStrings(item));
+  }
+  return [];
+}
+
+function splitEvidenceText(text: string): string[] {
+  return text
+    .split(/\r?\n|[-•*]\s+|[。；;]\s*/u)
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function splitLongEvidencePhrase(text: string): string[] {
+  const normalized = text.replace(/\s+/g, " ").trim();
+  if (normalized.length <= 88) return [normalized];
+  const chunks: string[] = [];
+  for (let start = 0; start < normalized.length; start += 58) {
+    const chunk = normalized.slice(start, start + 72).trim();
+    if (chunk.length >= 24) chunks.push(chunk);
+  }
+  return chunks.length > 0 ? chunks : [normalized];
+}
+
+function normalizeDenseBullet(text: string): string | undefined {
+  const cleaned = text
+    .replace(/^[-•*\d.\s]+/u, "")
+    .replace(/^(项目|职责|成果|内容|描述|亮点|工作)[:：]\s*/u, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (cleaned.length < 24) return undefined;
+  if (containsCjkText(cleaned)) {
+    return trimCjkBullet(cleaned);
+  }
+  return trimAsciiBullet(cleaned);
+}
+
+function trimCjkBullet(text: string): string {
+  if (text.length <= 64) return text;
+  const slice = text.slice(0, 64);
+  const boundary = Math.max(
+    slice.lastIndexOf("，"),
+    slice.lastIndexOf("、"),
+    slice.lastIndexOf("；"),
+    slice.lastIndexOf(";"),
+    slice.lastIndexOf(","),
+  );
+  if (boundary >= 46) return slice.slice(0, boundary).replace(/[，、；;,]\s*$/u, "");
+  return slice;
+}
+
+function trimAsciiBullet(text: string): string {
+  if (text.length <= 130) return text;
+  const slice = text.slice(0, 130);
+  const boundary = Math.max(slice.lastIndexOf(";"), slice.lastIndexOf(","), slice.lastIndexOf(" "));
+  if (boundary >= 90) return slice.slice(0, boundary).replace(/[;,]\s*$/u, "");
+  return slice;
+}
+
+function containsCjkText(text: string): boolean {
+  return /[\u3400-\u9FFF]/u.test(text);
+}
+
 type ResumeDocumentItemEntry = {
   sectionId: string;
   sectionType: ProductResumeItem["sectionType"];
   sectionOrder: number;
   itemId: string;
   bulletIds: string[];
+  bulletTexts: Record<string, string>;
+  bulletEvidence: Record<string, string>;
   title: string;
   contentSnapshot: string;
   sourceExperienceId?: string;
@@ -1726,6 +2146,16 @@ function toItemEntry(
     sectionOrder: section.order,
     itemId: item.id,
     bulletIds: (item.bullets ?? []).map((b) => b?.id).filter((id): id is string => typeof id === "string" && id.length > 0),
+    bulletTexts: Object.fromEntries(
+      (item.bullets ?? [])
+        .filter((b) => typeof b?.id === "string" && b.id.length > 0 && typeof b.text === "string")
+        .map((b) => [b.id, b.text.trim()]),
+    ),
+    bulletEvidence: Object.fromEntries(
+      (item.bullets ?? [])
+        .filter((b) => typeof b?.id === "string" && b.id.length > 0 && Array.isArray(b.evidenceIds) && b.evidenceIds.length > 0)
+        .map((b) => [b.id, b.evidenceIds![0]!]),
+    ),
     title: title.slice(0, 120),
     contentSnapshot,
     sourceExperienceId: typeof item.sourceExperienceId === "string" && item.sourceExperienceId.trim().length > 0

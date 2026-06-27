@@ -554,6 +554,9 @@ const NormalizedGenerationResultSchema = z.object({
 
 const PROMPTS = new PromptRegistry();
 const SYSTEM_PROMPT = PROMPTS.get("product.generation.resumeSystem");
+const GENERATION_TIMEOUT_MS = 120_000;
+const GENERATION_MAX_RETRIES = 1;
+const GENERATION_MAX_TOKENS = 12_000;
 
 function buildUserPrompt(
   jdText: string,
@@ -620,7 +623,9 @@ function buildEvidenceGroundedUserPrompt(input: {
     `  matched=${item.matchedTerms.join(", ") || "none"}; reason=${item.reason}`,
   ].join("\n")).join("\n");
 
-  const sourceCards = buildSourceExperienceCards(input.sourceExperiences ?? []);
+  const sourceExperiences = input.sourceExperiences ?? [];
+  const sourceInventory = buildSourceExperienceInventory(sourceExperiences);
+  const sourceCards = buildSourceExperienceCards(sourceExperiences);
 
   const longTermMemory = input.evidencePack.longTermMemory ? [
     "Claim Usage Stats:",
@@ -708,6 +713,8 @@ function buildEvidenceGroundedUserPrompt(input: {
     allowedClaims,
     "",
     "Candidate Source Cards (authoritative resume facts):",
+    sourceInventory,
+    "",
     sourceCards || "No source cards were provided. Use only Allowed Claims.",
     "",
     "Missing or Weakly Supported Requirements:",
@@ -730,9 +737,15 @@ function buildEvidenceGroundedUserPrompt(input: {
     "- Do not attach every retrieved claim to every variant. Return only directly used claims.",
     "- Provide evidenceSummary and riskSummary based on the Evidence Pack.",
     "- Use exact organization, role/title, school, dates, and project names from Candidate Source Cards. If a field is missing, omit it; never write placeholders such as 某公司, 某科技公司, or guessed dates.",
-    "- The recommended variant must read like a complete one-page resume body, not a short analysis summary. Use plain Chinese section headings such as 教育经历, 技能与兴趣, 实习经历, 项目经历.",
-    "- Match the reference resume density: concise high-signal bullets, action + method/technology + scope + verified metric/result, usually 2-5 bullets per selected experience/project.",
-    "- Tailor selection and bullet ordering to the JD. Prefer the most relevant 4-6 source experiences over listing everything.",
+    "- The recommended variant must read like a complete one-page resume body, not a short analysis summary. Use plain Chinese section headings such as 教育经历, 实习经历, 项目经历, 荣誉奖项, 技能与兴趣.",
+    "- Follow the reference resume order by default: 教育经历 -> 实习/工作经历 -> 项目经历 -> 荣誉奖项 -> 技能与兴趣. Keep both degrees, awards, and compact skills when source cards provide them.",
+    "- Match the reference resume density: use a full one-page Chinese resume body with dense internship/project sections, not a sparse shortlist.",
+    "- Recommended variant target: usually 14-20 strong bullets across 7-10 source experiences/items when source cards support it; secondary variant can be shorter.",
+    "- Internship/work and project sections are the core density engine. When source cards contain at least 2 internship/work items or at least 3 project items, the recommended variant should include several of them rather than collapsing the library into only 1-2 experiences.",
+    "- For the strongest matching internship/project items, write 2-4 bullets. For secondary but useful internship/project items, write 1-2 compact evidence-backed bullets.",
+    "- Each bullet should be long enough to occupy most of a resume line in the fixed A4 template. If a bullet wraps to a second line, the second line should also be substantial; avoid fragment endings of only a few words.",
+    "- Each bullet should use action + method/technology + scope + verified metric/result, and should be rich enough to fill resume space without becoming a paragraph.",
+    "- Tailor selection and bullet ordering to the JD. Prefer the most relevant 6-9 source experiences over listing everything, but do not omit good internship/project evidence merely because the top 1-2 items already match.",
     "- Avoid obvious AI resume filler such as 具备较强, 良好的, 扎实的, 积极主动, 学习能力强 unless directly supported by evidence.",
     "- Include a valid resumeDocument for every variant whenever possible; it must mirror the plain content and preserve sourceExperienceId/evidenceIds.",
     "",
@@ -741,7 +754,11 @@ function buildEvidenceGroundedUserPrompt(input: {
 }
 
 function buildSourceExperienceCards(experiences: ProductExperienceSummary[]): string {
-  return experiences.slice(0, 12).map((exp) => {
+  return experiences
+    .slice(0, 16)
+    .map((exp, index) => ({ exp, index }))
+    .sort((a, b) => sourceCardCategoryRank(a.exp.category) - sourceCardCategoryRank(b.exp.category) || a.index - b.index)
+    .map(({ exp }) => {
     const structured = compactStructuredExperience(exp.structured);
     const dates = [exp.startDate, exp.endDate].filter(Boolean).join(" - ");
     return [
@@ -753,9 +770,30 @@ function buildSourceExperienceCards(experiences: ProductExperienceSummary[]): st
       structured.techStack.length > 0 ? `  techStack=${structured.techStack.join(", ")}` : "",
       structured.metrics.length > 0 ? `  metrics=${structured.metrics.join(" | ")}` : "",
       structured.highlights.length > 0 ? `  highlights=${structured.highlights.join(" | ")}` : "",
-      exp.content ? `  content=${exp.content.replace(/\s+/g, " ").trim().slice(0, 900)}` : "",
+      exp.content ? `  content=${exp.content.replace(/\s+/g, " ").trim().slice(0, 520)}` : "",
     ].filter(Boolean).join("\n");
   }).join("\n\n");
+}
+
+function buildSourceExperienceInventory(experiences: ProductExperienceSummary[]): string {
+  if (experiences.length === 0) return "Source inventory: none.";
+  const counts = new Map<ProductExperienceSummary["category"], number>();
+  for (const exp of experiences) counts.set(exp.category, (counts.get(exp.category) ?? 0) + 1);
+  const count = (category: ProductExperienceSummary["category"]) => counts.get(category) ?? 0;
+  return [
+    `Source inventory: total=${experiences.length}`,
+    `- education=${count("education")}; internship=${count("internship")}; work=${count("work")}; project=${count("project")}; award=${count("award")}; skill=${count("skill")}; other=${count("other")}`,
+    "- Selection rule: these source cards have already been shortlisted for this JD. Keep education/awards/skills compactly, then use the provided internship/work and project cards in priority order to fill one A4 page while staying evidence-backed.",
+  ].join("\n");
+}
+
+function sourceCardCategoryRank(category: ProductExperienceSummary["category"]): number {
+  if (category === "education") return 0;
+  if (category === "internship" || category === "work") return 1;
+  if (category === "project") return 2;
+  if (category === "award") return 3;
+  if (category === "skill") return 4;
+  return 5;
 }
 
 function compactStructuredExperience(structured: Record<string, unknown> | undefined): {
@@ -1042,7 +1080,14 @@ export class LLMGenerationService {
     userPrompt: string,
     debugPayload: Record<string, unknown>,
   ): Promise<z.infer<typeof NormalizedGenerationResultSchema>> {
-    debugGeneration("initial start", debugPayload);
+    debugGeneration("initial start", {
+      ...debugPayload,
+      promptChars: userPrompt.length,
+      systemPromptChars: SYSTEM_PROMPT.length,
+      maxTokens: GENERATION_MAX_TOKENS,
+      timeoutMs: GENERATION_TIMEOUT_MS,
+      maxRetries: GENERATION_MAX_RETRIES,
+    });
     let responseContent = "";
     try {
       const response = await this.modelClient.chat({
@@ -1051,8 +1096,10 @@ export class LLMGenerationService {
           { role: "user", content: userPrompt },
         ],
         temperature: 0.4,
-        maxTokens: 12000,
+        maxTokens: GENERATION_MAX_TOKENS,
         responseFormat: "json",
+        timeoutMs: GENERATION_TIMEOUT_MS,
+        maxRetries: GENERATION_MAX_RETRIES,
       });
       responseContent = response.content;
     } catch (error) {
@@ -1116,8 +1163,10 @@ export class LLMGenerationService {
           { role: "user", content: REPAIR_PROMPT.replace("{{errors}}", errorSummary) },
         ],
         temperature: 0.3,
-        maxTokens: 12000,
+        maxTokens: GENERATION_MAX_TOKENS,
         responseFormat: "json",
+        timeoutMs: GENERATION_TIMEOUT_MS,
+        maxRetries: GENERATION_MAX_RETRIES,
       });
       responseContent = response.content;
     } catch (error) {

@@ -30,14 +30,16 @@ export class ModelClient {
 
   public async chat(request: ModelClientChatRequest): Promise<LLMChatResponse> {
     const chatRequest = this.prepareRequest(request);
+    const timeoutMs = request.timeoutMs ?? this.timeoutMs;
+    const maxRetries = request.maxRetries ?? this.maxRetries;
     let lastError: unknown;
 
-    for (let attempt = 0; attempt <= this.maxRetries; attempt += 1) {
+    for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
       try {
-        return await this.withTimeout(this.provider.chat(chatRequest), this.timeoutMs);
+        return await this.callWithTimeout(chatRequest, timeoutMs);
       } catch (error) {
         lastError = error;
-        if (attempt >= this.maxRetries) throw this.wrapError(error);
+        if (attempt >= maxRetries) throw this.wrapError(error);
         await sleep(Math.min(2 ** attempt * 250, 4_000));
       }
     }
@@ -56,24 +58,31 @@ export class ModelClient {
   }
 
   private prepareRequest(request: ModelClientChatRequest): LLMChatRequest {
+    const { timeoutMs: _timeoutMs, maxRetries: _maxRetries, ...providerRequest } = request;
     return {
-      ...request,
+      ...providerRequest,
       model: request.model ?? this.defaultModel,
       messages: trimMessages(request.messages, this.maxMessages),
       stream: request.stream ?? false,
     };
   }
 
-  private async withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
+  private async callWithTimeout(request: LLMChatRequest, timeoutMs: number): Promise<LLMChatResponse> {
+    const controller = new AbortController();
+    let didTimeout = false;
     let timeout: ReturnType<typeof setTimeout> | undefined;
-    const timeoutPromise = new Promise<never>((_, reject) => {
-      timeout = setTimeout(() => {
-        reject(new AgentError("MODEL_FAILED", `Model request timed out after ${timeoutMs}ms.`));
-      }, timeoutMs);
-    });
+    timeout = setTimeout(() => {
+      didTimeout = true;
+      controller.abort();
+    }, timeoutMs);
 
     try {
-      return await Promise.race([promise, timeoutPromise]);
+      return await this.provider.chat({ ...request, signal: controller.signal });
+    } catch (error) {
+      if (didTimeout) {
+        throw new AgentError("MODEL_FAILED", `Model request timed out after ${timeoutMs}ms.`);
+      }
+      throw error;
     } finally {
       if (timeout) clearTimeout(timeout);
     }

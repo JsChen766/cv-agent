@@ -49,7 +49,7 @@ function reportFromHtml(html: string): ResumeLayoutReport {
   const minRequired = Math.round(A4_ONE_PAGE_SPEC.contentWidthPx * A4_ONE_PAGE_SPEC.bulletMinLineWidthRatio);
   const bulletLayouts = bulletTexts.map(({ bulletId, text }) => {
     const isTooShort = text.includes("Built API");
-    const widths = isTooShort ? [120] : [560];
+    const widths = isTooShort ? [120] : [700];
     return {
       bulletId,
       lineCount: 1,

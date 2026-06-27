@@ -208,17 +208,46 @@ describe("ResumeQualityService.evaluate (deterministic)", () => {
       expect(["high", "critical"]).toContain(layout?.level);
     });
 
-    it("emits a medium layout suggestion when underflow is large and editor did not run", () => {
+    it("emits a layout suggestion when the page is not nearly full", () => {
       const items = [makeItem("i-1", [makeBullet("b-1", VANILLA)])];
-      const fit = makeFit({ overflowPx: 0, underflowPx: 320, contentHeightPx: 600, pageUsableHeightPx: 987 });
+      const fit = makeFit({ overflowPx: 0, underflowPx: 100, contentHeightPx: 887, pageUsableHeightPx: 987 });
       const r = new ResumeQualityService().evaluate({ resume: makeResume(items), items, density: "standard", fitReport: fit });
       const layoutSuggestion = r.suggestions.find((s) => s.dimension === "layout");
       expect(layoutSuggestion).toBeDefined();
     });
 
+    it("flags severe underfill when a one-page resume only uses about four fifths of the page", () => {
+      const items = [makeItem("i-1", [makeBullet("b-1", VANILLA)])];
+      const fit = makeFit({ overflowPx: 0, underflowPx: 187, contentHeightPx: 800, pageUsableHeightPx: 987 });
+      const r = new ResumeQualityService().evaluate({ resume: makeResume(items), items, density: "standard", fitReport: fit });
+      expect(r.layoutScore).toBeLessThan(80);
+      expect(r.risks.find((x) => x.id === "layout:severe_underfill")).toBeDefined();
+    });
+
+    it("does not waive underfill just because a fit edit was attempted", () => {
+      const items = [makeItem("i-1", [makeBullet("b-1", VANILLA)])];
+      const fit = makeFit({ overflowPx: 0, underflowPx: 120, contentHeightPx: 867, pageUsableHeightPx: 987 });
+      const edit: ResumeFitEditorReport = {
+        applied: true,
+        fallback: false,
+        trigger: "fill_underflow",
+        reason: "edits_applied",
+        initialEstimatedPages: 1,
+        finalEstimatedPages: 1,
+        initialOverflowPx: 0,
+        finalOverflowPx: 0,
+        initialUnderflowPx: 200,
+        finalUnderflowPx: 120,
+        actions: [],
+        measuredAt: "2025-01-01T00:00:00Z",
+      };
+      const r = new ResumeQualityService().evaluate({ resume: makeResume(items), items, density: "standard", fitReport: fit, editReport: edit });
+      expect(r.suggestions.find((s) => s.dimension === "layout")).toBeDefined();
+    });
+
     it("does NOT emit a layout risk when the page is balanced", () => {
       const items = [makeItem("i-1", [makeBullet("b-1", VANILLA)])];
-      const r = new ResumeQualityService().evaluate({ resume: makeResume(items), items, density: "standard", fitReport: makeFit({ overflowPx: 0, underflowPx: 80 }) });
+      const r = new ResumeQualityService().evaluate({ resume: makeResume(items), items, density: "standard", fitReport: makeFit({ overflowPx: 0, underflowPx: 70, contentHeightPx: 917, pageUsableHeightPx: 987 }) });
       expect(r.layoutScore).toBeGreaterThanOrEqual(80);
       expect(r.risks.find((x) => x.dimension === "layout")).toBeUndefined();
     });

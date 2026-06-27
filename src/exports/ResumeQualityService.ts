@@ -105,6 +105,8 @@ const ACTION_VERB_PATTERNS: RegExp[] = [
 ];
 
 const METRIC_PATTERN = /(\d+(?:[\.,]\d+)?\s*(?:%|x|×|倍|万|k|K|m|M|h|hours?|days?|weeks?|months?))|\d+/;
+const TARGET_MIN_PAGE_USAGE_RATIO = 0.92;
+const SEVERE_UNDERFILL_PAGE_USAGE_RATIO = 0.82;
 
 export class ResumeQualityService {
   public evaluate(input: ResumeQualityInput): ResumeQualityReport {
@@ -407,13 +409,22 @@ function scoreLayout(
     const range = exhausted ? 35 : 45;
     return Math.round(base + ratio * range);
   }
-  if (underflow >= 240 && (!edit || edit.applied !== true)) {
+  const pageUsage = fit.pageUsableHeightPx > 0 ? fit.contentHeightPx / fit.pageUsableHeightPx : 1;
+  if (pageUsage < TARGET_MIN_PAGE_USAGE_RATIO) {
+    if (pageUsage < SEVERE_UNDERFILL_PAGE_USAGE_RATIO) {
+      risks.push({
+        id: "layout:severe_underfill",
+        level: "medium",
+        dimension: "layout",
+        message: `Resume uses only ${Math.round(pageUsage * 100)}% of the A4 content area. Add enough internship/project evidence to fill the A4 page before sharing.`,
+      });
+    }
     suggestions.push({
       id: "layout:underflow",
       dimension: "layout",
-      message: `Page usage is low (${underflow}px of empty space). Consider expanding key bullets or adding evidence.`,
+      message: `Page usage is low (${underflow}px of empty space, ${Math.round(pageUsage * 100)}% used). Expand internship/project bullets or include more relevant source experiences until the page is nearly full.`,
     });
-    return 75;
+    return pageUsage < SEVERE_UNDERFILL_PAGE_USAGE_RATIO ? 60 : 75;
   }
   return 90;
 }

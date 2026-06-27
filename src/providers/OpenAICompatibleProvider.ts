@@ -23,6 +23,7 @@ export class OpenAICompatibleProvider implements LLMProvider {
       method: "POST",
       headers: this.headers(),
       body: JSON.stringify(this.toRequestBody({ ...request, stream: false })),
+      signal: request.signal,
     });
     return normalizeOpenAIChatResponse(await parseJsonResponse(response, this.name));
   }

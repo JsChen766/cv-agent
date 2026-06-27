@@ -190,6 +190,79 @@
 
 严格判断：阶段三达到当前可进入后续优化的最低质量要求，满意度约 90% 以上。最终 PDF 已能稳定控制在一页，并能保存可审计 layout report；内容不再因为排版被粗暴压缩到只剩教育/技能，经历和项目 bullet 保留较完整。剩余可继续优化点：PDF 中文文本抽取在 `pdfjs-dist` 下仍有部分 `\u0000` 字符（视觉 PDF 正常，机器文本提取不完美）；并发压力测试本轮只完成了 session 隔离设计和单 job 实测，后续若要上线高并发导出，应补充多 export job 并发烟测。
 
+## 阶段四：参考简历贴近度第一轮优化（2026-06-27）
+
+本阶段目标不是重新证明“能导出 PDF”，而是在阶段三的一页 PDF 基础上，针对参考简历观感继续收敛：减少网页化/松散感，修正 section 顺序，提升内容保留量，让成品更接近 `docs/陈剑升-香港城市大学.pdf` 展示的一页中文简历。
+
+本轮发现的主要问题：
+
+- `one-page-modern` 模板固定按 `experience -> project -> education -> skill` 输出，覆盖了阶段二生成内容中更接近参考样本的“教育优先”顺序。
+- 18mm 页边距、10.5pt/1.5 行高、较大的 section/item 间距让 PDF 观感偏松，像网页预览而不是紧凑中文简历。
+- 技能以 chip 样式渲染，占空间且视觉上不像参考简历的“技能与兴趣”文字行。
+- 结构化 education item 的正文渲染会把 header 再拼进详情，导致学历、学校、日期在 PDF 文本中重复。
+- 新接受的生成简历标题使用 `${targetRole} draft`，导致 PDF 顶部出现内部草稿感。
+- PDF 文本抽取会把中文 section 拆成带空格字符，旧 smoke 脚本的 section 正则不能识别阶段四中文标题。
+
+已完成的 Agent 内部优化：
+
+- 收紧 `PageSpec`：A4 页边距由 18mm 调整为 8mm，并在保留默认 `standard` density 语义的前提下重调模板 CSS，让模板、测量和 PDF 渲染继续共享同一个版式真相。
+- 重写 `onePageModernTemplate` 的参考简历顺序：默认按 `教育经历 -> 实习经历 -> 项目经历 -> 荣誉奖项 -> 技能与兴趣 -> 个人总结/其他` 渲染；中文简历使用中文 section label，英文内容仍保留英文 label。
+- 将技能从 chip 改为紧凑行内文本，去掉背景框、边框和大间距；教育/奖项按信息段落渲染，避免 header 在详情里重复。
+- 收紧模板 CSS：更小页边距、9pt 级正文字号、紧凑 section/item/bullet 间距、细分隔线；保留可读性，同时减少阶段三的网页卡片感。
+- 新生成并接受的简历标题从 `${targetRole} draft` 改为 `${targetRole}简历` / `个人简历`，模板渲染时也会清理旧标题里的 `draft/resume` 后缀。
+- 强化生成 prompt：要求默认遵循参考简历顺序，保留双学历、GPA/排名、核心课程、荣誉奖项和紧凑技能行；`resumeDocument.section.order` 也要求按参考顺序输出。
+- 更新真实 smoke 的 section 检查：先去掉 PDF 抽取文本中的空白，再识别中文 `教育/实习/项目/技能`，避免视觉正常但机器正则误判。
+
+真实 LLM/PDF 验收结果：
+
+- 使用本机 Docker 后端 `http://127.0.0.1:3000`，`AGENT_PROVIDER=deepseek`，`PDF_RENDERER=playwright`，用户 `dev-user`。
+- 运行 `scripts/phase3-pdf-layout-smoke.ts` 全量 3 个 JD，覆盖生成、确认、接受变体、导出 PDF、下载和 `layoutReport` 检查；汇总结果保存为 `docs/temp_pdf/2026-06-27T06-33-59-320Z_phase3_summary_pass.json`。
+- `data_bi`：`pgen-bcd7beb2-d395-428f-b4f6-2225830546a8` / `export-366f7715-372f-43c7-98cc-aa5944d280ec`，1 页，`invalidBullets=0`，教育优先，包含项目、荣誉、技能。
+- `ml_data`：`pgen-930cffb2-f879-4c37-adbf-f71555506175` / `export-8269ce0f-c977-4a4d-b36e-aca1e70f5ac8`，1 页，`invalidBullets=0`，中文 section 识别通过。
+- `ai_product`：`pgen-85ba4628-0071-4c50-b60c-71caa6c90dd1` / `export-22919a85-0ab1-475c-8af5-f33592b84eed`，1 页，`invalidBullets=0`，PDF 顶部不再出现 `draft`，顺序为教育、实习、项目、荣誉、技能。
+
+机器验证：
+
+- `npm run typecheck` 通过。
+- `npx vitest run tests/onePageModernTemplate.test.ts tests/saveAcceptedVariantWithDocument.test.ts` 通过。
+- `npx tsx scripts/phase3-pdf-layout-smoke.ts` 通过 3/3 场景；`pdfjs-dist` 仍会输出本地 `canvas` polyfill warning，但不影响页数、文本、下载和 layout 判断。
+
+严格判断：阶段四完成了第一轮“向参考简历靠拢”的关键结构修正，尤其是顺序、标题、技能样式、教育重复和整体紧凑度。当前仍未完全达到参考 PDF：顶部还缺少真实姓名/联系方式（现有后端数据未提供，不应凭空编造），页面仍可进一步通过更多真实内容或更细的布局策略填满；后续阶段可考虑引入候选人 profile/contact 元数据、按参考样本做视觉截图回归，以及让 composer 在 underflow 较大时优先保留更多项目/奖项细节。
+
+## 阶段四追加记录：一页填满与经历密度修正（2026-06-27）
+
+本轮针对新的人工反馈继续收紧阶段四：PDF 不能只做到“一页内”，而要尽量填满一页 A4；实习/项目经历不能只选 1-2 条；荣誉奖项必须横向排版；每条经历 bullet 的行宽需要更饱满，尤其不能出现第二行只剩几个字的断行。
+
+已完成的 Agent 内部优化：
+
+- 将 `PageSpec.bulletMinLineWidthRatio` 从 `2/3` 收紧为 `0.8`，让 Playwright 真实测量的每一行 bullet 都必须接近整行宽度；两行 bullet 的第二行过短会判为不合格。
+- 将 deterministic layout quality 的最低页面使用率从 `82%` 收紧为 `92%`，`82%` 以下直接记为 severe underfill；即使 LLM fit editor 已尝试扩写，最终页面未接近填满也不会豁免。
+- 将 `scripts/phase3-pdf-layout-smoke.ts` 的验收线同步收紧为核心 bullet 不少于 14 条、页面使用率不低于 92%，避免 3/4 页 PDF 再被误判为通过。
+- 调整 `GenerationProductService` 的简历素材选择：教育、奖项、技能作为基础简历骨架保留但不参与 JD 匹配；只有 internship/work 与 project 参与 JD 相关性排序，分别取匹配度最高的前 3 条进入生成候选，再按版式长度从低优先级经历开始压缩或取舍。
+- 在 `GenerationProductService` 中新增内部 density completion：推荐版 `resumeDocument` 如果 career bullets 不足，会先扩写已选实习/工作/项目条目到每条最多 4 个真实证据 bullet，再从已入围但尚未使用的 source experiences 中补充条目；补充项保留 `sourceExperienceId`，bullet 使用原始经历 content/structured 字段中的证据短句，不凭空编造事实。
+- 缩窄 generation evidence pack：传给模型的证据包只围绕入围 source experiences，避免把整库 education/award/skill 当作匹配素材；同时保留基础 section，让简历骨架完整但不干扰 JD 匹配。
+- 调整 `LLMGenerationService` prompt 和 source inventory：显式告诉模型经历库中 education/internship/work/project/award/skill 的数量，要求推荐版优先用足实习/项目素材；同时缩短传给模型的 source card 正文，降低 provider 超时概率，完整经历仍保留在内部补全阶段使用。
+- 为生成链路增加单次请求 `timeoutMs=120000`、`maxRetries=1` 与 AbortController：旧的 60 秒 `Promise.race` 只是在本地抛错，没有终止底层 fetch，长生成重试时可能让外部 provider 请求叠在一起。现在超时会真正 abort，并且 resume 生成可使用更适合长 JSON 输出的超时预算。
+- 将 `onePageModernTemplate` 的荣誉奖项改为横向 `inline-info-line`，类似“技能与兴趣”的紧凑文本行，不再按纵向 bullet/list 渲染。
+- 将经历 bullet 增加 `text-align: justify` / `text-align-last: justify`，并把 standard density 行高微调为 `1.52`，让单行和两行 bullet 都更接近填满整行，减少短尾断行。
+
+机器验证：
+
+- `npm run typecheck` 通过。
+- `npx vitest run tests/onePageModernTemplate.test.ts tests/resumeLayoutComposer.test.ts tests/saveAcceptedVariantWithDocument.test.ts tests/resumeQualityService.test.ts` 通过，覆盖荣誉横排、underfill 无豁免、结构化保存不回退、项目/实习各取 top 3 的素材短名单，以及稀疏 LLM 输出会被真实 source experiences 补足 career bullets。
+
+真实 Docker/LLM 验证状态：
+
+- 本机 Docker 后端 `http://127.0.0.1:3000/health` 正常，`api` 与 Postgres 均运行。
+- 第一次按新验收线运行 `npx tsx scripts/phase3-pdf-layout-smoke.ts` 时，真实输出暴露旧问题仍存在：`data_bi` 仅 `contentHeightPx=404/1063`、`bulletLayouts=2`；`ml_data` 为 `442/1063`、`bulletLayouts=3`；`ai_product` 为 `557/1063`、`bulletLayouts=6`。该结果确认新的 92% 页面使用率与 14 bullet 验收线能抓住 3/4 页问题。
+- 加入 density completion 后再次运行真实 smoke 两次，均在第一个 `long_generation` job 阶段被外部 provider 阻塞：`job-8cfb4b08-2a08-4e58-8868-d4835ba6b8d7` 和 `job-29d4c670-f8dc-4e42-9cd5-dc0d408a57c7` 都失败于旧链路的 `Model request timed out after 60000ms`。排查结论是简历生成链路不同于普通聊天/匹配链路：它会携带 3.7-4.0 万字符 prompt、约 7770 字符 system prompt，并要求模型返回完整结构化简历 JSON；旧超时没有 abort 底层 fetch，导致外部 LLM 看起来像“挡住”了这条链路。
+- 修复长生成超时/abort、缩窄 evidence pack、按 JD 只匹配实习/项目并补足密度后，重新运行 `npx tsx scripts/phase3-pdf-layout-smoke.ts`，真实 Docker/LLM/PDF 3 个场景全部通过，汇总文件为 `docs/temp_pdf/2026-06-27T16-18-33-237Z_phase3_summary_pass.json`。
+- `data_bi`：PDF `docs/temp_pdf/2026-06-27T16-10-59-811Z_01_data_bi_pass_pgen-7ded61ee-3893-48e9-a756-b3aaee37605f_export-97513ef1-9b15-4010-a972-a890ab2c7cf8.pdf`，`fitsPage=true`，`invalidBullets=0`，`contentHeightPx=1056/1063`。
+- `ml_data`：PDF `docs/temp_pdf/2026-06-27T16-13-24-266Z_02_ml_data_pass_pgen-a0c4047e-9481-423d-a84c-6d3e04c954f9_export-c6de3814-6ed2-4e2a-b1f0-f4f0df1ba980.pdf`，`fitsPage=true`，`invalidBullets=0`，`contentHeightPx=1037/1063`。
+- `ai_product`：PDF `docs/temp_pdf/2026-06-27T16-16-07-057Z_03_ai_product_pass_pgen-38d51558-95b6-4945-a68a-b67956207ada_export-6d031c23-f620-4f9f-92bd-dce75a74c07d.pdf`，`fitsPage=true`，`invalidBullets=0`，`contentHeightPx=1056/1063`。
+
+严格判断：阶段四追加轮已通过本机真实 Docker 后端、真实外部 LLM 与真实 PDF 导出验收。当前策略不再让教育、奖项、技能参与 JD 匹配，而是固定保留基础 section；JD 匹配只发生在项目经历和实习/工作经历上，各取 top 3 后进入生成与内部补密度。后续若还需要更像参考 PDF，可继续做候选人 profile/contact 元数据与截图级视觉回归，但一页填满、经历密度、奖项横排和 bullet 行宽这四个反馈点已经进入可验收状态。
+
 ## 真实 LLM 验收记录要求
 
 每次阶段验收都应保存一份报告到 `docs/`，建议命名为：

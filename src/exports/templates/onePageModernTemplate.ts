@@ -12,21 +12,21 @@ export function onePageModernTemplate(): ResumeTemplate {
   };
 }
 
-const DEFAULT_DENSITY: OnePageModernDensity = "standard";
 const MIDDOT = "\u00B7";
 const PAGE = A4_ONE_PAGE_SPEC;
+const DEFAULT_DENSITY: OnePageModernDensity = PAGE.defaultDensity;
 
 const SECTION_ORDER: ProductResumeItem["sectionType"][] = [
-  "summary",
+  "education",
   "experience",
   "project",
-  "education",
-  "skill",
   "award",
+  "skill",
+  "summary",
   "other",
 ];
 
-const SECTION_LABELS: Record<ProductResumeItem["sectionType"], string> = {
+const SECTION_LABELS_EN: Record<ProductResumeItem["sectionType"], string> = {
   summary: "Summary",
   experience: "Experience",
   project: "Projects",
@@ -36,22 +36,37 @@ const SECTION_LABELS: Record<ProductResumeItem["sectionType"], string> = {
   other: "Highlights",
 };
 
+const SECTION_LABELS_ZH: Record<ProductResumeItem["sectionType"], string> = {
+  summary: "个人总结",
+  experience: "实习经历",
+  project: "项目经历",
+  education: "教育经历",
+  skill: "技能与兴趣",
+  award: "荣誉奖项",
+  other: "其他亮点",
+};
+
 function render({ resume }: ResumeTemplateContext): string {
   const density = pickDensity(resume);
   const visibleItems = resume.items.filter((item) => !item.hidden);
   const sections = groupItemsBySection(visibleItems);
+  const labels = usesChineseLabels(resume, visibleItems) ? SECTION_LABELS_ZH : SECTION_LABELS_EN;
   const sectionsHtml = SECTION_ORDER
     .flatMap((type) => {
       const items = sections.get(type);
       if (!items || items.length === 0) return [];
-      return [renderSection(type, items)];
+      return [renderSection(type, items, labels)];
     })
     .join("\n");
 
-  const headerName = escapeHtml(resume.title);
-  const headerKicker = resume.targetRole
-    ? `<div class="kicker">${escapeHtml(resume.targetRole)}</div>`
+  const metadata = (resume as { metadata?: Record<string, unknown> }).metadata ?? {};
+  const profile = profileFromMetadata(metadata);
+  const headerName = escapeHtml(profile.name ?? cleanResumeTitle(resume.title, resume.targetRole));
+  const roleText = profile.name && resume.targetRole ? resume.targetRole : cleanTargetRole(resume.targetRole, resume.title);
+  const headerKicker = roleText
+    ? `<div class="kicker">${escapeHtml(roleText)}</div>`
     : "";
+  const contactHtml = renderContact(profile.contact);
 
   return `<!doctype html>
 <html lang="en">
@@ -65,8 +80,11 @@ ${PRINT_CSS}
 <body>
 <main class="resume density-${density}" data-template="one-page-modern" data-density="${density}" role="document">
   <header class="masthead">
-    <h1 class="name">${headerName}</h1>
-    ${headerKicker}
+    <div class="identity">
+      <h1 class="name">${headerName}</h1>
+      ${headerKicker}
+    </div>
+    ${contactHtml}
   </header>
   ${sectionsHtml}
 </main>
@@ -121,14 +139,78 @@ function bulletIdsMetadata(item: ProductResumeItem): string[] {
   return value.filter((id): id is string => typeof id === "string" && id.length > 0);
 }
 
+function usesChineseLabels(
+  resume: ResumeTemplateContext["resume"],
+  items: ProductResumeItem[],
+): boolean {
+  const text = [
+    resume.title,
+    resume.targetRole,
+    ...items.flatMap((item) => [item.title, item.contentSnapshot]),
+  ].filter(Boolean).join("\n");
+  return /[\u3400-\u9FFF]/u.test(text);
+}
+
+type HeaderProfile = {
+  name?: string;
+  contact: string[];
+};
+
+function profileFromMetadata(metadata: Record<string, unknown>): HeaderProfile {
+  const candidateName = stringValue(metadata.candidateName)
+    ?? stringValue(metadata.name)
+    ?? stringValue(metadata.fullName);
+  const contactRaw = metadata.contact;
+  const contact: string[] = [];
+  if (Array.isArray(contactRaw)) {
+    contact.push(...contactRaw.filter((item): item is string => typeof item === "string" && item.trim().length > 0));
+  } else if (contactRaw && typeof contactRaw === "object") {
+    for (const value of Object.values(contactRaw as Record<string, unknown>)) {
+      if (typeof value === "string" && value.trim().length > 0) contact.push(value.trim());
+    }
+  }
+  for (const key of ["phone", "email", "website", "location"]) {
+    const value = stringValue(metadata[key]);
+    if (value) contact.push(value);
+  }
+  return { name: candidateName, contact: Array.from(new Set(contact)).slice(0, 5) };
+}
+
+function stringValue(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
+}
+
+function cleanResumeTitle(title: string, targetRole?: string): string {
+  const cleaned = title
+    .replace(/\s+(?:draft|resume)\s*$/i, "")
+    .replace(/\s+简历草稿\s*$/u, "")
+    .trim();
+  if (cleaned) return cleaned;
+  return targetRole?.trim() || "Resume";
+}
+
+function cleanTargetRole(targetRole: string | undefined, title: string): string | undefined {
+  const cleanedTitle = cleanResumeTitle(title, targetRole);
+  const role = targetRole?.trim();
+  if (!role || role === cleanedTitle) return undefined;
+  return role;
+}
+
+function renderContact(contact: string[]): string {
+  if (contact.length === 0) return "";
+  return `<address class="contact">${contact.map((item) => `<span>${escapeHtml(item)}</span>`).join("")}</address>`;
+}
+
 function renderSection(
   type: ProductResumeItem["sectionType"],
   items: ProductResumeItem[],
+  labels: Record<ProductResumeItem["sectionType"], string>,
 ): string {
-  const label = SECTION_LABELS[type];
+  const label = labels[type];
   if (type === "skill") return renderSkillSection(label, items);
+  if (type === "award") return renderInlineInfoSection(type, label, items);
   if (type === "summary") return renderSummarySection(label, items);
-  if (type === "education" || type === "award") return renderInfoSection(type, label, items);
+  if (type === "education") return renderInfoSection(type, label, items);
   const body = items.map((item) => renderItem(item)).join("\n");
   const sectionId = sectionIdFor(type, items);
   return `<section class="section section--${type}" data-section-type="${type}" data-section-id="${escapeHtml(sectionId)}">
@@ -149,7 +231,7 @@ function renderInfoSection(
     const dataItemId = stringMetadata(item, "itemId");
     const stableItemId = dataItemId ?? item.id;
     const itemAttrs = ` data-item-id="${escapeHtml(stableItemId)}"`;
-    const details = [...parsed.bullets, parsed.fallbackBody]
+    const details = [...parsed.bullets, ...parsed.bodyLines]
       .flatMap((value) => value.split(/\r?\n/))
       .map((value) => value.trim())
       .filter(Boolean);
@@ -173,7 +255,7 @@ function renderItem(item: ProductResumeItem): string {
   const stableItemId = dataItemId ?? item.id;
   const itemAttrs = ` data-item-id="${escapeHtml(stableItemId)}"`;
   if (parsed.bullets.length === 0) {
-    const body = parsed.fallbackBody.trim();
+    const body = parsed.bodyLines.join("\n").trim() || (parsed.header !== item.title ? parsed.header : "");
     if (!body) return `<article class="item"${itemAttrs}>${headerHtml}</article>`;
     return `<article class="item"${itemAttrs}>${headerHtml}<p class="item-body">${escapeHtml(body)}</p></article>`;
   }
@@ -182,10 +264,17 @@ function renderItem(item: ProductResumeItem): string {
     .map((b, i) => {
       const bid = metadataBulletIds[i] ?? `${stableItemId}-bullet-${i + 1}`;
       const battr = ` data-bullet-id="${escapeHtml(bid)}"`;
-      return `<li${battr}>${escapeHtml(b)}</li>`;
+      return `<li${battr}>${escapeHtml(normalizeBulletText(b))}</li>`;
     })
     .join("");
   return `<article class="item"${itemAttrs}>${headerHtml}<ul class="bullets">${bullets}</ul></article>`;
+}
+
+function normalizeBulletText(value: string): string {
+  const trimmed = value.trim();
+  const labelMatch = /^([\u3400-\u9FFFA-Za-z0-9\s/+&.-]{2,14})[:\uFF1A]\s*(.{24,})$/u.exec(trimmed);
+  if (!labelMatch) return trimmed;
+  return labelMatch[2].trim();
 }
 
 function renderItemHeader(headerLine: string, item: ProductResumeItem): string {
@@ -242,16 +331,41 @@ function renderSkillSection(label: string, items: ProductResumeItem[]): string {
   const skills = items.flatMap((item) => {
     const parsed = parseContentSnapshot(item.contentSnapshot);
     if (parsed.bullets.length > 0) return parsed.bullets;
-    return parsed.fallbackBody
+    const source = parsed.bodyLines.length > 0 ? parsed.bodyLines.join("；") : parsed.header;
+    return source
       .split(/[,\uFF0C;\uFF1B\u3001]/)
       .map((s) => s.trim())
       .filter(Boolean);
   });
   if (skills.length === 0) return "";
-  const chips = skills.map((s) => `<span class="skill-chip">${escapeHtml(s)}</span>`).join("");
+  const line = skills.map((s) => escapeHtml(s)).join("、");
   return `<section class="section section--skill" data-section-type="skill" data-section-id="${escapeHtml(sectionIdFor("skill", items))}">
   <h2 class="section-title">${escapeHtml(label)}</h2>
-  <p class="skills-line">${chips}</p>
+  <p class="skills-line">${line}</p>
+</section>`;
+}
+
+function renderInlineInfoSection(
+  type: ProductResumeItem["sectionType"],
+  label: string,
+  items: ProductResumeItem[],
+): string {
+  const entries = items
+    .map((item) => {
+      const parsed = parseContentSnapshot(item.contentSnapshot);
+      const header = parsed.header || item.title;
+      const details = [...parsed.bullets, ...parsed.bodyLines]
+        .flatMap((value) => value.split(/\r?\n/))
+        .map((value) => normalizeBulletText(value.trim()))
+        .filter(Boolean);
+      return [header, ...details].filter(Boolean).join(" · ");
+    })
+    .filter(Boolean);
+  if (entries.length === 0) return "";
+  const line = entries.map((entry) => escapeHtml(entry)).join("；");
+  return `<section class="section section--${type} section--inline-info" data-section-type="${type}" data-section-id="${escapeHtml(sectionIdFor(type, items))}">
+  <h2 class="section-title">${escapeHtml(label)}</h2>
+  <p class="inline-info-line">${line}</p>
 </section>`;
 }
 
@@ -266,6 +380,7 @@ type ParsedSnapshot = {
   header: string;
   bullets: string[];
   fallbackBody: string;
+  bodyLines: string[];
 };
 
 function parseContentSnapshot(snapshot: string): ParsedSnapshot {
@@ -291,6 +406,7 @@ function parseContentSnapshot(snapshot: string): ParsedSnapshot {
     header,
     bullets,
     fallbackBody: [header, ...otherLines].filter(Boolean).join("\n"),
+    bodyLines: otherLines,
   };
 }
 
@@ -329,113 +445,132 @@ html, body {
   background: #ffffff;
   color: var(--ink);
   font-family: "Noto Sans CJK SC", "Noto Sans SC", "Source Han Sans SC", "Microsoft YaHei", "PingFang SC", "Hiragino Sans GB", -apple-system, BlinkMacSystemFont, "Segoe UI", "Helvetica Neue", Arial, sans-serif;
-  font-size: 10.5pt;
-  line-height: 1.5;
+  font-size: 9.4pt;
+  line-height: 1.4;
   -webkit-font-smoothing: antialiased;
 }
 .resume {
   max-width: 760px;
   margin: 0 auto;
-  padding: 24px;
+  padding: 16px;
 }
 @media print {
   .resume { max-width: none; margin: 0; padding: 0; }
 }
 .masthead {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
   text-align: left;
-  border-bottom: 1.5px solid var(--accent);
-  padding-bottom: 10px;
-  margin-bottom: 14px;
+  border-bottom: 1px solid var(--accent);
+  padding-bottom: 2px;
+  margin-bottom: 3px;
 }
+.identity { min-width: 0; }
 .name {
   margin: 0;
-  font-size: 22pt;
+  font-size: 18pt;
   font-weight: 600;
-  letter-spacing: 0.5px;
+  letter-spacing: 0;
   color: var(--accent);
+  line-height: 1.05;
 }
 .kicker {
-  margin-top: 4px;
+  margin-top: 1px;
   color: var(--muted);
-  font-size: 11pt;
+  font-size: 8.8pt;
   font-weight: 500;
 }
+.contact {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 1px;
+  margin: 0;
+  color: var(--ink);
+  font-style: normal;
+  font-size: 8pt;
+  line-height: 1.18;
+  white-space: nowrap;
+}
 .section {
-  margin-top: 14px;
+  margin-top: 4px;
   page-break-inside: auto;
 }
 .section-title {
-  margin: 0 0 6px 0;
-  font-size: 10.5pt;
+  margin: 0 0 2px 0;
+  font-size: 9pt;
   font-weight: 700;
   text-transform: uppercase;
-  letter-spacing: 1.2px;
+  letter-spacing: 0;
   color: var(--accent);
-  border-bottom: 1px solid var(--rule);
-  padding-bottom: 3px;
+  border-bottom: 1px solid var(--accent);
+  padding-bottom: 1px;
 }
 .item {
-  margin-top: 10px;
+  margin-top: 3px;
   page-break-inside: avoid;
   break-inside: avoid;
 }
-.item:first-of-type { margin-top: 4px; }
-.item-header { margin-bottom: 2px; }
+.item:first-of-type { margin-top: 1px; }
+.item-header { margin-bottom: 0; }
 .item-title-row {
   display: flex;
   justify-content: space-between;
   align-items: baseline;
-  gap: 12px;
+  gap: 8px;
 }
 .item-title {
   font-weight: 600;
-  font-size: 11pt;
+  font-size: 9.1pt;
   color: var(--ink);
 }
 .item-period {
-  font-size: 9.5pt;
+  font-size: 8.3pt;
   color: var(--muted);
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
 .item-meta {
-  font-size: 9.5pt;
+  font-size: 8.3pt;
   color: var(--muted);
-  margin-top: 1px;
+  margin-top: 0;
 }
 .bullets {
-  margin: 4px 0 0 0;
-  padding-left: 18px;
+  margin: 1px 0 0 0;
+  padding-left: 12px;
   list-style: disc;
 }
 .bullets li {
-  margin: 2px 0;
+  margin: 0;
   page-break-inside: avoid;
   break-inside: avoid;
+  text-align: justify;
+  text-align-last: justify;
+  text-justify: inter-character;
 }
 .item-body {
-  margin: 4px 0 0 0;
+  margin: 1px 0 0 0;
   white-space: pre-wrap;
 }
 .summary-paragraph {
-  margin: 4px 0 0 0;
+  margin: 1px 0 0 0;
   color: var(--ink);
 }
 .section--skill .skills-line {
-  margin: 4px 0 0 0;
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px 10px;
-}
-.skill-chip {
-  display: inline-block;
-  font-size: 9.5pt;
+  margin: 1px 0 0 0;
+  display: block;
+  font-size: 8.4pt;
   color: var(--ink);
-  background: #f3f4f6;
-  border: 1px solid var(--rule);
-  border-radius: 3px;
-  padding: 1px 8px;
-  line-height: 1.4;
+  line-height: 1.2;
+}
+.section--inline-info .inline-info-line {
+  margin: 1px 0 0 0;
+  display: block;
+  font-size: 8.4pt;
+  color: var(--ink);
+  line-height: 1.2;
 }
 
 /* ── density modes (Phase 4 reserves these; auto-switching is Phase 5) ── */
@@ -443,11 +578,11 @@ html, body {
 .resume.density-comfortable .item { margin-top: 12px; }
 .resume.density-comfortable .bullets li { margin: 3px 0; }
 
-.resume.density-standard { font-size: 10.5pt; line-height: 1.5; }
+.resume.density-standard { font-size: 9.4pt; line-height: 1.52; }
 
-.resume.density-compact { font-size: 9.75pt; line-height: 1.38; }
-.resume.density-compact .section { margin-top: 10px; }
-.resume.density-compact .item { margin-top: 7px; }
-.resume.density-compact .bullets li { margin: 1px 0; }
-.resume.density-compact .name { font-size: 20pt; }
+.resume.density-compact { font-size: 9.2pt; line-height: 1.26; }
+.resume.density-compact .section { margin-top: 4px; }
+.resume.density-compact .item { margin-top: 3px; }
+.resume.density-compact .bullets li { margin: 0; }
+.resume.density-compact .name { font-size: 17.5pt; }
 `;

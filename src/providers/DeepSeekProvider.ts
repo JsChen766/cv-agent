@@ -20,7 +20,8 @@ export class DeepSeekProvider implements LLMProvider {
     const response = await fetch(`${this.baseURL}/chat/completions`, {
       method: "POST",
       headers: this.headers(),
-      body: JSON.stringify(this.toRequestBody({ ...request, stream: false }))
+      body: JSON.stringify(this.toRequestBody({ ...request, stream: false })),
+      signal: request.signal,
     });
 
     return normalizeOpenAIChatResponse(await parseJsonResponse(response, this.name));
@@ -30,7 +31,8 @@ export class DeepSeekProvider implements LLMProvider {
     const response = await fetch(`${this.baseURL}/chat/completions`, {
       method: "POST",
       headers: this.headers(),
-      body: JSON.stringify(this.toRequestBody({ ...request, stream: true }))
+      body: JSON.stringify(this.toRequestBody({ ...request, stream: true })),
+      signal: request.signal,
     });
 
     if (!response.ok || !response.body) {

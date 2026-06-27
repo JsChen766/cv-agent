@@ -192,15 +192,17 @@ function assessPdf(input: { pdfInfo: JsonRecord; layoutReport?: JsonRecord; expo
   const fitsPage = layout?.fitsPage === true && (contentHeightPx == null || usableHeightPx == null || contentHeightPx <= usableHeightPx);
   const bulletWidthPass = layout?.passesBulletWidthRule === true && invalidBullets.length === 0;
   const bulletLayouts = Array.isArray(layout?.bulletLayouts) ? layout.bulletLayouts : [];
-  const enoughCoreBullets = bulletLayouts.length >= 4;
-  const enoughPageUsage = contentHeightPx != null && usableHeightPx != null && contentHeightPx / usableHeightPx >= 0.58;
+  const enoughCoreBullets = bulletLayouts.length >= 14;
+  const enoughPageUsage = contentHeightPx != null && usableHeightPx != null && contentHeightPx / usableHeightPx >= 0.92;
   const qualityReport = isRecord(input.exportRecord.qualityReport) ? input.exportRecord.qualityReport : {};
   const criticReview = isRecord(qualityReport.criticReview) ? qualityReport.criticReview : {};
   const semanticScore = typeof criticReview.semanticJdMatchScore === "number" ? criticReview.semanticJdMatchScore : undefined;
   const semanticPass = semanticScore == null || semanticScore >= 70;
   const pageCountPass = input.pdfInfo.pageCount === 1;
   const text = readString(input.pdfInfo, "text") ?? "";
-  const hasSections = /Experience|Projects|Education|Skills|实习|项目|教育|技能/i.test(text);
+  const normalizedText = text.replace(/\s+/g, "");
+  const hasSections = /Experience|Projects|Education|Skills/i.test(text)
+    || /实习|项目|教育|技能/.test(normalizedText);
   const pass = pageCountPass && fitsPage && bulletWidthPass && enoughCoreBullets && enoughPageUsage && semanticPass && hasSections;
   return {
     pass,

@@ -80,7 +80,7 @@ describe("onePageModernTemplate — defaultTemplate zero-regression", () => {
 });
 
 describe("onePageModernTemplate — visual contract", () => {
-  it("emits A4 print rules, the one-page-modern marker, and the default density", () => {
+  it("emits A4 print rules, the one-page-modern marker, and the standard default density", () => {
     const html = onePageModernTemplate().render({
       resume: buildResume([buildItem({ contentSnapshot: "Built things." })]),
     });
@@ -145,7 +145,8 @@ describe("onePageModernTemplate — structured (Phase 3) data path", () => {
     const expIdx = html.indexOf('data-section-type="experience"');
     const eduIdx = html.indexOf('data-section-type="education"');
     expect(expIdx).toBeGreaterThan(0);
-    expect(eduIdx).toBeGreaterThan(expIdx);
+    expect(eduIdx).toBeGreaterThan(0);
+    expect(eduIdx).toBeLessThan(expIdx);
 
     const aIdx = html.indexOf('data-item-id="doc-exp-a"');
     const bIdx = html.indexOf('data-item-id="doc-exp-b"');
@@ -190,7 +191,7 @@ describe("onePageModernTemplate — legacy data path", () => {
     expect(html).not.toContain("Hidden item.");
   });
 
-  it("renders skill section as inline chips, splitting on Chinese and ASCII separators", () => {
+  it("renders skill section as a compact inline text line, splitting on Chinese and ASCII separators", () => {
     const skillItem = buildItem({
       id: "skill-1",
       sectionType: "skill",
@@ -201,11 +202,59 @@ describe("onePageModernTemplate — legacy data path", () => {
       resume: buildResume([skillItem]),
     });
     expect(html).toContain('data-section-type="skill"');
-    expect(html).toContain('class="skill-chip">TypeScript<');
-    expect(html).toContain('class="skill-chip">React<');
-    expect(html).toContain('class="skill-chip">Node.js<');
-    expect(html).toContain('class="skill-chip">Vue<');
-    expect(html).toContain('class="skill-chip">Postgres<');
+    expect(html).toContain('<p class="skills-line">TypeScript、React、Node.js、Vue、Postgres</p>');
+    expect(html).not.toContain("skill-chip");
+  });
+
+  it("renders awards as a compact horizontal line instead of vertical bullet items", () => {
+    const awardA = buildItem({
+      id: "award-1",
+      sectionType: "award",
+      title: "国家励志奖学金",
+      contentSnapshot: "国家励志奖学金 · 南昌大学 · 2023\n- 校级一等奖学金\n- 数学建模竞赛二等奖",
+    });
+    const awardB = buildItem({
+      id: "award-2",
+      sectionType: "award",
+      title: "优秀学生干部",
+      contentSnapshot: "优秀学生干部 · 2024",
+    });
+    const html = onePageModernTemplate().render({
+      resume: buildResume([awardA, awardB], { title: "中文简历" }),
+    });
+    expect(html).toContain('data-section-type="award"');
+    expect(html).toContain('class="inline-info-line"');
+    expect(html).toContain("国家励志奖学金 · 南昌大学 · 2023 · 校级一等奖学金 · 数学建模竞赛二等奖；优秀学生干部 · 2024");
+    expect(html).not.toContain('<ul class="bullets">');
+  });
+
+  it("renders Chinese section labels and avoids duplicating structured education headers", () => {
+    const edu = buildItem({
+      id: "edu-1",
+      sectionType: "education",
+      title: "软件工程学士",
+      contentSnapshot: "软件工程学士 \u00B7 南昌大学 \u00B7 2021.09 - 2025.06\nGPA: 3.3/4.0，排名: 3/30\n主要课程：数据结构、数据库原理、Python",
+    });
+    const exp = buildItem({
+      id: "exp-1",
+      sectionType: "experience",
+      title: "数据分析实习生",
+      contentSnapshot: "数据分析实习生 \u00B7 WEEX \u00B7 2026.01 - 2026.04\n- 编写95+个复杂SQL脚本，支持交易数据分析",
+    });
+    const html = onePageModernTemplate().render({
+      resume: buildResume([exp, edu], { title: "AI 产品数据分析实习生 draft", targetRole: "AI 产品数据分析实习生" }),
+    });
+    expect(html).toContain(">教育经历</h2>");
+    expect(html).toContain(">实习经历</h2>");
+    expect(html).toContain("<title>AI 产品数据分析实习生</title>");
+    expect(html).not.toContain("draft");
+
+    const firstHeader = html.indexOf("软件工程学士");
+    const detail = html.indexOf("GPA: 3.3/4.0");
+    const repeatedHeader = html.indexOf("软件工程学士", firstHeader + 1);
+    expect(firstHeader).toBeGreaterThan(0);
+    expect(detail).toBeGreaterThan(firstHeader);
+    expect(repeatedHeader).toBeLessThan(0);
   });
 });
 

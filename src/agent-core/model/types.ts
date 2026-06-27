@@ -30,11 +30,14 @@ export type LLMChatRequest = {
   toolChoice?: unknown;
   responseFormat?: "json" | "text";
   thinking?: boolean;
+  signal?: AbortSignal;
   metadata?: Record<string, unknown>;
 };
 
 export type ModelClientChatRequest = Omit<LLMChatRequest, "model"> & {
   model?: string;
+  timeoutMs?: number;
+  maxRetries?: number;
 };
 
 export type LLMUsage = {
