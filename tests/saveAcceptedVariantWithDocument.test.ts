@@ -329,6 +329,8 @@ describe("saveAcceptedVariantToResume — structured ResumeDocument path", () =>
       .flatMap((item) => item.bullets);
     const sourceIds = variant.resumeDocument!.sections.flatMap((section) => section.items.map((item) => item.sourceExperienceId).filter(Boolean));
     expect(careerBullets.length).toBeGreaterThanOrEqual(14);
+    expect(careerBullets.every((bullet) => bullet.text.length >= 48)).toBe(true);
+    expect(careerBullets.filter((bullet) => /，\s*在[^，。；;、,]+(?:中|下|实习生)$|支持按时段$|处理\d{1,2}$|Jiangxi-$|在基于3D运动轨迹跟踪$|[:：]\s*[^，。；;、,]{0,8}$/u.test(bullet.text))).toEqual([]);
     expect(sourceIds.length).toBeGreaterThan(1);
     expect(variant.sourceExperienceIds?.length).toBeGreaterThan(1);
   });

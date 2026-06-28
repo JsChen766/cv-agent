@@ -235,12 +235,19 @@ function bulletVariants(text: string): Array<{ text: string }> {
   const variants: string[] = [];
   variants.push(text);
   for (const next of clausePrefixVariants(text)) {
-    if (next.length >= 28 && !variants.includes(next)) variants.push(next);
+    if (isAcceptableVariantLength(next) && !variants.includes(next)) variants.push(next);
+  }
+  if (containsCjk(text)) {
+    for (const target of [124, 122, 120, 118, 116, 58, 56, 54, 52, 50, 48]) {
+      if (target >= text.length) continue;
+      const next = truncateAtBoundary(text, target);
+      if (next && isAcceptableVariantLength(next) && !variants.includes(next)) variants.push(next);
+    }
+    return variants.map((value) => ({ text: value }));
   }
   for (const target of targets) {
-    if (target < text.length && containsCjk(text)) continue;
     const next = target >= text.length ? text : truncateAtBoundary(text, target);
-    if (next.length >= 28 && !variants.includes(next)) variants.push(next);
+    if (next && isAcceptableVariantLength(next) && !variants.includes(next)) variants.push(next);
   }
   return variants.map((value) => ({ text: value }));
 }
@@ -256,7 +263,7 @@ function clausePrefixVariants(text: string): string[] {
   }
   return boundaries
     .map((end) => cleanVariantText(text.slice(0, end)))
-    .filter((value, index, values) => value.length > 0 && values.indexOf(value) === index)
+    .filter((value, index, values) => isAcceptableVariantLength(value) && values.indexOf(value) === index)
     .sort((a, b) => b.length - a.length);
 }
 
@@ -266,22 +273,39 @@ function cleanVariantText(value: string): string {
     .replace(/[\s,;:，；、.\-\u2014\u2013]+$/u, "");
 }
 
-function truncateAtBoundary(text: string, maxLen: number): string {
+function truncateAtBoundary(text: string, maxLen: number): string | undefined {
   if (text.length <= maxLen) return text;
   const slice = text.slice(0, maxLen);
-  const ws = slice.lastIndexOf(" ");
-  const punctuation = Math.max(
-    slice.lastIndexOf("，"),
-    slice.lastIndexOf("；"),
-    slice.lastIndexOf(";"),
-    slice.lastIndexOf(","),
-    slice.lastIndexOf("。"),
-    slice.lastIndexOf("."),
-  );
-  const cut = punctuation > maxLen * 0.55
-    ? slice.slice(0, punctuation + 1)
-    : ws > maxLen * 0.6
-      ? slice.slice(0, ws)
-      : slice;
-  return cleanVariantText(cut);
+  const candidates: string[] = [];
+  for (let index = 0; index < slice.length; index += 1) {
+    const char = slice[index] ?? "";
+    if (!/[。！？!?；;，、,.]/u.test(char) && !(char === " " && !containsCjk(text))) continue;
+    const candidate = cleanVariantText(slice.slice(0, index + 1));
+    if (isAcceptableVariantLength(candidate)) candidates.push(candidate);
+  }
+  return candidates.sort((a, b) => b.length - a.length)[0];
+}
+
+function isAcceptableVariantLength(text: string): boolean {
+  if (containsCjk(text)) return text.length >= 48 && !isIncompleteCjkVariant(text);
+  return text.length >= 28 && !/[A-Za-z]+-$/u.test(text.trim());
+}
+
+function isIncompleteCjkVariant(text: string): boolean {
+  const cleaned = cleanVariantText(text);
+  if (!cleaned) return true;
+  const finalSegment = cleanVariantText(cleaned.split(/[，。；;、,]/u).pop() ?? cleaned);
+  if (finalSegment && finalSegment !== cleaned && isDanglingCjkSegment(finalSegment)) return true;
+  return isDanglingCjkSegment(cleaned);
+}
+
+function isDanglingCjkSegment(cleaned: string): boolean {
+  if (/[（(][^）)]*$/u.test(cleaned) || /[《“"'][^》”"']*$/u.test(cleaned)) return true;
+  if (/[:：]\s*[^，。；;、,]{0,8}$/u.test(cleaned)) return true;
+  if (/^(支持|用于|基于|围绕|通过|使用|采用|覆盖|实现|提升|处理|构建|设计|主导|负责|参与|协同|优化|提取).{0,6}$/u.test(cleaned)) return true;
+  if (/(基于|围绕|通过|使用|采用|覆盖|支持|用于|实现|提升|处理|构建|设计|主导|负责|参与|协同|以及|包括|例如|如|与|和|及|或|并|为|将|在|中|的)$/u.test(cleaned)) return true;
+  if (/处理\d{1,2}$/u.test(cleaned)) return true;
+  if (/智能监$/u.test(cleaned)) return true;
+  if (/^在.+(?:中|下|里|内|上|前|后|阶段|项目|系统|实习生|工程师|负责人)?$/u.test(cleaned) && !/[，。；;]/u.test(cleaned)) return true;
+  return false;
 }

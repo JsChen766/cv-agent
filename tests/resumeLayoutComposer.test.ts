@@ -49,12 +49,15 @@ function reportFromHtml(html: string): ResumeLayoutReport {
   const minRequired = Math.round(A4_ONE_PAGE_SPEC.contentWidthPx * A4_ONE_PAGE_SPEC.bulletMinLineWidthRatio);
   const bulletLayouts = bulletTexts.map(({ bulletId, text }) => {
     const widths = [Math.min(700, Math.max(120, text.length * 8))];
+    const passesWidthRule = widths.length > 0
+      && widths.length <= A4_ONE_PAGE_SPEC.maxBulletLines
+      && widths.every((width) => width >= minRequired);
     return {
       bulletId,
       lineCount: 1,
       lineWidthsPx: widths,
       minRequiredLineWidthPx: minRequired,
-      passesWidthRule: true,
+      passesWidthRule,
       text,
     };
   });
@@ -121,5 +124,83 @@ describe("ResumeLayoutComposer", () => {
     expect(result.resume.items[0].contentSnapshot).toContain("standardize 20+ core metrics");
     expect(result.report.passesBulletWidthRule).toBe(true);
     expect(result.actions.some((action) => action.type === "reject_bullet")).toBe(true);
+  });
+
+  it("rejects career bullets whose natural line width is below the two-thirds threshold", async () => {
+    const session: ResumeLayoutSession = {
+      measure: async (html) => reportFromHtml(html),
+      close: async () => {},
+    };
+    const sessions = {
+      withSession: async <T,>(
+        _input: { layoutSessionId: string; templateId: string; density: string },
+        fn: (session: ResumeLayoutSession) => Promise<T>,
+      ) => fn(session),
+    };
+    const composer = new ResumeLayoutComposer(sessions);
+    const resume = buildResume([
+      buildItem({
+        id: "exp-1",
+        contentSnapshot: [
+          "Data Analyst · WEEX · 2026.01 - 2026.04",
+          "- Short bullet",
+          "- Coordinated product, risk, and operations teams to standardize 20+ core metrics in 2 weeks, reducing repeated communication across 30+ business stakeholders",
+        ].join("\n"),
+        metadata: { itemId: "doc-exp-1", bulletIds: ["b-short", "b-good"] },
+      }),
+    ]);
+
+    const result = await composer.compose({
+      layoutSessionId: "test-layout",
+      resume,
+      templateId: "one-page-modern",
+      density: "standard",
+      renderHtml: (candidate) => onePageModernTemplate().render({ resume: candidate }),
+    });
+
+    expect(result.resume.items[0].contentSnapshot).not.toContain("Short bullet");
+    expect(result.resume.items[0].contentSnapshot).toContain("standardize 20+ core metrics");
+    expect(result.actions).toContainEqual(expect.objectContaining({
+      type: "reject_bullet",
+      itemId: "exp-1",
+      bulletText: "Short bullet",
+    }));
+  });
+
+  it("does not create shortened CJK variants that end as hard-cut fragments", async () => {
+    const session: ResumeLayoutSession = {
+      measure: async (html) => reportFromHtml(html),
+      close: async () => {},
+    };
+    const sessions = {
+      withSession: async <T,>(
+        _input: { layoutSessionId: string; templateId: string; density: string },
+        fn: (session: ResumeLayoutSession) => Promise<T>,
+      ) => fn(session),
+    };
+    const composer = new ResumeLayoutComposer(sessions);
+    const resume = buildResume([
+      buildItem({
+        id: "exp-1",
+        contentSnapshot: [
+          "数据分析实习生 · WEEX · 2026.01 - 2026.04",
+          "- 负责300万+条关键词库与语料库管理，设计标准化标签体系，数据检索与调用效率提升40%以上，数据清洗与预处理：处理30万+条语料库，采用去重方法提升有效数据占比，OVERFLOW_ONLY_TOKEN",
+        ].join("\n"),
+        metadata: { itemId: "doc-exp-1", bulletIds: ["b-long"] },
+      }),
+    ]);
+
+    const result = await composer.compose({
+      layoutSessionId: "test-layout",
+      resume,
+      templateId: "one-page-modern",
+      density: "standard",
+      renderHtml: (candidate) => onePageModernTemplate().render({ resume: candidate }),
+    });
+
+    const snapshot = result.resume.items[0].contentSnapshot;
+    expect(snapshot).not.toContain("OVERFLOW_ONLY_TOKEN");
+    expect(snapshot).not.toMatch(/处理\d{1,2}$|[:：]\s*[^，。；;、,]{0,8}$/u);
+    expect(snapshot).toContain("数据检索与调用效率提升40%以上");
   });
 });

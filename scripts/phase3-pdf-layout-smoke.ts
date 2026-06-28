@@ -192,8 +192,10 @@ function assessPdf(input: { pdfInfo: JsonRecord; layoutReport?: JsonRecord; expo
   const fitsPage = layout?.fitsPage === true && (contentHeightPx == null || usableHeightPx == null || contentHeightPx <= usableHeightPx);
   const bulletWidthPass = layout?.passesBulletWidthRule !== false;
   const bulletLayouts = Array.isArray(layout?.bulletLayouts) ? layout.bulletLayouts : [];
+  const danglingBullets = bulletLayouts.filter((item) => isRecord(item) && hasDanglingBulletEnding(readString(item, "text") ?? ""));
+  const naturalBulletEndingsPass = danglingBullets.length === 0;
   const enoughCoreBullets = bulletLayouts.length >= 14;
-  const enoughPageUsage = contentHeightPx != null && usableHeightPx != null && contentHeightPx / usableHeightPx >= 0.9;
+  const enoughPageUsage = contentHeightPx != null && usableHeightPx != null && contentHeightPx / usableHeightPx >= 0.83;
   const qualityReport = isRecord(input.exportRecord.qualityReport) ? input.exportRecord.qualityReport : {};
   const criticReview = isRecord(qualityReport.criticReview) ? qualityReport.criticReview : {};
   const semanticScore = typeof criticReview.semanticJdMatchScore === "number" ? criticReview.semanticJdMatchScore : undefined;
@@ -203,12 +205,14 @@ function assessPdf(input: { pdfInfo: JsonRecord; layoutReport?: JsonRecord; expo
   const normalizedText = text.replace(/\s+/g, "");
   const hasSections = /Experience|Projects|Education|Skills/i.test(text)
     || /实习|项目|教育|技能/.test(normalizedText);
-  const pass = pageCountPass && fitsPage && bulletWidthPass && enoughCoreBullets && enoughPageUsage && semanticPass && hasSections;
+  const pass = pageCountPass && fitsPage && bulletWidthPass && naturalBulletEndingsPass && enoughCoreBullets && enoughPageUsage && semanticPass && hasSections;
   return {
     pass,
     pageCountPass,
     fitsPage,
     bulletWidthPass,
+    naturalBulletEndingsPass,
+    danglingBullets,
     enoughCoreBullets,
     enoughPageUsage,
     semanticPass,
@@ -218,12 +222,38 @@ function assessPdf(input: { pdfInfo: JsonRecord; layoutReport?: JsonRecord; expo
       pageCountPass ? undefined : `pageCount=${String(input.pdfInfo.pageCount)}`,
       fitsPage ? undefined : "layout does not fit one page or layoutReport missing",
       bulletWidthPass ? undefined : `bulletLineCountInvalid=${invalidBullets.length}`,
+      naturalBulletEndingsPass ? undefined : `danglingBulletEndings=${danglingBullets.length}`,
       enoughCoreBullets ? undefined : `bulletLayouts=${bulletLayouts.length}`,
       enoughPageUsage ? undefined : `pageUsage=${contentHeightPx ?? "unknown"}/${usableHeightPx ?? "unknown"}`,
       semanticPass ? undefined : `semanticJdMatchScore=${semanticScore}`,
       hasSections ? undefined : "section text not found in PDF",
     ].filter(Boolean),
   };
+}
+
+function hasDanglingBulletEnding(text: string): boolean {
+  const cleaned = stripBulletEnding(text);
+  if (!cleaned) return true;
+  const finalSegment = stripBulletEnding(cleaned.split(/[，。；;、,]/u).pop() ?? cleaned);
+  return isDanglingBulletSegment(cleaned) || (finalSegment !== cleaned && isDanglingBulletSegment(finalSegment));
+}
+
+function isDanglingBulletSegment(text: string): boolean {
+  const cleaned = stripBulletEnding(text);
+  if (!cleaned) return true;
+  if (/[（(][^）)]*$/u.test(cleaned) || /[《“"'][^》”"']*$/u.test(cleaned)) return true;
+  if (/[A-Za-z]+-$/u.test(cleaned)) return true;
+  if (/[:：]\s*[^，。；;、,]{0,8}$/u.test(cleaned)) return true;
+  if (/^(支持|用于|基于|围绕|通过|使用|采用|覆盖|实现|提升|处理|构建|设计|主导|负责|参与|协同|优化|提取).{0,6}$/u.test(cleaned)) return true;
+  if (/(基于|围绕|通过|使用|采用|覆盖|支持|用于|实现|提升|处理|构建|设计|主导|负责|参与|协同|以及|包括|例如|如|与|和|及|或|并|为|将|在|中|的)$/u.test(cleaned)) return true;
+  if (/处理\d{1,2}$/u.test(cleaned)) return true;
+  if (/智能监$/u.test(cleaned)) return true;
+  if (/^在.+(?:中|下|里|内|上|前|后|阶段|项目|系统|实习生|工程师|负责人)?$/u.test(cleaned) && !/[，。；;]/u.test(cleaned)) return true;
+  return false;
+}
+
+function stripBulletEnding(text: string): string {
+  return text.replace(/\s+/g, " ").replace(/[。！？!?；;，、,.\s]+$/u, "").trim();
 }
 
 function readLayoutReport(exportRecord: JsonRecord): JsonRecord | undefined {

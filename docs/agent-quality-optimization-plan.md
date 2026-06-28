@@ -284,6 +284,53 @@
 - `ml_data`：PDF `docs/temp_pdf/2026-06-27T17-02-43-893Z_02_ml_data_pass_pgen-37066de1-a37b-4e62-b43b-575fea4c7d2f_export-f47c3058-9cc5-4fc4-bef5-469e8ee1abc7.pdf`，1 页，`fitsPage=true`，`invalidBullets=0`，`contentHeightPx=1018/1063`。
 - `ai_product`：PDF `docs/temp_pdf/2026-06-27T17-05-23-918Z_03_ai_product_pass_pgen-24d89f25-ef44-45cb-a120-cfc998cc7a5e_export-b05b223f-8c70-42a8-abd8-fb80f922907e.pdf`，1 页，`fitsPage=true`，`invalidBullets=0`，`contentHeightPx=1037/1063`。
 
+## 阶段四追加记录：自然行宽硬门禁与页面填充修正（2026-06-28）
+
+本轮针对截图中的两个问题继续修正：第一，经历/项目要点不能只占很短一段，换行后第二行也不能只剩几个字；第二，最终 PDF 不能在页面底部留下明显空白。实现原则是明确禁止通过 `letter-spacing`、`text-align: justify`、`text-align-last` 或类似 CSS 拉伸来伪造整行效果，必须让要点内容本身落在更合理的自然长度范围内，再由 Playwright 真实布局测量做硬门禁。本记录覆盖并修正上一条“自然短行不再作为失败条件”的临时解释：当前规则恢复为失败条件，但阈值使用用户要求的 `2/3`，不再使用容易诱导字距拉伸的 `80%`。
+
+已完成的 Agent 内部优化：
+- 将 `PageSpec.bulletMinLineWidthRatio` 固定为 `2/3`，`ResumeLayoutOracle` 重新以 `Range.getClientRects()` 的每一行真实宽度判定 career bullet：每条最多两行，且每一行都必须达到正文内容宽度的三分之二；教育、奖项、技能等天然短信息仍不按 career bullet 检查。
+- 更新生成提示 `generation-resume-system.md`：中文经历要点优先写成 `48-58` 字的自然单行，或 `116-124` 字的自然两行；明确避开 `59-115` 字的危险区间，因为该区间在当前 A4 模板中最容易形成“一整行 + 极短第二行”。
+- 在 `GenerationProductService` 的 density completion 中加入已生成 bullet 的自然长度归一化：短于 48 字的要点会用同源 evidence phrase 补足；`59-115` 字危险区间会优先扩展到 `116-124` 字两行，扩展不了时才压回 `48-58` 字单行；补充内容只来自原始 source experience 的 `content/structured` 证据，不凭空编造事实。
+- 修复部分生成 item 的 `sourceExperienceId` 缺失或不匹配问题：如果 LLM 没有带出正确 source id，会按 item 标题、subtitle 与真实经历标题/机构/角色做保守匹配，从而让后续扩写能够使用正确证据。
+- 调整 `ResumeLayoutComposer` 的 CJK 候选顺序：优先尝试 `116-124` 字的自然两行候选，再尝试 `48-58` 字单行兜底，避免为了通过行宽门禁过早把所有 bullet 压短。
+- 修改导出接受策略：只要 composer 产物已经满足 `fitsPage=true` 且 `passesBulletWidthRule=true`，就采用该产物，不再为了追求页面利用率而回退到存在短尾或溢出的原始简历；页面利用率仍由 quality/smoke 单独验收。
+- 将 deterministic PDF 页面利用率目标统一为 `88%`：低于该线仍判定为页面未填满，但不再为了最后少量像素强行诱导 CSS 字距拉伸或破坏自然排版。
+
+机器验证：
+- `npx vitest run tests/resumeLayoutComposer.test.ts tests/saveAcceptedVariantWithDocument.test.ts tests/onePageModernTemplate.test.ts tests/resumeQualityService.test.ts` 通过，合计 38 个测试。
+- `npm run typecheck` 通过。
+- `docker compose up -d --build api` 后运行 `npx tsx scripts/phase3-pdf-layout-smoke.ts`，本机 Docker 后端、真实 LLM、真实 PDF 导出 3 个场景全部通过。汇总文件：`docs/temp_pdf/2026-06-27T18-26-28-995Z_phase3_summary_pass.json`。
+- `data_bi`：PDF `docs/temp_pdf/2026-06-27T18-16-59-568Z_01_data_bi_pass_pgen-fcc8d551-fcf7-442e-b7db-7a3e3bf2c2ea_export-4dedcc67-dc74-4f15-89d4-33b242c54f7d.pdf`，1 页，`fitsPage=true`，`invalidBullets=0`，`contentHeightPx=1039/1063`，页面利用率约 `97.7%`。
+- `ml_data`：PDF `docs/temp_pdf/2026-06-27T18-19-36-932Z_02_ml_data_pass_pgen-176b0dc3-9511-41f2-b49c-c67eaca42aae_export-042ddc12-118c-4406-ac9a-3b136d3aa1e2.pdf`，1 页，`fitsPage=true`，`invalidBullets=0`，`contentHeightPx=1055/1063`，页面利用率约 `99.2%`。
+- `ai_product`：PDF `docs/temp_pdf/2026-06-27T18-23-23-819Z_03_ai_product_pass_pgen-d9d6f5b9-55eb-419b-a8af-4e43654c3211_export-03f29472-03f7-4f54-8a7f-816ce8804203.pdf`，1 页，`fitsPage=true`，`invalidBullets=0`，`contentHeightPx=1039/1063`，页面利用率约 `97.7%`。
+
+严格判断：本轮已解决截图中的两个核心问题。要点宽度现在不是靠字距或两端对齐撑开，而是通过生成/归一化更合适长度的真实证据内容，再由浏览器真实测量逐行检查；最终三份真实导出都没有短尾 bullet，且页面使用率均超过 97%，底部空白不再明显。剩余质量问题主要转为表达层面：少数 evidence-backed 扩写会显得重复或略机械，后续若继续打磨，应优先改 source phrase 组合策略与 critic rewrite 应用，而不是再放松版式门禁。
+
+## 阶段四追加记录：自然完结硬门禁修正（2026-06-28）
+
+本轮针对最新截图反馈继续修正：上一轮虽然让 bullet 行宽达标，但部分要点是“为了落在长度区间而被截断”，例如停在 `数据清洗与预处理：处理3`、`在基于3D运动轨迹跟踪`、`Jiangxi-` 或 `在数据分析实习生` 这类半句话。新的原则是：行宽目标必须由完整、自然结束的证据句达成，不能用任意字符截断、半个短语、悬空介词结构或未完成标签来换取 2/3 行宽。
+
+已完成的 Agent 内部优化：
+- 更新 `generation-resume-system.md`：要求每条经历/项目 bullet 必须以完整简历句或完整分句自然结束，明确禁止停在未完成标签、数字前缀、英文连字符、`在...中/下` 等悬空片段。
+- 重写 `GenerationProductService` 的密度补全与中文裁剪策略：不再按固定字符数硬切；先按中文自然边界（逗号、分号、顿号、括号、句号等）拆分和组合，再检查候选是否落入 `48-58` 或 `116-124` 的自然长度窗口。
+- 增加自然完结判定：识别 `处理\d{1,2}`、`Jiangxi-`、短标签冒号、`在...中/下`、`支持按时段`、`智能监` 等截图中暴露的硬截断/半句模式；发现后优先用同源 evidence 补成完整句，补不了则换回更短但完整的候选。
+- 调整 `ResumeLayoutComposer`：`truncateAtBoundary` 只返回通过自然边界与长度窗口检查的候选；CJK/ASCII fallback 都不再把原文随意切到目标长度。
+- 在 `scripts/phase3-pdf-layout-smoke.ts` 增加 `naturalBulletEndingsPass` 与 `danglingBullets` 验收项；只要真实 PDF 的 career bullet 出现悬空结尾，即使一页、行宽和页面占用都达标，也判为失败。
+- 为了在“自然完结”约束下仍尽量填满页面，将 career bullet 密度目标提高到不少于 22 条，单个经历/项目最多补到 5 条 evidence-backed bullet；页面使用率硬线调整为 `83%`，`82%` 以下仍视为严重 underfill，避免为了最后少量空白再次诱导硬截断。
+
+机器验证：
+- `npx vitest run tests/resumeLayoutComposer.test.ts tests/saveAcceptedVariantWithDocument.test.ts tests/onePageModernTemplate.test.ts tests/resumeQualityService.test.ts` 通过，合计 39 个测试。新增覆盖 composer 不产出硬截断 CJK 候选、保存生成结果不包含悬空 bullet、页面使用率阈值与模板约束仍生效。
+- `npm run typecheck` 通过。
+
+真实 Docker/LLM/PDF 验证：
+- 已重新执行 `docker compose up -d --build api`，再按场景分别运行 `PHASE3_SCENARIO=data_bi/ml_data/ai_product PHASE3_TIMEOUT_MS=600000 npx tsx scripts/phase3-pdf-layout-smoke.ts`。三个场景均通过本机 Docker 后端、真实外部 LLM、真实 PDF 导出与下载链路。
+- `data_bi`：汇总 `docs/temp_pdf/2026-06-27T19-17-06-873Z_phase3_summary_pass.json`，PDF `docs/temp_pdf/2026-06-27T19-14-18-514Z_01_data_bi_pass_pgen-5ec5c8df-1ea6-4a38-91c4-bb1b1706f58e_export-0ff0c95b-49c4-4281-b9cb-06cb9964cbec.pdf`，1 页，`fitsPage=true`，`invalidBullets=0`，`naturalBulletEndingsPass=true`，`danglingBullets=[]`，`contentHeightPx=1036/1063`，页面利用率约 `97.5%`。
+- `ml_data`：汇总 `docs/temp_pdf/2026-06-27T19-20-12-603Z_phase3_summary_pass.json`，PDF `docs/temp_pdf/2026-06-27T19-17-13-875Z_01_ml_data_pass_pgen-7b1ff21d-3add-4cd2-9136-c3e18f8623c4_export-4d598f87-2c4e-42ef-ab07-b6f8757a54b7.pdf`，1 页，`fitsPage=true`，`invalidBullets=0`，`naturalBulletEndingsPass=true`，`danglingBullets=[]`，`contentHeightPx=1018/1063`，页面利用率约 `95.8%`。
+- `ai_product`：汇总 `docs/temp_pdf/2026-06-27T19-23-14-335Z_phase3_summary_pass.json`，PDF `docs/temp_pdf/2026-06-27T19-20-19-507Z_01_ai_product_pass_pgen-436e5dd4-bf7a-4d03-a85e-006494448a1b_export-2b53fea5-2d7b-4a5f-92eb-8d06afea540a.pdf`，1 页，`fitsPage=true`，`invalidBullets=0`，`naturalBulletEndingsPass=true`，`danglingBullets=[]`，`contentHeightPx=960/1063`，页面利用率约 `90.3%`。
+
+严格判断：本轮修正了“人为截断以满足宽度”的根因。当前链路把“自然完结”纳入生成提示、密度补全、composer 候选和真实 smoke 验收四层约束；要点仍需满足 2/3 行宽，但不能再靠半句话或硬切片通过。三个真实场景均没有悬空结尾，页面也都超过 90% 使用率，底部空白已控制在可接受范围内。剩余可继续优化的是表达重复与冗余前缀，而不是自然完结或页面填充问题。
+
 ## 真实 LLM 验收记录要求
 
 每次阶段验收都应保存一份报告到 `docs/`，建议命名为：

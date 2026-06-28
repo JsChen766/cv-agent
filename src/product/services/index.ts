@@ -1827,8 +1827,16 @@ function inferTitle(content: string, fallback: string): string {
 // ResumeDocument → ProductResumeItem entries
 // ───────────────────────────────────────────────────────────────
 
-const DENSITY_MIN_CAREER_BULLETS = 20;
+const DENSITY_MIN_CAREER_BULLETS = 22;
 const DENSITY_MAX_SUPPLEMENTAL_ITEMS = 10;
+const DENSE_CJK_MIN_CHARS = 48;
+const DENSE_CJK_MAX_CHARS = 58;
+const DENSE_CJK_TWO_LINE_MIN_CHARS = 116;
+const DENSE_CJK_TWO_LINE_MAX_CHARS = 124;
+const DENSE_ASCII_MIN_CHARS = 82;
+const DENSE_ASCII_MAX_CHARS = 130;
+const CJK_SENTENCE_BOUNDARIES = /[。！？!?；;]/u;
+const CJK_SOFT_BOUNDARIES = /[，、,]/u;
 const SECTION_ORDER_FOR_DENSITY: Record<ProductResumeItem["sectionType"], number> = {
   education: 0,
   experience: 1,
@@ -1866,17 +1874,54 @@ function densifyGeneratedResumeVariant(
       items: section.items.map((item) => ({ ...item, bullets: item.bullets.map((bullet) => ({ ...bullet })) })),
     })),
   };
+  const sourcesById = new Map(sourceExperiences.map((source) => [source.id, source]));
   const usedSourceIds = new Set<string>();
   for (const section of nextDoc.sections) {
     for (const item of section.items) {
-      if (item.sourceExperienceId) usedSourceIds.add(item.sourceExperienceId);
+      const source = resolveResumeItemSource(item, sourcesById, sourceExperiences);
+      if (source) {
+        usedSourceIds.add(source.id);
+        if (item.sourceExperienceId !== source.id) item.sourceExperienceId = source.id;
+      } else if (item.sourceExperienceId) {
+        usedSourceIds.add(item.sourceExperienceId);
+      }
     }
   }
 
   let careerBulletCount = countCareerBullets(nextDoc);
-  if (careerBulletCount >= DENSITY_MIN_CAREER_BULLETS) return variant;
 
-  const sourcesById = new Map(sourceExperiences.map((source) => [source.id, source]));
+  let changedExistingBullets = false;
+  for (const section of nextDoc.sections) {
+    if (section.type !== "experience" && section.type !== "project") continue;
+    for (const item of section.items) {
+      const source = resolveResumeItemSource(item, sourcesById, sourceExperiences);
+      if (!source) continue;
+      if (item.sourceExperienceId !== source.id) {
+        item.sourceExperienceId = source.id;
+        changedExistingBullets = true;
+      }
+      const sourceBullets = denseBulletsFromSourceExperience(source, 4);
+      const sourcePhrases = sourceEvidencePhrases(source);
+      const existingTexts = new Set(item.bullets.map((bullet) => bullet.text.trim()));
+      for (const bullet of item.bullets) {
+        const text = bullet.text.trim();
+        const replacement = normalizeCareerBulletForNaturalWidth(text, sourcePhrases)
+          ?? (needsDenseBulletExpansion(text)
+            ? sourceBullets.find((candidate) => candidate !== text && !existingTexts.has(candidate))
+            : undefined);
+        if (!replacement) continue;
+        existingTexts.delete(text);
+        bullet.text = replacement;
+        if (!bullet.evidenceIds || bullet.evidenceIds.length === 0) bullet.evidenceIds = [`source-card-${source.id}`];
+        existingTexts.add(replacement);
+        changedExistingBullets = true;
+      }
+    }
+  }
+  if (careerBulletCount >= DENSITY_MIN_CAREER_BULLETS) {
+    if (!changedExistingBullets) return variant;
+  }
+
   for (const section of nextDoc.sections) {
     if (careerBulletCount >= DENSITY_MIN_CAREER_BULLETS) break;
     if (section.type !== "experience" && section.type !== "project") continue;
@@ -1887,7 +1932,7 @@ function densifyGeneratedResumeVariant(
       if (!source) continue;
       const existingTexts = new Set(item.bullets.map((bullet) => bullet.text.trim()));
       for (const text of denseBulletsFromSourceExperience(source, DENSITY_MIN_CAREER_BULLETS - careerBulletCount)) {
-        if (item.bullets.length >= 4) break;
+        if (item.bullets.length >= 5) break;
         if (existingTexts.has(text)) continue;
         item.bullets.push({
           id: `density-${source.id}-b${item.bullets.length + 1}`,
@@ -1930,7 +1975,7 @@ function densifyGeneratedResumeVariant(
     supplementalItems += 1;
   }
 
-  if (careerBulletCount === countCareerBullets(doc)) return variant;
+  if (careerBulletCount === countCareerBullets(doc) && !changedExistingBullets) return variant;
   const sourceExperienceIds = Array.from(new Set([
     ...(variant.sourceExperienceIds ?? []),
     ...Array.from(usedSourceIds),
@@ -1990,14 +2035,50 @@ function resumeSectionTypeForExperience(source: ProductExperienceSummary): Produ
   return "other";
 }
 
+function resolveResumeItemSource(
+  item: ResumeDocumentSection["items"][number],
+  sourcesById: Map<string, ProductExperienceSummary>,
+  sourceExperiences: ProductExperienceSummary[],
+): ProductExperienceSummary | undefined {
+  if (item.sourceExperienceId) {
+    const byId = sourcesById.get(item.sourceExperienceId);
+    if (byId) return byId;
+  }
+  const title = normalizeSourceMatchText(item.title);
+  const subtitle = normalizeSourceMatchText(item.subtitle);
+  if (!title && !subtitle) return undefined;
+  return sourceExperiences.find((source) => {
+    const sourceParts = [
+      source.title,
+      source.organization,
+      source.role,
+    ].map(normalizeSourceMatchText).filter(Boolean);
+    return Boolean(
+      (title && sourceParts.some((part) => part.includes(title) || title.includes(part)))
+      || (subtitle && sourceParts.some((part) => part.includes(subtitle) || subtitle.includes(part))),
+    );
+  });
+}
+
+function normalizeSourceMatchText(value: string | undefined): string {
+  return (value ?? "")
+    .replace(/\s+/g, "")
+    .replace(/[^\p{L}\p{N}+#./-]/gu, "")
+    .toLowerCase();
+}
+
 function denseBulletsFromSourceExperience(source: ProductExperienceSummary, remainingNeeded: number): string[] {
   const candidates = sourceEvidencePhrases(source);
   const bullets: string[] = [];
-  for (const candidate of candidates) {
-    const bullet = normalizeDenseBullet(candidate);
+  for (let index = 0; index < candidates.length; index += 1) {
+    const candidate = candidates[index]!;
+    const bullet = normalizeDenseBullet(candidate, [
+      ...candidates.slice(index + 1),
+      ...candidates.slice(0, index),
+    ]);
     if (!bullet || bullets.includes(bullet)) continue;
     bullets.push(bullet);
-    if (bullets.length >= Math.min(4, Math.max(1, remainingNeeded))) break;
+    if (bullets.length >= Math.min(5, Math.max(1, remainingNeeded))) break;
   }
   return bullets;
 }
@@ -2014,8 +2095,34 @@ function sourceEvidencePhrases(source: ProductExperienceSummary): string[] {
   }
   return phrases
     .map((item) => item.replace(/\s+/g, " ").trim())
+    .flatMap((item) => {
+      const contextual = contextualizeSourcePhrase(source, item);
+      return contextual && contextual !== item ? [item, contextual] : [item];
+    })
     .flatMap((item) => splitLongEvidencePhrase(item))
-    .filter((item, index, list) => item.length >= 18 && list.indexOf(item) === index);
+    .filter((item, index, list) => item.length >= 14 && list.indexOf(item) === index);
+}
+
+function contextualizeSourcePhrase(source: ProductExperienceSummary, phrase: string): string {
+  const cleaned = phrase.trim();
+  if (!cleaned || containsSourceContext(cleaned, source)) return cleaned;
+  const title = source.title?.trim();
+  const org = source.organization?.trim();
+  const role = source.role?.trim();
+  if (containsCjkText(cleaned)) {
+    const context = [title, org].filter(Boolean).join("、");
+    if (!context) return cleaned;
+    return `在${context}中，${cleaned}`;
+  }
+  const context = [role || title, org].filter(Boolean).join(" at ");
+  if (!context) return cleaned;
+  return `${cleaned} in ${context}`;
+}
+
+function containsSourceContext(text: string, source: ProductExperienceSummary): boolean {
+  return [source.title, source.organization, source.role]
+    .filter((item): item is string => Boolean(item && item.trim()))
+    .some((item) => text.includes(item.trim()));
 }
 
 function collectStructuredStrings(value: unknown): string[] {
@@ -2036,52 +2143,202 @@ function splitEvidenceText(text: string): string[] {
 
 function splitLongEvidencePhrase(text: string): string[] {
   const normalized = text.replace(/\s+/g, " ").trim();
-  if (normalized.length <= 88) return [normalized];
+  if (normalized.length <= DENSE_CJK_TWO_LINE_MAX_CHARS) return [normalized];
+  if (!containsCjkText(normalized)) return [normalized];
+  const clauses = splitNaturalCjkClauses(normalized);
+  if (clauses.length <= 1) return [normalized];
   const chunks: string[] = [];
-  for (let start = 0; start < normalized.length; start += 58) {
-    const chunk = normalized.slice(start, start + 72).trim();
-    if (chunk.length >= 24) chunks.push(chunk);
+  let current = "";
+  for (const clause of clauses) {
+    const next = current ? `${current}，${clause}` : clause;
+    if (next.length <= DENSE_CJK_TWO_LINE_MAX_CHARS) {
+      current = next;
+      continue;
+    }
+    if (current.length >= 24 && !isIncompleteResumeBullet(current)) chunks.push(current);
+    current = clause;
   }
+  if (current.length >= 24 && !isIncompleteResumeBullet(current)) chunks.push(current);
   return chunks.length > 0 ? chunks : [normalized];
 }
 
-function normalizeDenseBullet(text: string): string | undefined {
+function normalizeDenseBullet(text: string, followingCandidates: string[] = []): string | undefined {
   const cleaned = text
     .replace(/^[-•*\d.\s]+/u, "")
     .replace(/^(项目|职责|成果|内容|描述|亮点|工作)[:：]\s*/u, "")
     .replace(/\s+/g, " ")
     .trim();
-  if (cleaned.length < 24) return undefined;
+  if (cleaned.length < 14) return undefined;
   if (containsCjkText(cleaned)) {
-    return trimCjkBullet(cleaned);
+    if (cleaned.length <= DENSE_CJK_MAX_CHARS) return trimCjkBullet(expandCjkBullet(cleaned, followingCandidates));
+    const twoLine = trimCjkTwoLineBullet(
+      expandCjkBulletToMin(cleaned, followingCandidates, DENSE_CJK_TWO_LINE_MIN_CHARS),
+    );
+    return twoLine ?? trimCjkBullet(cleaned);
   }
-  return trimAsciiBullet(cleaned);
+  return trimAsciiBullet(expandAsciiBullet(cleaned, followingCandidates));
 }
 
-function trimCjkBullet(text: string): string {
-  if (text.length <= 64) return text;
-  const slice = text.slice(0, 64);
-  const boundary = Math.max(
-    slice.lastIndexOf("，"),
-    slice.lastIndexOf("、"),
-    slice.lastIndexOf("；"),
-    slice.lastIndexOf(";"),
-    slice.lastIndexOf(","),
-  );
-  if (boundary >= 46) return slice.slice(0, boundary).replace(/[，、；;,]\s*$/u, "");
-  return slice;
+function normalizeCareerBulletForNaturalWidth(text: string, followingCandidates: string[]): string | undefined {
+  const cleaned = cleanDenseContinuation(text);
+  if (cleaned.length < 14) return undefined;
+  if (!containsCjkText(cleaned)) {
+    return cleaned.length < DENSE_ASCII_MIN_CHARS
+      ? normalizeDenseBullet(cleaned, followingCandidates)
+      : undefined;
+  }
+  if (cleaned.length < DENSE_CJK_MIN_CHARS) return normalizeDenseBullet(cleaned, followingCandidates);
+  if (cleaned.length <= DENSE_CJK_MAX_CHARS) {
+    return isIncompleteResumeBullet(cleaned) ? normalizeDenseBullet(cleaned, followingCandidates) : undefined;
+  }
+  if (cleaned.length < DENSE_CJK_TWO_LINE_MIN_CHARS) {
+    return trimCjkTwoLineBullet(expandCjkBulletToMin(cleaned, followingCandidates, DENSE_CJK_TWO_LINE_MIN_CHARS));
+  }
+  if (cleaned.length <= DENSE_CJK_TWO_LINE_MAX_CHARS) {
+    return isIncompleteResumeBullet(cleaned) ? normalizeDenseBullet(cleaned, followingCandidates) : undefined;
+  }
+  if (cleaned.length > DENSE_CJK_TWO_LINE_MAX_CHARS) return trimCjkTwoLineBullet(cleaned);
+  return undefined;
 }
 
-function trimAsciiBullet(text: string): string {
-  if (text.length <= 130) return text;
-  const slice = text.slice(0, 130);
+function trimCjkBullet(text: string): string | undefined {
+  return naturalCjkPrefixInRange(text, DENSE_CJK_MIN_CHARS, DENSE_CJK_MAX_CHARS);
+}
+
+function trimAsciiBullet(text: string): string | undefined {
+  if (text.length <= DENSE_ASCII_MAX_CHARS) return text.length >= DENSE_ASCII_MIN_CHARS ? text : undefined;
+  const slice = text.slice(0, DENSE_ASCII_MAX_CHARS);
   const boundary = Math.max(slice.lastIndexOf(";"), slice.lastIndexOf(","), slice.lastIndexOf(" "));
-  if (boundary >= 90) return slice.slice(0, boundary).replace(/[;,]\s*$/u, "");
+  if (boundary >= DENSE_ASCII_MIN_CHARS) return slice.slice(0, boundary).replace(/[;,]\s*$/u, "");
   return slice;
+}
+
+function trimCjkTwoLineBullet(text: string): string | undefined {
+  return naturalCjkPrefixInRange(text, DENSE_CJK_TWO_LINE_MIN_CHARS, DENSE_CJK_TWO_LINE_MAX_CHARS);
+}
+
+function expandCjkBullet(text: string, followingCandidates: string[]): string {
+  let next = text;
+  for (const candidate of followingCandidates) {
+    if (next.length >= DENSE_CJK_MIN_CHARS) break;
+    const cleaned = cleanNaturalContinuation(candidate);
+    if (!cleaned || cleaned === next || next.includes(cleaned)) continue;
+    if (cleaned.includes(next) && cleaned.length >= DENSE_CJK_MIN_CHARS) {
+      next = cleaned;
+      break;
+    }
+    next = `${next.replace(/[，、；;,]\s*$/u, "")}，${cleaned}`;
+  }
+  return next;
+}
+
+function expandCjkBulletToMin(text: string, followingCandidates: string[], minChars: number): string {
+  let next = text;
+  for (const candidate of followingCandidates) {
+    if (next.length >= minChars) break;
+    const cleaned = cleanNaturalContinuation(candidate);
+    if (!cleaned || cleaned === next || next.includes(cleaned)) continue;
+    if (cleaned.includes(next) && cleaned.length >= minChars) {
+      next = cleaned;
+      break;
+    }
+    next = `${next.replace(/[，、；;,]\s*$/u, "")}，${cleaned}`;
+  }
+  return next;
+}
+
+function expandAsciiBullet(text: string, followingCandidates: string[]): string {
+  let next = text;
+  for (const candidate of followingCandidates) {
+    if (next.length >= DENSE_ASCII_MIN_CHARS) break;
+    const cleaned = cleanDenseContinuation(candidate);
+    if (!cleaned || cleaned === next || next.includes(cleaned)) continue;
+    if (cleaned.includes(next) && cleaned.length >= DENSE_ASCII_MIN_CHARS) {
+      next = cleaned;
+      break;
+    }
+    next = `${next.replace(/[;,]\s*$/u, "")}; ${cleaned}`;
+  }
+  return next;
+}
+
+function cleanDenseContinuation(text: string): string {
+  return text
+    .replace(/^[-•*\d.\s]+/u, "")
+    .replace(/^(项目|职责|成果|内容|描述|亮点|工作)[:：]\s*/u, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function needsDenseBulletExpansion(text: string): boolean {
+  const cleaned = text.replace(/\s+/g, " ").trim();
+  if (!cleaned) return false;
+  if (!containsCjkText(cleaned)) return cleaned.length < DENSE_ASCII_MIN_CHARS;
+  return cleaned.length < DENSE_CJK_MIN_CHARS
+    || (cleaned.length > DENSE_CJK_MAX_CHARS && cleaned.length < DENSE_CJK_TWO_LINE_MIN_CHARS)
+    || isIncompleteResumeBullet(cleaned);
 }
 
 function containsCjkText(text: string): boolean {
   return /[\u3400-\u9FFF]/u.test(text);
+}
+
+function splitNaturalCjkClauses(text: string): string[] {
+  return text
+    .split(/[。！？!?；;，,、]\s*/u)
+    .map((item) => item.trim())
+    .filter((item) => item.length > 0 && !isIncompleteResumeBullet(item));
+}
+
+function cleanNaturalContinuation(text: string): string | undefined {
+  const cleaned = cleanDenseContinuation(text);
+  if (!cleaned || isIncompleteResumeBullet(cleaned)) return undefined;
+  return cleaned;
+}
+
+function naturalCjkPrefixInRange(text: string, minChars: number, maxChars: number): string | undefined {
+  const cleaned = stripResumeBulletEnding(text);
+  if (cleaned.length >= minChars && cleaned.length <= maxChars && !isIncompleteResumeBullet(cleaned)) {
+    return cleaned;
+  }
+  if (cleaned.length < minChars) return undefined;
+  const candidates: string[] = [];
+  for (let index = 0; index < cleaned.length && index < maxChars; index += 1) {
+    const char = cleaned[index] ?? "";
+    if (!CJK_SENTENCE_BOUNDARIES.test(char) && !CJK_SOFT_BOUNDARIES.test(char)) continue;
+    const candidate = stripResumeBulletEnding(cleaned.slice(0, index + 1));
+    if (candidate.length >= minChars && candidate.length <= maxChars && !isIncompleteResumeBullet(candidate)) {
+      candidates.push(candidate);
+    }
+  }
+  return candidates.sort((a, b) => b.length - a.length)[0];
+}
+
+function stripResumeBulletEnding(text: string): string {
+  return text
+    .replace(/\s+/g, " ")
+    .replace(/[。！？!?；;，、,.\s]+$/u, "")
+    .trim();
+}
+
+function isIncompleteResumeBullet(text: string): boolean {
+  const cleaned = stripResumeBulletEnding(text);
+  if (!cleaned) return true;
+  const finalSegment = stripResumeBulletEnding(cleaned.split(/[，。；;、,]/u).pop() ?? cleaned);
+  if (finalSegment && finalSegment !== cleaned && isDanglingResumeSegment(finalSegment)) return true;
+  return isDanglingResumeSegment(cleaned);
+}
+
+function isDanglingResumeSegment(cleaned: string): boolean {
+  if (/[（(][^）)]*$/u.test(cleaned) || /[《“"'][^》”"']*$/u.test(cleaned)) return true;
+  if (/[A-Za-z]+-$/u.test(cleaned)) return true;
+  if (/[:：]\s*[^，。；;、,]{0,8}$/u.test(cleaned)) return true;
+  if (/^(支持|用于|基于|围绕|通过|使用|采用|覆盖|实现|提升|处理|构建|设计|主导|负责|参与|协同|优化|提取).{0,6}$/u.test(cleaned)) return true;
+  if (/(基于|围绕|通过|使用|采用|覆盖|支持|用于|实现|提升|处理|构建|设计|主导|负责|参与|协同|以及|包括|例如|如|与|和|及|或|并|为|将|在|中|的)$/u.test(cleaned)) return true;
+  if (/处理\d{1,2}$/u.test(cleaned)) return true;
+  if (/智能监$/u.test(cleaned)) return true;
+  if (/^在.+(?:中|下|里|内|上|前|后|阶段|项目|系统|实习生|工程师|负责人)?$/u.test(cleaned) && !/[，。；;]/u.test(cleaned)) return true;
+  return false;
 }
 
 type ResumeDocumentItemEntry = {

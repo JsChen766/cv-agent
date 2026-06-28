@@ -210,7 +210,7 @@ describe("ResumeQualityService.evaluate (deterministic)", () => {
 
     it("emits a layout suggestion when the page is not nearly full", () => {
       const items = [makeItem("i-1", [makeBullet("b-1", VANILLA)])];
-      const fit = makeFit({ overflowPx: 0, underflowPx: 100, contentHeightPx: 887, pageUsableHeightPx: 987 });
+      const fit = makeFit({ overflowPx: 0, underflowPx: 172, contentHeightPx: 815, pageUsableHeightPx: 987 });
       const r = new ResumeQualityService().evaluate({ resume: makeResume(items), items, density: "standard", fitReport: fit });
       const layoutSuggestion = r.suggestions.find((s) => s.dimension === "layout");
       expect(layoutSuggestion).toBeDefined();
@@ -226,7 +226,7 @@ describe("ResumeQualityService.evaluate (deterministic)", () => {
 
     it("does not waive underfill just because a fit edit was attempted", () => {
       const items = [makeItem("i-1", [makeBullet("b-1", VANILLA)])];
-      const fit = makeFit({ overflowPx: 0, underflowPx: 120, contentHeightPx: 867, pageUsableHeightPx: 987 });
+      const fit = makeFit({ overflowPx: 0, underflowPx: 172, contentHeightPx: 815, pageUsableHeightPx: 987 });
       const edit: ResumeFitEditorReport = {
         applied: true,
         fallback: false,
@@ -237,7 +237,7 @@ describe("ResumeQualityService.evaluate (deterministic)", () => {
         initialOverflowPx: 0,
         finalOverflowPx: 0,
         initialUnderflowPx: 200,
-        finalUnderflowPx: 120,
+        finalUnderflowPx: 172,
         actions: [],
         measuredAt: "2025-01-01T00:00:00Z",
       };

@@ -406,7 +406,7 @@ export class ResumeExportService {
       const pageUsage = result.report.usableHeightPx > 0
         ? result.report.contentHeightPx / result.report.usableHeightPx
         : 1;
-      if (result.report.fitsPage && result.report.passesBulletWidthRule && pageUsage >= 0.9) {
+      if (result.report.fitsPage && result.report.passesBulletWidthRule) {
         const html = this.renderer.render(result.resume, templateId);
         console.debug("[exports] incremental layout composer applied", {
           exportId: record.id,
@@ -414,6 +414,7 @@ export class ResumeExportService {
           contentHeightPx: result.report.contentHeightPx,
           remainingHeightPx: result.report.remainingHeightPx,
           pageUsage,
+          pageUsageTargetMet: pageUsage >= 0.88,
           actions: result.actions.length,
         });
         return { resume: result.resume, html, layoutReport: result.report };
