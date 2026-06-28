@@ -3,6 +3,8 @@ import { A4_ONE_PAGE_SPEC, type ResumePageSpec } from "./PageSpec.js";
 
 export type BulletLineLayout = {
   bulletId: string;
+  itemId?: string;
+  sectionType?: string;
   lineCount: number;
   lineWidthsPx: number[];
   minRequiredLineWidthPx: number;
@@ -124,6 +126,8 @@ export class ResumeLayoutOracle {
 
               const bulletLayouts = Array.from(doc.querySelectorAll("li[data-bullet-id]")).map((node) => {
                 const li = node as any;
+                const article = li.closest("article[data-item-id]") as any;
+                const section = li.closest("section[data-section-type]") as any;
                 const range = doc.createRange();
                 range.selectNodeContents(li);
                 const widths = mergeRects(Array.from(range.getClientRects()) as Array<{ top: number; width: number; height: number }>);
@@ -132,6 +136,8 @@ export class ResumeLayoutOracle {
                 const passesWidth = widths.every((width) => width >= bulletMin);
                 return {
                   bulletId: li.getAttribute("data-bullet-id") || "",
+                  itemId: article?.getAttribute("data-item-id") || undefined,
+                  sectionType: section?.getAttribute("data-section-type") || undefined,
                   lineCount: widths.length,
                   lineWidthsPx: widths,
                   minRequiredLineWidthPx: bulletMin,

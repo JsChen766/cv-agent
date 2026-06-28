@@ -414,7 +414,7 @@ export class ResumeExportService {
           contentHeightPx: result.report.contentHeightPx,
           remainingHeightPx: result.report.remainingHeightPx,
           pageUsage,
-          pageUsageTargetMet: pageUsage >= 0.88,
+          pageUsageTargetMet: pageUsage >= 0.9,
           actions: result.actions.length,
         });
         return { resume: result.resume, html, layoutReport: result.report };

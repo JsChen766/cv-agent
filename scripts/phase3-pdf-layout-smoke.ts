@@ -194,8 +194,16 @@ function assessPdf(input: { pdfInfo: JsonRecord; layoutReport?: JsonRecord; expo
   const bulletLayouts = Array.isArray(layout?.bulletLayouts) ? layout.bulletLayouts : [];
   const danglingBullets = bulletLayouts.filter((item) => isRecord(item) && hasDanglingBulletEnding(readString(item, "text") ?? ""));
   const naturalBulletEndingsPass = danglingBullets.length === 0;
-  const enoughCoreBullets = bulletLayouts.length >= 14;
-  const enoughPageUsage = contentHeightPx != null && usableHeightPx != null && contentHeightPx / usableHeightPx >= 0.83;
+  const careerBulletLayouts = bulletLayouts.filter((item) => {
+    if (!isRecord(item)) return false;
+    const sectionType = readString(item, "sectionType");
+    return sectionType === "experience" || sectionType === "project" || sectionType == null;
+  });
+  const careerItemBulletCounts = careerBulletCountsByItem(careerBulletLayouts);
+  const sparseCareerItems = careerItemBulletCounts.filter((item) => item.bulletCount < 3);
+  const careerItemMinimumPass = sparseCareerItems.length === 0;
+  const enoughCoreBullets = careerBulletLayouts.length >= 14;
+  const enoughPageUsage = contentHeightPx != null && usableHeightPx != null && contentHeightPx / usableHeightPx >= 0.9;
   const qualityReport = isRecord(input.exportRecord.qualityReport) ? input.exportRecord.qualityReport : {};
   const criticReview = isRecord(qualityReport.criticReview) ? qualityReport.criticReview : {};
   const semanticScore = typeof criticReview.semanticJdMatchScore === "number" ? criticReview.semanticJdMatchScore : undefined;
@@ -205,7 +213,7 @@ function assessPdf(input: { pdfInfo: JsonRecord; layoutReport?: JsonRecord; expo
   const normalizedText = text.replace(/\s+/g, "");
   const hasSections = /Experience|Projects|Education|Skills/i.test(text)
     || /实习|项目|教育|技能/.test(normalizedText);
-  const pass = pageCountPass && fitsPage && bulletWidthPass && naturalBulletEndingsPass && enoughCoreBullets && enoughPageUsage && semanticPass && hasSections;
+  const pass = pageCountPass && fitsPage && bulletWidthPass && naturalBulletEndingsPass && careerItemMinimumPass && enoughCoreBullets && enoughPageUsage && semanticPass && hasSections;
   return {
     pass,
     pageCountPass,
@@ -213,6 +221,8 @@ function assessPdf(input: { pdfInfo: JsonRecord; layoutReport?: JsonRecord; expo
     bulletWidthPass,
     naturalBulletEndingsPass,
     danglingBullets,
+    careerItemMinimumPass,
+    sparseCareerItems,
     enoughCoreBullets,
     enoughPageUsage,
     semanticPass,
@@ -223,12 +233,29 @@ function assessPdf(input: { pdfInfo: JsonRecord; layoutReport?: JsonRecord; expo
       fitsPage ? undefined : "layout does not fit one page or layoutReport missing",
       bulletWidthPass ? undefined : `bulletLineCountInvalid=${invalidBullets.length}`,
       naturalBulletEndingsPass ? undefined : `danglingBulletEndings=${danglingBullets.length}`,
-      enoughCoreBullets ? undefined : `bulletLayouts=${bulletLayouts.length}`,
+      careerItemMinimumPass ? undefined : `sparseCareerItems=${sparseCareerItems.map((item) => `${item.itemId}:${item.bulletCount}`).join(",")}`,
+      enoughCoreBullets ? undefined : `bulletLayouts=${careerBulletLayouts.length}`,
       enoughPageUsage ? undefined : `pageUsage=${contentHeightPx ?? "unknown"}/${usableHeightPx ?? "unknown"}`,
       semanticPass ? undefined : `semanticJdMatchScore=${semanticScore}`,
       hasSections ? undefined : "section text not found in PDF",
     ].filter(Boolean),
   };
+}
+
+function careerBulletCountsByItem(items: unknown[]): Array<{ itemId: string; bulletCount: number }> {
+  const counts = new Map<string, number>();
+  for (const item of items) {
+    if (!isRecord(item)) continue;
+    const itemId = readString(item, "itemId") ?? inferItemIdFromBulletId(readString(item, "bulletId") ?? "");
+    if (!itemId) continue;
+    counts.set(itemId, (counts.get(itemId) ?? 0) + 1);
+  }
+  return Array.from(counts.entries()).map(([itemId, bulletCount]) => ({ itemId, bulletCount }));
+}
+
+function inferItemIdFromBulletId(bulletId: string): string | undefined {
+  const match = /^(.*?)(?:-bullet-\d+|-b\d+)$/u.exec(bulletId);
+  return match?.[1];
 }
 
 function hasDanglingBulletEnding(text: string): boolean {

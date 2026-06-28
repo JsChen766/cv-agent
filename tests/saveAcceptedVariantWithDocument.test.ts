@@ -18,9 +18,9 @@ import type {
   ProductGeneration,
   ResumeDocument,
 } from "../src/product/types.js";
-import type { LLMGeneratedVariantsResult, LLMGenerationService } from "../src/product/LLMGenerationService.js";
+import type { LLMExperienceBulletGenerationInput, LLMGeneratedVariantsResult, LLMGenerationService } from "../src/product/LLMGenerationService.js";
 
-function bootService(llmGenerationService?: Pick<LLMGenerationService, "generateVariants">) {
+function bootService(llmGenerationService?: Pick<LLMGenerationService, "generateVariants"> & Partial<Pick<LLMGenerationService, "generateCareerBulletsForExperience">>) {
   const experienceRepo = new InMemoryProductExperienceRepository();
   const jdRepo = new InMemoryProductJDRepository();
   const resumeRepo = new InMemoryProductResumeRepository();
@@ -333,6 +333,182 @@ describe("saveAcceptedVariantToResume — structured ResumeDocument path", () =>
     expect(careerBullets.filter((bullet) => /，\s*在[^，。；;、,]+(?:中|下|实习生)$|支持按时段$|处理\d{1,2}$|Jiangxi-$|在基于3D运动轨迹跟踪$|[:：]\s*[^，。；;、,]{0,8}$/u.test(bullet.text))).toEqual([]);
     expect(sourceIds.length).toBeGreaterThan(1);
     expect(variant.sourceExperienceIds?.length).toBeGreaterThan(1);
+  });
+
+  it("normalizes project headers and replaces near-duplicate career bullets from source evidence", async () => {
+    const projectDoc: ResumeDocument = {
+      schemaVersion: 1,
+      sections: [
+        {
+          id: "sec-project",
+          type: "project",
+          title: "项目经历",
+          order: 1,
+          items: [
+            {
+              id: "item-moxibustion",
+              title: "项目负责人",
+              subtitle: "基于3D运动轨迹追踪的艾灸考评系统",
+              period: "2023.05-2024.06",
+              bullets: [
+                { id: "b-1", text: "设计3D运动轨迹采集与识别流程，结合传感器数据完成艾灸动作评分与偏差分析" },
+                { id: "b-2", text: "设计3D运动轨迹采集与识别流程，结合传感器数据完成艾灸动作评分与偏差分析" },
+                { id: "b-3", text: "业务策略支持与成果落地，研究助理（项目负责人） 2023.05，艾灸操作依赖专家主观经验且缺乏标准化" },
+              ],
+            },
+          ],
+        },
+      ],
+    };
+    const llm = {
+      async generateVariants(): Promise<LLMGeneratedVariantsResult> {
+        const variant = makeVariant("Project content.", projectDoc);
+        variant.id = "pvar-project-quality";
+        variant.recommended = true;
+        return { variants: [variant], recommendedVariantId: variant.id };
+      },
+    };
+    const { generationService, experienceService } = bootService(llm);
+    const project = await experienceService.createExperience("user-1", {
+      title: "基于3D运动轨迹追踪的艾灸考评系统",
+      category: "project",
+      organization: "南昌大学",
+      role: "项目负责人",
+      startDate: "2023.05",
+      endDate: "2024.06",
+      content: [
+        "设计3D运动轨迹采集与识别流程，结合传感器数据完成艾灸动作评分与偏差分析。",
+        "优化动作序列校准与误差分析逻辑，提升评分一致性并支持教师复核。",
+        "完成实验方案、数据采集规范和用户测试材料，推动系统进入省级重点创业项目。",
+      ].join("\n"),
+    });
+
+    const result = await generationService.generateResumeFromJD({
+      userId: "user-1",
+      jdText: "需要传感器数据分析、项目推进、算法评估和用户测试经验。",
+      targetRole: "AI 产品数据分析实习生",
+    });
+
+    const variant = result.generation.outputSnapshot?.variants?.[0];
+    expect(variant?.resumeDocument).toBeDefined();
+    const item = variant!.resumeDocument!.sections
+      .find((section) => section.type === "project")!
+      .items.find((candidate) => candidate.sourceExperienceId === project.experience.id)!;
+    expect(item.title).toBe("基于3D运动轨迹追踪的艾灸考评系统");
+    expect(item.subtitle).toContain("项目负责人");
+    expect(item.bullets.map((bullet) => bullet.text)).toHaveLength(new Set(item.bullets.map((bullet) => bullet.text)).size);
+    expect(item.bullets.some((bullet) => bullet.text.includes("评分一致性"))).toBe(true);
+    expect(item.bullets.some((bullet) => bullet.text.includes("业务策略支持与成果落地"))).toBe(false);
+  });
+
+  it("regenerates each project item with prior bullets as anti-duplication context and keeps at least three bullets", async () => {
+    const projectDoc: ResumeDocument = {
+      schemaVersion: 1,
+      sections: [
+        {
+          id: "sec-project",
+          type: "project",
+          title: "项目经历",
+          order: 1,
+          items: [
+            {
+              id: "item-health",
+              title: "基于分布式声学传感器阵列的建筑物结构健康状态智能监测系统",
+              subtitle: "项目负责人",
+              period: "2025.05-2026.05",
+              bullets: [
+                { id: "h-1", text: "设计基于声学全息成像的微弱信号提取模型（A-Hologram），主导撰写《多点分布式声学时钟同步与相位校准方案》" },
+                { id: "h-2", text: "设计基于声学全息成像的微弱信号提取模型（A-Hologram），主导撰写《多点分布式声学时钟同步与相位校准方案》" },
+                { id: "h-3", text: "主导撰写《多点分布式声学时钟同步与相位校准方案》、《基于声学特征的建筑结构损伤量化评级白皮书》及核心专利申请书" },
+              ],
+            },
+            {
+              id: "item-driving",
+              title: "基于便携式非侵入神经信号与眼动追踪的混合智能辅助驾乘系统",
+              subtitle: "项目负责人",
+              period: "2025.02-2026.04",
+              bullets: [
+                { id: "d-1", text: "将认知心理学上的“视觉注意区”转化为“软交互防分神控制策略”，疲劳行为判定准确率提升了79%" },
+              ],
+            },
+          ],
+        },
+      ],
+    };
+    const bulletCalls: Array<Pick<LLMExperienceBulletGenerationInput, "sectionType" | "acceptedBullets"> & { sourceExperienceId: string }> = [];
+    const llm = {
+      async generateVariants(): Promise<LLMGeneratedVariantsResult> {
+        const variant = makeVariant("Project content.", projectDoc);
+        variant.id = "pvar-project-refine";
+        variant.recommended = true;
+        return { variants: [variant], recommendedVariantId: variant.id };
+      },
+      async generateCareerBulletsForExperience(input: LLMExperienceBulletGenerationInput): Promise<string[]> {
+        bulletCalls.push({
+          sourceExperienceId: input.sourceExperience.id,
+          sectionType: input.sectionType,
+          acceptedBullets: [...input.acceptedBullets],
+        });
+        if (input.sourceExperience.title.includes("神经信号")) {
+          if (input.acceptedBullets.length <= 1) {
+            return [
+              "融合非侵入式神经信号、眼动追踪与驾驶场景标注数据，构建分神风险识别流程并沉淀可复现实验记录",
+            ];
+          }
+          return [
+            "设计车载软交互触发策略与提示反馈机制，围绕疲劳识别、注意力迁移和安全干预完成原型验证",
+          ];
+        }
+        return [
+          "重复的A-Hologram声学全息成像模型描述",
+          "建立声学传感器阵列的相位同步与损伤量化评估流程，支撑结构健康监测报告和专利材料",
+        ];
+      },
+    };
+    const { generationService, experienceService } = bootService(llm);
+    const health = await experienceService.createExperience("user-1", {
+      title: "基于分布式声学传感器阵列的建筑物结构健康状态智能监测系统",
+      category: "project",
+      organization: "南昌大学",
+      role: "项目负责人",
+      content: [
+        "设计基于声学全息成像的微弱信号提取模型（A-Hologram），完成多点声学阵列时钟同步与相位校准。",
+        "编写建筑结构损伤量化评级白皮书，梳理传感器标定、信号降噪和结构异常识别流程。",
+        "推进核心专利申请和系统级技术方案，支撑建筑结构健康监测从采集到评估的完整链路。",
+      ].join("\n"),
+    });
+    const driving = await experienceService.createExperience("user-1", {
+      title: "基于便携式非侵入神经信号与眼动追踪的混合智能辅助驾乘系统",
+      category: "project",
+      organization: "南昌大学",
+      role: "项目负责人",
+      content: [
+        "将认知心理学上的视觉注意区转化为软交互防分神控制策略，疲劳行为判定准确率提升79%。",
+        "融合非侵入式神经信号、眼动追踪与驾驶场景标注数据，设计分神风险识别与预警流程。",
+        "完成车载交互原型、实验记录和安全干预策略验证，支持辅助驾乘系统的场景化评估。",
+      ].join("\n"),
+    });
+
+    const result = await generationService.generateResumeFromJD({
+      userId: "user-1",
+      jdText: "需要传感器融合、信号处理、实验验证和智能系统产品化经验。",
+      targetRole: "AI 产品数据分析实习生",
+    });
+
+    const projectItems = result.generation.outputSnapshot!.variants![0]!.resumeDocument!.sections
+      .find((section) => section.type === "project")!
+      .items;
+    const healthItem = projectItems.find((item) => item.id === "item-health")!;
+    const drivingItem = projectItems.find((item) => item.id === "item-driving")!;
+    expect(healthItem.sourceExperienceId).toBe(health.experience.id);
+    expect(drivingItem.sourceExperienceId).toBe(driving.experience.id);
+    expect(new Set(healthItem.bullets.map((bullet) => bullet.text)).size).toBe(healthItem.bullets.length);
+    expect(healthItem.bullets.some((bullet) => bullet.text.includes("损伤量化") || bullet.text.includes("结构健康监测"))).toBe(true);
+    expect(drivingItem.bullets.length).toBeGreaterThanOrEqual(3);
+    expect(new Set(drivingItem.bullets.map((bullet) => bullet.text)).size).toBe(drivingItem.bullets.length);
+    const drivingCalls = bulletCalls.filter((call) => call.sourceExperienceId === driving.experience.id);
+    expect(drivingCalls.length).toBeGreaterThanOrEqual(1);
+    expect(drivingCalls[0]!.acceptedBullets.length).toBeGreaterThanOrEqual(1);
   });
 
   it("shortlists baseline sections plus top 3 work-like and top 3 project experiences before calling the LLM", async () => {

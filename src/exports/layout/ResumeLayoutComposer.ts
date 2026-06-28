@@ -59,7 +59,7 @@ export class ResumeLayoutComposer {
   ): Promise<ResumeLayoutComposerResult> {
     const actions: ResumeLayoutComposerAction[] = [];
     const baseReport = await session.measure(input.renderHtml(input.resume));
-    if (isPassing(baseReport)) {
+    if (isPassing(baseReport) && resumeHasMinimumCareerItemBullets(input.resume)) {
       return { resume: input.resume, report: baseReport, actions };
     }
 
@@ -119,12 +119,12 @@ export class ResumeLayoutComposer {
         }
       }
 
-      if (acceptedBullets.length > 0) {
+      if (acceptedBullets.length >= minimumBulletsForItem(item)) {
         const finalItem = cloneItem(item);
         finalItem.contentSnapshot = renderSnapshot({ ...parsed, bullets: acceptedBullets });
         acceptedItems.push(finalItem);
       } else {
-        actions.push({ type: "reject_item", itemId: item.id, reason: "no bullets satisfied the layout constraints" });
+        actions.push({ type: "reject_item", itemId: item.id, reason: `only ${acceptedBullets.length} bullets satisfied the layout constraints` });
       }
     }
 
@@ -150,6 +150,21 @@ export class ResumeLayoutComposer {
 
 function isPassing(report: ResumeLayoutReport): boolean {
   return report.fitsPage && report.passesBulletWidthRule;
+}
+
+function resumeHasMinimumCareerItemBullets(resume: ProductResumeDetail): boolean {
+  return resume.items.every((item) => {
+    if (item.hidden || !isCareerItem(item)) return true;
+    return parseSnapshot(item.contentSnapshot).bullets.length >= minimumBulletsForItem(item);
+  });
+}
+
+function minimumBulletsForItem(item: ProductResumeItem): number {
+  return isCareerItem(item) ? 3 : 1;
+}
+
+function isCareerItem(item: ProductResumeItem): boolean {
+  return item.sectionType === "experience" || item.sectionType === "project";
 }
 
 function explainFailure(report: ResumeLayoutReport): string {
@@ -240,7 +255,7 @@ function bulletVariants(text: string): Array<{ text: string }> {
   if (containsCjk(text)) {
     for (const target of [124, 122, 120, 118, 116, 58, 56, 54, 52, 50, 48]) {
       if (target >= text.length) continue;
-      const next = truncateAtBoundary(text, target);
+      const next = truncateAtBoundary(text, target) ?? truncateCjkCompactly(text, target);
       if (next && isAcceptableVariantLength(next) && !variants.includes(next)) variants.push(next);
     }
     return variants.map((value) => ({ text: value }));
@@ -284,6 +299,15 @@ function truncateAtBoundary(text: string, maxLen: number): string | undefined {
     if (isAcceptableVariantLength(candidate)) candidates.push(candidate);
   }
   return candidates.sort((a, b) => b.length - a.length)[0];
+}
+
+function truncateCjkCompactly(text: string, maxLen: number): string | undefined {
+  if (!containsCjk(text) || text.length <= maxLen) return undefined;
+  for (let length = maxLen; length >= 48; length -= 1) {
+    const candidate = cleanVariantText(text.slice(0, length));
+    if (isAcceptableVariantLength(candidate)) return candidate;
+  }
+  return undefined;
 }
 
 function isAcceptableVariantLength(text: string): boolean {

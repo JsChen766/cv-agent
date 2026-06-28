@@ -105,7 +105,7 @@ const ACTION_VERB_PATTERNS: RegExp[] = [
 ];
 
 const METRIC_PATTERN = /(\d+(?:[\.,]\d+)?\s*(?:%|x|×|倍|万|k|K|m|M|h|hours?|days?|weeks?|months?))|\d+/;
-const TARGET_MIN_PAGE_USAGE_RATIO = 0.83;
+const TARGET_MIN_PAGE_USAGE_RATIO = 0.9;
 const SEVERE_UNDERFILL_PAGE_USAGE_RATIO = 0.82;
 
 export class ResumeQualityService {

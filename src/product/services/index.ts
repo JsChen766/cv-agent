@@ -20,7 +20,7 @@ import type {
 import { extractExperienceDraftFromText } from "../experienceDraft.js";
 import type { LLMExperienceExtractor } from "../LLMExperienceExtractor.js";
 import { detectDominantLanguage, extractedCandidateToDraft } from "../LLMExperienceExtractor.js";
-import { LLMGenerationError, type LLMGenerationService } from "../LLMGenerationService.js";
+import { LLMGenerationError, type LLMExperienceBulletGenerationInput, type LLMGenerationService } from "../LLMGenerationService.js";
 import type { EvidenceRAGService, EvidencePack, ClaimGraphIndexer } from "../../rag/evidence/index.js";
 import type { GuidelineRAGService } from "../../rag/guideline/index.js";
 import { GroundingContextCoordinator } from "../../rag/GroundingContextCoordinator.js";
@@ -1080,6 +1080,14 @@ export class GenerationProductService {
           sourceExperiences: experiences,
           recommendedVariantId,
         });
+        variants = await refineGeneratedResumeVariantsWithCareerBullets({
+          variants,
+          sourceExperiences: experiences,
+          jdText: jd.rawText,
+          targetRole,
+          recommendedVariantId,
+          llmGenerationService: this.llmGenerationService,
+        });
       } catch (error) {
         throw generationFailureError(error);
       }
@@ -1828,7 +1836,10 @@ function inferTitle(content: string, fallback: string): string {
 // ───────────────────────────────────────────────────────────────
 
 const DENSITY_MIN_CAREER_BULLETS = 22;
+const DENSITY_REFILL_CAREER_BULLETS = 16;
 const DENSITY_MAX_SUPPLEMENTAL_ITEMS = 10;
+const CAREER_ITEM_MIN_BULLETS = 3;
+const CAREER_ITEM_MAX_GENERATED_BULLETS = 5;
 const DENSE_CJK_MIN_CHARS = 48;
 const DENSE_CJK_MAX_CHARS = 58;
 const DENSE_CJK_TWO_LINE_MIN_CHARS = 116;
@@ -1888,8 +1899,6 @@ function densifyGeneratedResumeVariant(
     }
   }
 
-  let careerBulletCount = countCareerBullets(nextDoc);
-
   let changedExistingBullets = false;
   for (const section of nextDoc.sections) {
     if (section.type !== "experience" && section.type !== "project") continue;
@@ -1900,50 +1909,42 @@ function densifyGeneratedResumeVariant(
         item.sourceExperienceId = source.id;
         changedExistingBullets = true;
       }
+      if (normalizeCareerResumeItemHeader(section.type, item, source)) {
+        changedExistingBullets = true;
+      }
       const sourceBullets = denseBulletsFromSourceExperience(source, 4);
       const sourcePhrases = sourceEvidencePhrases(source);
-      const existingTexts = new Set(item.bullets.map((bullet) => bullet.text.trim()));
+      const acceptedTexts: string[] = [];
       for (const bullet of item.bullets) {
         const text = bullet.text.trim();
-        const replacement = normalizeCareerBulletForNaturalWidth(text, sourcePhrases)
-          ?? (needsDenseBulletExpansion(text)
-            ? sourceBullets.find((candidate) => candidate !== text && !existingTexts.has(candidate))
-            : undefined);
-        if (!replacement) continue;
-        existingTexts.delete(text);
-        bullet.text = replacement;
-        if (!bullet.evidenceIds || bullet.evidenceIds.length === 0) bullet.evidenceIds = [`source-card-${source.id}`];
-        existingTexts.add(replacement);
+        const qualityText = normalizeCareerBulletQuality(text, source, sourcePhrases);
+        const textAfterQuality = qualityText ?? text;
+        const duplicate = acceptedTexts.some((accepted) => areResumeBulletsTooSimilar(textAfterQuality, accepted, source));
+        const replacement = duplicate
+          ? sourceBullets.find((candidate) => !acceptedTexts.some((accepted) => areResumeBulletsTooSimilar(candidate, accepted, source)))
+          : normalizeCareerBulletForNaturalWidth(textAfterQuality, sourcePhrases)
+            ?? (needsDenseBulletExpansion(textAfterQuality)
+              ? sourceBullets.find((candidate) => candidate !== textAfterQuality && !acceptedTexts.some((accepted) => areResumeBulletsTooSimilar(candidate, accepted, source)))
+              : qualityText);
+        if (replacement) {
+          bullet.text = replacement;
+          if (!bullet.evidenceIds || bullet.evidenceIds.length === 0) bullet.evidenceIds = [`source-card-${source.id}`];
+          acceptedTexts.push(replacement);
+          changedExistingBullets = true;
+          continue;
+        }
+        acceptedTexts.push(textAfterQuality);
+      }
+      const polishedBullets = polishCareerItemBullets(item.bullets, source, sourceBullets, sourcePhrases);
+      if (polishedBullets.changed) {
+        item.bullets = polishedBullets.bullets;
         changedExistingBullets = true;
       }
     }
   }
+  let careerBulletCount = countCareerBullets(nextDoc);
   if (careerBulletCount >= DENSITY_MIN_CAREER_BULLETS) {
     if (!changedExistingBullets) return variant;
-  }
-
-  for (const section of nextDoc.sections) {
-    if (careerBulletCount >= DENSITY_MIN_CAREER_BULLETS) break;
-    if (section.type !== "experience" && section.type !== "project") continue;
-    for (const item of section.items) {
-      if (careerBulletCount >= DENSITY_MIN_CAREER_BULLETS) break;
-      if (!item.sourceExperienceId) continue;
-      const source = sourcesById.get(item.sourceExperienceId);
-      if (!source) continue;
-      const existingTexts = new Set(item.bullets.map((bullet) => bullet.text.trim()));
-      for (const text of denseBulletsFromSourceExperience(source, DENSITY_MIN_CAREER_BULLETS - careerBulletCount)) {
-        if (item.bullets.length >= 5) break;
-        if (existingTexts.has(text)) continue;
-        item.bullets.push({
-          id: `density-${source.id}-b${item.bullets.length + 1}`,
-          text,
-          evidenceIds: [`source-card-${source.id}`],
-        });
-        existingTexts.add(text);
-        careerBulletCount += 1;
-        usedSourceIds.add(source.id);
-      }
-    }
   }
 
   let supplementalItems = 0;
@@ -1953,13 +1954,18 @@ function densifyGeneratedResumeVariant(
     const sectionType = resumeSectionTypeForExperience(source);
     if (sectionType !== "experience" && sectionType !== "project") continue;
     if (usedSourceIds.has(source.id)) continue;
-    const bullets = denseBulletsFromSourceExperience(source, DENSITY_MIN_CAREER_BULLETS - careerBulletCount);
-    if (bullets.length === 0) continue;
+    const bullets = sourceGroundedCareerBulletCandidates(
+      source,
+      [],
+      CAREER_ITEM_MIN_BULLETS,
+      CAREER_ITEM_MAX_GENERATED_BULLETS,
+    );
+    if (bullets.length < CAREER_ITEM_MIN_BULLETS) continue;
     const section = ensureResumeDocumentSection(nextDoc, sectionType);
     section.items.push({
       id: `density-${source.id}`,
-      title: source.role || source.title,
-      subtitle: source.organization,
+      title: resumeDocumentTitleForSource(sectionType, source),
+      subtitle: resumeDocumentSubtitleForSource(sectionType, source),
       period: formatResumeDateRange(source.startDate, source.endDate),
       bullets: bullets.map((text, index) => ({
         id: `density-${source.id}-b${index + 1}`,
@@ -1973,6 +1979,51 @@ function densifyGeneratedResumeVariant(
     usedSourceIds.add(source.id);
     careerBulletCount += bullets.length;
     supplementalItems += 1;
+  }
+
+  const finalPolish = polishCareerDocumentItems(nextDoc, sourcesById, sourceExperiences);
+  if (finalPolish.changed) changedExistingBullets = true;
+  careerBulletCount = finalPolish.careerBulletCount;
+
+  for (const source of sourceExperiences) {
+    if (careerBulletCount >= DENSITY_MIN_CAREER_BULLETS) break;
+    if (supplementalItems >= DENSITY_MAX_SUPPLEMENTAL_ITEMS) break;
+    const sectionType = resumeSectionTypeForExperience(source);
+    if (sectionType !== "experience" && sectionType !== "project") continue;
+    if (usedSourceIds.has(source.id)) continue;
+    const bullets = sourceGroundedCareerBulletCandidates(
+      source,
+      [],
+      CAREER_ITEM_MIN_BULLETS,
+      CAREER_ITEM_MAX_GENERATED_BULLETS,
+    );
+    if (bullets.length < CAREER_ITEM_MIN_BULLETS) continue;
+    const section = ensureResumeDocumentSection(nextDoc, sectionType);
+    section.items.push({
+      id: `density-${source.id}`,
+      title: resumeDocumentTitleForSource(sectionType, source),
+      subtitle: resumeDocumentSubtitleForSource(sectionType, source),
+      period: formatResumeDateRange(source.startDate, source.endDate),
+      bullets: bullets.map((text, index) => ({
+        id: `density-${source.id}-b${index + 1}`,
+        text,
+        evidenceIds: [`source-card-${source.id}`],
+      })),
+      sourceExperienceId: source.id,
+      evidenceStrength: "medium",
+      relevanceScore: 0.55,
+    });
+    usedSourceIds.add(source.id);
+    careerBulletCount += bullets.length;
+    supplementalItems += 1;
+  }
+
+  if (careerBulletCount < DENSITY_REFILL_CAREER_BULLETS) {
+    const refill = refillCareerBulletsFromSources(nextDoc, sourcesById, sourceExperiences, DENSITY_REFILL_CAREER_BULLETS);
+    if (refill.added > 0) {
+      careerBulletCount += refill.added;
+      changedExistingBullets = true;
+    }
   }
 
   if (careerBulletCount === countCareerBullets(doc) && !changedExistingBullets) return variant;
@@ -1989,6 +2040,506 @@ function densifyGeneratedResumeVariant(
       `Density completion added evidence-backed internship/project items from ${supplementalItems} source experiences.`,
     ].filter(Boolean).join(" "),
   };
+}
+
+async function refineGeneratedResumeVariantsWithCareerBullets(input: {
+  variants: ProductGeneratedVariant[];
+  sourceExperiences: ProductExperienceSummary[];
+  jdText: string;
+  targetRole?: string;
+  recommendedVariantId?: string;
+  llmGenerationService?: LLMGenerationService;
+}): Promise<ProductGeneratedVariant[]> {
+  const recommendedId = input.recommendedVariantId
+    ?? input.variants.find((variant) => variant.recommended)?.id
+    ?? input.variants[0]?.id;
+  const refined: ProductGeneratedVariant[] = [];
+  for (const variant of input.variants) {
+    refined.push(
+      variant.id === recommendedId
+        ? await refineGeneratedResumeVariantWithCareerBullets(variant, input)
+        : variant,
+    );
+  }
+  return refined;
+}
+
+async function refineGeneratedResumeVariantWithCareerBullets(
+  variant: ProductGeneratedVariant,
+  input: {
+    sourceExperiences: ProductExperienceSummary[];
+    jdText: string;
+    targetRole?: string;
+    llmGenerationService?: LLMGenerationService;
+  },
+): Promise<ProductGeneratedVariant> {
+  const doc = variant.resumeDocument;
+  if (!doc || !Array.isArray(doc.sections) || doc.sections.length === 0) return variant;
+  const nextDoc: ResumeDocument = {
+    ...doc,
+    sections: doc.sections.map((section) => ({
+      ...section,
+      items: section.items.map((item) => ({
+        ...item,
+        bullets: item.bullets.map((bullet) => ({ ...bullet })),
+      })),
+    })),
+  };
+  const sourcesById = new Map(input.sourceExperiences.map((source) => [source.id, source]));
+  const usedSourceIds = new Set<string>(variant.sourceExperienceIds ?? []);
+  let changed = false;
+
+  for (const section of nextDoc.sections) {
+    if (section.type !== "experience" && section.type !== "project") continue;
+    for (const item of section.items) {
+      const source = resolveResumeItemSource(item, sourcesById, input.sourceExperiences);
+      if (!source) continue;
+      usedSourceIds.add(source.id);
+      if (item.sourceExperienceId !== source.id) {
+        item.sourceExperienceId = source.id;
+        changed = true;
+      }
+      if (normalizeCareerResumeItemHeader(section.type, item, source)) changed = true;
+      if (
+        item.id.startsWith("density-")
+        && typeof input.llmGenerationService?.generateCareerBulletsForExperience !== "function"
+      ) {
+        continue;
+      }
+      const refined = await refineCareerItemBulletsFromSource({
+        sectionType: section.type,
+        item,
+        source,
+        jdText: input.jdText,
+        targetRole: input.targetRole,
+        llmGenerationService: input.llmGenerationService,
+      });
+      if (refined.changed) {
+        item.bullets = refined.bullets;
+        changed = true;
+      }
+    }
+  }
+
+  if (!changed) return variant;
+  return {
+    ...variant,
+    resumeDocument: sortResumeDocument(nextDoc),
+    sourceExperienceIds: Array.from(new Set([
+      ...(variant.sourceExperienceIds ?? []),
+      ...Array.from(usedSourceIds),
+    ])),
+    reason: [
+      variant.reason,
+      "Career item bullet refinement regenerated source-grounded, non-duplicate internship/project bullets.",
+    ].filter(Boolean).join(" "),
+  };
+}
+
+async function refineCareerItemBulletsFromSource(input: {
+  sectionType: "experience" | "project";
+  item: ResumeDocumentSection["items"][number];
+  source: ProductExperienceSummary;
+  jdText: string;
+  targetRole?: string;
+  llmGenerationService?: LLMGenerationService;
+}): Promise<{ bullets: ResumeDocumentSection["items"][number]["bullets"]; changed: boolean }> {
+  const sourcePhrases = sourceEvidencePhrases(input.source);
+  const sourceBullets = denseBulletsFromSourceExperience(input.source, CAREER_ITEM_MAX_GENERATED_BULLETS + 1);
+  const acceptedTexts: string[] = [];
+  const result: ResumeDocumentSection["items"][number]["bullets"] = [];
+  let changed = false;
+
+  for (const bullet of input.item.bullets) {
+    const candidate = normalizeCareerBulletCandidate(bullet.text, input.source, sourcePhrases);
+    const replacement = candidate && isAcceptableCareerBullet(candidate, acceptedTexts, input.source)
+      ? candidate
+      : findNextCareerBulletCandidate(sourceBullets, acceptedTexts, input.source, sourcePhrases);
+    if (!replacement) {
+      const preserved = stripDuplicateNaturalClauses(bullet.text.trim());
+      if (
+        preserved
+        && !needsDenseBulletExpansion(preserved)
+        && !acceptedTexts.some((accepted) => areResumeBulletsTooSimilar(preserved, accepted, input.source))
+        && !haveResumeMetricAnchorOverlap(preserved, acceptedTexts)
+      ) {
+        result.push({
+          ...bullet,
+          text: preserved,
+          evidenceIds: bullet.evidenceIds && bullet.evidenceIds.length > 0 ? bullet.evidenceIds : [`source-card-${input.source.id}`],
+        });
+        acceptedTexts.push(preserved);
+        if (preserved !== bullet.text.trim()) changed = true;
+      } else {
+        changed = true;
+      }
+      continue;
+    }
+    result.push({
+      ...bullet,
+      text: replacement,
+      evidenceIds: bullet.evidenceIds && bullet.evidenceIds.length > 0 ? bullet.evidenceIds : [`source-card-${input.source.id}`],
+    });
+    if (replacement !== bullet.text.trim()) changed = true;
+    acceptedTexts.push(replacement);
+  }
+
+  while (result.length < CAREER_ITEM_MAX_GENERATED_BULLETS) {
+    const generated = await generateOneCareerBulletCandidate({
+      jdText: input.jdText,
+      targetRole: input.targetRole,
+      sectionType: input.sectionType,
+      sourceExperience: input.source,
+      currentTitle: input.item.title,
+      currentSubtitle: input.item.subtitle,
+      acceptedBullets: acceptedTexts,
+      minBullets: CAREER_ITEM_MIN_BULLETS,
+      maxBullets: CAREER_ITEM_MAX_GENERATED_BULLETS,
+      llmGenerationService: input.llmGenerationService,
+    });
+    const nextText = findNextCareerBulletCandidate(
+      [...generated, ...sourceBullets, ...sourcePhrases],
+      acceptedTexts,
+      input.source,
+      sourcePhrases,
+    ) ?? findNextCareerBulletCandidate(
+      [...generated, ...sourceBullets, ...sourcePhrases],
+      acceptedTexts,
+      input.source,
+      sourcePhrases,
+      { relaxed: true },
+    ) ?? findAnyNonExactCareerBulletCandidate(
+      [...generated, ...sourceBullets, ...sourcePhrases],
+      acceptedTexts,
+      input.source,
+      sourcePhrases,
+    );
+    if (!nextText) break;
+    result.push({
+      id: `${input.item.id || input.source.id}-refined-b${result.length + 1}`,
+      text: nextText,
+      evidenceIds: [`source-card-${input.source.id}`],
+    });
+    acceptedTexts.push(nextText);
+    changed = true;
+  }
+
+  const uniqueResult: ResumeDocumentSection["items"][number]["bullets"] = [];
+  const uniqueTexts: string[] = [];
+  for (const bullet of result) {
+    const exactDuplicate = hasExactCareerBulletDuplicate(bullet.text, uniqueTexts, input.source);
+    const relaxedDuplicate = !isRelaxedAcceptableCareerBullet(bullet.text, uniqueTexts, input.source);
+    const strictDuplicate = uniqueTexts.some((accepted) => areResumeBulletsTooSimilar(bullet.text, accepted, input.source));
+    if (exactDuplicate || relaxedDuplicate || strictDuplicate) {
+      changed = true;
+      continue;
+    }
+    uniqueResult.push(bullet);
+    uniqueTexts.push(bullet.text);
+  }
+
+  while (uniqueResult.length < CAREER_ITEM_MAX_GENERATED_BULLETS) {
+    const generated = await generateOneCareerBulletCandidate({
+      jdText: input.jdText,
+      targetRole: input.targetRole,
+      sectionType: input.sectionType,
+      sourceExperience: input.source,
+      currentTitle: input.item.title,
+      currentSubtitle: input.item.subtitle,
+      acceptedBullets: uniqueTexts,
+      minBullets: CAREER_ITEM_MIN_BULLETS,
+      maxBullets: CAREER_ITEM_MAX_GENERATED_BULLETS,
+      llmGenerationService: input.llmGenerationService,
+    });
+    const needsMinimum = uniqueResult.length < CAREER_ITEM_MIN_BULLETS;
+    const nextText = findNextCareerBulletCandidate(
+      [...generated, ...sourceBullets, ...sourcePhrases],
+      uniqueTexts,
+      input.source,
+      sourcePhrases,
+    ) ?? findNextCareerBulletCandidate(
+      [...generated, ...sourceBullets, ...sourcePhrases],
+      uniqueTexts,
+      input.source,
+      sourcePhrases,
+      { relaxed: true },
+    ) ?? (needsMinimum
+      ? findAnyNonExactCareerBulletCandidate(
+          [...generated, ...sourceBullets, ...sourcePhrases],
+          uniqueTexts,
+          input.source,
+          sourcePhrases,
+        ) ?? buildSyntheticCareerBulletCandidate(input.source, uniqueTexts, sourcePhrases)
+      : undefined);
+    if (!nextText) break;
+    uniqueResult.push({
+      id: `${input.item.id || input.source.id}-refined-b${uniqueResult.length + 1}`,
+      text: nextText,
+      evidenceIds: [`source-card-${input.source.id}`],
+    });
+    uniqueTexts.push(nextText);
+    changed = true;
+  }
+
+  return { bullets: uniqueResult, changed: changed || uniqueResult.length !== input.item.bullets.length };
+}
+
+function ensureCareerItemMinimumBulletsFromSource(
+  item: ResumeDocumentSection["items"][number],
+  source: ProductExperienceSummary,
+): { added: number; changed: boolean } {
+  if (item.bullets.length >= CAREER_ITEM_MIN_BULLETS) return { added: 0, changed: false };
+  const acceptedTexts = item.bullets.map((bullet) => bullet.text.trim()).filter(Boolean);
+  const candidates = sourceGroundedCareerBulletCandidates(
+    source,
+    acceptedTexts,
+    CAREER_ITEM_MIN_BULLETS,
+    CAREER_ITEM_MAX_GENERATED_BULLETS,
+  );
+  let added = 0;
+  for (const text of candidates) {
+    if (item.bullets.length >= CAREER_ITEM_MIN_BULLETS) break;
+    if (acceptedTexts.includes(text)) continue;
+    item.bullets.push({
+      id: `${item.id || source.id}-min-b${item.bullets.length + 1}`,
+      text,
+      evidenceIds: [`source-card-${source.id}`],
+    });
+    acceptedTexts.push(text);
+    added += 1;
+  }
+  return { added, changed: added > 0 };
+}
+
+function sourceGroundedCareerBulletCandidates(
+  source: ProductExperienceSummary,
+  acceptedTexts: string[],
+  minBullets: number,
+  maxBullets: number,
+): string[] {
+  const sourcePhrases = sourceEvidencePhrases(source);
+  const candidates = [
+    ...denseBulletsFromSourceExperience(source, maxBullets),
+    ...sourcePhrases,
+  ];
+  const result: string[] = [];
+  const accepted = [...acceptedTexts];
+  while (result.length < maxBullets && accepted.length + result.length < maxBullets) {
+    const next = findNextCareerBulletCandidate(candidates, [...accepted, ...result], source, sourcePhrases)
+      ?? findNextCareerBulletCandidate(candidates, [...accepted, ...result], source, sourcePhrases, { relaxed: true })
+      ?? findAnyNonExactCareerBulletCandidate(candidates, [...accepted, ...result], source, sourcePhrases)
+      ?? buildSyntheticCareerBulletCandidate(source, [...accepted, ...result], sourcePhrases);
+    if (!next) break;
+    result.push(next);
+  }
+  if (acceptedTexts.length + result.length < minBullets) {
+    return result;
+  }
+  return result;
+}
+
+async function generateOneCareerBulletCandidate(
+  input: LLMExperienceBulletGenerationInput & { llmGenerationService?: LLMGenerationService },
+): Promise<string[]> {
+  const generator = input.llmGenerationService?.generateCareerBulletsForExperience;
+  if (typeof generator !== "function") return [];
+  try {
+    return await generator.call(input.llmGenerationService, input);
+  } catch {
+    return [];
+  }
+}
+
+function findNextCareerBulletCandidate(
+  candidates: string[],
+  acceptedTexts: string[],
+  source: ProductExperienceSummary,
+  sourcePhrases: string[],
+  options: { relaxed?: boolean } = {},
+): string | undefined {
+  for (const candidate of candidates) {
+    const normalized = normalizeCareerBulletCandidate(candidate, source, sourcePhrases);
+    if (!normalized) continue;
+    if (options.relaxed) {
+      if (!isRelaxedAcceptableCareerBullet(normalized, acceptedTexts, source)) continue;
+    } else if (!isAcceptableCareerBullet(normalized, acceptedTexts, source)) {
+      continue;
+    }
+    return normalized;
+  }
+  return undefined;
+}
+
+function findAnyNonExactCareerBulletCandidate(
+  candidates: string[],
+  acceptedTexts: string[],
+  source: ProductExperienceSummary,
+  sourcePhrases: string[],
+): string | undefined {
+  for (const candidate of candidates) {
+    const normalized = normalizeCareerBulletCandidate(candidate, source, sourcePhrases);
+    if (!normalized) continue;
+    if (hasExactCareerBulletDuplicate(normalized, acceptedTexts, source)) continue;
+    return normalized;
+  }
+  return undefined;
+}
+
+function buildSyntheticCareerBulletCandidate(
+  source: ProductExperienceSummary,
+  acceptedTexts: string[],
+  sourcePhrases: string[],
+): string | undefined {
+  const context = uniqueNonEmpty([source.title, source.role]).join("、") || source.title || source.role || "该经历";
+  for (const phrase of sourcePhrases) {
+    const cleaned = cleanNaturalContinuation(phrase);
+    if (!cleaned) continue;
+    const candidate = containsCjkText(cleaned)
+      ? `围绕${context}，${cleaned}`
+      : `${cleaned} for ${context}`;
+    const normalized = normalizeCareerBulletCandidate(candidate, source, sourcePhrases);
+    if (!normalized) continue;
+    if (hasExactCareerBulletDuplicate(normalized, acceptedTexts, source)) continue;
+    return normalized;
+  }
+  return undefined;
+}
+
+function normalizeCareerBulletCandidate(
+  text: string,
+  source: ProductExperienceSummary,
+  sourcePhrases: string[],
+): string | undefined {
+  const qualityText = normalizeCareerBulletQuality(text, source, sourcePhrases) ?? text;
+  const withoutDuplicateClauses = stripDuplicateNaturalClauses(qualityText);
+  const widthNormalized = normalizeCareerBulletForNaturalWidth(withoutDuplicateClauses, sourcePhrases)
+    ?? normalizeDenseBullet(withoutDuplicateClauses, sourcePhrases)
+    ?? withoutDuplicateClauses;
+  const normalized = stripDuplicateNaturalClauses(widthNormalized).trim();
+  if (isLowQualityCareerBullet(normalized, source)) return undefined;
+  if (needsDenseBulletExpansion(normalized)) return undefined;
+  return normalized;
+}
+
+function isAcceptableCareerBullet(
+  text: string,
+  acceptedTexts: string[],
+  source: ProductExperienceSummary,
+): boolean {
+  if (!text || isLowQualityCareerBullet(text, source)) return false;
+  return !acceptedTexts.some((accepted) => areResumeBulletsTooSimilar(text, accepted, source))
+    && !haveResumeMetricAnchorOverlap(text, acceptedTexts);
+}
+
+function isRelaxedAcceptableCareerBullet(
+  text: string,
+  acceptedTexts: string[],
+  source: ProductExperienceSummary,
+): boolean {
+  if (!text || isLowQualityCareerBullet(text, source)) return false;
+  const normalized = normalizeBulletSimilarityText(stripSourceNames(text, source));
+  if (!normalized) return false;
+  return !acceptedTexts.some((accepted) => {
+    const acceptedNormalized = normalizeBulletSimilarityText(stripSourceNames(accepted, source));
+    return accepted.trim() === text.trim()
+      || (acceptedNormalized.length > 0 && acceptedNormalized === normalized)
+      || (normalized.length >= 20 && acceptedNormalized.length >= 20 && (
+        normalized.includes(acceptedNormalized) || acceptedNormalized.includes(normalized)
+      ));
+  });
+}
+
+function hasExactCareerBulletDuplicate(
+  text: string,
+  acceptedTexts: string[],
+  source: ProductExperienceSummary,
+): boolean {
+  const normalized = normalizeBulletSimilarityText(stripSourceNames(text, source));
+  return acceptedTexts.some((accepted) => {
+    const acceptedNormalized = normalizeBulletSimilarityText(stripSourceNames(accepted, source));
+    return accepted.trim() === text.trim()
+      || (normalized.length > 0 && acceptedNormalized === normalized);
+  });
+}
+
+function polishCareerDocumentItems(
+  doc: ResumeDocument,
+  sourcesById: Map<string, ProductExperienceSummary>,
+  sourceExperiences: ProductExperienceSummary[],
+): { careerBulletCount: number; changed: boolean } {
+  let changed = false;
+  for (const section of doc.sections) {
+    if (section.type !== "experience" && section.type !== "project") continue;
+    for (const item of section.items) {
+      const source = resolveResumeItemSource(item, sourcesById, sourceExperiences);
+      if (!source) continue;
+      if (item.sourceExperienceId !== source.id) {
+        item.sourceExperienceId = source.id;
+        changed = true;
+      }
+      if (normalizeCareerResumeItemHeader(section.type, item, source)) changed = true;
+      const sourceBullets = denseBulletsFromSourceExperience(source, 4);
+      const sourcePhrases = sourceEvidencePhrases(source);
+      if (item.id.startsWith("density-")) {
+        for (const bullet of item.bullets) {
+          const original = bullet.text.trim();
+          const qualityText = normalizeCareerBulletQuality(original, source, sourcePhrases);
+          const nextText = stripDuplicateNaturalClauses(qualityText ?? original);
+          const acceptedText = nextText.length >= DENSE_CJK_MIN_CHARS ? nextText : original;
+          if (acceptedText !== original) {
+            bullet.text = acceptedText;
+            changed = true;
+          }
+        }
+        continue;
+      }
+      const polished = polishCareerItemBullets(item.bullets, source, sourceBullets, sourcePhrases);
+      if (polished.changed) {
+        item.bullets = polished.bullets;
+        changed = true;
+      }
+    }
+  }
+  return { careerBulletCount: countCareerBullets(doc), changed };
+}
+
+function refillCareerBulletsFromSources(
+  doc: ResumeDocument,
+  sourcesById: Map<string, ProductExperienceSummary>,
+  sourceExperiences: ProductExperienceSummary[],
+  targetCount: number,
+): { added: number } {
+  let currentCount = countCareerBullets(doc);
+  let added = 0;
+  for (const section of doc.sections) {
+    if (currentCount >= targetCount) break;
+    if (section.type !== "experience" && section.type !== "project") continue;
+    for (const item of section.items) {
+      if (currentCount >= targetCount) break;
+      if (item.bullets.length >= 5) continue;
+      const source = resolveResumeItemSource(item, sourcesById, sourceExperiences);
+      if (!source) continue;
+      const existingTexts = new Set(item.bullets.map((bullet) => bullet.text.trim()));
+      const candidates = sourceEvidencePhrases(source);
+      for (let index = 0; index < candidates.length; index += 1) {
+        if (currentCount >= targetCount || item.bullets.length >= 5) break;
+        const text = normalizeDenseBullet(candidates[index]!, [
+          ...candidates.slice(index + 1),
+          ...candidates.slice(0, index),
+        ]);
+        if (!text || existingTexts.has(text) || isLowQualityCareerBullet(text, source)) continue;
+        item.bullets.push({
+          id: `density-refill-${source.id}-b${item.bullets.length + 1}`,
+          text,
+          evidenceIds: [`source-card-${source.id}`],
+        });
+        existingTexts.add(text);
+        currentCount += 1;
+        added += 1;
+      }
+    }
+  }
+  return { added };
 }
 
 function countCareerBullets(doc: ResumeDocument): number {
@@ -2035,6 +2586,55 @@ function resumeSectionTypeForExperience(source: ProductExperienceSummary): Produ
   return "other";
 }
 
+function normalizeCareerResumeItemHeader(
+  sectionType: ProductResumeItem["sectionType"],
+  item: ResumeDocumentSection["items"][number],
+  source: ProductExperienceSummary,
+): boolean {
+  if (sectionType !== "experience" && sectionType !== "project") return false;
+  const expectedTitle = resumeDocumentTitleForSource(sectionType, source);
+  const expectedSubtitle = resumeDocumentSubtitleForSource(sectionType, source);
+  const expectedPeriod = formatResumeDateRange(source.startDate, source.endDate);
+  let changed = false;
+  if (expectedTitle && item.title.trim() !== expectedTitle) {
+    item.title = expectedTitle;
+    changed = true;
+  }
+  if (expectedSubtitle && item.subtitle?.trim() !== expectedSubtitle) {
+    item.subtitle = expectedSubtitle;
+    changed = true;
+  }
+  if (expectedPeriod && item.period?.trim() !== expectedPeriod) {
+    item.period = expectedPeriod;
+    changed = true;
+  }
+  return changed;
+}
+
+function resumeDocumentTitleForSource(
+  sectionType: ProductResumeItem["sectionType"],
+  source: ProductExperienceSummary,
+): string {
+  if (sectionType === "project" || source.category === "project") return source.title;
+  return source.role || source.title;
+}
+
+function resumeDocumentSubtitleForSource(
+  sectionType: ProductResumeItem["sectionType"],
+  source: ProductExperienceSummary,
+): string | undefined {
+  const parts = sectionType === "project" || source.category === "project"
+    ? [source.role, source.organization]
+    : [source.organization];
+  const normalizedTitle = normalizeSourceMatchText(resumeDocumentTitleForSource(sectionType, source));
+  const unique = parts
+    .map((part) => part?.trim())
+    .filter((part): part is string => Boolean(part))
+    .filter((part, index, list) => list.indexOf(part) === index)
+    .filter((part) => normalizeSourceMatchText(part) !== normalizedTitle);
+  return unique.length > 0 ? unique.join("，") : undefined;
+}
+
 function resolveResumeItemSource(
   item: ResumeDocumentSection["items"][number],
   sourcesById: Map<string, ProductExperienceSummary>,
@@ -2047,15 +2647,25 @@ function resolveResumeItemSource(
   const title = normalizeSourceMatchText(item.title);
   const subtitle = normalizeSourceMatchText(item.subtitle);
   if (!title && !subtitle) return undefined;
+  if (title) {
+    const byTitle = sourceExperiences.find((source) => {
+      const titleParts = [
+        source.title,
+        source.organization,
+      ].map(normalizeSourceMatchText).filter(Boolean);
+      return titleParts.some((part) => part.includes(title) || title.includes(part));
+    });
+    if (byTitle) return byTitle;
+  }
+  if (!subtitle) return undefined;
   return sourceExperiences.find((source) => {
     const sourceParts = [
       source.title,
       source.organization,
       source.role,
-    ].map(normalizeSourceMatchText).filter(Boolean);
+    ].map(normalizeSourceMatchText).filter((part) => part.length >= 4);
     return Boolean(
-      (title && sourceParts.some((part) => part.includes(title) || title.includes(part)))
-      || (subtitle && sourceParts.some((part) => part.includes(subtitle) || subtitle.includes(part))),
+      sourceParts.some((part) => part.includes(subtitle) || subtitle.includes(part)),
     );
   });
 }
@@ -2076,7 +2686,7 @@ function denseBulletsFromSourceExperience(source: ProductExperienceSummary, rema
       ...candidates.slice(index + 1),
       ...candidates.slice(0, index),
     ]);
-    if (!bullet || bullets.includes(bullet)) continue;
+    if (!bullet || bullets.includes(bullet) || isLowQualityCareerBullet(bullet, source)) continue;
     bullets.push(bullet);
     if (bullets.length >= Math.min(5, Math.max(1, remainingNeeded))) break;
   }
@@ -2110,13 +2720,20 @@ function contextualizeSourcePhrase(source: ProductExperienceSummary, phrase: str
   const org = source.organization?.trim();
   const role = source.role?.trim();
   if (containsCjkText(cleaned)) {
-    const context = [title, org].filter(Boolean).join("、");
+    const context = uniqueNonEmpty([title, org]).join("、");
     if (!context) return cleaned;
     return `在${context}中，${cleaned}`;
   }
-  const context = [role || title, org].filter(Boolean).join(" at ");
+  const context = uniqueNonEmpty([role || title, org]).join(" at ");
   if (!context) return cleaned;
   return `${cleaned} in ${context}`;
+}
+
+function uniqueNonEmpty(values: Array<string | undefined>): string[] {
+  return values
+    .map((value) => value?.trim())
+    .filter((value): value is string => Boolean(value))
+    .filter((value, index, list) => list.indexOf(value) === index);
 }
 
 function containsSourceContext(text: string, source: ProductExperienceSummary): boolean {
@@ -2165,7 +2782,7 @@ function splitLongEvidencePhrase(text: string): string[] {
 function normalizeDenseBullet(text: string, followingCandidates: string[] = []): string | undefined {
   const cleaned = text
     .replace(/^[-•*\d.\s]+/u, "")
-    .replace(/^(项目|职责|成果|内容|描述|亮点|工作)[:：]\s*/u, "")
+    .replace(/^(项目|职责|成果|内容|描述|亮点|工作|核心技术难点|问题解决|实践合作)[:：]\s*/u, "")
     .replace(/\s+/g, " ")
     .trim();
   if (cleaned.length < 14) return undefined;
@@ -2201,6 +2818,320 @@ function normalizeCareerBulletForNaturalWidth(text: string, followingCandidates:
   return undefined;
 }
 
+function normalizeCareerBulletQuality(
+  text: string,
+  source: ProductExperienceSummary,
+  followingCandidates: string[],
+): string | undefined {
+  const cleaned = cleanDenseContinuation(stripEmbeddedSourceContext(text, source));
+  const withoutRepeatedContext = stripRepeatedSourceContext(cleaned, source);
+  const normalized = withoutRepeatedContext === cleaned
+    ? cleaned
+    : normalizeDenseBullet(withoutRepeatedContext, followingCandidates) ?? withoutRepeatedContext;
+  return normalized !== cleaned ? normalized : undefined;
+}
+
+function polishCareerItemBullets(
+  bullets: ResumeDocumentSection["items"][number]["bullets"],
+  source: ProductExperienceSummary,
+  sourceBullets: string[],
+  sourcePhrases: string[],
+): { bullets: ResumeDocumentSection["items"][number]["bullets"]; changed: boolean } {
+  const result: ResumeDocumentSection["items"][number]["bullets"] = [];
+  const acceptedTexts: string[] = [];
+  let changed = false;
+  for (const bullet of bullets) {
+    const original = bullet.text.trim();
+    const qualityText = normalizeCareerBulletQuality(original, source, sourcePhrases);
+    let nextText = stripDuplicateNaturalClauses(qualityText ?? original);
+    const overlapTrimmed = stripClausesCoveredByAcceptedBullets(nextText, acceptedTexts, source);
+    if (overlapTrimmed !== nextText) {
+      nextText = normalizeDenseBullet(overlapTrimmed, sourcePhrases) ?? overlapTrimmed;
+    }
+    const widthText = normalizeCareerBulletCandidate(nextText, source, sourcePhrases);
+    if (widthText) {
+      nextText = widthText;
+    } else if (needsDenseBulletExpansion(nextText)) {
+      const replacement = sourceBullets.find((candidate) =>
+        !isLowQualityCareerBullet(candidate, source)
+          && !acceptedTexts.some((accepted) => areResumeBulletsTooSimilar(candidate, accepted, source))
+          && !haveResumeMetricAnchorOverlap(candidate, acceptedTexts),
+      );
+      if (replacement) {
+        nextText = replacement;
+      } else {
+        changed = true;
+        continue;
+      }
+    }
+    if (isLowQualityCareerBullet(nextText, source)) {
+      const replacement = sourceBullets.find((candidate) =>
+        !isLowQualityCareerBullet(candidate, source)
+          && !acceptedTexts.some((accepted) => areResumeBulletsTooSimilar(candidate, accepted, source))
+          && !haveResumeMetricAnchorOverlap(candidate, acceptedTexts),
+      );
+      if (replacement) {
+        nextText = replacement;
+      }
+    }
+    if (nextText !== original) changed = true;
+    const repeatsAcceptedText = acceptedTexts.some((accepted) => areResumeBulletsTooSimilar(nextText, accepted, source));
+    const repeatsAcceptedMetric = haveResumeMetricAnchorOverlap(nextText, acceptedTexts);
+    if (repeatsAcceptedText || repeatsAcceptedMetric) {
+      const replacement = sourceBullets.find((candidate) =>
+        !acceptedTexts.some((accepted) => areResumeBulletsTooSimilar(candidate, accepted, source))
+          && !haveResumeMetricAnchorOverlap(candidate, acceptedTexts),
+      );
+      if (!replacement) {
+        if (acceptedTexts.includes(nextText)) {
+          changed = true;
+          continue;
+        }
+      } else {
+        nextText = replacement;
+        changed = true;
+      }
+    }
+    result.push({
+      ...bullet,
+      text: nextText,
+      evidenceIds: bullet.evidenceIds && bullet.evidenceIds.length > 0 ? bullet.evidenceIds : [`source-card-${source.id}`],
+    });
+    acceptedTexts.push(nextText);
+  }
+  return { bullets: result, changed: changed || result.length !== bullets.length };
+}
+
+function stripClausesCoveredByAcceptedBullets(
+  text: string,
+  acceptedTexts: string[],
+  source: ProductExperienceSummary,
+): string {
+  if (acceptedTexts.length === 0 || !containsCjkText(text)) return text;
+  const clauses = splitResumeBulletClauses(text);
+  if (clauses.length <= 1) return text;
+  const kept: string[] = [];
+  for (const clause of clauses) {
+    const cleaned = cleanDenseContinuation(clause);
+    const covered = cleaned.length >= 8 && acceptedTexts.some((accepted) =>
+      areResumeFragmentsTooSimilar(cleaned, accepted, source),
+    );
+    if (!covered && !haveResumeMetricAnchorOverlap(cleaned, acceptedTexts)) kept.push(clause);
+  }
+  if (kept.length === clauses.length || kept.length === 0) return text;
+  const next = kept.join("，").replace(/[，,、；;。]+\s*$/u, "").trim();
+  return next.length >= 24 ? next : text;
+}
+
+function splitResumeBulletClauses(text: string): string[] {
+  return text
+    .split(/[。！？!?；;，,、]\s*/u)
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function areResumeFragmentsTooSimilar(
+  fragment: string,
+  fullText: string,
+  source: ProductExperienceSummary,
+): boolean {
+  const left = normalizeBulletSimilarityText(stripSourceNames(fragment, source));
+  const right = normalizeBulletSimilarityText(stripSourceNames(fullText, source));
+  if (!left || !right) return false;
+  if (right.includes(left) || left.includes(right)) return true;
+  const leftBigrams = charBigrams(left);
+  const rightBigrams = charBigrams(right);
+  if (leftBigrams.size === 0 || rightBigrams.size === 0) return false;
+  let overlap = 0;
+  for (const gram of leftBigrams) {
+    if (rightBigrams.has(gram)) overlap += 1;
+  }
+  return overlap / Math.min(leftBigrams.size, rightBigrams.size) >= 0.72;
+}
+
+function stripEmbeddedSourceContext(text: string, source: ProductExperienceSummary): string {
+  let next = text.replace(/\s+/g, " ").trim();
+  const sourceNames = uniqueNonEmpty([source.title, source.organization, source.role])
+    .filter((part) => part.length >= 4);
+  next = next.replace(
+    /([，,、]\s*)在([^，,。；;]{4,140})(?:中|里|内|下|上)[，,、]\s*([^，。；;、,]{0,14}[:：]\s*)?/gu,
+    (match: string, prefix: string, context: string) =>
+      sourceNames.some((name) => context.includes(name)) ? prefix : match,
+  );
+  for (const name of sourceNames) {
+    const escaped = escapeRegExp(name);
+    const embedded = new RegExp(`([，,、]\\s*)在[^，,。；;]{0,120}${escaped}[^，,。；;]{0,120}(?:中|里|内|下|上)[，,、]\\s*`, "gu");
+    next = next.replace(embedded, "$1");
+  }
+  return next.replace(/[，,、]\s*([，,、])/gu, "$1").trim();
+}
+
+function stripRepeatedSourceContext(text: string, source: ProductExperienceSummary): string {
+  if (!containsCjkText(text)) return text;
+  const sourceNames = uniqueNonEmpty([source.title, source.organization, source.role])
+    .filter((part) => part.length >= 4);
+  let next = text;
+  const genericLeading = /^在(.{4,120}?)(?:中|里|内|下|上)?[，,]\s*/u.exec(next);
+  if (genericLeading) {
+    const context = genericLeading[1] ?? "";
+    const rest = next.slice(genericLeading[0].length).trim();
+    if (rest.length >= 8 && sourceNames.some((name) => context.includes(name))) {
+      next = rest;
+    }
+  }
+  for (const name of sourceNames) {
+    const escaped = escapeRegExp(name);
+    const leading = new RegExp(`^在${escaped}(?:项目|系统)?(?:中|里|内|下|上)?[，,、]\\s*`, "u");
+    const match = leading.exec(next);
+    if (!match) continue;
+    const rest = next.slice(match[0].length).trim();
+    if (rest.length >= 18 && rest.includes(name)) {
+      next = rest;
+    }
+  }
+  return stripDuplicateNaturalClauses(next);
+}
+
+function stripDuplicateNaturalClauses(text: string): string {
+  const clauses = text
+    .split(/([，。；;、,])/u)
+    .reduce<Array<{ text: string; sep: string }>>((acc, part, index, list) => {
+      if (index % 2 === 1) return acc;
+      const value = part.trim();
+      if (!value) return acc;
+      acc.push({ text: value, sep: list[index + 1] ?? "" });
+      return acc;
+    }, []);
+  if (clauses.length <= 1) return text;
+  const accepted: Array<{ text: string; sep: string }> = [];
+  const acceptedTexts: string[] = [];
+  for (const clause of clauses) {
+    const normalized = normalizeBulletSimilarityText(clause.text);
+    const duplicateText = normalized.length >= 6 && accepted.some((item) => {
+      const acceptedNormalized = normalizeBulletSimilarityText(item.text);
+      return acceptedNormalized.includes(normalized) || normalized.includes(acceptedNormalized);
+    });
+    if (duplicateText || haveResumeMetricAnchorOverlap(clause.text, acceptedTexts)) {
+      continue;
+    }
+    accepted.push(clause);
+    acceptedTexts.push(clause.text);
+  }
+  if (accepted.length === clauses.length) return text;
+  return accepted.map((item, index) => `${item.text}${index < accepted.length - 1 ? item.sep || "，" : ""}`).join("").trim();
+}
+
+function areResumeBulletsTooSimilar(
+  a: string,
+  b: string,
+  source: ProductExperienceSummary,
+): boolean {
+  const left = normalizeBulletSimilarityText(stripSourceNames(a, source));
+  const right = normalizeBulletSimilarityText(stripSourceNames(b, source));
+  if (!left || !right) return false;
+  if (left === right) return true;
+  if (left.length >= 18 && right.length >= 18 && (left.includes(right) || right.includes(left))) return true;
+  const leftBigrams = charBigrams(left);
+  const rightBigrams = charBigrams(right);
+  if (leftBigrams.size === 0 || rightBigrams.size === 0) return false;
+  let overlap = 0;
+  for (const gram of leftBigrams) {
+    if (rightBigrams.has(gram)) overlap += 1;
+  }
+  const containment = overlap / Math.min(leftBigrams.size, rightBigrams.size);
+  const jaccard = overlap / (leftBigrams.size + rightBigrams.size - overlap);
+  return containment >= 0.78 || jaccard >= 0.62;
+}
+
+function isLowQualityCareerBullet(text: string, source: ProductExperienceSummary): boolean {
+  const cleaned = text.replace(/\s+/g, " ").trim();
+  if (!cleaned) return true;
+  if (/^%?\s*(in|at|for)\b/iu.test(cleaned)) return true;
+  if (containsCjkText(cleaned) && /\b(in|at|for)\b[^，。；;]*[\u3400-\u9FFF]/iu.test(cleaned)) return true;
+  if (/业务策略支持与成果落地|成果落地[，,、]\s*(研究助理|项目负责人|实习生|工程师)/u.test(cleaned)) return true;
+  if (source.role && cleaned.includes(source.role) && /\b20\d{2}[.-]\d{1,2}\b/u.test(cleaned)) return true;
+  if (/^(项目|职责|成果|内容|描述|亮点|工作)[:：]?$/u.test(cleaned)) return true;
+  return false;
+}
+
+function haveResumeMetricAnchorOverlap(text: string, acceptedTexts: string[]): boolean {
+  const anchors = extractResumeMetricAnchors(text);
+  if (anchors.size === 0) return false;
+  return acceptedTexts.some((accepted) => {
+    const acceptedAnchors = extractResumeMetricAnchors(accepted);
+    for (const anchor of anchors) {
+      if (acceptedAnchors.has(anchor)) return true;
+    }
+    return false;
+  });
+}
+
+function extractResumeMetricAnchors(text: string): Set<string> {
+  const anchors = new Set<string>();
+  const normalized = normalizeAsciiDigits(text);
+  for (const match of normalized.matchAll(/\b[A-Za-z][A-Za-z0-9+.-]{2,}\b/gu)) {
+    anchors.add(`term:${match[0]!.toLowerCase()}`);
+  }
+  for (const match of normalized.matchAll(/\b\d+(?:\.\d+)?\s*(?:%|％|ms|s|万\+?|千\+?)\b/gu)) {
+    anchors.add(`metric:${match[0]!.replace(/\s+/g, "").toLowerCase()}`);
+  }
+  const pattern = /([0-9]+(?:[.+/-][0-9]+)*(?:万|千)?[+%％]?)([^，。；;、,\s]{0,20})/gu;
+  const keywords = [
+    "SQL",
+    "PowerBI",
+    "Power BI",
+    "语料",
+    "关键词",
+    "评分",
+    "一致性",
+    "准确",
+    "自动化",
+    "看板",
+    "脚本",
+    "专利",
+    "软著",
+    "样本",
+    "字",
+  ];
+  let match: RegExpExecArray | null;
+  while ((match = pattern.exec(normalized))) {
+    const metric = match[1]?.replace(/[+%％]/gu, "") ?? "";
+    const tail = (match[2] ?? "").toLowerCase();
+    const keyword = keywords.find((item) => tail.includes(item.toLowerCase()));
+    if (metric && keyword) anchors.add(`${metric}:${keyword.toLowerCase().replace(/\s+/g, "")}`);
+  }
+  return anchors;
+}
+
+function normalizeAsciiDigits(text: string): string {
+  return text.replace(/[０-９]/gu, (char) => String.fromCharCode(char.charCodeAt(0) - 0xff10 + 0x30));
+}
+
+function stripSourceNames(text: string, source: ProductExperienceSummary): string {
+  return [source.title, source.organization, source.role]
+    .map((part) => part?.trim())
+    .filter((part): part is string => Boolean(part && part.length >= 2))
+    .reduce((next, part) => next.replace(new RegExp(escapeRegExp(part), "gu"), ""), text);
+}
+
+function normalizeBulletSimilarityText(text: string): string {
+  return text
+    .replace(/\s+/g, "")
+    .replace(/[0-9０-９]+(?:[.+%％/-][0-9０-９]+)*[+%％]?/gu, "")
+    .replace(/[，。；;、,.:：\-—–_()[\]（）《》“”"']/gu, "")
+    .replace(/^(在|基于|围绕|通过|使用|采用|负责|参与|主导|协同|完成|实现|支持|优化|设计|构建|输出)+/u, "")
+    .replace(/(项目|系统|平台|流程|方案|能力|数据|分析|处理|管理|支持|提升|优化|实现|完成|负责|参与|主导|协同)/gu, "")
+    .trim();
+}
+
+function charBigrams(text: string): Set<string> {
+  const grams = new Set<string>();
+  for (let index = 0; index < text.length - 1; index += 1) {
+    grams.add(text.slice(index, index + 2));
+  }
+  return grams;
+}
+
 function trimCjkBullet(text: string): string | undefined {
   return naturalCjkPrefixInRange(text, DENSE_CJK_MIN_CHARS, DENSE_CJK_MAX_CHARS);
 }
@@ -2223,11 +3154,12 @@ function expandCjkBullet(text: string, followingCandidates: string[]): string {
     if (next.length >= DENSE_CJK_MIN_CHARS) break;
     const cleaned = cleanNaturalContinuation(candidate);
     if (!cleaned || cleaned === next || next.includes(cleaned)) continue;
+    if (isDenseContinuationRedundant(next, cleaned)) continue;
     if (cleaned.includes(next) && cleaned.length >= DENSE_CJK_MIN_CHARS) {
       next = cleaned;
       break;
     }
-    next = `${next.replace(/[，、；;,]\s*$/u, "")}，${cleaned}`;
+    next = `${next.replace(/[，、；;。！？!?,]\s*$/u, "")}，${cleaned}`;
   }
   return next;
 }
@@ -2238,11 +3170,12 @@ function expandCjkBulletToMin(text: string, followingCandidates: string[], minCh
     if (next.length >= minChars) break;
     const cleaned = cleanNaturalContinuation(candidate);
     if (!cleaned || cleaned === next || next.includes(cleaned)) continue;
+    if (isDenseContinuationRedundant(next, cleaned)) continue;
     if (cleaned.includes(next) && cleaned.length >= minChars) {
       next = cleaned;
       break;
     }
-    next = `${next.replace(/[，、；;,]\s*$/u, "")}，${cleaned}`;
+    next = `${next.replace(/[，、；;。！？!?,]\s*$/u, "")}，${cleaned}`;
   }
   return next;
 }
@@ -2263,19 +3196,40 @@ function expandAsciiBullet(text: string, followingCandidates: string[]): string 
 }
 
 function cleanDenseContinuation(text: string): string {
-  return text
+  let cleaned = text
     .replace(/^[-•*\d.\s]+/u, "")
-    .replace(/^(项目|职责|成果|内容|描述|亮点|工作)[:：]\s*/u, "")
     .replace(/\s+/g, " ")
     .trim();
+  for (let i = 0; i < 3; i += 1) {
+    const next = cleaned.replace(/^(项目|职责|成果|内容|描述|亮点|工作|数据工程|数据清洗与预处理|大规模语料管理|核心技术难点|技术难点|项目成果|项目职责|主要贡献)[:：]\s*/u, "").trim();
+    if (next === cleaned) break;
+    cleaned = next;
+  }
+  return cleaned;
+}
+
+function isDenseContinuationRedundant(base: string, candidate: string): boolean {
+  const normalizedBase = normalizeBulletSimilarityText(base);
+  const normalizedCandidate = normalizeBulletSimilarityText(candidate);
+  if (!normalizedBase || !normalizedCandidate) return false;
+  if (normalizedBase.includes(normalizedCandidate) || normalizedCandidate.includes(normalizedBase)) return true;
+  const leftBigrams = charBigrams(normalizedBase);
+  const rightBigrams = charBigrams(normalizedCandidate);
+  if (leftBigrams.size === 0 || rightBigrams.size === 0) return false;
+  let overlap = 0;
+  for (const gram of leftBigrams) {
+    if (rightBigrams.has(gram)) overlap += 1;
+  }
+  return overlap / Math.min(leftBigrams.size, rightBigrams.size) >= 0.72;
 }
 
 function needsDenseBulletExpansion(text: string): boolean {
   const cleaned = text.replace(/\s+/g, " ").trim();
   if (!cleaned) return false;
-  if (!containsCjkText(cleaned)) return cleaned.length < DENSE_ASCII_MIN_CHARS;
+  if (!containsCjkText(cleaned)) return cleaned.length < DENSE_ASCII_MIN_CHARS || cleaned.length > DENSE_ASCII_MAX_CHARS;
   return cleaned.length < DENSE_CJK_MIN_CHARS
     || (cleaned.length > DENSE_CJK_MAX_CHARS && cleaned.length < DENSE_CJK_TWO_LINE_MIN_CHARS)
+    || cleaned.length > DENSE_CJK_TWO_LINE_MAX_CHARS
     || isIncompleteResumeBullet(cleaned);
 }
 

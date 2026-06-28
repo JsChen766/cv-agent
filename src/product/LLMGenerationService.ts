@@ -283,6 +283,18 @@ function normalizeResumeDocument(raw: unknown): ResumeDocument | undefined {
   return parsed.data;
 }
 
+export type LLMExperienceBulletGenerationInput = {
+  jdText: string;
+  targetRole?: string;
+  sectionType: "experience" | "project";
+  sourceExperience: ProductExperienceSummary;
+  currentTitle?: string;
+  currentSubtitle?: string;
+  acceptedBullets: string[];
+  minBullets: number;
+  maxBullets: number;
+};
+
 function inferResumeDocumentFromContent(
   content: string,
   sourceExperienceIds: string[],
@@ -548,6 +560,10 @@ const NormalizedGenerationResultSchema = z.object({
   comparisonMatrix: z.array(ComparisonMatrixRowSchema).optional(),
 });
 
+const ExperienceBulletResultSchema = z.object({
+  bullets: z.array(z.string().min(1)).min(1).max(4),
+});
+
 // ═══════════════════════════════════════════════════════════════
 // Prompts
 // ═══════════════════════════════════════════════════════════════
@@ -740,9 +756,9 @@ function buildEvidenceGroundedUserPrompt(input: {
     "- The recommended variant must read like a complete one-page resume body, not a short analysis summary. Use plain Chinese section headings such as 教育经历, 实习经历, 项目经历, 荣誉奖项, 技能与兴趣.",
     "- Follow the reference resume order by default: 教育经历 -> 实习/工作经历 -> 项目经历 -> 荣誉奖项 -> 技能与兴趣. Keep both degrees, awards, and compact skills when source cards provide them.",
     "- Match the reference resume density: use a full one-page Chinese resume body with dense internship/project sections, not a sparse shortlist.",
-    "- Recommended variant target: usually 14-20 strong bullets across 7-10 source experiences/items when source cards support it; secondary variant can be shorter.",
+    "- Recommended variant target: usually 22-30 strong bullets across 6-9 source experiences/items when source cards support it; secondary variant can be shorter.",
     "- Internship/work and project sections are the core density engine. When source cards contain at least 2 internship/work items or at least 3 project items, the recommended variant should include several of them rather than collapsing the library into only 1-2 experiences.",
-    "- For the strongest matching internship/project items, write 2-4 bullets. For secondary but useful internship/project items, write 1-2 compact evidence-backed bullets.",
+    "- For every internship/work/project item you include, write at least 3 bullets and preferably 4-5 bullets when the source card supports distinct methods, data/process, evaluation, deliverable, and outcome angles.",
     "- Each bullet should be long enough to occupy most of a resume line in the fixed A4 template. If a bullet wraps to a second line, the second line should also be substantial; avoid fragment endings of only a few words.",
     "- Each bullet should use action + method/technology + scope + verified metric/result, and should be rich enough to fill resume space without becoming a paragraph.",
     "- Tailor selection and bullet ordering to the JD. Prefer the most relevant 6-9 source experiences over listing everything, but do not omit good internship/project evidence merely because the top 1-2 items already match.",
@@ -751,6 +767,48 @@ function buildEvidenceGroundedUserPrompt(input: {
     "",
     "Generate resume content variants. Return a JSON object with a 'variants' array.",
   ].join("\n");
+}
+
+function buildExperienceBulletPrompt(input: LLMExperienceBulletGenerationInput): string {
+  const source = input.sourceExperience;
+  const structured = compactStructuredExperience(source.structured);
+  const dates = [source.startDate, source.endDate].filter(Boolean).join(" - ");
+  const accepted = input.acceptedBullets.length > 0
+    ? input.acceptedBullets.map((item, index) => `${index + 1}. ${item}`).join("\n")
+    : "none";
+  return [
+    input.targetRole ? `Target role: ${input.targetRole}` : "",
+    "",
+    "Job Description:",
+    input.jdText.slice(0, 2400),
+    "",
+    "Current resume item:",
+    `sectionType=${input.sectionType}`,
+    input.currentTitle ? `title=${input.currentTitle}` : "",
+    input.currentSubtitle ? `subtitle=${input.currentSubtitle}` : "",
+    "",
+    "Authoritative source experience:",
+    `sourceExperienceId=${source.id}`,
+    `category=${source.category}; title=${source.title}`,
+    source.organization ? `organization=${source.organization}` : "",
+    source.role ? `role=${source.role}` : "",
+    dates ? `dates=${dates}` : "",
+    structured.techStack.length > 0 ? `techStack=${structured.techStack.join(", ")}` : "",
+    structured.metrics.length > 0 ? `metrics=${structured.metrics.join(" | ")}` : "",
+    structured.highlights.length > 0 ? `highlights=${structured.highlights.join(" | ")}` : "",
+    source.content ? `content=${source.content.replace(/\s+/g, " ").trim().slice(0, 1200)}` : "",
+    "",
+    "Already accepted bullets for this same item:",
+    accepted,
+    "",
+    "Task:",
+    `- Generate ${Math.max(1, Math.min(4, input.maxBullets - input.acceptedBullets.length))} additional Chinese resume bullet candidate(s) for this exact item.`,
+    `- The final item must have at least ${input.minBullets} bullets when source evidence supports it; do not exceed ${input.maxBullets}.`,
+    "- Use only facts present in the authoritative source experience. Do not invent metrics, tools, awards, roles, organizations, or outcomes.",
+    "- Do not repeat or paraphrase any accepted bullet above. Each new bullet must emphasize a distinct angle such as model/method, data/process, evaluation, collaboration, deliverable, or outcome.",
+    "- Keep each bullet dense enough for a one-page Chinese resume line, using action + method/technology + scope + verified result when evidence supports it.",
+    "- Return strict JSON only: {\"bullets\":[\"...\"]}.",
+  ].filter(Boolean).join("\n");
 }
 
 function buildSourceExperienceCards(experiences: ProductExperienceSummary[]): string {
@@ -873,6 +931,84 @@ function buildFallbackComparisonMatrix(
 
 export class LLMGenerationService {
   public constructor(private readonly modelClient: ModelClient) {}
+
+  public async generateCareerBulletsForExperience(
+    input: LLMExperienceBulletGenerationInput,
+  ): Promise<string[]> {
+    const prompt = buildExperienceBulletPrompt(input);
+    debugGeneration("experience bullet start", {
+      sourceExperienceId: input.sourceExperience.id,
+      sectionType: input.sectionType,
+      acceptedBulletCount: input.acceptedBullets.length,
+      minBullets: input.minBullets,
+      maxBullets: input.maxBullets,
+      promptChars: prompt.length,
+    });
+
+    let responseContent = "";
+    try {
+      const response = await this.modelClient.chat({
+        messages: [
+          {
+            role: "system",
+            content: [
+              "You improve one resume experience item at a time.",
+              "You must stay within the provided source experience and avoid repeating accepted bullets.",
+              "Return strict JSON only.",
+            ].join(" "),
+          },
+          { role: "user", content: prompt },
+        ],
+        temperature: 0.35,
+        maxTokens: 1200,
+        responseFormat: "json",
+        timeoutMs: 60_000,
+        maxRetries: 1,
+      });
+      responseContent = response.content;
+    } catch (error) {
+      const providerErrorMessage = errorMessage(error);
+      debugGeneration("experience bullet provider failed", {
+        sourceExperienceId: input.sourceExperience.id,
+        providerErrorMessage,
+      });
+      throw new LLMGenerationError(
+        `LLM_GENERATION_FAILED: provider call failed during experience bullet generation. ${providerErrorMessage}`,
+        { phase: "provider_call", providerErrorMessage, cause: error },
+      );
+    }
+
+    let parsed: unknown;
+    try {
+      parsed = parseJson(responseContent, "initial");
+    } catch (error) {
+      debugGeneration("experience bullet json failed", {
+        sourceExperienceId: input.sourceExperience.id,
+        rawContentPreview: preview(responseContent),
+      });
+      throw error;
+    }
+
+    const rawBullets = Array.isArray(parsed)
+      ? parsed
+      : ExperienceBulletResultSchema.safeParse(parsed).success
+        ? ExperienceBulletResultSchema.parse(parsed).bullets
+        : isRecord(parsed) && Array.isArray(parsed.bullets)
+          ? parsed.bullets
+          : [];
+    const bullets = rawBullets
+      .filter((item): item is string => typeof item === "string")
+      .map((item) => item.replace(/^[-•*\d.\s]+/u, "").replace(/\s+/g, " ").trim())
+      .filter(Boolean)
+      .filter((item, index, list) => list.indexOf(item) === index)
+      .slice(0, 4);
+
+    debugGeneration("experience bullet success", {
+      sourceExperienceId: input.sourceExperience.id,
+      bulletCount: bullets.length,
+    });
+    return bullets;
+  }
 
   public async generateVariants(
     userId: string,

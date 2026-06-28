@@ -106,8 +106,10 @@ describe("ResumeLayoutComposer", () => {
           "Data Analyst · WEEX · 2026.01 - 2026.04",
           "- OVERFLOW_ONLY_TOKEN makes this candidate exceed the one page layout budget",
           "- Coordinated product, risk, and operations teams to standardize 20+ core metrics in 2 weeks, reducing repeated communication across 30+ business stakeholders",
+          "- Automated recurring SQL data checks and dashboard refresh workflows for trading, retention, and activity metrics, improving weekly reporting stability across product reviews",
+          "- Partnered with operations teams to translate dashboard findings into campaign review notes, helping prioritize follow-up analysis for deposits and active-user changes",
         ].join("\n"),
-        metadata: { itemId: "doc-exp-1", bulletIds: ["b-short", "b-good"] },
+        metadata: { itemId: "doc-exp-1", bulletIds: ["b-short", "b-good", "b-good-2", "b-good-3"] },
       }),
     ]);
 
@@ -145,8 +147,10 @@ describe("ResumeLayoutComposer", () => {
           "Data Analyst · WEEX · 2026.01 - 2026.04",
           "- Short bullet",
           "- Coordinated product, risk, and operations teams to standardize 20+ core metrics in 2 weeks, reducing repeated communication across 30+ business stakeholders",
+          "- Automated recurring SQL data checks and dashboard refresh workflows for trading, retention, and activity metrics, improving weekly reporting stability across product reviews",
+          "- Partnered with operations teams to translate dashboard findings into campaign review notes, helping prioritize follow-up analysis for deposits and active-user changes",
         ].join("\n"),
-        metadata: { itemId: "doc-exp-1", bulletIds: ["b-short", "b-good"] },
+        metadata: { itemId: "doc-exp-1", bulletIds: ["b-short", "b-good", "b-good-2", "b-good-3"] },
       }),
     ]);
 
@@ -185,8 +189,11 @@ describe("ResumeLayoutComposer", () => {
         contentSnapshot: [
           "数据分析实习生 · WEEX · 2026.01 - 2026.04",
           "- 负责300万+条关键词库与语料库管理，设计标准化标签体系，数据检索与调用效率提升40%以上，数据清洗与预处理：处理30万+条语料库，采用去重方法提升有效数据占比，OVERFLOW_ONLY_TOKEN",
+          "- 编写95+复杂SQL脚本，覆盖入金、交易量、留存与活跃用户指标，支撑自动化数据处理流程与周度经营复盘分析并提升数据交付稳定性",
+          "- 构建入金、交易、留存及收入分析口径，联动产品和运营团队沉淀20+核心指标，减少跨部门重复沟通成本并统一复盘判断标准与数据解释口径",
+          "- 协同产品和运营团队输出活动复盘结论，跟踪DAU、ARPU与交易转化变化，支撑后续功能迭代和资源投入判断及优先级排序调整",
         ].join("\n"),
-        metadata: { itemId: "doc-exp-1", bulletIds: ["b-long"] },
+        metadata: { itemId: "doc-exp-1", bulletIds: ["b-long", "b-good-1", "b-good-2", "b-good-3"] },
       }),
     ]);
 
