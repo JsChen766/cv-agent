@@ -426,7 +426,7 @@ CREATE INDEX IF NOT EXISTS idx_agent_tool_run_status ON agent_tool_run(status);
 CREATE TABLE IF NOT EXISTS background_job (
   id TEXT PRIMARY KEY,
   user_id TEXT NOT NULL,
-  type TEXT NOT NULL CHECK (type IN ('import_pdf', 'export_pdf', 'rebuild_index', 'long_generation')),
+  type TEXT NOT NULL CHECK (type IN ('import_pdf', 'export_pdf', 'rebuild_index', 'long_generation', 'parse_document', 'import_resume_file', 'import_resume_text', 'export_resume_html', 'export_resume_pdf')),
   status TEXT NOT NULL CHECK (status IN ('pending', 'running', 'completed', 'failed', 'cancelled')),
   input_json JSONB,
   output_json JSONB,

@@ -87,12 +87,15 @@ export function registerRagRoutes(
     const body = requireRecord(request.body ?? {});
     const service = kernel.productServices.evidenceRAGService;
     if (!service) throw new ApiError(ErrorCodes.INTERNAL_ERROR, "Evidence RAG is not configured.", 503);
-    const report = await service.reindexUserExperiences({
+    const job = await kernel.platformServices.backgroundJobs.enqueue({
       userId: ctx.user.id,
-      limit: numericLimit(body.limit, 500, 1, 2000),
+      type: "rebuild_index",
+      input: { limit: numericLimit(body.limit, 500, 1, 2000) },
+      progress: 0,
+      priority: 0,
+      maxAttempts: 3,
     });
-    if (!report) throw new ApiError(ErrorCodes.INTERNAL_ERROR, "Persistent claim indexing is not configured.", 503);
-    return productSuccess(report, kernel, ctx);
+    return productSuccess({ job, jobId: job.id }, kernel, ctx);
   });
 
   app.post("/product/rag/evidence/outcome", async (request) => {

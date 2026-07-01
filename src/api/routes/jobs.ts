@@ -65,6 +65,7 @@ function readJobType(value: unknown): BackgroundJobType {
     value === "long_generation" ||
     value === "parse_document" ||
     value === "import_resume_file" ||
+    value === "import_resume_text" ||
     value === "export_resume_html" ||
     value === "export_resume_pdf"
   ) return value;

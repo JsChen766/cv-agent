@@ -66,7 +66,7 @@ describe("Dual-RAG preview routes", () => {
     expect(data.summary.allowedClaimCount).toBeGreaterThan(0);
   });
 
-  it("reindexes legacy experiences for persistent claim retrieval", async () => {
+  it("queues legacy experience reindexing and completes it in a background job", async () => {
     await server.inject({
       method: "POST",
       url: "/product/experiences",
@@ -80,8 +80,15 @@ describe("Dual-RAG preview routes", () => {
       payload: {},
     });
     expect(response.statusCode).toBe(200);
-    const data = (response.json() as ApiSuccess<{ scannedExperiences: number; activeClaims: number }>).data;
-    expect(data.scannedExperiences).toBeGreaterThan(0);
-    expect(data.activeClaims).toBeGreaterThan(0);
+    const data = (response.json() as ApiSuccess<{ job: { id: string; type: string; status: string }; jobId: string }>).data;
+    expect(data.job.id).toBe(data.jobId);
+    expect(data.job.type).toBe("rebuild_index");
+    expect(data.job.status).toBe("pending");
+
+    await kernel.jobRunner.runJob(data.jobId, "user-1");
+    const job = await kernel.platformServices.backgroundJobs.getJob("user-1", data.jobId);
+    expect(job?.status).toBe("completed");
+    expect(job?.output?.scannedExperiences).toBeGreaterThan(0);
+    expect(job?.output?.activeClaims).toBeGreaterThan(0);
   });
 });

@@ -137,21 +137,55 @@ describe("Product API routes", () => {
     });
   });
 
-  it("creates import jobs, candidates, and accepts a candidate", async () => {
+  it("queues text import, completes candidates in a background job, and accepts a candidate", async () => {
     const importResponse = await server.inject({
       method: "POST",
       url: "/product/imports/text",
       headers: { "x-user-id": "user-1" },
       payload: { rawText: "Built React systems.\n\nReduced bundle size." },
     });
-    const data = (importResponse.json() as ApiSuccess<{ candidates: Array<{ id: string }> }>).data;
-    expect(data.candidates.length).toBeGreaterThan(0);
+    const data = (importResponse.json() as ApiSuccess<{
+      job: { id: string; status: string };
+      importJobId: string;
+      jobId: string;
+      backgroundJob: { id: string; type: string; status: string };
+      candidates: Array<{ id: string }>;
+    }>).data;
+    expect(data.job.id).toBe(data.importJobId);
+    expect(data.job.status).toBe("pending");
+    expect(data.backgroundJob.id).toBe(data.jobId);
+    expect(data.backgroundJob.type).toBe("import_resume_text");
+    expect(data.candidates).toEqual([]);
+
+    await kernel.jobRunner.runJob(data.jobId, "user-1");
+    const detail = await server.inject({ method: "GET", url: `/product/imports/${data.importJobId}`, headers: { "x-user-id": "user-1" } });
+    const detailData = (detail.json() as ApiSuccess<{ candidates: Array<{ id: string }> }>).data;
+    expect(detailData.candidates.length).toBeGreaterThan(0);
+
     const accept = await server.inject({
       method: "POST",
-      url: `/product/import-candidates/${data.candidates[0]!.id}/accept`,
+      url: `/product/import-candidates/${detailData.candidates[0]!.id}/accept`,
       headers: { "x-user-id": "user-1" },
     });
     expect(accept.statusCode).toBe(200);
+  });
+
+  it("does not extract text import candidates during the request", async () => {
+    let extractionCalls = 0;
+    kernel.productServices.importService.createCandidatesFromText = async () => {
+      extractionCalls += 1;
+      throw new Error("extraction should run in a background job");
+    };
+
+    const importResponse = await server.inject({
+      method: "POST",
+      url: "/product/imports/text",
+      headers: { "x-user-id": "user-1" },
+      payload: { rawText: "Built React systems." },
+    });
+
+    expect(importResponse.statusCode).toBe(200);
+    expect(extractionCalls).toBe(0);
   });
 
   it("accepts an import candidate with edited fields", async () => {
@@ -161,7 +195,10 @@ describe("Product API routes", () => {
       headers: { "x-user-id": "user-1" },
       payload: { rawText: "WEEX Data Analyst Intern. Built SQL dashboards." },
     });
-    const data = (importResponse.json() as ApiSuccess<{ candidates: Array<{ id: string }> }>).data;
+    const queued = (importResponse.json() as ApiSuccess<{ importJobId: string; jobId: string }>).data;
+    await kernel.jobRunner.runJob(queued.jobId, "user-1");
+    const detail = await server.inject({ method: "GET", url: `/product/imports/${queued.importJobId}`, headers: { "x-user-id": "user-1" } });
+    const data = (detail.json() as ApiSuccess<{ candidates: Array<{ id: string }> }>).data;
     const accept = await server.inject({
       method: "POST",
       url: `/product/import-candidates/${data.candidates[0]!.id}/accept`,
@@ -184,17 +221,25 @@ describe("Product API routes", () => {
     expect(accepted.experience.organization).toBe("Edited Company");
   });
 
-  it("generates variants from JD and creates a product generation", async () => {
+  it("queues generation from JD and completes variants in a background job", async () => {
     const response = await server.inject({
       method: "POST",
       url: "/product/generations/from-jd",
       headers: { "x-user-id": "user-1" },
       payload: { jdText: "React TypeScript performance optimization role.", targetRole: "Frontend Engineer" },
     });
-    const data = (response.json() as ApiSuccess<{ generationId: string; variants: unknown[] }>).data;
+    const data = (response.json() as ApiSuccess<{ job: { id: string; type: string; status: string }; jobId: string; actionType: string }>).data;
     expect(response.statusCode).toBe(200);
-    expect(data.generationId).toMatch(/^pgen-/);
-    expect(data.variants.length).toBeGreaterThan(0);
+    expect(data.job.id).toBe(data.jobId);
+    expect(data.job.type).toBe("long_generation");
+    expect(data.actionType).toBe("generate_resume_from_jd");
+
+    await kernel.jobRunner.runJob(data.jobId, "user-1");
+    const job = await kernel.platformServices.backgroundJobs.getJob("user-1", data.jobId);
+    expect(job?.status).toBe("completed");
+    const generationId = job?.output?.generationId as string;
+    expect(generationId).toMatch(/^pgen-/);
+    expect(job?.output?.variantCount).toBeGreaterThan(0);
   });
 
   it("lists product generations and dashboard read model user-scoped", async () => {
@@ -204,7 +249,10 @@ describe("Product API routes", () => {
       headers: { "x-user-id": "user-1" },
       payload: { jdText: "React TypeScript performance optimization role.", targetRole: "Frontend Engineer" },
     });
-    const generationId = (created.json() as ApiSuccess<{ generationId: string }>).data.generationId;
+    const queued = (created.json() as ApiSuccess<{ jobId: string }>).data;
+    await kernel.jobRunner.runJob(queued.jobId, "user-1");
+    const job = await kernel.platformServices.backgroundJobs.getJob("user-1", queued.jobId);
+    const generationId = job?.output?.generationId as string;
 
     const ownList = await server.inject({ method: "GET", url: "/product/generations", headers: { "x-user-id": "user-1" } });
     const otherList = await server.inject({ method: "GET", url: "/product/generations", headers: { "x-user-id": "user-2" } });

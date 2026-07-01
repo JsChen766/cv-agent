@@ -2,6 +2,7 @@ import { createKernel } from "./kernel/createKernel.js";
 import { createServer } from "./createServer.js";
 import { BackgroundWorker } from "../jobs/BackgroundWorker.js";
 import { readPlatformConfig } from "../platform/config.js";
+import type { BackgroundJobType } from "../platform/index.js";
 import "dotenv/config";
 
 const port = Number(process.env.PORT ?? 3000);
@@ -17,9 +18,11 @@ const server = await createServer(kernel);
 
 // Job Worker auto-start when JOB_WORKER_ENABLED=true or by development default.
 let worker: BackgroundWorker | undefined;
-const workerJobTypes: Array<"parse_document" | "import_resume_file" | "long_generation" | "export_resume_html" | "export_resume_pdf"> = [
+const workerJobTypes: BackgroundJobType[] = [
   "parse_document",
   "import_resume_file",
+  "import_resume_text",
+  "rebuild_index",
   "long_generation",
   "export_resume_html",
   "export_resume_pdf",

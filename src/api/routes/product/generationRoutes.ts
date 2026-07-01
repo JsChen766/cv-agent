@@ -3,7 +3,6 @@ import { ApiError, ErrorCodes } from "../../errors.js";
 import type { ApiKernel } from "../../types.js";
 import type { AuthResolver } from "../../auth/index.js";
 import { withIdempotency } from "../../idempotency.js";
-import { toWorkspaceVariant } from "../../../agent-tools/resume/index.js";
 import {
   productSuccess,
   requireRecord,
@@ -57,14 +56,22 @@ export function registerGenerationRoutes(
     }
     return withIdempotency(request, reply, kernel, ctx.user.id, async () => {
       await kernel.platformServices.usage.consume({ userId: ctx.user.id, metric: "generation" });
-      const result = await kernel.productServices.generationProductService.generateResumeFromJD({
+      const job = await kernel.platformServices.backgroundJobs.enqueue({
         userId: ctx.user.id,
-        jdId,
-        jdText,
-        targetRole: optionalString(body.targetRole),
+        type: "long_generation",
+        input: {
+          actionType: "generate_resume_from_jd",
+          toolArguments: {
+            ...(jdId ? { jdId } : {}),
+            ...(jdText ? { jdText } : {}),
+            ...(optionalString(body.targetRole) ? { targetRole: optionalString(body.targetRole) } : {}),
+          },
+        },
+        progress: 0,
+        priority: 0,
+        maxAttempts: 3,
       });
-      const variants = result.variants.map((v, i) => toWorkspaceVariant(v, result.jd, result.generation.id, i));
-      return productSuccess({ generationId: result.generation.id, jd: result.jd, variants, generation: result.generation }, kernel, ctx);
+      return productSuccess({ job, jobId: job.id, actionType: "generate_resume_from_jd" }, kernel, ctx);
     });
   });
 

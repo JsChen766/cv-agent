@@ -28,8 +28,15 @@ export function registerImportRoutes(
         throw new ApiError(ErrorCodes.INVALID_BODY, "Please provide import text in rawText or text.", 400);
       }
       const job = await kernel.productServices.importService.createTextImportJob(ctx.user.id, rawText);
-      const candidates = await kernel.productServices.importService.createCandidatesFromText(ctx.user.id, job.id);
-      return productSuccess({ job, candidates }, kernel, ctx);
+      const backgroundJob = await kernel.platformServices.backgroundJobs.enqueue({
+        userId: ctx.user.id,
+        type: "import_resume_text",
+        input: { importJobId: job.id },
+        progress: 0,
+        priority: 0,
+        maxAttempts: 3,
+      });
+      return productSuccess({ job, importJob: job, importJobId: job.id, backgroundJob, jobId: backgroundJob.id, candidates: [] }, kernel, ctx);
     });
   });
 

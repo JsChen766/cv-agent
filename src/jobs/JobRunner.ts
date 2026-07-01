@@ -68,6 +68,17 @@ export class JobRunner {
         throw new Error(`Failed to extract experiences from file ${fileId} (importJobId=${importJob.id}): ${message}`);
       }
     });
+    this.registry.register("import_resume_text", async ({ job }) => {
+      const importJobId = stringInput(job.input, "importJobId");
+      try {
+        const candidates = await this.deps.productServices.importService.createCandidatesFromText(job.userId, importJobId);
+        return { importJobId, candidateCount: candidates.length };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Experience extraction failed.";
+        await this.deps.productServices.importService.markImportJobFailed(job.userId, importJobId, message);
+        throw new Error(`Failed to extract experiences from text import ${importJobId}: ${message}`);
+      }
+    });
     this.registry.register("long_generation", async ({ job }) => {
       const actionType = stringInput(job.input, "actionType");
       if (actionType !== "generate_resume_from_jd") {
@@ -115,6 +126,16 @@ export class JobRunner {
         }));
       }
       return output;
+    });
+    this.registry.register("rebuild_index", async ({ job }) => {
+      const service = this.deps.productServices.evidenceRAGService;
+      if (!service) throw new Error("Evidence RAG is not configured.");
+      const report = await service.reindexUserExperiences({
+        userId: job.userId,
+        limit: numberInputOrUndefined(job.input, "limit"),
+      });
+      if (!report) throw new Error("Persistent claim indexing is not configured.");
+      return { ...report };
     });
     this.registry.register("export_resume_html", async ({ job }) => {
       const exportId = stringInput(job.input, "exportId");
@@ -330,4 +351,9 @@ function recordInput(input: Record<string, unknown> | undefined, key: string): R
   const value = input?.[key];
   if (typeof value !== "object" || value === null || Array.isArray(value)) throw new Error(`${key} is required.`);
   return value as Record<string, unknown>;
+}
+
+function numberInputOrUndefined(input: Record<string, unknown> | undefined, key: string): number | undefined {
+  const value = input?.[key];
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }

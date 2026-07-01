@@ -450,6 +450,10 @@ export class ImportService {
     return this.repository.getImportJob(userId, id);
   }
 
+  public markImportJobFailed(userId: string, id: string, errorMessage: string): Promise<ProductImportJob | null> {
+    return this.repository.updateImportJobStatus(userId, id, { status: "failed", errorMessage });
+  }
+
   public listCandidatesByJob(userId: string, jobId: string): Promise<ProductImportCandidate[]> {
     return this.repository.listCandidatesByJob(userId, jobId);
   }

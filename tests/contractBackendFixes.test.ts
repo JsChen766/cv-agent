@@ -45,8 +45,10 @@ describe("Contract: imports/text rawText and text compatibility", () => {
       payload: { rawText: "Built React systems." },
     });
     expect(response.statusCode).toBe(200);
-    const data = (response.json() as ApiSuccess<{ candidates: unknown[] }>).data;
-    expect(data.candidates.length).toBeGreaterThan(0);
+    const data = (response.json() as ApiSuccess<{ importJobId: string; jobId: string; backgroundJob: { type: string } }>).data;
+    expect(data.importJobId).toMatch(/^pimp-/);
+    expect(data.jobId).toMatch(/^job-/);
+    expect(data.backgroundJob.type).toBe("import_resume_text");
   });
 
   it("accepts { text }", async () => {
@@ -57,8 +59,10 @@ describe("Contract: imports/text rawText and text compatibility", () => {
       payload: { text: "Reduced bundle size." },
     });
     expect(response.statusCode).toBe(200);
-    const data = (response.json() as ApiSuccess<{ candidates: unknown[] }>).data;
-    expect(data.candidates.length).toBeGreaterThan(0);
+    const data = (response.json() as ApiSuccess<{ importJobId: string; jobId: string; backgroundJob: { type: string } }>).data;
+    expect(data.importJobId).toMatch(/^pimp-/);
+    expect(data.jobId).toMatch(/^job-/);
+    expect(data.backgroundJob.type).toBe("import_resume_text");
   });
 
   it("prioritizes rawText over text", async () => {
@@ -69,8 +73,10 @@ describe("Contract: imports/text rawText and text compatibility", () => {
       payload: { rawText: "Raw text content.", text: "Fallback text." },
     });
     expect(response.statusCode).toBe(200);
-    const data = (response.json() as ApiSuccess<{ candidates: unknown[] }>).data;
-    expect(data.candidates.length).toBeGreaterThan(0);
+    const data = (response.json() as ApiSuccess<{ importJobId: string; jobId: string; job: { rawText?: string } }>).data;
+    expect(data.importJobId).toMatch(/^pimp-/);
+    expect(data.jobId).toMatch(/^job-/);
+    expect(data.job.rawText).toBe("Raw text content.");
   });
 });
 
@@ -615,7 +621,7 @@ describe("Contract: product generation API shapes", () => {
     await kernel.close();
   });
 
-  it("POST /product/generations/from-jd returns { generationId, jd, variants, generation }", async () => {
+  it("POST /product/generations/from-jd returns a long_generation job and detail is recoverable after polling", async () => {
     const response = await server.inject({
       method: "POST",
       url: "/product/generations/from-jd",
@@ -623,17 +629,28 @@ describe("Contract: product generation API shapes", () => {
       payload: { jdText: "React developer role.", targetRole: "Frontend Engineer" },
     });
     expect(response.statusCode).toBe(200);
-    const data = (response.json() as ApiSuccess<{ generationId: string; jd: unknown; variants: unknown[]; generation: unknown }>).data;
-    expect(data.generationId).toMatch(/^pgen-/);
-    expect(data.jd).toBeTruthy();
-    expect(data.variants.length).toBeGreaterThan(0);
-    // variants should have ProductVariant shape (not raw ProductGeneratedVariant)
-    const variant = data.variants[0] as Record<string, unknown>;
+    const data = (response.json() as ApiSuccess<{ jobId: string; job: { id: string; type: string }; actionType: string }>).data;
+    expect(data.job.id).toBe(data.jobId);
+    expect(data.job.type).toBe("long_generation");
+    expect(data.actionType).toBe("generate_resume_from_jd");
+
+    await kernel.jobRunner.runJob(data.jobId, "user-1");
+    const job = await kernel.platformServices.backgroundJobs.getJob("user-1", data.jobId);
+    const generationId = job?.output?.generationId as string;
+    expect(generationId).toMatch(/^pgen-/);
+
+    const detail = await server.inject({
+      method: "GET",
+      url: `/product/generations/${generationId}`,
+      headers: { "x-user-id": "user-1" },
+    });
+    const detailData = (detail.json() as ApiSuccess<{ variants: unknown[] }>).data;
+    expect(detailData.variants.length).toBeGreaterThan(0);
+    const variant = detailData.variants[0] as Record<string, unknown>;
     expect(variant.title).toBeTruthy();
     expect(variant.role).toBeTruthy();
     expect(variant.score).toBeTruthy();
     expect(variant.badges).toBeTruthy();
-    expect(data.generation).toBeTruthy();
   });
 
   it("GET /product/generations/:id returns variants explicitly", async () => {
@@ -643,7 +660,10 @@ describe("Contract: product generation API shapes", () => {
       headers: { "x-user-id": "user-1" },
       payload: { jdText: "React developer role.", targetRole: "FE" },
     });
-    const genId = (created.json() as ApiSuccess<{ generationId: string }>).data.generationId;
+    const queued = (created.json() as ApiSuccess<{ jobId: string }>).data;
+    await kernel.jobRunner.runJob(queued.jobId, "user-1");
+    const job = await kernel.platformServices.backgroundJobs.getJob("user-1", queued.jobId);
+    const genId = job?.output?.generationId as string;
 
     const detail = await server.inject({
       method: "GET",
@@ -663,7 +683,12 @@ describe("Contract: product generation API shapes", () => {
       headers: { "x-user-id": "user-1" },
       payload: { jdText: "React developer role.", targetRole: "FE" },
     });
-    const { generationId, variants } = (created.json() as ApiSuccess<{ generationId: string; variants: Array<{ id: string }> }>).data;
+    const queued = (created.json() as ApiSuccess<{ jobId: string }>).data;
+    await kernel.jobRunner.runJob(queued.jobId, "user-1");
+    const job = await kernel.platformServices.backgroundJobs.getJob("user-1", queued.jobId);
+    const generationId = job?.output?.generationId as string;
+    const detail = await server.inject({ method: "GET", url: `/product/generations/${generationId}`, headers: { "x-user-id": "user-1" } });
+    const variants = (detail.json() as ApiSuccess<{ variants: Array<{ id: string }> }>).data.variants;
 
     const accept = await server.inject({
       method: "POST",
@@ -686,7 +711,12 @@ describe("Contract: product generation API shapes", () => {
       headers: { "x-user-id": "user-1" },
       payload: { jdText: "React developer role.", targetRole: "FE" },
     });
-    const { generationId, variants } = (created.json() as ApiSuccess<{ generationId: string; variants: Array<{ id: string }> }>).data;
+    const queued = (created.json() as ApiSuccess<{ jobId: string }>).data;
+    await kernel.jobRunner.runJob(queued.jobId, "user-1");
+    const job = await kernel.platformServices.backgroundJobs.getJob("user-1", queued.jobId);
+    const generationId = job?.output?.generationId as string;
+    const detail = await server.inject({ method: "GET", url: `/product/generations/${generationId}`, headers: { "x-user-id": "user-1" } });
+    const variants = (detail.json() as ApiSuccess<{ variants: Array<{ id: string }> }>).data.variants;
 
     const accept = await server.inject({
       method: "POST",

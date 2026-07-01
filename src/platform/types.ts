@@ -84,6 +84,7 @@ export type BackgroundJobType =
   | "long_generation"
   | "parse_document"
   | "import_resume_file"
+  | "import_resume_text"
   | "export_resume_html"
   | "export_resume_pdf";
 
