@@ -76,6 +76,67 @@ describe("Product API routes", () => {
     expect((itemResponse.json() as ApiSuccess<{ contentSnapshot: string }>).data.contentSnapshot).toContain("40%");
   });
 
+  it("patches resume items without clearing omitted fields", async () => {
+    const resumeResponse = await server.inject({
+      method: "POST",
+      url: "/product/resumes",
+      headers: { "x-user-id": "user-1" },
+      payload: { title: "FE draft" },
+    });
+    const resume = (resumeResponse.json() as ApiSuccess<{ id: string }>).data;
+    const itemResponse = await server.inject({
+      method: "POST",
+      url: `/product/resumes/${resume.id}/items`,
+      headers: { "x-user-id": "user-1" },
+      payload: { title: "Original title", contentSnapshot: "Original content." },
+    });
+    const item = (itemResponse.json() as ApiSuccess<{ id: string }>).data;
+
+    const patched = await server.inject({
+      method: "PATCH",
+      url: `/product/resume-items/${item.id}`,
+      headers: { "x-user-id": "user-1" },
+      payload: { pinned: true, contentSnapshot: "Updated content." },
+    });
+
+    expect(patched.statusCode).toBe(200);
+    expect((patched.json() as ApiSuccess<{ title: string; contentSnapshot: string; pinned: boolean }>).data).toMatchObject({
+      title: "Original title",
+      contentSnapshot: "Updated content.",
+      pinned: true,
+    });
+  });
+
+  it("rejects null title when patching resume items", async () => {
+    const resumeResponse = await server.inject({
+      method: "POST",
+      url: "/product/resumes",
+      headers: { "x-user-id": "user-1" },
+      payload: { title: "FE draft" },
+    });
+    const resume = (resumeResponse.json() as ApiSuccess<{ id: string }>).data;
+    const itemResponse = await server.inject({
+      method: "POST",
+      url: `/product/resumes/${resume.id}/items`,
+      headers: { "x-user-id": "user-1" },
+      payload: { title: "Original title", contentSnapshot: "Original content." },
+    });
+    const item = (itemResponse.json() as ApiSuccess<{ id: string }>).data;
+
+    const patched = await server.inject({
+      method: "PATCH",
+      url: `/product/resume-items/${item.id}`,
+      headers: { "x-user-id": "user-1" },
+      payload: { title: null, pinned: true },
+    });
+
+    expect(patched.statusCode).toBe(400);
+    expect(patched.json()).toMatchObject({
+      ok: false,
+      error: { code: "INVALID_BODY", message: "title must be a non-empty string when provided." },
+    });
+  });
+
   it("creates import jobs, candidates, and accepts a candidate", async () => {
     const importResponse = await server.inject({
       method: "POST",

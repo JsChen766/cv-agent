@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createServer } from "../src/api/createServer.js";
+import { createKernel } from "../src/api/kernel/createKernel.js";
 import type { ApiSuccess } from "../src/api/response.js";
 import type { ApiKernel } from "../src/api/types.js";
 import type { CopilotChatResponse } from "../src/copilot/types.js";
@@ -45,6 +46,33 @@ describe("backend hardening on agent-core runtime", () => {
     expect(json).not.toContain("chain_of_thought");
     expect(json).not.toContain("reasoning_content");
     expect(json).not.toContain("providerRaw");
+  });
+
+  it("returns a stable non-500 error when user API key encryption is not configured", async () => {
+    await server.close();
+    await kernel.close();
+    setupEnv();
+    process.env.NODE_ENV = "development";
+    delete process.env.USER_API_KEY_ENCRYPTION_SECRET;
+    kernel = await createKernel();
+    server = await createServer(kernel);
+
+    const response = await server.inject({
+      method: "POST",
+      url: "/auth/api-keys",
+      headers: { "x-user-id": "user-1" },
+      payload: { provider: "deepseek", label: "DeepSeek", apiKey: "sk-test" },
+    });
+
+    expect(response.statusCode).not.toBe(500);
+    expect(response.statusCode).toBe(503);
+    expect(response.json()).toMatchObject({
+      ok: false,
+      error: {
+        code: "CONFIGURATION_REQUIRED",
+        message: "User API key storage is not configured.",
+      },
+    });
   });
 
   it("keeps idempotent copilot chat responses replayable", async () => {

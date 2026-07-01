@@ -1,3 +1,4 @@
+import { UserApiKeyStorageConfigurationError } from "../../auth/ApiKeyEncryptor.js";
 import { AgentError } from "../../agent-core/runtime/AgentError.js";
 import { ApiError } from "./ApiError.js";
 import { ErrorCodes, normalizeErrorCode } from "./ErrorCode.js";
@@ -27,6 +28,14 @@ export function mapError(error: unknown): MappedApiError {
       code: normalizeErrorCode(error.code),
       message: error.message,
       retryable: statusCode >= 500,
+    };
+  }
+  if (error instanceof UserApiKeyStorageConfigurationError) {
+    return {
+      statusCode: 503,
+      code: ErrorCodes.CONFIGURATION_REQUIRED,
+      message: error.message,
+      retryable: false,
     };
   }
   if (isProviderTimeout(error)) {

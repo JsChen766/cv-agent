@@ -1,6 +1,13 @@
 import { createCipheriv, createDecipheriv, createHash, randomBytes } from "node:crypto";
 import { readPlatformConfig } from "../platform/config.js";
 
+export class UserApiKeyStorageConfigurationError extends Error {
+  public constructor() {
+    super("User API key storage is not configured.");
+    this.name = "UserApiKeyStorageConfigurationError";
+  }
+}
+
 export type ApiKeyEncryptor = {
   encrypt(plaintext: string): string;
   decrypt(ciphertext: string): string;
@@ -51,5 +58,5 @@ function readSecret(): string {
     // config may throw before env is fully set — fall through
   }
   if (process.env.NODE_ENV === "test") return "test-user-api-key-secret";
-  throw new Error("USER_API_KEY_ENCRYPTION_SECRET is required to store user API keys.");
+  throw new UserApiKeyStorageConfigurationError();
 }

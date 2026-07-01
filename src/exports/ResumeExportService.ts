@@ -134,7 +134,7 @@ export class ResumeExportService {
   }
 
   public async deleteExport(userId: string, id: string): Promise<ResumeExport | null> {
-    return this.repository.updateExport(userId, id, { status: "deleted" });
+    return this.repository.deleteExport(userId, id);
   }
 
   public async renderExportJob(userId: string, exportId: string): Promise<ResumeExport> {

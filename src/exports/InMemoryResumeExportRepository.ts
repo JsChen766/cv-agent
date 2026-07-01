@@ -28,4 +28,12 @@ export class InMemoryResumeExportRepository implements ResumeExportRepository {
     this.exports.set(id, next);
     return next;
   }
+
+  public async deleteExport(userId: string, id: string): Promise<ResumeExport | null> {
+    const record = this.exports.get(id);
+    if (record?.userId !== userId) return null;
+    const next = { ...record, status: "deleted" as const, updatedAt: new Date().toISOString() };
+    this.exports.set(id, next);
+    return next;
+  }
 }

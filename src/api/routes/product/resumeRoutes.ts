@@ -8,6 +8,7 @@ import {
   requireRecord,
   requiredString,
   optionalString,
+  compactRecord,
   stringArray,
   readSectionType,
   param,
@@ -63,12 +64,12 @@ export function registerResumeRoutes(
     const ctx = await contextFor(request);
     const body = requireRecord(request.body);
     return withIdempotency(request, reply, kernel, ctx.user.id, async () => {
-      const item = await kernel.productServices.resumeService.updateResumeItem(ctx.user.id, param(request, "id"), {
-        title: optionalString(body.title),
-        contentSnapshot: optionalString(body.contentSnapshot),
+      const item = await kernel.productServices.resumeService.updateResumeItem(ctx.user.id, param(request, "id"), compactRecord({
+        title: optionalPatchString(body.title, "title"),
+        contentSnapshot: optionalPatchString(body.contentSnapshot, "contentSnapshot"),
         hidden: typeof body.hidden === "boolean" ? body.hidden : undefined,
         pinned: typeof body.pinned === "boolean" ? body.pinned : undefined,
-      });
+      }));
       if (!item) throw new ApiError(ErrorCodes.NOT_FOUND, "Resume item not found.", 404);
       return productSuccess(item, kernel, ctx);
     });
@@ -80,4 +81,12 @@ export function registerResumeRoutes(
     return withIdempotency(request, reply, kernel, ctx.user.id, async () =>
       productSuccess(await kernel.productServices.resumeService.reorderResumeItems(ctx.user.id, param(request, "id"), stringArray(body.orderedIds)), kernel, ctx));
   });
+}
+
+function optionalPatchString(value: unknown, name: string): string | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== "string" || !value.trim()) {
+    throw new ApiError(ErrorCodes.INVALID_BODY, `${name} must be a non-empty string when provided.`, 400);
+  }
+  return value;
 }

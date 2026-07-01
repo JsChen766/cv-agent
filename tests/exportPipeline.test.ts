@@ -66,6 +66,45 @@ describe("resume export pipeline", () => {
     expect(download.body).toContain("Improved hiring workflow reliability.");
   });
 
+  it("deletes exports idempotently without relaxing missing or cross-user access", async () => {
+    const resume = await kernel.productServices.resumeService.createResume("user-1", { title: "Delete export" });
+    const created = await server.inject({
+      method: "POST",
+      url: `/exports/resumes/${resume.id}`,
+      headers: { "x-user-id": "user-1" },
+      payload: { format: "html" },
+    });
+    const data = (created.json() as ApiSuccess<{ exportRecord: ResumeExport }>).data;
+
+    const first = await server.inject({
+      method: "DELETE",
+      url: `/exports/${data.exportRecord.id}`,
+      headers: { "x-user-id": "user-1" },
+    });
+    const second = await server.inject({
+      method: "DELETE",
+      url: `/exports/${data.exportRecord.id}`,
+      headers: { "x-user-id": "user-1" },
+    });
+    const crossUser = await server.inject({
+      method: "DELETE",
+      url: `/exports/${data.exportRecord.id}`,
+      headers: { "x-user-id": "user-2" },
+    });
+    const missing = await server.inject({
+      method: "DELETE",
+      url: "/exports/export-missing",
+      headers: { "x-user-id": "user-1" },
+    });
+
+    expect(first.statusCode).toBe(200);
+    expect((first.json() as ApiSuccess<ResumeExport>).data.status).toBe("deleted");
+    expect(second.statusCode).toBe(200);
+    expect((second.json() as ApiSuccess<ResumeExport>).data.status).toBe("deleted");
+    expect(crossUser.statusCode).toBe(404);
+    expect(missing.statusCode).toBe(404);
+  });
+
   it("marks the export failed when the export job cannot render", async () => {
     const created = await server.inject({
       method: "POST",

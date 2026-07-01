@@ -5,4 +5,5 @@ export type ResumeExportRepository = {
   getExport(userId: string, id: string): Promise<ResumeExport | null>;
   listExports(userId: string, limit?: number): Promise<ResumeExport[]>;
   updateExport(userId: string, id: string, patch: Partial<ResumeExport>): Promise<ResumeExport | null>;
+  deleteExport(userId: string, id: string): Promise<ResumeExport | null>;
 };

@@ -30,10 +30,18 @@ export class PostgresResumeExportRepository implements ResumeExportRepository {
 
   public async updateExport(userId: string, id: string, patch: Partial<ResumeExport>): Promise<ResumeExport | null> {
     await this.database.query(
-      `UPDATE resume_export SET job_id=COALESCE($3,job_id), status=COALESCE($4,status), file_id=COALESCE($5,file_id), download_token_hash=COALESCE($6,download_token_hash), download_expires_at=COALESCE($7,download_expires_at), error_message=$8, completed_at=COALESCE($9,completed_at), fit_report=COALESCE($10::jsonb,fit_report), compression_report=COALESCE($11::jsonb,compression_report), edit_report=COALESCE($12::jsonb,edit_report), quality_report=COALESCE($13::jsonb,quality_report), updated_at=$14 WHERE user_id=$1 AND id=$2`,
+      `UPDATE resume_export SET job_id=COALESCE($3,job_id), status=COALESCE($4,status), file_id=COALESCE($5,file_id), download_token_hash=COALESCE($6,download_token_hash), download_expires_at=COALESCE($7,download_expires_at), error_message=$8, completed_at=COALESCE($9,completed_at), fit_report=COALESCE($10::jsonb,fit_report), compression_report=COALESCE($11::jsonb,compression_report), edit_report=COALESCE($12::jsonb,edit_report), quality_report=COALESCE($13::jsonb,quality_report), updated_at=$14 WHERE user_id=$1 AND id=$2 AND status <> 'deleted'`,
       [userId, id, patch.jobId ?? null, patch.status ?? null, patch.fileId ?? null, patch.downloadTokenHash ?? null, patch.downloadExpiresAt ?? null, patch.errorMessage ?? null, patch.completedAt ?? null, patch.fitReport ? JSON.stringify(patch.fitReport) : null, patch.compressionReport ? JSON.stringify(patch.compressionReport) : null, patch.editReport ? JSON.stringify(patch.editReport) : null, patch.qualityReport ? JSON.stringify(patch.qualityReport) : null, new Date().toISOString()],
     );
     return this.getExport(userId, id);
+  }
+
+  public async deleteExport(userId: string, id: string): Promise<ResumeExport | null> {
+    const result = await this.database.query<any>(
+      `UPDATE resume_export SET status='deleted', updated_at=$3 WHERE user_id=$1 AND id=$2 RETURNING *`,
+      [userId, id, new Date().toISOString()],
+    );
+    return result.rows[0] ? toExport(result.rows[0]) : null;
   }
 }
 
