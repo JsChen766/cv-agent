@@ -84,6 +84,69 @@ describe("file upload → resume import pipeline", () => {
     expect(drafts.filter((draft) => draft.category === "project")).toHaveLength(2);
   });
 
+  it("keeps bullet lines inside the same internship entry", () => {
+    const resumeText = [
+      "实习经历",
+      "2025.06-2025.09 字节跳动 数据分析实习生",
+      "- 搭建 SQL 指标看板，覆盖 5 个增长渠道。",
+      "· 2025.07-2025.08 跟进增长实验复盘，沉淀 2 个可复用分析模板。",
+      "- 优化日报口径，将人工统计时间从 2 小时降到 15 分钟。",
+      "- 与产品经理协作定位留存波动，输出 3 条实验建议。",
+    ].join("\n");
+
+    const drafts = buildResumeImportDrafts(resumeText);
+
+    expect(drafts).toHaveLength(1);
+    expect(drafts[0]?.organization).toBe("字节跳动");
+    expect(drafts[0]?.role).toBe("数据分析实习生");
+    expect(drafts[0]?.content).toContain("搭建 SQL 指标看板");
+    expect(drafts[0]?.content).toContain("增长实验复盘");
+    expect(drafts[0]?.content).toContain("优化日报口径");
+    expect(drafts[0]?.content).toContain("输出 3 条实验建议");
+    expect(drafts[0]?.warnings ?? []).not.toContain("organization_not_found");
+  });
+
+  it("splits unsectioned resume text by experience boundaries instead of bullets", () => {
+    const resumeText = [
+      "2025.06-2025.09 字节跳动 数据分析实习生",
+      "- 搭建 SQL 指标看板，覆盖 5 个增长渠道。",
+      "- 优化日报口径，将人工统计时间从 2 小时降到 15 分钟。",
+      "",
+      "2024.10-2025.01 校园智能问答平台 项目负责人",
+      "- 使用 TypeScript 和 Node.js 设计问答编排服务。",
+      "- 接入 PostgreSQL 记录用户反馈，支持后续评估。",
+    ].join("\n");
+
+    const drafts = buildResumeImportDrafts(resumeText);
+
+    expect(drafts).toHaveLength(2);
+    expect(drafts[0]?.category).toBe("internship");
+    expect(drafts[0]?.content).toContain("优化日报口径");
+    expect(drafts[1]?.category).toBe("project");
+    expect(drafts[1]?.title).toContain("校园智能问答平台");
+    expect(drafts[1]?.content).toContain("PostgreSQL");
+  });
+
+  it("keeps a project title line with its following date and bullets", () => {
+    const resumeText = [
+      "项目经历",
+      "校园智能问答平台",
+      "2024.10-2025.01 角色：项目负责人",
+      "- 使用 TypeScript 和 Node.js 设计问答编排服务。",
+      "- 接入 PostgreSQL 记录用户反馈，支持后续评估。",
+    ].join("\n");
+
+    const drafts = buildResumeImportDrafts(resumeText);
+
+    expect(drafts).toHaveLength(1);
+    expect(drafts[0]?.category).toBe("project");
+    expect(drafts[0]?.title).toBe("校园智能问答平台");
+    expect(drafts[0]?.role).toBe("项目负责人");
+    expect(drafts[0]?.content).toContain("2024.10-2025.01");
+    expect(drafts[0]?.content).toContain("TypeScript");
+    expect(drafts[0]?.content).toContain("PostgreSQL");
+  });
+
   it("uploads a text resume, runs the import_resume_file job, and returns candidates", async () => {
     const resumeText = [
       "Project: Built analytics dashboard.",

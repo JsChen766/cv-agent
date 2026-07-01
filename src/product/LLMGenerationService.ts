@@ -332,8 +332,8 @@ function inferResumeDocumentFromContent(
       continue;
     }
     if (!current) ensureSection("其他");
-    const bullet = line.replace(/^[-*•]\s*/, "").trim();
-    if (/^[-*•]\s+/.test(line)) {
+    const bullet = line.replace(/^[-*•·]\s*/, "").trim();
+    if (/^[-*•·]\s*/.test(line)) {
       if (!currentItem) {
         currentItem = makeResumeDocumentItem(current!, current!.title, sourceExperienceIds[0]);
         current!.items.push(currentItem);
@@ -393,7 +393,7 @@ function makeResumeDocumentItem(
  * Normalize a single variant from raw LLM output.
  * Never throws — returns null only if content is completely missing.
  */
-function normalizeVariant(raw: unknown, index: number): NormalizedVariant | null {
+function normalizeVariant(raw: unknown, index: number, qualityContext?: GenerationQualityContext): NormalizedVariant | null {
   if (!isRecord(raw)) return null;
   const content = typeof raw.content === "string" && raw.content.trim().length > 0
     ? raw.content.trim()
@@ -406,6 +406,15 @@ function normalizeVariant(raw: unknown, index: number): NormalizedVariant | null
   const resumeDocument = normalizeResumeDocument(raw.resumeDocument ?? raw.document ?? raw.structuredResume)
     ?? inferResumeDocumentFromContent(content, sourceExperienceIds, sourceEvidenceIds);
 
+  const qa = assessGeneratedVariantQuality({
+    content,
+    jdText: qualityContext?.jdText,
+    sourceExperiences: qualityContext?.sourceExperiences ?? [],
+  });
+  const riskSummary = mergeVariantRiskSummary(normalizeRiskSummary(raw.riskSummary), qa.warnings);
+  const missingInfo = mergeStringLists(normalizeMissingInfo(raw.missingInfo), qa.missingInfo);
+  const risks = mergeStringLists(normalizeStringArray(raw.risks ?? raw.cautions ?? raw.cons, 3, 18), qa.displayRisks)?.slice(0, 3);
+
   return {
     content,
     scores,
@@ -415,31 +424,31 @@ function normalizeVariant(raw: unknown, index: number): NormalizedVariant | null
     sourceExperienceIds,
     sourceEvidenceIds,
     evidenceSummary: normalizeEvidenceSummary(raw.evidenceSummary),
-    riskSummary: normalizeRiskSummary(raw.riskSummary),
-    missingInfo: normalizeMissingInfo(raw.missingInfo),
+    riskSummary,
+    missingInfo,
     groundingTrace: normalizeGroundingTrace(raw.groundingTrace),
     variantName: normalizeShortString(raw.variantName ?? raw.name, 12),
     summary: normalizeShortString(raw.summary ?? raw.summaryLine, 32),
     scenario: normalizeShortString(raw.scenario ?? raw.position, 14),
     advantages: normalizeStringArray(raw.advantages ?? raw.strengths ?? raw.pros, 4, 14),
-    risks: normalizeStringArray(raw.risks ?? raw.cautions ?? raw.cons, 3, 18),
+    risks,
     recommended: normalizeBool(raw.recommended ?? raw.preferred ?? raw.isRecommended),
     rank: normalizeRank(raw.rank),
     resumeDocument,
   };
 }
 
-function normalizeGenerationResult(raw: unknown): {
+function normalizeGenerationResult(raw: unknown, qualityContext?: GenerationQualityContext): {
   variants: NormalizedVariant[];
   recommendedVariantKey?: string;
   comparisonMatrix?: VariantComparisonMatrixRow[];
 } {
   if (Array.isArray(raw)) {
-    return { variants: normalizeVariantList(raw) };
+    return { variants: normalizeVariantList(raw, qualityContext) };
   }
   if (isRecord(raw)) {
     const variants = Array.isArray(raw.variants)
-      ? normalizeVariantList(raw.variants)
+      ? normalizeVariantList(raw.variants, qualityContext)
       : [];
     const recommendedVariantKey = typeof raw.recommendedVariantId === "string"
       ? raw.recommendedVariantId.trim() || undefined
@@ -450,10 +459,10 @@ function normalizeGenerationResult(raw: unknown): {
   return { variants: [] };
 }
 
-function normalizeVariantList(raw: unknown[]): NormalizedVariant[] {
+function normalizeVariantList(raw: unknown[], qualityContext?: GenerationQualityContext): NormalizedVariant[] {
   const variants: NormalizedVariant[] = [];
   for (let i = 0; i < raw.length && variants.length < 5; i++) {
-    const v = normalizeVariant(raw[i], i);
+    const v = normalizeVariant(raw[i], i, qualityContext);
     if (v) variants.push(v);
   }
   return variants;
@@ -564,6 +573,88 @@ const ExperienceBulletResultSchema = z.object({
   bullets: z.array(z.string().min(1)).min(1).max(4),
 });
 
+function assessGeneratedVariantQuality(input: {
+  content: string;
+  jdText?: string;
+  sourceExperiences: ProductExperienceSummary[];
+}): { warnings: string[]; missingInfo: string[]; displayRisks: string[] } {
+  const warnings: string[] = [];
+  const displayRisks: string[] = [];
+  if (input.jdText && isChineseDominant(input.jdText) && hasEnglishTemplatePhrasing(input.content)) {
+    warnings.push("language mismatch: Chinese JD should not produce English template phrasing in resume bullets.");
+    displayRisks.push("语言需统一为中文");
+  }
+
+  const bulletLines = input.content.split(/\r?\n/).map((line) => line.trim()).filter((line) => /^[-*•·]/.test(line));
+  if (bulletLines.some((line) => isWeakGeneratedBullet(line))) {
+    warnings.push("weak resume bullet: use action + scope/context + measurable or evidence-backed impact instead of generic responsibility text.");
+  }
+
+  if (hasUnsupportedGeneratedClaim(input.content, input.sourceExperiences)) {
+    warnings.push("unsupported claim risk: generated content appears to contain claims not grounded in the provided experience evidence.");
+  }
+
+  const missingInfo = warnings.length > 0
+    ? ["Review unsupported or weak JD requirements; add evidence or move gaps to suggestions before final export."]
+    : [];
+  return { warnings, missingInfo, displayRisks };
+}
+
+function mergeVariantRiskSummary(
+  existing: NormalizedVariant["riskSummary"] | undefined,
+  warnings: string[],
+): NormalizedVariant["riskSummary"] | undefined {
+  if (warnings.length === 0) return existing;
+  const mergedWarnings = mergeStringLists(existing?.warnings, warnings);
+  return {
+    level: riskLevelAtLeast(existing?.level ?? "low", "medium"),
+    unsupportedClaims: existing?.unsupportedClaims ?? [],
+    missingEvidence: existing?.missingEvidence ?? [],
+    warnings: mergedWarnings,
+  };
+}
+
+function mergeStringLists(existing: string[] | undefined, additions: string[]): string[] | undefined {
+  const merged = Array.from(new Set([...(existing ?? []), ...additions].map((item) => item.trim()).filter(Boolean)));
+  return merged.length > 0 ? merged : undefined;
+}
+
+function riskLevelAtLeast(current: "low" | "medium" | "high" | "critical", minimum: "low" | "medium" | "high" | "critical"): "low" | "medium" | "high" | "critical" {
+  const order = ["low", "medium", "high", "critical"] as const;
+  return order[Math.max(order.indexOf(current), order.indexOf(minimum))];
+}
+
+function isChineseDominant(text: string): boolean {
+  const cjk = (text.match(/[\u3400-\u9fff]/g) ?? []).length;
+  const latin = (text.match(/[A-Za-z]/g) ?? []).length;
+  return cjk > 0 && cjk >= latin / 2;
+}
+
+function hasEnglishTemplatePhrasing(text: string): boolean {
+  return /\b(?:responsible for|good communication|strong communication|self[- ]motivated|team player|solid foundation|familiar with)\b/i.test(text);
+}
+
+function isWeakGeneratedBullet(line: string): boolean {
+  const text = line.replace(/^[-*•·]\s*/, "").trim();
+  if (!text) return true;
+  if (/\b(?:responsible for|good communication|strong communication|team player|self[- ]motivated)\b/i.test(text)) return true;
+  if (/^(?:负责|参与|协助|具备|熟悉|了解|掌握)(?:相关)?(?:工作|任务|能力|技能)?[。.]?$/.test(text)) return true;
+  return text.length < 18 && !/(\d|%|提升|降低|优化|覆盖|支持|交付|上线|完成|实现|构建|设计|分析|验证)/i.test(text);
+}
+
+function hasUnsupportedGeneratedClaim(content: string, sourceExperiences: ProductExperienceSummary[]): boolean {
+  const sourceText = sourceExperiences.map((experience) => [
+    experience.title,
+    experience.organization,
+    experience.role,
+    experience.content,
+    JSON.stringify(experience.structured ?? {}),
+  ].filter(Boolean).join(" ")).join(" ").toLowerCase();
+  if (!sourceText) return false;
+  const highRiskClaims = ["千万级", "百万级", "营收", "跨国", "团队管理", "team management", "revenue", "million", "launched", "上线"];
+  return highRiskClaims.some((claim) => content.toLowerCase().includes(claim.toLowerCase()) && !sourceText.includes(claim.toLowerCase()));
+}
+
 // ═══════════════════════════════════════════════════════════════
 // Prompts
 // ═══════════════════════════════════════════════════════════════
@@ -573,6 +664,12 @@ const SYSTEM_PROMPT = PROMPTS.get("product.generation.resumeSystem");
 const GENERATION_TIMEOUT_MS = 120_000;
 const GENERATION_MAX_RETRIES = 1;
 const GENERATION_MAX_TOKENS = 12_000;
+
+type GenerationQualityContext = {
+  jdText: string;
+  sourceExperiences: ProductExperienceSummary[];
+};
+
 
 function buildUserPrompt(
   jdText: string,
@@ -743,6 +840,7 @@ function buildEvidenceGroundedUserPrompt(input: {
     longTermMemory,
     "",
     "Grounding policy:",
+    "- Match the output language to the JD or the user's explicit language instruction; if the JD is Chinese, write resume prose in Chinese while preserving proper nouns and technical terms.",
     "- Follow the Instruction Pack for writing strategy, role positioning, and style.",
     "- Treat the Evidence Pack as the factual boundary.",
     "- You may rephrase, prioritize, and package only the Allowed Claims.",
@@ -760,7 +858,7 @@ function buildEvidenceGroundedUserPrompt(input: {
     "- Internship/work and project sections are the core density engine. When source cards contain at least 2 internship/work items or at least 3 project items, the recommended variant should include several of them rather than collapsing the library into only 1-2 experiences.",
     "- For every internship/work/project item you include, write at least 3 bullets and preferably 4-5 bullets when the source card supports distinct methods, data/process, evaluation, deliverable, and outcome angles.",
     "- Each bullet should be long enough to occupy most of a resume line in the fixed A4 template. If a bullet wraps to a second line, the second line should also be substantial; avoid fragment endings of only a few words.",
-    "- Each bullet should use action + method/technology + scope + verified metric/result, and should be rich enough to fill resume space without becoming a paragraph.",
+    "- Each bullet should use action + method/technology + scope/context + verified metric/result or evidence-backed impact, and should be rich enough to fill resume space without becoming a paragraph.",
     "- Tailor selection and bullet ordering to the JD. Prefer the most relevant 6-9 source experiences over listing everything, but do not omit good internship/project evidence merely because the top 1-2 items already match.",
     "- Avoid obvious AI resume filler such as 具备较强, 良好的, 扎实的, 积极主动, 学习能力强 unless directly supported by evidence.",
     "- Include a valid resumeDocument for every variant whenever possible; it must mirror the plain content and preserve sourceExperienceId/evidenceIds.",
@@ -1045,6 +1143,8 @@ export class LLMGenerationService {
         {
           targetRole: input.targetRole,
           guidelineOnly: Boolean(input.instructionPack),
+          jdText: input.jdText,
+          experiences: input.sourceExperiences ?? [],
         },
       );
       return this.toGeneratedResult(input.userId, result);
@@ -1067,6 +1167,8 @@ export class LLMGenerationService {
       preferenceCount: (input.personalizationPack?.stablePreferences.length ?? 0)
         + (input.personalizationPack?.contextualPreferences.length ?? 0),
       targetRole: input.targetRole,
+      jdText: input.jdText,
+      experiences: input.sourceExperiences ?? [],
     });
 
     const generated = this.toGeneratedResult(input.userId, result);
@@ -1209,6 +1311,8 @@ export class LLMGenerationService {
     return this.tryGenerateFromPrompt(buildUserPrompt(jdText, targetRole, experiences), {
       experienceCount: experiences.length,
       targetRole,
+      jdText,
+      experiences,
     });
   }
 
@@ -1216,6 +1320,12 @@ export class LLMGenerationService {
     userPrompt: string,
     debugPayload: Record<string, unknown>,
   ): Promise<z.infer<typeof NormalizedGenerationResultSchema>> {
+    const qualityContext: GenerationQualityContext = {
+      jdText: typeof debugPayload.jdText === "string" ? debugPayload.jdText : "",
+      sourceExperiences: Array.isArray(debugPayload.experiences)
+        ? debugPayload.experiences.filter((item): item is ProductExperienceSummary => isRecord(item) && typeof item.id === "string")
+        : [],
+    };
     debugGeneration("initial start", {
       ...debugPayload,
       promptChars: userPrompt.length,
@@ -1255,11 +1365,11 @@ export class LLMGenerationService {
       parsed = parseJson(responseContent, "initial");
     } catch (error) {
       // JSON parse failed — try repair immediately
-      return this.repairGenerationFromPrompt(userPrompt, "json_parse", responseContent);
+      return this.repairGenerationFromPrompt(userPrompt, "json_parse", responseContent, undefined, qualityContext);
     }
 
     // Normalize (lenient) then validate (strict)
-    const normalized = normalizeGenerationResult(parsed);
+    const normalized = normalizeGenerationResult(parsed, qualityContext);
     if (normalized.variants.length > 0) {
       // Re-validate through strict schema — should always pass after normalization
       const validated = NormalizedGenerationResultSchema.safeParse(normalized);
@@ -1276,7 +1386,7 @@ export class LLMGenerationService {
     // No valid variants after normalization — try repair
     return this.repairGenerationFromPrompt(userPrompt, "schema_validation", responseContent, normalized.variants.length === 0
       ? ["no variants with non-empty content"]
-      : formatIssues(NormalizedGenerationResultSchema.safeParse(normalized).error?.issues ?? []));
+      : formatIssues(NormalizedGenerationResultSchema.safeParse(normalized).error?.issues ?? []), qualityContext);
   }
 
   private async repairGenerationFromPrompt(
@@ -1284,6 +1394,7 @@ export class LLMGenerationService {
     reason: "json_parse" | "schema_validation",
     previousContent: string,
     schemaIssues?: string[],
+    qualityContext?: GenerationQualityContext,
   ): Promise<z.infer<typeof NormalizedGenerationResultSchema>> {
     let responseContent = "";
     try {
@@ -1327,7 +1438,7 @@ export class LLMGenerationService {
       );
     }
 
-    const normalized = normalizeGenerationResult(parsed);
+    const normalized = normalizeGenerationResult(parsed, qualityContext);
     if (normalized.variants.length > 0) {
       const validated = NormalizedGenerationResultSchema.safeParse(normalized);
       if (validated.success) {

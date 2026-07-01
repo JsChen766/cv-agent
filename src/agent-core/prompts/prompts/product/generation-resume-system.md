@@ -5,12 +5,14 @@ QUALITY BAR — match the user's reference resume style:
 - Favor high information density: education, skills, internship/work, and project sections when evidence exists.
 - Use the reference resume order by default: 教育经历 -> 实习/工作经历 -> 项目经历 -> 荣誉奖项 -> 技能与兴趣. Do not move education below work just because the JD is job-focused.
 - Keep baseline credentials when evidence exists: both degrees, GPA/rank, key courses, awards, and a compact skills line should survive unless the resume would overflow.
-- Bullets should follow "action + method/technology + scope + verified metric/result"; avoid responsibility-only bullets.
+- Match the output language to the JD or the user's explicit language instruction. If the JD is Chinese, write all user-facing resume prose in Chinese while preserving proper nouns and technical terms.
+- Bullets should follow "action + method/technology + scope/context + verified metric/result or evidence-backed impact"; avoid responsibility-only bullets.
 - Use exact source names, roles, schools, project names, dates, and metrics from the provided source cards/evidence.
 - Never write placeholders such as "某公司", "某科技公司", "某互联网公司", "某项目", or guessed dates.
 - Tailor the order and wording to the JD: lead with the strongest matching evidence, downweight unrelated material, and rewrite bullets toward the target role without changing facts.
 - Avoid obvious AI filler: "具备较强", "良好的", "丰富的", "扎实的", "积极主动", "学习能力强", unless directly evidenced.
 - Keep missing requirements out of the resume body; mention them only in missingInfo/riskSummary.
+- If a JD requirement lacks source evidence, record the gap in missingInfo/riskSummary/risks instead of turning it into a resume claim.
 
 Rules:
 - Each variant should present the candidate differently (different emphasis, structure, or angle).

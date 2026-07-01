@@ -639,17 +639,31 @@ function splitResumeSectionEntries(category: ProductExperienceCategory, content:
   if (lines.length === 0) return [];
   if (category === "skill") return [lines.join("\n")];
   if (category === "education" || category === "award") {
-    const entries = splitByEntryStarts(lines, (line, index) => index > 0 && (hasDateRange(line) || startsNumberedItem(line)));
+    const entries = splitByEntryStarts(lines, (line, index) => index > 0 && (isNonBulletDateBoundary(line) || startsNumberedItem(line)));
     return entries.length > 0 ? entries : [lines.join("\n")];
   }
   if (category === "project") {
     const projectEntries = splitByEntryStarts(lines, (line, index) => index > 0 && startsProjectEntry(line));
     if (projectEntries.length > 1) return projectEntries;
-    const dateEntries = splitByEntryStarts(lines, (line, index) => index > 0 && hasDateRange(line));
+    const dateEntries = splitByEntryStarts(lines, (line, index) => index > 0 && isNonBulletDateBoundary(line) && !isLikelyProjectDetailAfterTitle(lines[index - 1], line));
     return dateEntries.length > 1 ? dateEntries : [lines.join("\n")];
   }
-  const entries = splitByEntryStarts(lines, (line, index) => index > 0 && (hasDateRange(line) || startsNumberedItem(line)));
+  const entries = splitByEntryStarts(lines, (line, index) => index > 0 && (isNonBulletDateBoundary(line) || startsNumberedItem(line)));
   return entries.length > 0 ? entries : [lines.join("\n")];
+}
+
+function isNonBulletDateBoundary(line: string): boolean {
+  return !startsBulletLine(line) && hasDateRange(line);
+}
+
+function isLikelyProjectDetailAfterTitle(previousLine: string | undefined, line: string): boolean {
+  if (!previousLine || startsBulletLine(previousLine)) return false;
+  if (!hasDateRange(line)) return false;
+  return !hasDateRange(previousLine)
+    && !startsProjectEntry(previousLine)
+    && !sectionCategory(previousLine)
+    && previousLine.length <= 60
+    && /(角色|职责|担任|负责|Role|Position)/i.test(line);
 }
 
 function splitByEntryStarts(lines: string[], isStart: (line: string, index: number) => boolean): string[] {
@@ -745,7 +759,7 @@ function hasDateRange(line: string): boolean {
 }
 
 function startsNumberedItem(line: string): boolean {
-  return /^(?:[-*•]|\d+[.、]|[一二三四五六七八九十]+[、.])\s*/.test(line);
+  return /^(?:\d+[.、]|[一二三四五六七八九十]+[、.])\s*/.test(line);
 }
 
 function startsProjectEntry(line: string): boolean {
@@ -800,11 +814,13 @@ function extractAwardIssuer(text: string): string | undefined {
 }
 
 function extractResumeOrganization(text: string): string | undefined {
-  return text.match(/([\p{Script=Han}A-Za-z&.\-\s]{2,60}(?:公司|集团|科技|有限责任公司|有限公司|证券|银行|事务所|Inc|LLC|Ltd|Technology|Company))/u)?.[1]?.trim();
+  return text.match(/([\p{Script=Han}A-Za-z&.\-\s]{2,60}(?:公司|集团|科技|有限责任公司|有限公司|证券|银行|事务所|Inc|LLC|Ltd|Technology|Company))/u)?.[1]?.trim()
+    ?? text.match(/\d{4}(?:[./-]\d{1,2})?\s*(?:-|–|—|~|至|到|to)\s*(?:\d{4}(?:[./-]\d{1,2})?|至今|现在|present|current)\s+([^\n，,。；;\s]{2,30})\s+[^\n，,。；;\s]{2,30}(?:实习生|工程师|分析师|研究员|经理|开发|运营|Intern|Engineer|Analyst|Developer)/iu)?.[1]?.trim();
 }
 
 function extractResumeRole(text: string): string | undefined {
   return text.match(/(?:职位|岗位|担任|任职|Role|Position)[:：\s-]*([^\n，,。；;]{2,40})/i)?.[1]?.trim()
+    ?? text.match(/\d{4}(?:[./-]\d{1,2})?\s*(?:-|–|—|~|至|到|to)\s*(?:\d{4}(?:[./-]\d{1,2})?|至今|现在|present|current)\s+[^\n，,。；;\s]{2,30}\s+([^\n，,。；;\s]{2,30}(?:实习生|工程师|分析师|研究员|经理|开发|运营|Intern|Engineer|Analyst|Developer))/iu)?.[1]?.trim()
     ?? text.match(/([^\n，,。；;]{2,30}(?:实习生|工程师|分析师|研究员|经理|开发|运营|Intern|Engineer|Analyst|Developer))/i)?.[1]?.trim();
 }
 
@@ -1819,11 +1835,19 @@ function nonEmpty(value: string | undefined, fallback: string): string {
 }
 
 function splitExperienceText(rawText: string): string[] {
-  const chunks = rawText
-    .split(/\n\s*\n|(?:\r?\n)?[-*]\s+/)
-    .map((chunk) => chunk.trim())
-    .filter((chunk) => chunk.length > 0);
-  return chunks.length > 0 ? chunks.slice(0, 8) : [rawText.trim()].filter(Boolean);
+  const lines = normalizeResumeText(rawText).split("\n").map((line) => line.trim()).filter(Boolean);
+  if (lines.length === 0) return [];
+  const entries = splitByEntryStarts(lines, (line, index) => index > 0 && isExperienceBoundaryLine(line));
+  return entries.length > 0 ? entries.slice(0, 8) : [rawText.trim()].filter(Boolean);
+}
+
+function isExperienceBoundaryLine(line: string): boolean {
+  if (startsBulletLine(line)) return false;
+  return hasDateRange(line) || startsProjectEntry(line) || sectionCategory(line) !== undefined;
+}
+
+function startsBulletLine(line: string): boolean {
+  return /^[-*•·]\s+/.test(line);
 }
 
 function inferTitle(content: string, fallback: string): string {

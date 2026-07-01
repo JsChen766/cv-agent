@@ -52,8 +52,11 @@ describe("LLMExperienceExtractor language preservation", () => {
     expect(systemPrompt).toContain("Preserve the user's original language");
     expect(systemPrompt).toContain("Do not translate Chinese input into English unless the user explicitly asks");
     expect(systemPrompt).toContain("Do not translate English paper titles or journal names into Chinese");
+    expect(systemPrompt).toContain("Do NOT split one experience just because it has multiple bullet lines");
+    expect(systemPrompt).toContain("Use organization/company, role/title, project heading, date range, or section heading changes as candidate boundaries");
     expect(systemPrompt).toContain("Do not fabricate external details");
     expect(repairPrompt).toContain("Preserve the original language");
+    expect(repairPrompt).toContain("do not split one experience only because it contains multiple bullet lines");
     expect(repairPrompt).toContain("Do not add unverified external details");
   });
 });

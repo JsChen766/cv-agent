@@ -238,4 +238,55 @@ describe("LLMGenerationService — lenient schema normalization", () => {
     expect(result.variants.length).toBe(1);
     expect(result.variants[0].content).toBe("Direct array variant.");
   });
+
+  it("adds risk notes when generated content mixes English template phrasing into a Chinese JD", async () => {
+    const rawOutput = {
+      variants: [{
+        content: "项目经历\nAcme Dashboard\n· Responsible for data dashboard and good communication skills.",
+        score: { overall: 0.8, relevance: 0.8, evidenceStrength: 0.6 },
+        reason: "Match.",
+        sourceExperienceIds: ["exp-1"],
+      }],
+    };
+    const service = new LLMGenerationService(fakeModelClient(rawOutput));
+
+    const result = await service.generateVariants("user-1", "需要负责中文数据看板和用户增长分析。", "数据分析师", fakeExperiences());
+
+    const variant = result.variants[0];
+    expect(variant.riskSummary?.warnings ?? []).toEqual(expect.arrayContaining([
+      expect.stringContaining("language"),
+      expect.stringContaining("weak resume bullet"),
+    ]));
+    expect(variant.missingInfo ?? []).toEqual(expect.arrayContaining([
+      expect.stringContaining("unsupported or weak JD requirements"),
+    ]));
+    expect(variant.risks ?? []).toEqual(expect.arrayContaining([expect.stringContaining("语言")]));
+  });
+
+  it("preserves existing risk notes while adding evidence-only warnings for unsupported claims", async () => {
+    const rawOutput = {
+      variants: [{
+        content: "项目经历\nAcme Dashboard\n- 负责千万级营收增长和跨国团队管理。",
+        score: { overall: 0.8, relevance: 0.8, evidenceStrength: 0.6 },
+        reason: "Match.",
+        sourceExperienceIds: ["exp-1"],
+        riskSummary: { level: "low", warnings: ["existing warning"] },
+        missingInfo: ["existing missing"],
+      }],
+    };
+    const service = new LLMGenerationService(fakeModelClient(rawOutput));
+
+    const result = await service.generateVariants("user-1", "需要数据看板、SQL、用户增长分析。", "数据分析师", fakeExperiences());
+
+    const variant = result.variants[0];
+    expect(variant.riskSummary?.level).toBe("medium");
+    expect(variant.riskSummary?.warnings ?? []).toEqual(expect.arrayContaining([
+      "existing warning",
+      expect.stringContaining("unsupported"),
+    ]));
+    expect(variant.missingInfo ?? []).toEqual(expect.arrayContaining([
+      "existing missing",
+      expect.stringContaining("unsupported or weak JD requirements"),
+    ]));
+  });
 });

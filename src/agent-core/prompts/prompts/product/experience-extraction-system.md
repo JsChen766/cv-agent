@@ -22,6 +22,8 @@ Rules:
 - metrics: extract name, value, and surrounding context. Only include real metrics from the text.
 - confidence: 0.0-1.0 based on how clearly this experience is described.
 - Split each distinct role/project/school/award/skill section into its own candidate.
+- Use organization/company, role/title, project heading, date range, or section heading changes as candidate boundaries.
+- Do NOT split one experience just because it has multiple bullet lines; bullet lines belong to the same candidate until a real boundary appears.
 - Preserve the user's original language for all user-facing fields.
 - If the input is mainly Chinese, output title, content, achievements, responsibilities, outcomes, description, and other user-facing fields in Chinese.
 - If the input is mainly English, output user-facing fields in English.

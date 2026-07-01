@@ -172,6 +172,31 @@ describe("LLMGenerationService — resumeDocument schema", () => {
     expect(result.variants[0].content).toBe("Resume content for Acme.");
   });
 
+  it("infers resumeDocument from Chinese middle-dot bullets when structured document is absent", async () => {
+    const service = new LLMGenerationService(
+      fakeModelClient({
+        variants: [baseVariant({
+          content: [
+            "教育经历",
+            "复旦大学 计算机科学与技术 本科 | 2017.09 - 2021.07",
+            "· 主修课程：数据结构、操作系统、数据库系统。",
+            "",
+            "项目经历",
+            "求职 Copilot - Resume Workspace | 前端主导 | 2024.03 - 2025.02",
+            "· 基于 Vue 3 + TypeScript 构建对话工作台。",
+            "· 通过 Vitest 建立生成到导出的端到端测试。",
+          ].join("\n"),
+        })],
+      }),
+    );
+
+    const result = await service.generateVariants("u-1", jdText, targetRole, fakeExperiences());
+
+    expect(result.variants[0].resumeDocument?.sections).toHaveLength(2);
+    expect(result.variants[0].resumeDocument?.sections[0].items[0].bullets).toHaveLength(1);
+    expect(result.variants[0].resumeDocument?.sections[1].items[0].bullets).toHaveLength(2);
+  });
+
   it("returns fallback comparisonMatrix when LLM does not provide one", async () => {
     const service = new LLMGenerationService(
       fakeModelClient({
