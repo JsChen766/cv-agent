@@ -246,3 +246,78 @@ export type ResumeChangeSet = {
   createdAt: string;
   updatedAt: string;
 };
+
+export type ResumePreviewStage =
+  | "original_parsed_resume"
+  | "problem_markers"
+  | "rewrite_plan"
+  | "patched_draft"
+  | "layout_checked_draft"
+  | "critic_repaired_draft"
+  | "final_accepted_draft";
+
+export type ResumeDraftProblemMarker = {
+  markerId: string;
+  severity: ResumeOptimizationFindingSeverity;
+  message: string;
+  target?: ResumeOptimizationTarget;
+  rubricDimension?: ResumeOptimizationRubricDimension;
+  evidenceIds: string[];
+};
+
+export type ResumeRewritePlanItem = {
+  changeId: string;
+  type: ResumeChangeType;
+  target: ResumeOptimizationTarget;
+  reason: string;
+  riskLevel: ResumeChangeRiskLevel;
+  rubricDimensions: ResumeOptimizationRubricDimension[];
+};
+
+export type LayoutPreviewDiagnosticType =
+  | "overflow"
+  | "underfill"
+  | "excessive_bullet_lines"
+  | "short_bullet_line"
+  | "missing_section";
+
+export type LayoutPreviewDiagnostic = {
+  type: LayoutPreviewDiagnosticType;
+  severity: "low" | "medium" | "high";
+  message: string;
+  sectionType?: import("../types.js").ProductResumeItem["sectionType"];
+  itemId?: string;
+  bulletId?: string;
+  overflowPx?: number;
+  remainingHeightPx?: number;
+  lineCount?: number;
+  minLineWidthPx?: number;
+};
+
+export type LayoutPreviewReport = {
+  schemaVersion: 1;
+  layoutPreviewId: string;
+  generatedAt: string;
+  exportLayoutReport: import("../../exports/layout/ResumeLayoutOracle.js").ResumeLayoutReport;
+  summary: {
+    fitsPage: boolean;
+    hasOverflow: boolean;
+    hasUnderfill: boolean;
+    invalidBulletCount: number;
+    missingSectionCount: number;
+  };
+  diagnostics: LayoutPreviewDiagnostic[];
+};
+
+export type ResumePreviewSnapshot = {
+  schemaVersion: 1;
+  snapshotId: string;
+  generationId: string;
+  changeSetId?: string;
+  stage: ResumePreviewStage;
+  createdAt: string;
+  resumeDocumentDraft: import("../types.js").ResumeDocument;
+  problemMarkers: ResumeDraftProblemMarker[];
+  rewritePlan: ResumeRewritePlanItem[];
+  layoutPreviewReport?: LayoutPreviewReport;
+};

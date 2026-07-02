@@ -115,6 +115,8 @@ export function createGenerateResumeFromJDTool(): ToolDefinition {
           analysisReport: result.analysisReport,
           resumeChangeSet: result.resumeChangeSet,
           resumeChangeSets: result.resumeChangeSets,
+          resumePreviewSnapshots: result.resumePreviewSnapshots,
+          resumeDocumentDraft: result.resumeDocumentDraft,
         },
         workspacePatch: {
           activePanel: "variants",
@@ -127,6 +129,8 @@ export function createGenerateResumeFromJDTool(): ToolDefinition {
           workflowStatus: result.workflowRun,
           analysisReport: result.analysisReport,
           resumeChangeSet: result.resumeChangeSet,
+          resumePreviewSnapshots: result.resumePreviewSnapshots,
+          resumeDocumentDraft: result.resumeDocumentDraft,
           summary: `已生成 ${variants.length} 个 JD 简历版本。`,
         },
         actionResult: {
@@ -141,6 +145,8 @@ export function createGenerateResumeFromJDTool(): ToolDefinition {
             workflowStatus: result.workflowRun,
             analysisReport: result.analysisReport,
             resumeChangeSet: result.resumeChangeSet,
+            resumePreviewSnapshots: result.resumePreviewSnapshots,
+            resumeDocumentDraft: result.resumeDocumentDraft,
             changeSetId: result.resumeChangeSet?.changeSetId,
             pendingChangeCount: result.resumeChangeSet?.summary.pendingCount,
           },

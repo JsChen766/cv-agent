@@ -31,6 +31,8 @@ describe("resume agent tools", () => {
       const data = result.data as {
         variants: Array<{ id: string; content: string; createdAt: string }>;
         resumeChangeSet?: { summary?: { pendingCount?: number; label?: string }; changes?: unknown[] };
+        resumePreviewSnapshots?: Array<{ stage?: string; resumeDocumentDraft?: unknown }>;
+        resumeDocumentDraft?: { sections?: unknown[] };
         generation?: { inputSnapshot?: Record<string, unknown>; outputSnapshot?: Record<string, unknown> };
       };
       expect(data.variants.length).toBeGreaterThan(0);
@@ -79,6 +81,17 @@ describe("resume agent tools", () => {
       expect(data.generation?.inputSnapshot?.analysisReport).toBeTruthy();
       expect(data.generation?.outputSnapshot?.analysisReport).toBeTruthy();
       expect(data.generation?.outputSnapshot?.resumeChangeSet).toBeTruthy();
+      expect(data.resumePreviewSnapshots?.map((snapshot) => snapshot.stage)).toEqual(expect.arrayContaining([
+        "original_parsed_resume",
+        "problem_markers",
+        "rewrite_plan",
+        "patched_draft",
+      ]));
+      expect(data.resumeDocumentDraft?.sections?.length).toBeGreaterThan(0);
+      expect(data.generation?.inputSnapshot?.resumePreviewSnapshots).toBeTruthy();
+      expect(data.generation?.outputSnapshot?.resumeDocumentDraft).toBeTruthy();
+      expect(result.workspacePatch?.resumePreviewSnapshots).toBeTruthy();
+      expect(result.workspacePatch?.resumeDocumentDraft).toBeTruthy();
       expect(result.workspacePatch?.resumeChangeSet).toBeTruthy();
       const metadata = result.actionResult?.metadata as { changeSetId?: string } | undefined;
       expect(metadata?.changeSetId).toEqual(data.resumeChangeSet ? expect.any(String) : undefined);

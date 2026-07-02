@@ -117,6 +117,8 @@ export class JobRunner {
         variants: workspaceVariants,
         analysisReport: result.analysisReport,
         resumeChangeSet: result.resumeChangeSet,
+        resumePreviewSnapshots: result.resumePreviewSnapshots,
+        resumeDocumentDraft: result.resumeDocumentDraft,
       });
       const output = {
         actionType,
@@ -129,6 +131,8 @@ export class JobRunner {
         analysisReport: result.analysisReport,
         resumeChangeSet: result.resumeChangeSet,
         resumeChangeSets: result.resumeChangeSets,
+        resumePreviewSnapshots: result.resumePreviewSnapshots,
+        resumeDocumentDraft: result.resumeDocumentDraft,
       };
       const pendingActionId = stringInputOrUndefined(job.input, "pendingActionId");
       if (pendingActionId) {
@@ -143,6 +147,8 @@ export class JobRunner {
           workflowRun: result.workflowRun,
           analysisReport: result.analysisReport,
           resumeChangeSet: result.resumeChangeSet,
+          resumePreviewSnapshots: result.resumePreviewSnapshots,
+          resumeDocumentDraft: result.resumeDocumentDraft,
         }));
       }
       return output;
@@ -293,6 +299,8 @@ export class JobRunner {
     variants: ProductVariant[];
     analysisReport?: unknown;
     resumeChangeSet?: unknown;
+    resumePreviewSnapshots?: unknown;
+    resumeDocumentDraft?: unknown;
   }): Promise<void> {
     if (!sessionId) return;
     const copilotServices = this.deps.copilotServices;
@@ -317,6 +325,8 @@ export class JobRunner {
         status: "ready",
         analysisReport: input.analysisReport,
         resumeChangeSet: input.resumeChangeSet,
+        resumePreviewSnapshots: input.resumePreviewSnapshots,
+        resumeDocumentDraft: input.resumeDocumentDraft,
         summary: `已生成 ${input.variants.length} 个简历版本，请选择一个版本保存为简历。`,
         active: {
           ...(base.active ?? {}),
@@ -348,6 +358,8 @@ function buildGenerationSuccessResult(input: {
   workflowRun?: unknown;
   analysisReport?: unknown;
   resumeChangeSet?: unknown;
+  resumePreviewSnapshots?: unknown;
+  resumeDocumentDraft?: unknown;
 }): ToolResult {
   return {
     status: "success",
@@ -361,6 +373,8 @@ function buildGenerationSuccessResult(input: {
       workflowEvents: isWorkflowRun(input.workflowRun) ? input.workflowRun.events : undefined,
       analysisReport: input.analysisReport,
       resumeChangeSet: input.resumeChangeSet,
+      resumePreviewSnapshots: input.resumePreviewSnapshots,
+      resumeDocumentDraft: input.resumeDocumentDraft,
     },
     workspacePatch: {
       activePanel: "variants",
@@ -372,6 +386,8 @@ function buildGenerationSuccessResult(input: {
       workflowStatus: input.workflowRun,
       analysisReport: input.analysisReport,
       resumeChangeSet: input.resumeChangeSet,
+      resumePreviewSnapshots: input.resumePreviewSnapshots,
+      resumeDocumentDraft: input.resumeDocumentDraft,
       summary: `已生成 ${input.variants.length} 个简历版本，请选择一个版本保存为简历。`,
     },
     actionResult: {
@@ -387,6 +403,8 @@ function buildGenerationSuccessResult(input: {
         workflowStatus: input.workflowRun,
         analysisReport: input.analysisReport,
         resumeChangeSet: input.resumeChangeSet,
+        resumePreviewSnapshots: input.resumePreviewSnapshots,
+        resumeDocumentDraft: input.resumeDocumentDraft,
         changeSetId: changeSetId(input.resumeChangeSet),
       },
     },

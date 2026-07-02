@@ -409,6 +409,66 @@ Validation:
 - Tests comparing preview layout report fields with export `qualityReport.layoutReport`.
 - Real Docker/PDF smoke proving preview draft and exported PDF stay aligned.
 
+## Phase 4 Completion Status
+
+Status as of 2026-07-02: complete.
+
+Implementation summary:
+
+- Added internal preview artifact types for `resumeDocumentDraft`, `ResumePreviewSnapshot`, problem markers, rewrite-plan items, and layout preview diagnostics.
+- Added `ResumeDraftProjector`, `ResumePatchProjectionService`, `ResumePreviewSnapshotService`, and `LayoutPreviewReportProjector`.
+- Preview snapshots now expose original parsed resume, analysis problem markers, rewrite plan, and patched draft from the Phase 3 change-set lineage without requiring PDF generation.
+- `LayoutPreviewReportProjector` reuses the export `ResumeLayoutReport` shape and projects overflow, underfill, excessive bullet lines, short bullet lines, and missing-section diagnostics.
+- Threaded `resumePreviewSnapshots` and `resumeDocumentDraft` through direct `generate_resume_from_jd`, queued `long_generation` job output, pending-action completion metadata, workspace metadata, and generation input/output snapshots.
+- Final accept/export path continues to use the same structured variant/draft lineage that preview snapshots expose, preserving existing export template semantics.
+
+Changed files:
+
+- `src/product/resumeOptimization/types.ts`
+- `src/product/resumeOptimization/ResumeDraftProjector.ts`
+- `src/product/resumeOptimization/ResumePatchProjectionService.ts`
+- `src/product/resumeOptimization/ResumePreviewSnapshotService.ts`
+- `src/product/resumeOptimization/LayoutPreviewReportProjector.ts`
+- `src/product/resumeOptimization/index.ts`
+- `src/product/services/index.ts`
+- `src/api/kernel/createKernel.ts`
+- `src/agent-tools/resume/generateResumeFromJD.tool.ts`
+- `src/jobs/JobRunner.ts`
+- `src/copilot/types.ts`
+- `tests/resumeOptimizationWorkflow.test.ts`
+- `tests/resumeAgentTools.test.ts`
+- `docs/resume-optimization-workflow-plan.md`
+
+Contract impact assessment:
+
+- Public route paths, request bodies, response envelopes, ProductBlock meanings, pending-action semantics, job routes, generation routes, and export routes are unchanged.
+- New `resumePreviewSnapshots` and `resumeDocumentDraft` data is additive and optional, carried only inside existing tool result data, workspace patch, action metadata, job output, and generation snapshot surfaces.
+- `CopilotWorkspace.resumePreviewSnapshots` and `CopilotWorkspace.resumeDocumentDraft` are optional `unknown` metadata for persisted preview context; they do not alter workspace status, variant semantics, or export behavior.
+
+Tests run:
+
+- `npx vitest run tests/resumeOptimizationWorkflow.test.ts` - passed, 10 tests.
+- `npx vitest run tests/resumeAgentTools.test.ts` - passed, 5 tests.
+- `npm run typecheck` - passed.
+- `npx vitest run tests/resumeOptimizationWorkflow.test.ts tests/resumeAgentTools.test.ts tests/CopilotRoutes.test.ts` - passed, 38 tests.
+- `npm test` - passed, 873 tests.
+
+Real Docker/LLM/PDF validation:
+
+- Rebuilt and restarted the Docker API with `docker compose up -d --build api`.
+- Confirmed `/health` returned `mode=postgres`.
+- Ran a Docker-backed product flow through `/product/experiences`, `/product/generations/from-jd`, `/jobs/:id`, `/product/generations/:id`, `/product/generations/:id/accept-variant`, `/exports/resumes/:resumeId`, and `/exports/:id`.
+- Verified completed generation `pgen-aaa67821-0332-4837-94a0-2186ad055ba2` exposed `resumePreviewSnapshots` and `resumeDocumentDraft` in job output and persisted generation snapshots.
+- Verified accepted resume `pres-ed67dd50-cf02-41c5-842b-cef21af292e8` exported to PDF export `export-fee1c64e-c9fc-4626-8033-0997e1b76126` with completed export job `job-62b9cb86-68a3-4b2c-aad2-a8414f35f94a`.
+- Verified exported PDF quality metadata included `qualityReport.layoutReport` with `fitsPage=true`, `overflowPx=0`, and layout diagnostics available for preview/export field comparison.
+- Smoke result marker: `PHASE4_PREVIEW_DOCKER_PDF_SMOKE_PASS`.
+
+Unresolved risks and Phase 5 handoff notes:
+
+- Phase 4 exposes deterministic preview lineage and layout preview projection, but it does not yet run the browser layout oracle during generation; Phase 5/6 can attach measured `layout_checked_draft` snapshots when critic/layout repair stages execute.
+- Dedicated public accept/reject routes are still not exposed; preview final accepted draft is available through internal deterministic services and existing variant acceptance, while item-level frontend review actions remain a future adapter task.
+- Critic-repaired draft snapshots are structurally reserved but not populated until Phase 5 wires actionable critic items and patch suggestions.
+
 ## Phase 5: Editorial Critic And Auto Patch Suggestions
 
 Goal: turn critic from a coarse pass/fail gate into an actionable editor.

@@ -7,3 +7,7 @@ export * from "./ResumeChangePlanner.js";
 export * from "./ResumeChangeApplyService.js";
 export * from "./ResumeChangeRejectService.js";
 export * from "./ResumeChangeSetService.js";
+export * from "./ResumeDraftProjector.js";
+export * from "./ResumePatchProjectionService.js";
+export * from "./LayoutPreviewReportProjector.js";
+export * from "./ResumePreviewSnapshotService.js";

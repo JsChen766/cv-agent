@@ -30,9 +30,11 @@ import {
   JDResumeAnalysisService,
   ResumeChangeSetService,
   ResumeOptimizationWorkflowService,
+  ResumePreviewSnapshotService,
   type JDResumeAnalysisReport,
   type ResumeChangeSet,
   type ResumeOptimizationRun,
+  type ResumePreviewSnapshot,
 } from "../resumeOptimization/index.js";
 import type {
   ProductExperienceRepository,
@@ -51,6 +53,7 @@ export type ProductServices = {
   resumeOptimizationWorkflowService: ResumeOptimizationWorkflowService;
   jdResumeAnalysisService: JDResumeAnalysisService;
   resumeChangeSetService: ResumeChangeSetService;
+  resumePreviewSnapshotService: ResumePreviewSnapshotService;
   evidenceRAGService?: EvidenceRAGService;
   guidelineRAGService?: GuidelineRAGService;
   preferenceBankService?: PreferenceBankService;
@@ -991,6 +994,7 @@ export class GenerationProductService {
     private readonly resumeOptimizationWorkflowService: ResumeOptimizationWorkflowService = new ResumeOptimizationWorkflowService(),
     private readonly jdResumeAnalysisService: JDResumeAnalysisService = new JDResumeAnalysisService(),
     private readonly resumeChangeSetService: ResumeChangeSetService = new ResumeChangeSetService(),
+    private readonly resumePreviewSnapshotService: ResumePreviewSnapshotService = new ResumePreviewSnapshotService(),
   ) {}
 
   public async generateResumeFromJD(input: {
@@ -1010,6 +1014,8 @@ export class GenerationProductService {
     analysisReport: JDResumeAnalysisReport;
     resumeChangeSet?: ResumeChangeSet;
     resumeChangeSets: ResumeChangeSet[];
+    resumePreviewSnapshots: ResumePreviewSnapshot[];
+    resumeDocumentDraft?: ResumeDocument;
   }> {
     if (!input.jdId && !input.jdText?.trim()) {
       throw new Error("JD text or jdId is required.");
@@ -1194,11 +1200,23 @@ export class GenerationProductService {
       sourceExperiences: experiences,
     });
     const resumeChangeSet = resumeChangeSets[0];
+    const resumePreviewSnapshots = resumeChangeSet
+      ? this.resumePreviewSnapshotService.createSnapshots({
+          changeSet: resumeChangeSet,
+          analysisReport,
+          generationId: generation.id,
+        })
+      : [];
+    const resumeDocumentDraft = this.resumePreviewSnapshotService.pickRenderableDraft(resumePreviewSnapshots);
     generation.inputSnapshot.resumeChangeSet = resumeChangeSet;
+    generation.inputSnapshot.resumePreviewSnapshots = resumePreviewSnapshots;
+    generation.inputSnapshot.resumeDocumentDraft = resumeDocumentDraft;
     generation.outputSnapshot = {
       ...(generation.outputSnapshot ?? {}),
       resumeChangeSet,
       resumeChangeSets,
+      resumePreviewSnapshots,
+      resumeDocumentDraft,
     };
     const completedWorkflowRun = this.resumeOptimizationWorkflowService.completeDraftGeneration({
       run: workflowRun,
@@ -1217,6 +1235,8 @@ export class GenerationProductService {
       analysisReport,
       resumeChangeSet,
       resumeChangeSets,
+      resumePreviewSnapshots,
+      resumeDocumentDraft,
     };
 
     await this.repository.createGeneration(generation);
@@ -1243,6 +1263,8 @@ export class GenerationProductService {
       analysisReport,
       resumeChangeSet,
       resumeChangeSets,
+      resumePreviewSnapshots,
+      resumeDocumentDraft,
     };
   }
 

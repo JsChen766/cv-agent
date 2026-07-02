@@ -192,6 +192,8 @@ export type CopilotWorkspace = {
   jdProfile?: JDProfile;
   analysisReport?: unknown;
   resumeChangeSet?: unknown;
+  resumePreviewSnapshots?: unknown;
+  resumeDocumentDraft?: unknown;
   workingSets?: Record<string, unknown>;
   active?: {
     jdId?: string;

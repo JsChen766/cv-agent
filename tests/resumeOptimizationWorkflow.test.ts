@@ -3,8 +3,12 @@ import { projectAgentRoomEvents } from "../src/agent-core/events/AgentRoomEventP
 import type { ToolResult } from "../src/agent-core/tools/ToolResult.js";
 import {
   JDResumeAnalysisService,
+  LayoutPreviewReportProjector,
   ResumeChangeSetService,
+  ResumeDraftProjector,
   ResumeOptimizationWorkflowService,
+  ResumePatchProjectionService,
+  ResumePreviewSnapshotService,
 } from "../src/product/resumeOptimization/index.js";
 import type { ProductExperienceSummary, ProductGeneratedVariant, ProductGeneration, ProductJDRecord } from "../src/product/types.js";
 
@@ -315,6 +319,78 @@ describe("ResumeChangeSetService", () => {
   });
 });
 
+describe("ResumePreviewSnapshotService", () => {
+  it("projects original, problem-marker, patched, and accepted draft snapshots from change-set lineage", async () => {
+    const { changeSet, service, analysisReport } = await sampleChangeSet();
+    const accepted = service.acceptChange(changeSet, changeSet.changes[0]!.changeId);
+    const projector = new ResumeDraftProjector();
+    const patchProjection = new ResumePatchProjectionService(projector);
+    const previewService = new ResumePreviewSnapshotService(projector, patchProjection);
+
+    const snapshots = previewService.createSnapshots({
+      changeSet,
+      analysisReport,
+      acceptedChangeSet: accepted,
+      generationId: changeSet.generationId,
+    });
+
+    expect(snapshots.map((snapshot) => snapshot.stage)).toEqual([
+      "original_parsed_resume",
+      "problem_markers",
+      "rewrite_plan",
+      "patched_draft",
+      "final_accepted_draft",
+    ]);
+    expect(snapshots[0]?.resumeDocumentDraft).toEqual(changeSet.originalDraft);
+    expect(snapshots[1]?.problemMarkers.length).toBeGreaterThan(0);
+    expect(snapshots[2]?.rewritePlan.length).toBe(changeSet.changes.length);
+    expect(flattenDraftText(snapshots[3]?.resumeDocumentDraft)).toContain(changeSet.changes[0]!.after);
+    expect(flattenDraftText(snapshots[4]?.resumeDocumentDraft)).toContain(changeSet.changes[0]!.after);
+    expect(flattenDraftText(snapshots[4]?.resumeDocumentDraft)).not.toContain(changeSet.changes[1]!.after);
+    expect(previewService.pickRenderableDraft(snapshots)).toEqual(accepted.currentDraft);
+  });
+
+  it("projects layout preview diagnostics with the same layout report fields used by export quality reports", () => {
+    const layoutReport = sampleLayoutReport({
+      contentHeightPx: 1200,
+      usableHeightPx: 1000,
+      remainingHeightPx: 0,
+      overflowPx: 200,
+      fitsPage: false,
+      invalidBullets: [{
+        bulletId: "bullet-1",
+        itemId: "item-pexp-1",
+        sectionType: "experience",
+        lineCount: 3,
+        lineWidthsPx: [720, 700, 120],
+        minRequiredLineWidthPx: 500,
+        passesWidthRule: false,
+        text: "Too long bullet",
+      }],
+    });
+    const projector = new LayoutPreviewReportProjector();
+    const preview = projector.project({
+      resumeDocumentDraft: structuredVariant("pexp-1", ["Too long bullet"]).resumeDocument!,
+      layoutReport,
+      requiredSectionTypes: ["summary", "experience", "education", "skill"],
+    });
+
+    expect(preview.exportLayoutReport).toBe(layoutReport);
+    expect(preview.diagnostics).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: "overflow", severity: "high", overflowPx: 200 }),
+      expect.objectContaining({ type: "excessive_bullet_lines", severity: "medium", bulletId: "bullet-1" }),
+      expect.objectContaining({ type: "missing_section", severity: "medium", sectionType: "summary" }),
+    ]));
+    expect(preview.summary).toMatchObject({
+      fitsPage: false,
+      hasOverflow: true,
+      hasUnderfill: false,
+      invalidBulletCount: 1,
+      missingSectionCount: 3,
+    });
+  });
+});
+
 function stageStatus(
   run: ReturnType<ResumeOptimizationWorkflowService["startRun"]>,
   stage: string,
@@ -388,6 +464,7 @@ function experience(
 async function sampleChangeSet(): Promise<{
   service: ResumeChangeSetService;
   changeSet: NonNullable<ReturnType<ResumeChangeSetService["createChangeSets"]>[number]>;
+  analysisReport: Awaited<ReturnType<JDResumeAnalysisService["analyze"]>>;
 }> {
   const service = new ResumeChangeSetService();
   const analysisService = new JDResumeAnalysisService();
@@ -413,7 +490,7 @@ async function sampleChangeSet(): Promise<{
     sourceExperiences: [source],
   });
   if (!changeSet) throw new Error("Expected change set.");
-  return { service, changeSet };
+  return { service, changeSet, analysisReport };
 }
 
 function generation(id: string, variantId: string): ProductGeneration {
@@ -459,6 +536,32 @@ function structuredVariant(sourceExperienceId: string, bullets: string[]): Produ
         }],
       }],
     },
+  };
+}
+
+function sampleLayoutReport(overrides: Partial<import("../src/exports/layout/ResumeLayoutOracle.js").ResumeLayoutReport> = {}): import("../src/exports/layout/ResumeLayoutOracle.js").ResumeLayoutReport {
+  const bulletLayouts = overrides.bulletLayouts ?? overrides.invalidBullets ?? [];
+  return {
+    layoutSessionId: "layout-preview-test",
+    templateId: "one-page-modern",
+    density: "standard",
+    targetPages: 1,
+    contentWidthPx: 748,
+    usableHeightPx: 1000,
+    contentHeightPx: 900,
+    remainingHeightPx: 100,
+    overflowPx: 0,
+    fitsPage: true,
+    bulletMinLineWidthRatio: 2 / 3,
+    maxBulletLines: 2,
+    passesBulletWidthRule: (overrides.invalidBullets ?? []).length === 0,
+    bulletLayouts,
+    invalidBullets: [],
+    sectionLayouts: [],
+    itemLayouts: [],
+    measuredAt: "2026-07-02T00:00:00.000Z",
+    measurer: "heuristic",
+    ...overrides,
   };
 }
 
