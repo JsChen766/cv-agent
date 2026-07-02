@@ -28,7 +28,11 @@ describe("resume agent tools", () => {
         variants: expect.any(Array),
         generation: { id: expect.any(String) },
       });
-      const data = result.data as { variants: Array<{ id: string; content: string; createdAt: string }> };
+      const data = result.data as {
+        variants: Array<{ id: string; content: string; createdAt: string }>;
+        resumeChangeSet?: { summary?: { pendingCount?: number; label?: string }; changes?: unknown[] };
+        generation?: { inputSnapshot?: Record<string, unknown>; outputSnapshot?: Record<string, unknown> };
+      };
       expect(data.variants.length).toBeGreaterThan(0);
       expect(data.variants[0]).toMatchObject({
         id: expect.any(String),
@@ -40,6 +44,10 @@ describe("resume agent tools", () => {
         jdId: expect.any(String),
         variants: expect.any(Array),
         status: "ready",
+        workflowStatus: {
+          runId: expect.any(String),
+          currentStage: "change_set_ready",
+        },
       });
       expect((result.workspacePatch?.variants as unknown[]).length).toBeGreaterThan(0);
       expect(result.actionResult).toMatchObject({
@@ -48,8 +56,32 @@ describe("resume agent tools", () => {
         metadata: {
           generationId: expect.any(String),
           variantCount: expect.any(Number),
+          workflowRunId: expect.any(String),
         },
       });
+      const workflowStatus = (result.data as { workflowStatus?: { stages?: Array<{ stage: string; status: string }> } }).workflowStatus;
+      expect(workflowStatus?.stages?.find((stage) => stage.stage === "draft_generation")?.status).toBe("completed");
+      expect(workflowStatus?.stages?.find((stage) => stage.stage === "layout_check")?.status).toBe("pending");
+      const analysisReport = (result.data as { analysisReport?: { rubricVersion?: string; dimensions?: unknown[]; requirements?: unknown[] } }).analysisReport;
+      expect(analysisReport).toMatchObject({
+        rubricVersion: "resume-optimization-rubric-v1",
+        dimensions: expect.any(Array),
+        requirements: expect.any(Array),
+      });
+      expect(analysisReport?.dimensions).toHaveLength(10);
+      expect(data.resumeChangeSet).toMatchObject({
+        summary: {
+          pendingCount: expect.any(Number),
+          label: expect.stringContaining("waiting for review"),
+        },
+        changes: expect.any(Array),
+      });
+      expect(data.generation?.inputSnapshot?.analysisReport).toBeTruthy();
+      expect(data.generation?.outputSnapshot?.analysisReport).toBeTruthy();
+      expect(data.generation?.outputSnapshot?.resumeChangeSet).toBeTruthy();
+      expect(result.workspacePatch?.resumeChangeSet).toBeTruthy();
+      const metadata = result.actionResult?.metadata as { changeSetId?: string } | undefined;
+      expect(metadata?.changeSetId).toEqual(data.resumeChangeSet ? expect.any(String) : undefined);
     } finally {
       await kernel.close();
     }

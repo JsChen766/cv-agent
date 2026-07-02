@@ -196,6 +196,14 @@ export class PendingActionService {
     }
     try {
       if (claimed.toolName === "generate_resume_from_jd") {
+        const toolArguments = parsed.data as Record<string, unknown>;
+        const preJobWorkflowRun = input.context.kernel.productServices.resumeOptimizationWorkflowService.startRun({
+          userId: input.context.userId,
+          sessionId: input.context.sessionId,
+          jdId: typeof toolArguments.jdId === "string" ? toolArguments.jdId : undefined,
+          jdText: typeof toolArguments.jdText === "string" ? toolArguments.jdText : undefined,
+          targetRole: typeof toolArguments.targetRole === "string" ? toolArguments.targetRole : undefined,
+        });
         const job = await input.context.kernel.platformServices.backgroundJobs.createJob({
           userId: input.context.userId,
           type: "long_generation",
@@ -203,10 +211,12 @@ export class PendingActionService {
             actionType: "generate_resume_from_jd",
             pendingActionId: claimed.id,
             sessionId: input.context.sessionId,
-            toolArguments: parsed.data as Record<string, unknown>,
+            toolArguments,
+            resumeOptimizationRun: preJobWorkflowRun,
           },
           maxAttempts: 1,
         });
+        const workflowRun = input.context.kernel.productServices.resumeOptimizationWorkflowService.markQueued(preJobWorkflowRun, job.id);
         const result: ToolResult = {
           status: "success",
           message: "已开始生成简历版本，生成完成后会更新结果。",
@@ -214,10 +224,13 @@ export class PendingActionService {
             jobId: job.id,
             jobStatus: job.status,
             actionType: claimed.toolName,
+            workflowStatus: workflowRun,
+            workflowEvents: workflowRun.events,
           },
           workspacePatch: {
             activePanel: "variants",
             status: "generating",
+            workflowStatus: workflowRun,
             summary: "正在生成 JD 简历版本…",
           },
           actionResult: {
@@ -227,6 +240,8 @@ export class PendingActionService {
               jobId: job.id,
               jobStatus: job.status,
               generating: true,
+              workflowRunId: workflowRun.runId,
+              workflowStatus: workflowRun,
             },
           },
           visibility: "user_summary",

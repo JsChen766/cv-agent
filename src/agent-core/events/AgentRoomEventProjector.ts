@@ -6,6 +6,7 @@ import type { AgentMessage, AgentMessageParticipant } from "../runtime/AgentMess
 import type { CopilotLocale } from "../../copilot/locale.js";
 import { sanitizeMetadataObject } from "../runtime/ProductBlockPresenter.js";
 import type { AgentRoomEvent, AgentRoomAgentName, AgentRoomEventKind, SpecialInfoKind } from "./AgentRoomEvent.js";
+import { projectResumeWorkflowEvents } from "./ResumeWorkflowEventProjector.js";
 
 /**
  * Projects existing Copilot response structures (ProductBlock, ToolResult,
@@ -53,6 +54,12 @@ export function projectAgentRoomEvents(input: {
       events.push(writingEvent);
       continue;
     }
+    events.push(...projectResumeWorkflowEvents({
+      result,
+      now,
+      sessionId: input.sessionId,
+      turnId: input.turnId,
+    }));
     events.push({
       id: `evt-${randomUUID()}`,
       sessionId: input.sessionId,

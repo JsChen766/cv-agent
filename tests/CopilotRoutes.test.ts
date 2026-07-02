@@ -610,6 +610,12 @@ describe("Copilot routes on agent-core runtime", () => {
     expect(confirmBody.data.assistantMessage.metadata?.productBlocks?.some((block) => block.type === "experience_candidate_form") ?? false).toBe(false);
     expect(confirmBody.data.assistantMessage.metadata?.displaySnapshot?.productBlocks?.some((block) => block.type === "experience_candidate_form") ?? false).toBe(false);
     expect(confirmBody.data.agentRoomEvents?.some((event) => event.agentName === "experience_receiver" && event.specialInfo?.kind === "experience_candidate_form") ?? false).toBe(false);
+    const workflowEvent = confirmBody.data.agentRoomEvents?.find((event) => event.specialInfo?.kind === "agent_activity_timeline");
+    expect(workflowEvent?.specialInfo?.data).toMatchObject({
+      currentStage: "jd_analysis",
+      status: "running",
+      stages: expect.any(Array),
+    });
     expect(confirmBody.data.raw.actionResults?.some((item) => item.status === "needs_confirmation")).toBe(false);
     expect(generateSpy).not.toHaveBeenCalled();
     expect(confirmBody.data.raw.toolResults?.[0]).toMatchObject({
@@ -617,9 +623,16 @@ describe("Copilot routes on agent-core runtime", () => {
       data: {
         jobId: expect.any(String),
         jobStatus: "pending",
+        workflowStatus: {
+          runId: expect.any(String),
+          currentStage: "jd_analysis",
+        },
       },
       workspacePatch: {
         status: "generating",
+        workflowStatus: {
+          runId: expect.any(String),
+        },
       },
     });
     expect(confirmBody.data.raw.actionResults?.[0]).toMatchObject({
@@ -628,6 +641,7 @@ describe("Copilot routes on agent-core runtime", () => {
       metadata: {
         jobId: expect.any(String),
         generating: true,
+        workflowRunId: expect.any(String),
       },
     });
   });

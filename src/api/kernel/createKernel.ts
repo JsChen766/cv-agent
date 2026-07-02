@@ -22,7 +22,10 @@ import {
   PostgresProductImportRepository,
   PostgresProductJDRepository,
   PostgresProductResumeRepository,
+  JDResumeAnalysisService,
+  ResumeChangeSetService,
   ResumeService,
+  ResumeOptimizationWorkflowService,
   type ProductExperienceRepository,
   type ProductGenerationRepository,
   type ProductImportRepository,
@@ -181,6 +184,9 @@ function buildKernel(input: BuildKernelInput): ApiKernel {
     generationRepository: input.productGenerationRepository,
   });
   const preferenceCapabilityModule = createPreferenceCapabilityModule(preferenceBankService);
+  const resumeOptimizationWorkflowService = new ResumeOptimizationWorkflowService();
+  const jdResumeAnalysisService = new JDResumeAnalysisService();
+  const resumeChangeSetService = new ResumeChangeSetService();
 
   const importService = new ImportService(input.productImportRepository, experienceService, llmExperienceExtractor, claimGraphIndexer);
   const generationProductService = new GenerationProductService(
@@ -192,6 +198,9 @@ function buildKernel(input: BuildKernelInput): ApiKernel {
     evidenceRAGService,
     guidelineRAGService,
     preferenceBankService,
+    resumeOptimizationWorkflowService,
+    jdResumeAnalysisService,
+    resumeChangeSetService,
   );
   const productServices = {
     experienceService,
@@ -199,6 +208,9 @@ function buildKernel(input: BuildKernelInput): ApiKernel {
     resumeService,
     importService,
     generationProductService,
+    resumeOptimizationWorkflowService,
+    jdResumeAnalysisService,
+    resumeChangeSetService,
     evidenceRAGService,
     guidelineRAGService,
     preferenceBankService,

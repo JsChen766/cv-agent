@@ -190,6 +190,8 @@ export type CopilotWorkspace = {
   currentTask?: CopilotTask;
   suggestedTasks?: CopilotTask[];
   jdProfile?: JDProfile;
+  analysisReport?: unknown;
+  resumeChangeSet?: unknown;
   workingSets?: Record<string, unknown>;
   active?: {
     jdId?: string;

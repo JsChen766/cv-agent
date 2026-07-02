@@ -26,6 +26,14 @@ import type { GuidelineRAGService } from "../../rag/guideline/index.js";
 import { GroundingContextCoordinator } from "../../rag/GroundingContextCoordinator.js";
 import type { PreferenceBankService, PersonalizationPack } from "../../self-evolution/preference/index.js";
 import { isDeterministicFallbackAllowed } from "../deterministicFallbackGuard.js";
+import {
+  JDResumeAnalysisService,
+  ResumeChangeSetService,
+  ResumeOptimizationWorkflowService,
+  type JDResumeAnalysisReport,
+  type ResumeChangeSet,
+  type ResumeOptimizationRun,
+} from "../resumeOptimization/index.js";
 import type {
   ProductExperienceRepository,
   ProductGenerationRepository,
@@ -40,6 +48,9 @@ export type ProductServices = {
   resumeService: ResumeService;
   importService: ImportService;
   generationProductService: GenerationProductService;
+  resumeOptimizationWorkflowService: ResumeOptimizationWorkflowService;
+  jdResumeAnalysisService: JDResumeAnalysisService;
+  resumeChangeSetService: ResumeChangeSetService;
   evidenceRAGService?: EvidenceRAGService;
   guidelineRAGService?: GuidelineRAGService;
   preferenceBankService?: PreferenceBankService;
@@ -977,6 +988,9 @@ export class GenerationProductService {
     private readonly evidenceRAGService?: EvidenceRAGService,
     private readonly guidelineRAGService?: GuidelineRAGService,
     private readonly preferenceBankService?: PreferenceBankService,
+    private readonly resumeOptimizationWorkflowService: ResumeOptimizationWorkflowService = new ResumeOptimizationWorkflowService(),
+    private readonly jdResumeAnalysisService: JDResumeAnalysisService = new JDResumeAnalysisService(),
+    private readonly resumeChangeSetService: ResumeChangeSetService = new ResumeChangeSetService(),
   ) {}
 
   public async generateResumeFromJD(input: {
@@ -985,16 +999,29 @@ export class GenerationProductService {
     jdId?: string;
     jdText?: string;
     targetRole?: string;
+    resumeOptimizationRun?: ResumeOptimizationRun;
   }): Promise<{
     generation: ProductGeneration;
     jd: ProductJDRecord;
     variants: ProductGeneratedVariant[];
     recommendedVariantId?: string;
     comparisonMatrix?: VariantComparisonMatrixRow[];
+    workflowRun: ResumeOptimizationRun;
+    analysisReport: JDResumeAnalysisReport;
+    resumeChangeSet?: ResumeChangeSet;
+    resumeChangeSets: ResumeChangeSet[];
   }> {
     if (!input.jdId && !input.jdText?.trim()) {
       throw new Error("JD text or jdId is required.");
     }
+    const workflowRun = input.resumeOptimizationRun
+      ?? this.resumeOptimizationWorkflowService.startRun({
+        userId: input.userId,
+        sessionId: input.sessionId,
+        jdId: input.jdId,
+        jdText: input.jdText,
+        targetRole: input.targetRole,
+      });
 
     const jd = input.jdId
       ? await this.jdService.getJD(input.userId, input.jdId)
@@ -1058,6 +1085,13 @@ export class GenerationProductService {
           experiences,
         )
       : undefined;
+
+    const analysisReport = await this.jdResumeAnalysisService.analyze({
+      jd,
+      targetRole,
+      sourceExperiences: experiences,
+      evidencePack: evidencePackForGeneration,
+    });
 
     const groundingContext = this.groundingCoordinator.build({
       instructionPack,
@@ -1141,6 +1175,7 @@ export class GenerationProductService {
         ...(instructionPack ? { instructionPack } : {}),
         ...(evidencePackForGeneration ? { evidencePack: evidencePackForGeneration } : {}),
         ...(personalizationPack ? { personalizationPack } : {}),
+        analysisReport,
         groundingContext,
       },
       outputSnapshot: {
@@ -1150,6 +1185,38 @@ export class GenerationProductService {
       },
       selectedVariantIds: [],
       createdAt: new Date().toISOString(),
+    };
+    const resumeChangeSets = this.resumeChangeSetService.createChangeSets({
+      generation,
+      variants,
+      recommendedVariantId,
+      analysisReport,
+      sourceExperiences: experiences,
+    });
+    const resumeChangeSet = resumeChangeSets[0];
+    generation.inputSnapshot.resumeChangeSet = resumeChangeSet;
+    generation.outputSnapshot = {
+      ...(generation.outputSnapshot ?? {}),
+      resumeChangeSet,
+      resumeChangeSets,
+    };
+    const completedWorkflowRun = this.resumeOptimizationWorkflowService.completeDraftGeneration({
+      run: workflowRun,
+      jd,
+      generation,
+      variants,
+      sourceExperienceIds: experiences.map((item) => item.id),
+      evidencePack: evidencePackForGeneration,
+      targetRole,
+      resumeChangeSet,
+    });
+    generation.inputSnapshot.resumeOptimizationRun = completedWorkflowRun;
+    generation.outputSnapshot = {
+      ...(generation.outputSnapshot ?? {}),
+      resumeOptimizationRun: completedWorkflowRun,
+      analysisReport,
+      resumeChangeSet,
+      resumeChangeSets,
     };
 
     await this.repository.createGeneration(generation);
@@ -1172,6 +1239,10 @@ export class GenerationProductService {
       variants,
       recommendedVariantId,
       comparisonMatrix,
+      workflowRun: completedWorkflowRun,
+      analysisReport,
+      resumeChangeSet,
+      resumeChangeSets,
     };
   }
 

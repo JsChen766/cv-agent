@@ -84,14 +84,25 @@ export class JobRunner {
       if (actionType !== "generate_resume_from_jd") {
         throw new Error(`Unsupported long_generation actionType ${actionType}.`);
       }
-      const toolArguments = recordInput(job.input, "toolArguments");
-      const sessionId = stringInputOrUndefined(job.input, "sessionId");
+      const jobInput = job.input ?? {};
+      const toolArguments = recordInput(jobInput, "toolArguments");
+      const sessionId = stringInputOrUndefined(jobInput, "sessionId");
+      const workflowRun = this.deps.productServices.resumeOptimizationWorkflowService.fromSnapshot(jobInput.resumeOptimizationRun)
+        ?? this.deps.productServices.resumeOptimizationWorkflowService.startRun({
+          userId: job.userId,
+          sessionId,
+          jdId: stringInputOrUndefined(toolArguments, "jdId"),
+          jdText: stringInputOrUndefined(toolArguments, "jdText"),
+          targetRole: stringInputOrUndefined(toolArguments, "targetRole"),
+          jobId: job.id,
+        });
       const result = await this.deps.productServices.generationProductService.generateResumeFromJD({
         userId: job.userId,
         sessionId,
         jdId: stringInputOrUndefined(toolArguments, "jdId"),
         jdText: stringInputOrUndefined(toolArguments, "jdText"),
         targetRole: stringInputOrUndefined(toolArguments, "targetRole"),
+        resumeOptimizationRun: { ...workflowRun, jobId: job.id },
       });
       const workspaceVariants = result.variants.map(
         (variant, index) => toWorkspaceVariant(variant, result.jd, result.generation.id, index),
@@ -104,6 +115,8 @@ export class JobRunner {
         jdId: result.jd.id,
         activeVariantId,
         variants: workspaceVariants,
+        analysisReport: result.analysisReport,
+        resumeChangeSet: result.resumeChangeSet,
       });
       const output = {
         actionType,
@@ -112,6 +125,10 @@ export class JobRunner {
         variantCount: result.variants.length,
         activeVariantId,
         variants: result.variants,
+        workflowStatus: result.workflowRun,
+        analysisReport: result.analysisReport,
+        resumeChangeSet: result.resumeChangeSet,
+        resumeChangeSets: result.resumeChangeSets,
       };
       const pendingActionId = stringInputOrUndefined(job.input, "pendingActionId");
       if (pendingActionId) {
@@ -123,6 +140,9 @@ export class JobRunner {
           rawVariants: result.variants,
           jd: result.jd,
           generation: result.generation,
+          workflowRun: result.workflowRun,
+          analysisReport: result.analysisReport,
+          resumeChangeSet: result.resumeChangeSet,
         }));
       }
       return output;
@@ -218,6 +238,21 @@ export class JobRunner {
     if (job.type !== "long_generation") return;
     const pendingActionId = stringInputOrUndefined(job.input, "pendingActionId");
     if (!pendingActionId) return;
+    const jobInput = job.input ?? {};
+    const toolArguments = recordInput(jobInput, "toolArguments");
+    const sessionId = stringInputOrUndefined(jobInput, "sessionId");
+    const workflowRun = this.deps.productServices.resumeOptimizationWorkflowService.markFailure({
+      run: this.deps.productServices.resumeOptimizationWorkflowService.fromSnapshot(jobInput.resumeOptimizationRun)
+        ?? this.deps.productServices.resumeOptimizationWorkflowService.startRun({
+          userId: job.userId,
+          sessionId,
+          jdId: stringInputOrUndefined(toolArguments, "jdId"),
+          jdText: stringInputOrUndefined(toolArguments, "jdText"),
+          targetRole: stringInputOrUndefined(toolArguments, "targetRole"),
+          jobId: job.id,
+        }),
+      error: new Error(message),
+    });
     try {
       await this.deps.pendingActions.markFailed(job.userId, pendingActionId, {
         status: "failed",
@@ -225,6 +260,8 @@ export class JobRunner {
         data: {
           jobId: job.id,
           actionType: stringInputOrUndefined(job.input, "actionType") ?? "generate_resume_from_jd",
+          workflowStatus: workflowRun,
+          workflowEvents: workflowRun.events,
         },
         actionResult: {
           actionType: "generate_resume_from_jd",
@@ -234,6 +271,8 @@ export class JobRunner {
           metadata: {
             jobId: job.id,
             jobStatus: "failed",
+            workflowRunId: workflowRun.runId,
+            workflowStatus: workflowRun,
           },
         },
         visibility: "error_user_visible",
@@ -252,6 +291,8 @@ export class JobRunner {
     jdId: string;
     activeVariantId: string | undefined;
     variants: ProductVariant[];
+    analysisReport?: unknown;
+    resumeChangeSet?: unknown;
   }): Promise<void> {
     if (!sessionId) return;
     const copilotServices = this.deps.copilotServices;
@@ -274,6 +315,8 @@ export class JobRunner {
         activeVariantId: input.activeVariantId ?? null,
         variants: input.variants,
         status: "ready",
+        analysisReport: input.analysisReport,
+        resumeChangeSet: input.resumeChangeSet,
         summary: `已生成 ${input.variants.length} 个简历版本，请选择一个版本保存为简历。`,
         active: {
           ...(base.active ?? {}),
@@ -302,6 +345,9 @@ function buildGenerationSuccessResult(input: {
   rawVariants: ProductGeneratedVariant[];
   jd: ProductJDRecord;
   generation: unknown;
+  workflowRun?: unknown;
+  analysisReport?: unknown;
+  resumeChangeSet?: unknown;
 }): ToolResult {
   return {
     status: "success",
@@ -311,6 +357,10 @@ function buildGenerationSuccessResult(input: {
       jd: input.jd,
       variants: input.variants,
       generation: input.generation,
+      workflowStatus: input.workflowRun,
+      workflowEvents: isWorkflowRun(input.workflowRun) ? input.workflowRun.events : undefined,
+      analysisReport: input.analysisReport,
+      resumeChangeSet: input.resumeChangeSet,
     },
     workspacePatch: {
       activePanel: "variants",
@@ -319,6 +369,9 @@ function buildGenerationSuccessResult(input: {
       jdId: input.jdId,
       activeVariantId: input.activeVariantId,
       variants: input.variants,
+      workflowStatus: input.workflowRun,
+      analysisReport: input.analysisReport,
+      resumeChangeSet: input.resumeChangeSet,
       summary: `已生成 ${input.variants.length} 个简历版本，请选择一个版本保存为简历。`,
     },
     actionResult: {
@@ -330,6 +383,11 @@ function buildGenerationSuccessResult(input: {
         variantCount: input.variants.length,
         activeVariantId: input.activeVariantId,
         jdId: input.jdId,
+        workflowRunId: isWorkflowRun(input.workflowRun) ? input.workflowRun.runId : undefined,
+        workflowStatus: input.workflowRun,
+        analysisReport: input.analysisReport,
+        resumeChangeSet: input.resumeChangeSet,
+        changeSetId: changeSetId(input.resumeChangeSet),
       },
     },
     visibility: "user_summary",
@@ -351,6 +409,23 @@ function recordInput(input: Record<string, unknown> | undefined, key: string): R
   const value = input?.[key];
   if (typeof value !== "object" || value === null || Array.isArray(value)) throw new Error(`${key} is required.`);
   return value as Record<string, unknown>;
+}
+
+function isWorkflowRun(value: unknown): value is { runId: string; events: unknown[] } {
+  return typeof value === "object"
+    && value !== null
+    && !Array.isArray(value)
+    && typeof (value as Record<string, unknown>).runId === "string"
+    && Array.isArray((value as Record<string, unknown>).events);
+}
+
+function changeSetId(value: unknown): string | undefined {
+  return typeof value === "object"
+    && value !== null
+    && !Array.isArray(value)
+    && typeof (value as Record<string, unknown>).changeSetId === "string"
+    ? (value as Record<string, string>).changeSetId
+    : undefined;
 }
 
 function numberInputOrUndefined(input: Record<string, unknown> | undefined, key: string): number | undefined {
