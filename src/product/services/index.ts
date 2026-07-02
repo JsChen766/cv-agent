@@ -28,12 +28,17 @@ import type { PreferenceBankService, PersonalizationPack } from "../../self-evol
 import { isDeterministicFallbackAllowed } from "../deterministicFallbackGuard.js";
 import {
   JDResumeAnalysisService,
+  CriticPatchSuggestionService,
+  CriticReviewItemService,
+  ResumeEditorialCriticService,
   ResumeChangeSetService,
   ResumeOptimizationWorkflowService,
   ResumePreviewSnapshotService,
+  type ResumeEditorialCriticReview,
   type JDResumeAnalysisReport,
   type ResumeChangeSet,
   type ResumeOptimizationRun,
+  type ResumeCriticPatchSuggestion,
   type ResumePreviewSnapshot,
 } from "../resumeOptimization/index.js";
 import type {
@@ -52,6 +57,9 @@ export type ProductServices = {
   generationProductService: GenerationProductService;
   resumeOptimizationWorkflowService: ResumeOptimizationWorkflowService;
   jdResumeAnalysisService: JDResumeAnalysisService;
+  criticReviewItemService: CriticReviewItemService;
+  criticPatchSuggestionService: CriticPatchSuggestionService;
+  resumeEditorialCriticService: ResumeEditorialCriticService;
   resumeChangeSetService: ResumeChangeSetService;
   resumePreviewSnapshotService: ResumePreviewSnapshotService;
   evidenceRAGService?: EvidenceRAGService;
@@ -995,6 +1003,7 @@ export class GenerationProductService {
     private readonly jdResumeAnalysisService: JDResumeAnalysisService = new JDResumeAnalysisService(),
     private readonly resumeChangeSetService: ResumeChangeSetService = new ResumeChangeSetService(),
     private readonly resumePreviewSnapshotService: ResumePreviewSnapshotService = new ResumePreviewSnapshotService(),
+    private readonly resumeEditorialCriticService: ResumeEditorialCriticService = new ResumeEditorialCriticService(),
   ) {}
 
   public async generateResumeFromJD(input: {
@@ -1012,6 +1021,8 @@ export class GenerationProductService {
     comparisonMatrix?: VariantComparisonMatrixRow[];
     workflowRun: ResumeOptimizationRun;
     analysisReport: JDResumeAnalysisReport;
+    editorialCriticReview?: ResumeEditorialCriticReview;
+    criticPatchSuggestions: ResumeCriticPatchSuggestion[];
     resumeChangeSet?: ResumeChangeSet;
     resumeChangeSets: ResumeChangeSet[];
     resumePreviewSnapshots: ResumePreviewSnapshot[];
@@ -1200,21 +1211,34 @@ export class GenerationProductService {
       sourceExperiences: experiences,
     });
     const resumeChangeSet = resumeChangeSets[0];
+    const editorialCriticReview = resumeChangeSet
+      ? this.resumeEditorialCriticService.review({
+          generationId: generation.id,
+          analysisReport,
+          changeSet: resumeChangeSet,
+        })
+      : undefined;
+    const criticPatchSuggestions = editorialCriticReview?.patchSuggestions ?? [];
     const resumePreviewSnapshots = resumeChangeSet
       ? this.resumePreviewSnapshotService.createSnapshots({
           changeSet: resumeChangeSet,
           analysisReport,
+          editorialCriticReview,
           generationId: generation.id,
         })
       : [];
     const resumeDocumentDraft = this.resumePreviewSnapshotService.pickRenderableDraft(resumePreviewSnapshots);
     generation.inputSnapshot.resumeChangeSet = resumeChangeSet;
+    generation.inputSnapshot.editorialCriticReview = editorialCriticReview;
+    generation.inputSnapshot.criticPatchSuggestions = criticPatchSuggestions;
     generation.inputSnapshot.resumePreviewSnapshots = resumePreviewSnapshots;
     generation.inputSnapshot.resumeDocumentDraft = resumeDocumentDraft;
     generation.outputSnapshot = {
       ...(generation.outputSnapshot ?? {}),
       resumeChangeSet,
       resumeChangeSets,
+      editorialCriticReview,
+      criticPatchSuggestions,
       resumePreviewSnapshots,
       resumeDocumentDraft,
     };
@@ -1227,12 +1251,15 @@ export class GenerationProductService {
       evidencePack: evidencePackForGeneration,
       targetRole,
       resumeChangeSet,
+      editorialCriticReview,
     });
     generation.inputSnapshot.resumeOptimizationRun = completedWorkflowRun;
     generation.outputSnapshot = {
       ...(generation.outputSnapshot ?? {}),
       resumeOptimizationRun: completedWorkflowRun,
       analysisReport,
+      editorialCriticReview,
+      criticPatchSuggestions,
       resumeChangeSet,
       resumeChangeSets,
       resumePreviewSnapshots,
@@ -1261,6 +1288,8 @@ export class GenerationProductService {
       comparisonMatrix,
       workflowRun: completedWorkflowRun,
       analysisReport,
+      editorialCriticReview,
+      criticPatchSuggestions,
       resumeChangeSet,
       resumeChangeSets,
       resumePreviewSnapshots,
@@ -1780,16 +1809,57 @@ function resumeToRecord(resume: ProductResume): ProductResume {
 
 function generationFailureError(error: unknown): Error {
   if (error instanceof LLMGenerationError) {
-    const details = [
-      `phase=${error.phase}`,
-      error.providerErrorMessage ? `provider=${error.providerErrorMessage}` : "",
-      error.schemaIssues?.length ? `schemaIssues=${error.schemaIssues.join(" | ")}` : "",
-      error.rawContentPreview ? `rawContentPreview=${error.rawContentPreview}` : "",
-    ].filter(Boolean).join("; ");
-    return new Error(`LLM_GENERATION_FAILED: The AI model call failed or produced no valid resume variants. ${details}`);
+    const failure = new Error(`LLM_GENERATION_FAILED: ${safeLlmGenerationFailureMessage(error)}`);
+    (failure as Error & { cause?: unknown }).cause = error;
+    return failure;
   }
   const message = error instanceof Error ? error.message : String(error);
-  return new Error(`LLM_GENERATION_FAILED: The AI model call failed or produced no valid resume variants. ${message}`);
+  return new Error(`LLM_GENERATION_FAILED: ${safePlainGenerationFailureMessage(message)}`);
+}
+
+function safeLlmGenerationFailureMessage(error: LLMGenerationError): string {
+  const details = [
+    `phase=${error.phase}`,
+    error.providerErrorMessage ? `provider=${safeProviderErrorMessage(error.providerErrorMessage)}` : "",
+    error.schemaIssues?.length ? `schemaIssues=${error.schemaIssues.map(safeSchemaIssue).join(" | ")}` : "",
+  ].filter(Boolean).join("; ");
+  if (error.phase === "json_parse") {
+    return `The AI model returned invalid JSON, so no safe resume variant was created. ${details}`;
+  }
+  if (error.phase === "schema_validation") {
+    return `The AI model returned resume data that did not match the required schema. ${details}`;
+  }
+  if (error.phase === "provider_call" && /timeout|timed out|etimedout/i.test(error.providerErrorMessage ?? error.message)) {
+    return `The AI model request timed out before resume generation completed. ${details}`;
+  }
+  if (error.phase === "provider_call") {
+    return `The AI model provider failed before resume generation completed. ${details}`;
+  }
+  return `The AI model call failed or produced no valid resume variants. ${details}`;
+}
+
+function safePlainGenerationFailureMessage(message: string): string {
+  if (/timeout|timed out|etimedout/i.test(message)) return "The AI model request timed out before resume generation completed.";
+  if (/json|schema/i.test(message)) return "The AI model returned invalid structured output.";
+  if (/provider|model|llm/i.test(message)) return "The AI model provider failed before resume generation completed.";
+  return "The AI model call failed or produced no valid resume variants.";
+}
+
+function safeProviderErrorMessage(message: string): string {
+  const status = message.match(/\b(4\d{2}|5\d{2})\b/)?.[1];
+  const label = message.match(/\b(Unauthorized|Forbidden|Too Many Requests|Rate Limited|Bad Request|Internal Server Error|Service Unavailable|Gateway Timeout)\b/i)?.[1];
+  if (status && label) return `${status} ${label}`;
+  if (status) return `HTTP ${status}`;
+  if (/timeout|timed out|etimedout/i.test(message)) return "timeout";
+  return "provider_error";
+}
+
+function safeSchemaIssue(issue: string): string {
+  return issue
+    .replace(/[{}[\]"']/g, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 160);
 }
 
 function buildDraftVariants(

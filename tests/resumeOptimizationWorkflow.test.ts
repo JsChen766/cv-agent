@@ -6,7 +6,9 @@ import {
   LayoutPreviewReportProjector,
   ResumeChangeSetService,
   ResumeDraftProjector,
+  ResumeEditorialCriticService,
   ResumeOptimizationWorkflowService,
+  ResumeWorkflowRecoveryService,
   ResumePatchProjectionService,
   ResumePreviewSnapshotService,
 } from "../src/product/resumeOptimization/index.js";
@@ -53,6 +55,35 @@ describe("ResumeOptimizationWorkflowService", () => {
       }],
       sourceExperienceIds: ["pexp-1"],
       targetRole: "Frontend Engineer",
+      editorialCriticReview: {
+        schemaVersion: 1,
+        reviewId: "recr-1",
+        generationId: "pgen-1",
+        createdAt: new Date().toISOString(),
+        status: "patch_suggested",
+        summary: {
+          totalItems: 1,
+          autoFixableCount: 1,
+          needsInputCount: 0,
+          highestSeverity: "medium",
+          label: "1 critic patch suggestion ready",
+        },
+        items: [],
+        patchSuggestions: [{
+          suggestionId: "rcps-1",
+          reviewItemId: "rcri-1",
+          generationId: "pgen-1",
+          severity: "medium",
+          autoApply: true,
+          patch: {
+            type: "replace_bullet",
+            target: { itemId: "item-1", bulletId: "bullet-1" },
+            before: "Built a React dashboard.",
+            after: "Built a React dashboard with measurable performance impact.",
+          },
+          rationale: "Improve weak STAR closure.",
+        }],
+      },
     });
 
     expect(completed.runId).toBe(run.runId);
@@ -76,6 +107,7 @@ describe("ResumeOptimizationWorkflowService", () => {
     expect(stageStatus(completed, "intake")).toBe("completed");
     expect(stageStatus(completed, "draft_generation")).toBe("completed");
     expect(stageStatus(completed, "layout_check")).toBe("pending");
+    expect(stageStatus(completed, "critic_review")).toBe("completed");
     expect(stageStatus(completed, "change_set_ready")).toBe("completed");
     expect(completed.events.map((event) => event.stage)).toEqual([
       "intake",
@@ -84,6 +116,7 @@ describe("ResumeOptimizationWorkflowService", () => {
       "evidence_pack",
       "rewrite_plan",
       "draft_generation",
+      "critic_review",
       "change_set_ready",
     ]);
   });
@@ -127,15 +160,71 @@ describe("ResumeOptimizationWorkflowService", () => {
     expect(timeout.status).toBe("failed");
     expect(timeout.failureReason).toBe("llm_timeout");
     expect(timeout.nextAction?.type).toBe("retry_stage");
+    expect(timeout.recoveryPlan).toMatchObject({
+      reason: "llm_timeout",
+      stage: "draft_generation",
+      retryable: true,
+      preserveCompletedStages: true,
+    });
 
     const evidenceShortage = service.markFailure({ run, error: new Error("insufficient evidence shortage") });
     expect(evidenceShortage.status).toBe("needs_input");
     expect(evidenceShortage.nextAction?.type).toBe("add_experience_evidence");
+    expect(evidenceShortage.recoveryPlan?.partialDraftPolicy).toBe("not_available");
 
     const layoutFailure = service.markFailure({ run, error: new Error("layout overflow") });
     expect(layoutFailure.status).toBe("failed");
-    expect(layoutFailure.failureReason).toBe("layout_failure");
+    expect(layoutFailure.failureReason).toBe("layout_overflow");
     expect(stageStatus(layoutFailure, "layout_check")).toBe("failed");
+    expect(layoutFailure.nextAction?.payload).toMatchObject({
+      failedStage: "layout_check",
+      retryOnlyFailedStage: true,
+      remediation: "compact_layout",
+    });
+  });
+
+  it("classifies Phase 6 recovery cases without leaking raw provider payloads", () => {
+    const service = new ResumeWorkflowRecoveryService();
+
+    const invalidJson = service.classify({
+      message: "LLM_GENERATION_FAILED: phase=json_parse; provider=secret-key-like-provider-output; rawContentPreview={bad json with prompt}",
+    });
+    expect(invalidJson).toMatchObject({
+      reason: "llm_invalid_json",
+      stage: "draft_generation",
+      status: "failed",
+      retryable: true,
+      partialDraftPolicy: "not_available",
+    });
+    expect(invalidJson.userMessage).not.toContain("rawContentPreview");
+    expect(invalidJson.userMessage).not.toContain("secret-key-like-provider-output");
+
+    const underfill = service.classify({
+      message: "layout underfill",
+      partialArtifactTypes: ["resumeDocumentDraft", "resumeChangeSet"],
+    });
+    expect(underfill).toMatchObject({
+      reason: "layout_underfill",
+      stage: "layout_check",
+      partialDraftPolicy: "keep_visible",
+    });
+    expect(underfill.nextAction.payload).toMatchObject({
+      remediation: "expand_grounded_content",
+    });
+
+    const critic = service.classify({ message: "critic fail during quality critic review" });
+    expect(critic).toMatchObject({
+      reason: "critic_failure",
+      stage: "critic_review",
+      nextAction: { type: "retry_critic_review" },
+    });
+
+    const exportFailure = service.classify({ message: "Playwright Chromium renderer failed during export" });
+    expect(exportFailure).toMatchObject({
+      reason: "export_failure",
+      stage: "exported",
+      nextAction: { type: "retry_export" },
+    });
   });
 });
 
@@ -326,10 +415,16 @@ describe("ResumePreviewSnapshotService", () => {
     const projector = new ResumeDraftProjector();
     const patchProjection = new ResumePatchProjectionService(projector);
     const previewService = new ResumePreviewSnapshotService(projector, patchProjection);
+    const critic = new ResumeEditorialCriticService().review({
+      generationId: changeSet.generationId,
+      analysisReport,
+      changeSet,
+    });
 
     const snapshots = previewService.createSnapshots({
       changeSet,
       analysisReport,
+      editorialCriticReview: critic,
       acceptedChangeSet: accepted,
       generationId: changeSet.generationId,
     });
@@ -339,6 +434,7 @@ describe("ResumePreviewSnapshotService", () => {
       "problem_markers",
       "rewrite_plan",
       "patched_draft",
+      "critic_repaired_draft",
       "final_accepted_draft",
     ]);
     expect(snapshots[0]?.resumeDocumentDraft).toEqual(changeSet.originalDraft);
@@ -346,7 +442,8 @@ describe("ResumePreviewSnapshotService", () => {
     expect(snapshots[2]?.rewritePlan.length).toBe(changeSet.changes.length);
     expect(flattenDraftText(snapshots[3]?.resumeDocumentDraft)).toContain(changeSet.changes[0]!.after);
     expect(flattenDraftText(snapshots[4]?.resumeDocumentDraft)).toContain(changeSet.changes[0]!.after);
-    expect(flattenDraftText(snapshots[4]?.resumeDocumentDraft)).not.toContain(changeSet.changes[1]!.after);
+    expect(flattenDraftText(snapshots[5]?.resumeDocumentDraft)).toContain(changeSet.changes[0]!.after);
+    expect(flattenDraftText(snapshots[5]?.resumeDocumentDraft)).not.toContain(changeSet.changes[1]!.after);
     expect(previewService.pickRenderableDraft(snapshots)).toEqual(accepted.currentDraft);
   });
 
@@ -388,6 +485,118 @@ describe("ResumePreviewSnapshotService", () => {
       invalidBulletCount: 1,
       missingSectionCount: 3,
     });
+  });
+});
+
+describe("ResumeEditorialCriticService", () => {
+  it("produces item-level critic findings and safe patch suggestions", async () => {
+    const { changeSet, analysisReport } = await sampleChangeSet();
+    const review = new ResumeEditorialCriticService().review({
+      generationId: changeSet.generationId,
+      analysisReport,
+      changeSet,
+    });
+
+    expect(review).toMatchObject({
+      schemaVersion: 1,
+      reviewId: expect.any(String),
+      generationId: changeSet.generationId,
+      changeSetId: changeSet.changeSetId,
+      summary: {
+        totalItems: expect.any(Number),
+        autoFixableCount: expect.any(Number),
+        needsInputCount: expect.any(Number),
+        label: expect.any(String),
+      },
+      items: expect.any(Array),
+      patchSuggestions: expect.any(Array),
+    });
+    expect(review.items.length).toBeGreaterThan(0);
+    expect(review.items[0]).toMatchObject({
+      itemId: expect.any(String),
+      category: expect.any(String),
+      severity: expect.any(String),
+      target: expect.any(Object),
+      explanation: expect.any(String),
+      evidenceIds: expect.any(Array),
+      suggestedFix: expect.any(String),
+      autoFixAllowed: expect.any(Boolean),
+    });
+    expect(review.patchSuggestions.length).toBeGreaterThan(0);
+    expect(review.repairedDraft?.sections.length).toBeGreaterThan(0);
+  });
+
+  it("asks for evidence on unsupported claims instead of auto-patching", async () => {
+    const { changeSet, analysisReport } = await sampleChangeSet();
+    const riskyReport = {
+      ...analysisReport,
+      findings: [{
+        id: "finding-unsupported",
+        dimension: "fabrication_exaggeration_risk" as const,
+        severity: "high" as const,
+        message: "Claim says revenue grew 300% but no evidence supports it.",
+        target: changeSet.changes[0]?.target,
+        requirementIds: [],
+        sourceExperienceIds: [],
+        evidenceIds: [],
+        recommendedAction: "ask_user" as const,
+      }],
+    };
+    const review = new ResumeEditorialCriticService().review({
+      generationId: changeSet.generationId,
+      analysisReport: riskyReport,
+      changeSet,
+    });
+    const unsupported = review.items.find((item) => item.category === "inflated_metric" || item.category === "unsupported_claim");
+
+    expect(unsupported?.autoFixAllowed).toBe(false);
+    expect(unsupported?.nextAction?.type).toBe("provide_critic_evidence");
+  });
+
+  it("surfaces weak STAR and layout-risk critic items", async () => {
+    const { changeSet, analysisReport } = await sampleChangeSet();
+    const layoutReport = sampleLayoutReport({
+      overflowPx: 160,
+      fitsPage: false,
+      invalidBullets: [{
+        bulletId: "bullet-1",
+        itemId: "item-pexp-1",
+        sectionType: "experience",
+        lineCount: 3,
+        lineWidthsPx: [720, 640, 180],
+        minRequiredLineWidthPx: 500,
+        passesWidthRule: false,
+        text: "Too long bullet",
+      }],
+    });
+    const layoutPreview = new LayoutPreviewReportProjector().project({
+      resumeDocumentDraft: changeSet.proposedDraft,
+      layoutReport,
+      requiredSectionTypes: ["summary", "experience"],
+    });
+    const starReport = {
+      ...analysisReport,
+      findings: [{
+        id: "finding-star",
+        dimension: "star_closure" as const,
+        severity: "medium" as const,
+        message: "Bullet explains action but misses the final result.",
+        target: changeSet.changes[0]?.target,
+        requirementIds: [],
+        sourceExperienceIds: [],
+        evidenceIds: ["source-card-pexp-1"],
+        recommendedAction: "rewrite" as const,
+      }],
+    };
+    const review = new ResumeEditorialCriticService().review({
+      generationId: changeSet.generationId,
+      analysisReport: starReport,
+      changeSet,
+      layoutPreviewReport: layoutPreview,
+    });
+
+    expect(review.items.some((item) => item.category === "missing_star_closure")).toBe(true);
+    expect(review.items.some((item) => item.category === "layout_risk")).toBe(true);
   });
 });
 

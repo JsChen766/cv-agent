@@ -11,3 +11,7 @@ export * from "./ResumeDraftProjector.js";
 export * from "./ResumePatchProjectionService.js";
 export * from "./LayoutPreviewReportProjector.js";
 export * from "./ResumePreviewSnapshotService.js";
+export * from "./CriticReviewItemService.js";
+export * from "./CriticPatchSuggestionService.js";
+export * from "./ResumeEditorialCriticService.js";
+export * from "./ResumeWorkflowRecoveryService.js";

@@ -770,9 +770,10 @@ export class ResumeExportService {
   }
 
   public async markExportFailed(userId: string, exportId: string, errorMessage: string): Promise<ResumeExport | null> {
+    const safeMessage = safeExportFailureMessage(errorMessage);
     return this.repository.updateExport(userId, exportId, {
       status: "failed",
-      errorMessage,
+      errorMessage: safeMessage,
       completedAt: new Date().toISOString(),
     });
   }
@@ -803,6 +804,19 @@ function pdfErrorMessage(error: unknown): string {
   if (error instanceof ApiError) return error.message;
   if (error instanceof PdfRenderError) return error.message;
   return error instanceof Error ? error.message : "Export render failed.";
+}
+
+function safeExportFailureMessage(message: string): string {
+  if (/not configured|PDF_RENDERER|renderer/i.test(message)) {
+    return "Export failed because the PDF renderer is not configured or unavailable. Retry after enabling the renderer, or export HTML if available.";
+  }
+  if (/playwright|chromium/i.test(message)) {
+    return "Export failed because the Chromium browser renderer is unavailable. Install or start the renderer, then retry export.";
+  }
+  if (/timeout|timed out|etimedout/i.test(message)) {
+    return "Export timed out before the file was created. The accepted resume is preserved; retry export.";
+  }
+  return "Export failed before the file was created. The accepted resume is preserved; retry export or try another format.";
 }
 
 function sanitizeFilenameTitle(title: string | undefined): string {

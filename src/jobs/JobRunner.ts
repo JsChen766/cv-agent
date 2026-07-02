@@ -116,6 +116,8 @@ export class JobRunner {
         activeVariantId,
         variants: workspaceVariants,
         analysisReport: result.analysisReport,
+        editorialCriticReview: result.editorialCriticReview,
+        criticPatchSuggestions: result.criticPatchSuggestions,
         resumeChangeSet: result.resumeChangeSet,
         resumePreviewSnapshots: result.resumePreviewSnapshots,
         resumeDocumentDraft: result.resumeDocumentDraft,
@@ -129,6 +131,8 @@ export class JobRunner {
         variants: result.variants,
         workflowStatus: result.workflowRun,
         analysisReport: result.analysisReport,
+        editorialCriticReview: result.editorialCriticReview,
+        criticPatchSuggestions: result.criticPatchSuggestions,
         resumeChangeSet: result.resumeChangeSet,
         resumeChangeSets: result.resumeChangeSets,
         resumePreviewSnapshots: result.resumePreviewSnapshots,
@@ -146,6 +150,8 @@ export class JobRunner {
           generation: result.generation,
           workflowRun: result.workflowRun,
           analysisReport: result.analysisReport,
+          editorialCriticReview: result.editorialCriticReview,
+          criticPatchSuggestions: result.criticPatchSuggestions,
           resumeChangeSet: result.resumeChangeSet,
           resumePreviewSnapshots: result.resumePreviewSnapshots,
           resumeDocumentDraft: result.resumeDocumentDraft,
@@ -259,26 +265,37 @@ export class JobRunner {
         }),
       error: new Error(message),
     });
+    const recoveryPlan = workflowRun.recoveryPlan;
+    const publicMessage = recoveryPlan?.userMessage ?? "Resume generation failed. Completed workflow stages were preserved; retry the failed stage.";
+    const resultStatus = recoveryPlan?.status ?? "failed";
     try {
       await this.deps.pendingActions.markFailed(job.userId, pendingActionId, {
-        status: "failed",
-        message,
+        status: resultStatus,
+        message: publicMessage,
         data: {
           jobId: job.id,
           actionType: stringInputOrUndefined(job.input, "actionType") ?? "generate_resume_from_jd",
           workflowStatus: workflowRun,
           workflowEvents: workflowRun.events,
+          recoveryPlan,
+        },
+        workspacePatch: {
+          status: "failed",
+          workflowStatus: workflowRun,
+          recoveryPlan,
+          summary: publicMessage,
         },
         actionResult: {
           actionType: "generate_resume_from_jd",
-          status: "failed",
-          reason: "generation_job_failed",
-          message,
+          status: resultStatus,
+          reason: recoveryPlan?.reason ?? "generation_job_failed",
+          message: publicMessage,
           metadata: {
             jobId: job.id,
             jobStatus: "failed",
             workflowRunId: workflowRun.runId,
             workflowStatus: workflowRun,
+            recoveryPlan,
           },
         },
         visibility: "error_user_visible",
@@ -298,6 +315,8 @@ export class JobRunner {
     activeVariantId: string | undefined;
     variants: ProductVariant[];
     analysisReport?: unknown;
+    editorialCriticReview?: unknown;
+    criticPatchSuggestions?: unknown;
     resumeChangeSet?: unknown;
     resumePreviewSnapshots?: unknown;
     resumeDocumentDraft?: unknown;
@@ -324,6 +343,8 @@ export class JobRunner {
         variants: input.variants,
         status: "ready",
         analysisReport: input.analysisReport,
+        editorialCriticReview: input.editorialCriticReview,
+        criticPatchSuggestions: input.criticPatchSuggestions,
         resumeChangeSet: input.resumeChangeSet,
         resumePreviewSnapshots: input.resumePreviewSnapshots,
         resumeDocumentDraft: input.resumeDocumentDraft,
@@ -357,6 +378,8 @@ function buildGenerationSuccessResult(input: {
   generation: unknown;
   workflowRun?: unknown;
   analysisReport?: unknown;
+  editorialCriticReview?: unknown;
+  criticPatchSuggestions?: unknown;
   resumeChangeSet?: unknown;
   resumePreviewSnapshots?: unknown;
   resumeDocumentDraft?: unknown;
@@ -372,6 +395,8 @@ function buildGenerationSuccessResult(input: {
       workflowStatus: input.workflowRun,
       workflowEvents: isWorkflowRun(input.workflowRun) ? input.workflowRun.events : undefined,
       analysisReport: input.analysisReport,
+      editorialCriticReview: input.editorialCriticReview,
+      criticPatchSuggestions: input.criticPatchSuggestions,
       resumeChangeSet: input.resumeChangeSet,
       resumePreviewSnapshots: input.resumePreviewSnapshots,
       resumeDocumentDraft: input.resumeDocumentDraft,
@@ -385,6 +410,8 @@ function buildGenerationSuccessResult(input: {
       variants: input.variants,
       workflowStatus: input.workflowRun,
       analysisReport: input.analysisReport,
+      editorialCriticReview: input.editorialCriticReview,
+      criticPatchSuggestions: input.criticPatchSuggestions,
       resumeChangeSet: input.resumeChangeSet,
       resumePreviewSnapshots: input.resumePreviewSnapshots,
       resumeDocumentDraft: input.resumeDocumentDraft,
@@ -402,6 +429,8 @@ function buildGenerationSuccessResult(input: {
         workflowRunId: isWorkflowRun(input.workflowRun) ? input.workflowRun.runId : undefined,
         workflowStatus: input.workflowRun,
         analysisReport: input.analysisReport,
+        editorialCriticReview: input.editorialCriticReview,
+        criticPatchSuggestions: input.criticPatchSuggestions,
         resumeChangeSet: input.resumeChangeSet,
         resumePreviewSnapshots: input.resumePreviewSnapshots,
         resumeDocumentDraft: input.resumeDocumentDraft,

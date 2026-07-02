@@ -118,7 +118,7 @@ describe("resume export pipeline", () => {
 
     const failed = await kernel.exportService.getExport("user-1", data.exportRecord.id);
     expect(failed?.status).toBe("failed");
-    expect(failed?.errorMessage).toContain("Resume not found");
+    expect(failed?.errorMessage).toBe("Export failed before the file was created. The accepted resume is preserved; retry export or try another format.");
   });
 
   it("dev render fallback endpoint renders a pending export", async () => {

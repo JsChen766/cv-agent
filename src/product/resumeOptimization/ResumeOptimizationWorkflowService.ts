@@ -3,6 +3,7 @@ import type { EvidencePack } from "../../rag/evidence/index.js";
 import type { ProductGeneratedVariant, ProductGeneration, ProductJDRecord } from "../types.js";
 import {
   RESUME_OPTIMIZATION_STAGES,
+  type ResumeEditorialCriticReview,
   type ResumeChangeSet,
   type ResumeOptimizationNextAction,
   type ResumeOptimizationRun,
@@ -10,7 +11,9 @@ import {
   type ResumeOptimizationStage,
   type ResumeOptimizationStageState,
   type ResumeOptimizationStageStatus,
+  type ResumeOptimizationRecoveryPlan,
 } from "./types.js";
+import { ResumeWorkflowRecoveryService } from "./ResumeWorkflowRecoveryService.js";
 
 const STAGE_LABELS: Record<ResumeOptimizationStage, string> = {
   intake: "Intake",
@@ -28,6 +31,8 @@ const STAGE_LABELS: Record<ResumeOptimizationStage, string> = {
 };
 
 export class ResumeOptimizationWorkflowService {
+  public constructor(private readonly recoveryService: ResumeWorkflowRecoveryService = new ResumeWorkflowRecoveryService()) {}
+
   public startRun(input: ResumeOptimizationRunInput): ResumeOptimizationRun {
     const now = new Date().toISOString();
     const run = this.createBaseRun(input, now);
@@ -77,12 +82,17 @@ export class ResumeOptimizationWorkflowService {
     evidencePack?: EvidencePack;
     targetRole?: string;
     resumeChangeSet?: ResumeChangeSet;
+    editorialCriticReview?: ResumeEditorialCriticReview;
   }): ResumeOptimizationRun {
     const jdNextAction = this.buildJdNextAction(input.jd, input.targetRole);
     const evidenceNextAction = input.sourceExperienceIds.length === 0
       ? {
           type: "add_experience_evidence",
           label: "Add or import experience evidence before accepting the final resume",
+          payload: {
+            conservativeChanges: true,
+            missingEvidenceNote: "No active source experiences were available; keep generated changes conservative until evidence is added.",
+          },
         }
       : undefined;
     const evidenceCount = countEvidenceItems(input.evidencePack);
@@ -124,6 +134,18 @@ export class ResumeOptimizationWorkflowService {
       },
       nextAction: draftNextAction,
     });
+    if (input.editorialCriticReview) {
+      const criticNextAction = this.buildCriticNextAction(input.editorialCriticReview);
+      run = this.markCompleted(run, "critic_review", {
+        message: input.editorialCriticReview.summary.label,
+        artifactIds: {
+          generationId: input.generation.id,
+          criticReviewId: input.editorialCriticReview.reviewId,
+          criticPatchSuggestionIds: input.editorialCriticReview.patchSuggestions.map((suggestion) => suggestion.suggestionId),
+        },
+        nextAction: criticNextAction,
+      });
+    }
     const changeSetNextAction = input.resumeChangeSet
       ? {
           type: "review_resume_change_set",
@@ -201,25 +223,32 @@ export class ResumeOptimizationWorkflowService {
     error: unknown;
     stage?: ResumeOptimizationStage;
   }): ResumeOptimizationRun {
-    const message = errorMessage(input.error);
-    const classified = classifyFailure(message, input.stage);
-    if (classified.status === "needs_input") {
-      return this.markNeedsInput(input.run, classified.stage, {
-        message: classified.message,
-        nextAction: classified.nextAction,
+    const recoveryPlan = this.recoveryService.classify({
+      error: input.error,
+      stage: input.stage,
+      partialArtifactTypes: partialArtifactTypes(input.run),
+    });
+    if (recoveryPlan.status === "needs_input") {
+      return this.markNeedsInput(input.run, recoveryPlan.stage, {
+        message: recoveryPlan.userMessage,
+        failureReason: recoveryPlan.reason,
+        nextAction: recoveryPlan.nextAction,
+        recoveryPlan,
       });
     }
-    const failedRun = this.transition(input.run, classified.stage, "failed", {
-      message: classified.message,
-      failureReason: classified.reason,
-      nextAction: classified.nextAction,
+    const failedRun = this.transition(input.run, recoveryPlan.stage, "failed", {
+      message: recoveryPlan.userMessage,
+      failureReason: recoveryPlan.reason,
+      nextAction: recoveryPlan.nextAction,
+      recoveryPlan,
     });
     return {
       ...failedRun,
       status: "failed",
       currentStage: "failed",
-      failureReason: classified.reason,
-      nextAction: classified.nextAction,
+      failureReason: recoveryPlan.reason,
+      nextAction: recoveryPlan.nextAction,
+      recoveryPlan,
       updatedAt: new Date().toISOString(),
     };
   }
@@ -267,7 +296,9 @@ export class ResumeOptimizationWorkflowService {
       ...next,
       status: "needs_input",
       currentStage: "needs_input",
+      failureReason: input.failureReason ?? next.failureReason,
       nextAction: input.nextAction,
+      recoveryPlan: input.recoveryPlan,
       updatedAt: new Date().toISOString(),
     };
   }
@@ -291,6 +322,7 @@ export class ResumeOptimizationWorkflowService {
         artifactIds: input.artifactIds ?? item.artifactIds,
         failureReason: input.failureReason,
         nextAction: input.nextAction,
+        recoveryPlan: input.recoveryPlan,
       };
     });
     return {
@@ -309,11 +341,13 @@ export class ResumeOptimizationWorkflowService {
           createdAt: now,
           artifactIds: input.artifactIds,
           nextAction: input.nextAction,
+          recoveryPlan: input.recoveryPlan,
         },
       ],
       updatedAt: now,
       failureReason: input.failureReason ?? run.failureReason,
       nextAction: input.nextAction ?? run.nextAction,
+      recoveryPlan: input.recoveryPlan ?? run.recoveryPlan,
     };
   }
 
@@ -329,6 +363,21 @@ export class ResumeOptimizationWorkflowService {
       },
     };
   }
+
+  private buildCriticNextAction(review: ResumeEditorialCriticReview): ResumeOptimizationNextAction | undefined {
+    const firstNeedsInput = review.items.find((item) => item.nextAction && !item.autoFixAllowed);
+    if (firstNeedsInput?.nextAction) return firstNeedsInput.nextAction;
+    if (review.patchSuggestions.length === 0) return undefined;
+    return {
+      type: "review_critic_patch_suggestions",
+      label: review.summary.label,
+      payload: {
+        criticReviewId: review.reviewId,
+        changeSetId: review.changeSetId,
+        patchSuggestionIds: review.patchSuggestions.map((suggestion) => suggestion.suggestionId),
+      },
+    };
+  }
 }
 
 type TransitionInput = {
@@ -336,6 +385,7 @@ type TransitionInput = {
   artifactIds?: Record<string, string | string[] | undefined>;
   failureReason?: string;
   nextAction?: ResumeOptimizationNextAction;
+  recoveryPlan?: ResumeOptimizationRecoveryPlan;
 };
 
 function countEvidenceItems(evidencePack: EvidencePack | undefined): number {
@@ -347,61 +397,17 @@ function countEvidenceItems(evidencePack: EvidencePack | undefined): number {
   return 0;
 }
 
-function classifyFailure(message: string, stage: ResumeOptimizationStage | undefined): {
-  stage: ResumeOptimizationStage;
-  status: "failed" | "needs_input";
-  message: string;
-  reason: string;
-  nextAction: ResumeOptimizationNextAction;
-} {
-  const lower = message.toLowerCase();
-  if (lower.includes("jd text") || lower.includes("jdid") || lower.includes("job description")) {
-    return {
-      stage: "needs_input",
-      status: "needs_input",
-      message: "A JD is required before resume optimization can continue.",
-      reason: "missing_jd",
-      nextAction: { type: "provide_jd", label: "Provide the job description" },
-    };
+function partialArtifactTypes(run: ResumeOptimizationRun): string[] {
+  const types: string[] = [];
+  if (run.jdId) types.push("jd");
+  if (run.generationId) types.push("generation");
+  if (run.stages.some((stage) => stage.stage === "draft_generation" && stage.status === "completed")) {
+    types.push("resumeDocumentDraft");
   }
-  if (lower.includes("timeout") || lower.includes("timed out") || lower.includes("etimedout")) {
-    return {
-      stage: stage ?? "draft_generation",
-      status: "failed",
-      message: "The LLM call timed out; completed workflow state was preserved for retry.",
-      reason: "llm_timeout",
-      nextAction: { type: "retry_stage", label: "Retry draft generation" },
-    };
+  if (run.stages.some((stage) => stage.stage === "change_set_ready" && stage.status === "completed")) {
+    types.push("resumeChangeSet");
   }
-  if (lower.includes("evidence") && (lower.includes("shortage") || lower.includes("insufficient"))) {
-    return {
-      stage: "evidence_pack",
-      status: "needs_input",
-      message: "Evidence is insufficient for safe optimization.",
-      reason: "evidence_shortage",
-      nextAction: { type: "add_experience_evidence", label: "Add stronger experience evidence" },
-    };
-  }
-  if (lower.includes("layout") || lower.includes("overflow") || lower.includes("underfill")) {
-    return {
-      stage: "layout_check",
-      status: "failed",
-      message: "Layout validation failed and needs targeted remediation.",
-      reason: "layout_failure",
-      nextAction: { type: "retry_layout_check", label: "Retry layout check after compacting content" },
-    };
-  }
-  return {
-    stage: stage ?? "failed",
-    status: "failed",
-    message: message || "Resume optimization failed.",
-    reason: "workflow_failed",
-    nextAction: { type: "retry_stage", label: "Retry the failed stage" },
-  };
-}
-
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error || "Resume optimization failed.");
+  return types;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

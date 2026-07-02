@@ -31,6 +31,8 @@ describe("resume agent tools", () => {
       const data = result.data as {
         variants: Array<{ id: string; content: string; createdAt: string }>;
         resumeChangeSet?: { summary?: { pendingCount?: number; label?: string }; changes?: unknown[] };
+        editorialCriticReview?: { summary?: { totalItems?: number; autoFixableCount?: number }; patchSuggestions?: unknown[] };
+        criticPatchSuggestions?: unknown[];
         resumePreviewSnapshots?: Array<{ stage?: string; resumeDocumentDraft?: unknown }>;
         resumeDocumentDraft?: { sections?: unknown[] };
         generation?: { inputSnapshot?: Record<string, unknown>; outputSnapshot?: Record<string, unknown> };
@@ -79,13 +81,25 @@ describe("resume agent tools", () => {
         changes: expect.any(Array),
       });
       expect(data.generation?.inputSnapshot?.analysisReport).toBeTruthy();
+      expect(data.editorialCriticReview).toMatchObject({
+        summary: {
+          totalItems: expect.any(Number),
+          autoFixableCount: expect.any(Number),
+        },
+        patchSuggestions: expect.any(Array),
+      });
+      expect(data.criticPatchSuggestions).toEqual(expect.any(Array));
+      expect(data.generation?.inputSnapshot?.editorialCriticReview).toBeTruthy();
       expect(data.generation?.outputSnapshot?.analysisReport).toBeTruthy();
+      expect(data.generation?.outputSnapshot?.editorialCriticReview).toBeTruthy();
+      expect(data.generation?.outputSnapshot?.criticPatchSuggestions).toBeTruthy();
       expect(data.generation?.outputSnapshot?.resumeChangeSet).toBeTruthy();
       expect(data.resumePreviewSnapshots?.map((snapshot) => snapshot.stage)).toEqual(expect.arrayContaining([
         "original_parsed_resume",
         "problem_markers",
         "rewrite_plan",
         "patched_draft",
+        "critic_repaired_draft",
       ]));
       expect(data.resumeDocumentDraft?.sections?.length).toBeGreaterThan(0);
       expect(data.generation?.inputSnapshot?.resumePreviewSnapshots).toBeTruthy();
@@ -93,8 +107,18 @@ describe("resume agent tools", () => {
       expect(result.workspacePatch?.resumePreviewSnapshots).toBeTruthy();
       expect(result.workspacePatch?.resumeDocumentDraft).toBeTruthy();
       expect(result.workspacePatch?.resumeChangeSet).toBeTruthy();
-      const metadata = result.actionResult?.metadata as { changeSetId?: string } | undefined;
+      expect(result.workspacePatch?.editorialCriticReview).toBeTruthy();
+      expect(result.workspacePatch?.criticPatchSuggestions).toBeTruthy();
+      const metadata = result.actionResult?.metadata as {
+        changeSetId?: string;
+        criticReviewId?: string;
+        criticItemCount?: number;
+        criticPatchSuggestionCount?: number;
+      } | undefined;
       expect(metadata?.changeSetId).toEqual(data.resumeChangeSet ? expect.any(String) : undefined);
+      expect(metadata?.criticReviewId).toEqual(expect.any(String));
+      expect(metadata?.criticItemCount).toEqual(expect.any(Number));
+      expect(metadata?.criticPatchSuggestionCount).toEqual(expect.any(Number));
     } finally {
       await kernel.close();
     }

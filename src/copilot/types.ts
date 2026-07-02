@@ -191,6 +191,8 @@ export type CopilotWorkspace = {
   suggestedTasks?: CopilotTask[];
   jdProfile?: JDProfile;
   analysisReport?: unknown;
+  editorialCriticReview?: unknown;
+  criticPatchSuggestions?: unknown;
   resumeChangeSet?: unknown;
   resumePreviewSnapshots?: unknown;
   resumeDocumentDraft?: unknown;

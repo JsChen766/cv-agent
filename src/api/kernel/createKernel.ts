@@ -23,6 +23,9 @@ import {
   PostgresProductJDRepository,
   PostgresProductResumeRepository,
   JDResumeAnalysisService,
+  CriticPatchSuggestionService,
+  CriticReviewItemService,
+  ResumeEditorialCriticService,
   ResumeChangeSetService,
   ResumePreviewSnapshotService,
   ResumeService,
@@ -189,6 +192,12 @@ function buildKernel(input: BuildKernelInput): ApiKernel {
   const jdResumeAnalysisService = new JDResumeAnalysisService();
   const resumeChangeSetService = new ResumeChangeSetService();
   const resumePreviewSnapshotService = new ResumePreviewSnapshotService();
+  const criticReviewItemService = new CriticReviewItemService();
+  const criticPatchSuggestionService = new CriticPatchSuggestionService();
+  const resumeEditorialCriticService = new ResumeEditorialCriticService(
+    criticReviewItemService,
+    criticPatchSuggestionService,
+  );
 
   const importService = new ImportService(input.productImportRepository, experienceService, llmExperienceExtractor, claimGraphIndexer);
   const generationProductService = new GenerationProductService(
@@ -204,6 +213,7 @@ function buildKernel(input: BuildKernelInput): ApiKernel {
     jdResumeAnalysisService,
     resumeChangeSetService,
     resumePreviewSnapshotService,
+    resumeEditorialCriticService,
   );
   const productServices = {
     experienceService,
@@ -213,6 +223,9 @@ function buildKernel(input: BuildKernelInput): ApiKernel {
     generationProductService,
     resumeOptimizationWorkflowService,
     jdResumeAnalysisService,
+    criticReviewItemService,
+    criticPatchSuggestionService,
+    resumeEditorialCriticService,
     resumeChangeSetService,
     resumePreviewSnapshotService,
     evidenceRAGService,

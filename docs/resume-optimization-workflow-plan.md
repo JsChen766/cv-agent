@@ -524,6 +524,71 @@ Validation:
 - Tests for unsupported claim, weak STAR, and layout-risk cases.
 - Real LLM smoke comparing before/after critic patch behavior.
 
+## Phase 5 Completion Status
+
+Completed on 2026-07-03.
+
+Implementation summary:
+
+- Added Phase 5 editorial critic artifacts: `ResumeEditorialCriticReview`, item-level `ResumeCriticReviewItem`, safe `ResumeCriticPatchSuggestion`, optional patch payloads, review status, summary counts, and precise next actions.
+- Added `CriticReviewItemService`, `CriticPatchSuggestionService`, and `ResumeEditorialCriticService`.
+- The critic now turns rubric findings, change-set risk, repeated wording, bullet-length checks, and layout diagnostics into reviewable item-level findings.
+- Safe, evidence-backed findings create explicit patch suggestions with before/after payloads; unsafe or evidence-missing claims ask for supporting evidence instead of being silently rewritten.
+- Critic layout findings now point to `retry_layout_check`, while unsupported or inflated claims point to evidence collection.
+- Populated the reserved `critic_repaired_draft` preview snapshot when safe critic patch suggestions are available.
+- Threaded `editorialCriticReview` and `criticPatchSuggestions` through direct generation results, job output, generation input/output snapshots, workspace patches, and action metadata.
+- `critic_review` is now marked completed in `workflowStatus` before `change_set_ready` when an editorial critic review exists.
+- Added `scripts/phase5-editorial-critic-smoke.ts` to exercise the real Docker backend and assert before/after critic patch behavior.
+
+Changed files:
+
+- `src/product/resumeOptimization/types.ts`
+- `src/product/resumeOptimization/CriticReviewItemService.ts`
+- `src/product/resumeOptimization/CriticPatchSuggestionService.ts`
+- `src/product/resumeOptimization/ResumeEditorialCriticService.ts`
+- `src/product/resumeOptimization/ResumePreviewSnapshotService.ts`
+- `src/product/resumeOptimization/ResumeOptimizationWorkflowService.ts`
+- `src/product/resumeOptimization/index.ts`
+- `src/product/services/index.ts`
+- `src/api/kernel/createKernel.ts`
+- `src/jobs/JobRunner.ts`
+- `src/copilot/types.ts`
+- `src/agent-tools/resume/generateResumeFromJD.tool.ts`
+- `tests/resumeOptimizationWorkflow.test.ts`
+- `tests/resumeAgentTools.test.ts`
+- `scripts/phase5-editorial-critic-smoke.ts`
+- `docs/resume-optimization-workflow-plan.md`
+
+Contract impact assessment:
+
+- Public route paths, request bodies, response envelopes, ProductBlock meanings, pending-action semantics, job routes, generation routes, and export routes are unchanged.
+- New `editorialCriticReview` and `criticPatchSuggestions` data is additive and optional, carried only inside existing tool result data, workspace patch, action metadata, job output, and generation snapshot surfaces.
+- `CopilotWorkspace.editorialCriticReview` and `CopilotWorkspace.criticPatchSuggestions` are optional `unknown` metadata for persisted review context; they do not alter workspace status, variant semantics, or export behavior.
+
+Tests run:
+
+- `npm run typecheck` - passed.
+- `npx vitest run tests/resumeOptimizationWorkflow.test.ts tests/resumeAgentTools.test.ts` - passed, 18 tests.
+- `npx vitest run tests/resumeOptimizationWorkflow.test.ts tests/resumeAgentTools.test.ts tests/generateResumePendingFlow.test.ts` - passed, 23 tests.
+- `npm test` - passed.
+
+Real Docker/LLM validation:
+
+- Rebuilt and restarted the Docker API with `docker compose up -d --build api`.
+- Confirmed `/health` returned `mode=postgres`.
+- Ran `PHASE5_TIMEOUT_MS=300000 npx tsx scripts/phase5-editorial-critic-smoke.ts` against `http://127.0.0.1:3000`.
+- Re-verified the queued job output path with `PHASE5_EXISTING_JOB_ID=job-0474207c-e99e-45c5-b498-a2fe8304fff4 npx tsx scripts/phase5-editorial-critic-smoke.ts`.
+- Smoke result marker: `PHASE5_EDITORIAL_CRITIC_SMOKE_PASS`.
+- Verified generation `pgen-6a67054e-27c8-4348-84cb-b0545925af80` exposed `editorialCriticReview` with status `patch_suggested`, 47 item-level critic findings, and 24 patch suggestions from both job output and generation detail.
+- Verified patch suggestions contained before/after deltas, `resumePreviewSnapshots` included `critic_repaired_draft`, and `workflowStatus` marked `critic_review` completed with `retry_layout_check` as the layout-risk next action.
+- Smoke artifact: `docs/temp_pdf/2026-07-02T16-56-03-490Z_phase5_editorial_critic_smoke.json`.
+
+Unresolved risks and Phase 6 handoff notes:
+
+- Phase 5 creates and projects critic patch suggestions, but it does not add public accept/reject routes for critic patches; review actions still need a future adapter if the frontend sends item-level decisions.
+- Phase 5 still uses deterministic critic item construction from rubric/change/layout signals. The existing export-time LLM quality critic remains separate; Phase 6 should decide how to merge retry/failure semantics across deterministic and LLM critic failures.
+- Layout oracle execution during generation is still not automatic; Phase 6 should preserve completed stages and retry only layout/critic stages when measured overflow, underfill, or critic failure occurs.
+
 ## Phase 6: Graceful Failure And Recovery
 
 Goal: make the workflow resilient and user-guiding.
@@ -563,6 +628,68 @@ Validation:
 - Unit tests for each failure state.
 - Integration tests for retry and resume.
 - Real Docker smoke for at least missing JD, normal JD, and export path.
+
+## Phase 6 Completion Status
+
+Completed on 2026-07-03.
+
+Implementation summary:
+
+- Added `ResumeWorkflowRecoveryService` to classify workflow failures into explicit recovery plans for missing JD, missing target context, evidence shortage, weak match, LLM timeout, invalid JSON, schema validation, model configuration, layout overflow/underfill, critic failure, export failure, and generic workflow failure.
+- Added optional `recoveryPlan` metadata to workflow runs, stage states, and workflow events. Recovery plans preserve completed stages, identify the failed stage, expose retry-only-next-stage guidance, and define whether partial drafts/change sets can remain visible.
+- Updated `ResumeOptimizationWorkflowService.markFailure()` to use the recovery service instead of local string-only failure mapping.
+- Strengthened evidence-shortage next actions with conservative-change guidance and missing-evidence notes.
+- Updated generation-job failure handling so failed pending actions surface safe recovery messages, workflow status, recovery plan, and workspace failure summary instead of raw thrown messages.
+- Sanitized LLM generation failure messages so internal errors retain safe diagnostics such as HTTP status and schema field names, while raw provider previews, prompts, and payload snippets are not exposed.
+- Sanitized persisted export failure messages so export records show actionable retry guidance and keep the accepted resume recoverable.
+- Added `scripts/phase6-recovery-smoke.ts` to validate the live Docker backend through missing-JD guard, normal JD generation, accept variant, PDF export job, and PDF download.
+
+Changed files:
+
+- `src/product/resumeOptimization/types.ts`
+- `src/product/resumeOptimization/ResumeWorkflowRecoveryService.ts`
+- `src/product/resumeOptimization/ResumeOptimizationWorkflowService.ts`
+- `src/product/resumeOptimization/index.ts`
+- `src/product/services/index.ts`
+- `src/jobs/JobRunner.ts`
+- `src/exports/ResumeExportService.ts`
+- `tests/resumeOptimizationWorkflow.test.ts`
+- `tests/exportPipeline.test.ts`
+- `scripts/phase6-recovery-smoke.ts`
+- `docs/resume-optimization-workflow-plan.md`
+
+Contract impact assessment:
+
+- Public route paths, request bodies, response envelopes, ProductBlock meanings, pending-action semantics, job routes, generation routes, and export routes are unchanged.
+- `recoveryPlan` is additive and optional under existing workflow metadata surfaces; clients that ignore it continue to work.
+- Export records still use the existing `errorMessage` field, but failed exports now store a safe actionable message instead of arbitrary renderer/backend detail.
+- Internal LLM errors keep safe diagnostic hints for tests and logs, but raw provider content previews are excluded from exposed messages.
+
+Tests run:
+
+- `npm run typecheck` - passed.
+- `npx vitest run tests/resumeOptimizationWorkflow.test.ts tests/exportPipeline.test.ts` - passed, 21 tests.
+- `npx vitest run tests/resumeAgentTools.test.ts tests/generateResumePendingFlow.test.ts` - passed, 10 tests.
+- `npx vitest run tests/llmFirstAudit.test.ts tests/pdfExportPipeline.test.ts` - passed, 36 tests.
+- `npm test` - passed.
+
+Real Docker/LLM/PDF validation:
+
+- Rebuilt and restarted the Docker API with `docker compose up -d --build api`.
+- Confirmed `/health` returned `mode=postgres`.
+- Ran `PHASE6_TIMEOUT_MS=300000 npx tsx scripts/phase6-recovery-smoke.ts` against `http://127.0.0.1:3000`.
+- Verified missing-JD product-generation request returned HTTP 400 with `jdText or jdId is required.`
+- Verified normal JD generation completed job `job-887bd0b8-2484-4242-9890-5843c8787561`, produced generation `pgen-615a6de6-80df-49ae-80d2-8f7a1abcc38d`, reached `workflowStage=change_set_ready`, and carried no recovery plan on success.
+- Verified accepted resume `pres-56e4dfb6-0d60-4a6c-af1b-47772c11e041` exported through PDF export `export-6ca9f625-67e5-467e-8101-68cbe9e3bacc` and export job `job-ffc9a5a8-75ef-4f73-ab52-91cf99be7678`.
+- Verified downloaded PDF bytes started with `%PDF`, size was 576682 bytes, and export quality report was present.
+- Smoke result marker: `PHASE6_RECOVERY_SMOKE_PASS`.
+- Smoke artifact: `docs/temp_pdf/2026-07-02T17-10-46-340Z_phase6_recovery_smoke.json`.
+
+Unresolved risks and Phase 7 handoff notes:
+
+- Missing-JD workflow `needs_input` is unit-tested through `ResumeOptimizationWorkflowService.startRun()`, while the live product route rejects missing JD at request validation before creating a workflow run.
+- Recovery plans are now explicit but still native TypeScript state-machine metadata; Phase 7 should evaluate whether LangGraph or another runtime would simplify retry persistence/branching enough to justify an internal adapter.
+- Dedicated public retry endpoints for individual failed workflow stages are still not exposed; the backend now emits retry intent and failed-stage scope for a future adapter.
 
 ## Phase 7: Optional LangGraph Or Mature Workflow Runtime Evaluation
 

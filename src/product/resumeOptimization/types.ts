@@ -35,6 +35,36 @@ export type ResumeOptimizationNextAction = {
   payload?: Record<string, unknown>;
 };
 
+export type ResumeOptimizationFailureReason =
+  | "missing_jd"
+  | "missing_target_context"
+  | "evidence_shortage"
+  | "weak_match"
+  | "llm_timeout"
+  | "llm_invalid_json"
+  | "llm_schema_validation"
+  | "model_not_available"
+  | "layout_overflow"
+  | "layout_underfill"
+  | "layout_failure"
+  | "critic_failure"
+  | "export_failure"
+  | "workflow_failed";
+
+export type ResumeOptimizationRecoveryPlan = {
+  schemaVersion: 1;
+  reason: ResumeOptimizationFailureReason;
+  stage: ResumeOptimizationStage;
+  status: "failed" | "needs_input";
+  userMessage: string;
+  nextAction: ResumeOptimizationNextAction;
+  retryable: boolean;
+  preserveCompletedStages: true;
+  partialDraftPolicy: "keep_visible" | "hide_unsafe" | "not_available";
+  partialArtifactTypes: string[];
+  riskNote?: string;
+};
+
 export type ResumeOptimizationStageState = {
   stage: ResumeOptimizationStage;
   status: ResumeOptimizationStageStatus;
@@ -45,6 +75,7 @@ export type ResumeOptimizationStageState = {
   artifactIds?: Record<string, string | string[] | undefined>;
   failureReason?: string;
   nextAction?: ResumeOptimizationNextAction;
+  recoveryPlan?: ResumeOptimizationRecoveryPlan;
 };
 
 export type ResumeOptimizationWorkflowEvent = {
@@ -56,6 +87,7 @@ export type ResumeOptimizationWorkflowEvent = {
   createdAt: string;
   nextAction?: ResumeOptimizationNextAction;
   artifactIds?: Record<string, string | string[] | undefined>;
+  recoveryPlan?: ResumeOptimizationRecoveryPlan;
 };
 
 export type ResumeOptimizationRun = {
@@ -74,6 +106,7 @@ export type ResumeOptimizationRun = {
   updatedAt: string;
   failureReason?: string;
   nextAction?: ResumeOptimizationNextAction;
+  recoveryPlan?: ResumeOptimizationRecoveryPlan;
 };
 
 export type ResumeOptimizationRunInput = {
@@ -320,4 +353,67 @@ export type ResumePreviewSnapshot = {
   problemMarkers: ResumeDraftProblemMarker[];
   rewritePlan: ResumeRewritePlanItem[];
   layoutPreviewReport?: LayoutPreviewReport;
+};
+
+export type ResumeCriticFindingCategory =
+  | "unsupported_claim"
+  | "inflated_metric"
+  | "weak_verb"
+  | "missing_star_closure"
+  | "poor_jd_alignment"
+  | "repeated_wording"
+  | "structure_mismatch"
+  | "bullet_too_short"
+  | "bullet_too_long"
+  | "layout_risk"
+  | "tone_or_seniority_mismatch";
+
+export type ResumeCriticPatch = {
+  type: ResumeChangeType;
+  target: ResumeOptimizationTarget;
+  before: string;
+  after: string;
+};
+
+export type ResumeCriticReviewItem = {
+  itemId: string;
+  category: ResumeCriticFindingCategory;
+  severity: ResumeOptimizationFindingSeverity;
+  target: ResumeOptimizationTarget;
+  explanation: string;
+  evidenceIds: string[];
+  suggestedFix: string;
+  autoFixAllowed: boolean;
+  patch?: ResumeCriticPatch;
+  nextAction?: ResumeOptimizationNextAction;
+};
+
+export type ResumeCriticPatchSuggestion = {
+  suggestionId: string;
+  reviewItemId: string;
+  changeSetId?: string;
+  generationId: string;
+  severity: ResumeOptimizationFindingSeverity;
+  autoApply: boolean;
+  patch: ResumeCriticPatch;
+  rationale: string;
+};
+
+export type ResumeEditorialCriticReview = {
+  schemaVersion: 1;
+  reviewId: string;
+  generationId: string;
+  changeSetId?: string;
+  createdAt: string;
+  status: "pass" | "patch_suggested" | "needs_input";
+  summary: {
+    totalItems: number;
+    autoFixableCount: number;
+    needsInputCount: number;
+    highestSeverity?: ResumeOptimizationFindingSeverity;
+    label: string;
+  };
+  items: ResumeCriticReviewItem[];
+  patchSuggestions: ResumeCriticPatchSuggestion[];
+  repairedDraft?: import("../types.js").ResumeDocument;
 };

@@ -5,6 +5,7 @@ import { ResumePatchProjectionService } from "./ResumePatchProjectionService.js"
 import type {
   JDResumeAnalysisReport,
   ResumeChangeSet,
+  ResumeEditorialCriticReview,
   ResumeDraftProblemMarker,
   ResumePreviewSnapshot,
   ResumeRewritePlanItem,
@@ -19,6 +20,7 @@ export class ResumePreviewSnapshotService {
   public createSnapshots(input: {
     changeSet: ResumeChangeSet;
     analysisReport?: JDResumeAnalysisReport;
+    editorialCriticReview?: ResumeEditorialCriticReview;
     acceptedChangeSet?: ResumeChangeSet;
     generationId?: string;
   }): ResumePreviewSnapshot[] {
@@ -56,6 +58,16 @@ export class ResumePreviewSnapshotService {
         rewritePlan,
       }),
     ];
+    if (input.editorialCriticReview?.repairedDraft) {
+      snapshots.push(this.snapshot({
+        generationId,
+        changeSetId: input.changeSet.changeSetId,
+        stage: "critic_repaired_draft",
+        resumeDocumentDraft: input.editorialCriticReview.repairedDraft,
+        problemMarkers: markers,
+        rewritePlan,
+      }));
+    }
     if (input.acceptedChangeSet) {
       snapshots.push(this.snapshot({
         generationId,
