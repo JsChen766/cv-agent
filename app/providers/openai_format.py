@@ -8,6 +8,7 @@ Set LLM_BASE_URL to point at a non-OpenAI endpoint.
 
 from __future__ import annotations
 
+import json
 from collections.abc import AsyncIterator
 from typing import Any
 
@@ -62,7 +63,7 @@ class OpenAIFormatProvider:
             elif role == "assistant":
                 lc_msgs.append(AIMessage(content=content))
 
-        llm = self._llm.with_config({"temperature": temperature})
+        llm = self._llm.bind(temperature=temperature)
         if max_tokens:
             llm = llm.bind(max_tokens=max_tokens)
 
@@ -100,7 +101,65 @@ class OpenAIFormatProvider:
         try:
             return await structured_llm.ainvoke(lc_msgs)
         except Exception as e:
-            raise ExternalServiceError(f"Structured LLM call failed: {e}") from e
+            try:
+                return await self._chat_structured_via_json_prompt(
+                    messages,
+                    schema,
+                    temperature=temperature,
+                )
+            except Exception as fallback_error:
+                raise ExternalServiceError(
+                    f"Structured LLM call failed: {e}; JSON fallback failed: {fallback_error}"
+                ) from fallback_error
+
+    async def _chat_structured_via_json_prompt(
+        self,
+        messages: list[dict[str, str]],
+        schema: type,
+        *,
+        temperature: float,
+    ) -> Any:
+        schema_json = "{}"
+        if hasattr(schema, "model_json_schema"):
+            schema_json = json.dumps(schema.model_json_schema(), ensure_ascii=False)
+
+        fallback_messages = [
+            {
+                "role": "system",
+                "content": (
+                    "Return only valid JSON. Do not wrap it in markdown. "
+                    "The JSON must match this schema:\n"
+                    f"{schema_json}"
+                ),
+            },
+            *messages,
+        ]
+        raw = await self.chat(
+            fallback_messages,
+            temperature=temperature,
+            max_tokens=2000,
+        )
+        json_text = self._extract_json_object(str(raw))
+
+        if hasattr(schema, "model_validate_json"):
+            return schema.model_validate_json(json_text)
+        if hasattr(schema, "model_validate"):
+            return schema.model_validate(json.loads(json_text))
+        return json.loads(json_text)
+
+    @staticmethod
+    def _extract_json_object(text: str) -> str:
+        stripped = text.strip()
+        if stripped.startswith("```"):
+            stripped = stripped.strip("`")
+            if stripped.startswith("json"):
+                stripped = stripped[4:].strip()
+
+        start = stripped.find("{")
+        end = stripped.rfind("}")
+        if start == -1 or end == -1 or end <= start:
+            raise ValueError(f"LLM did not return a JSON object: {stripped[:200]}")
+        return stripped[start : end + 1]
 
     async def embed(self, texts: list[str]) -> list[list[float]]:
         try:

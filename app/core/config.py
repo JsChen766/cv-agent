@@ -22,8 +22,10 @@ class Settings(BaseSettings):
     llm_base_url: str | None = None  # override for openai-compatible vendors
 
     # Embeddings
-    embedding_model: str = "text-embedding-3-small"
-    embedding_dimensions: int = 1536
+    embedding_provider: Literal["local", "openai"] = "local"
+    embedding_model: str = "BAAI/bge-small-zh-v1.5"
+    embedding_dimensions: int = 512
+    embedding_local_files_only: bool = False
 
     # RAG
     evidence_similarity_threshold: float = 0.65

@@ -62,7 +62,8 @@ async def parse_import_node(state: MainState) -> dict[str, Any]:
             },
             {"role": "user", "content": raw_text},
         ],
-        response_model=CandidateList,
+        CandidateList,
+        temperature=0.1,
     )
 
     candidates = [c.model_dump() for c in result.candidates]

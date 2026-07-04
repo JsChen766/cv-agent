@@ -18,6 +18,10 @@ def get_provider():
 
 @lru_cache(maxsize=1)
 def get_embedding_provider():
-    """Return the embedding provider singleton (always OpenAI-format for now)."""
+    """Return the configured embedding provider singleton."""
+    if settings.embedding_provider == "local":
+        from app.providers.local_embedding import LocalEmbeddingProvider
+        return LocalEmbeddingProvider()
+
     from app.providers.openai_format import OpenAIFormatProvider
     return OpenAIFormatProvider()
