@@ -246,7 +246,7 @@ async def sidebar(
                 user_id,
             )
             experiences = await conn.fetch(
-                "SELECT id, title, organization FROM experiences WHERE user_id = $1 AND is_archived = false ORDER BY updated_at DESC LIMIT 5",
+                "SELECT id, title, organization FROM experiences WHERE user_id = $1 AND status = 'active' ORDER BY updated_at DESC LIMIT 5",
                 user_id,
             )
             jds = await conn.fetch(

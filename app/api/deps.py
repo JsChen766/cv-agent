@@ -5,6 +5,7 @@ from __future__ import annotations
 from fastapi import Cookie, Depends, Header, Request
 
 from app.api.auth_utils import decode_access_token
+from app.core.config import settings
 from app.core.errors import ExternalServiceError, UnauthorizedError
 from app.domain.user.models import User
 from app.domain.user.service import UserService
@@ -70,24 +71,32 @@ async def get_preference_service(pool=Depends(pool_dep)) -> PreferenceService:
 def _extract_token(
     authorization: str | None = Header(default=None),
     access_token: str | None = Cookie(default=None),
-) -> str:
+) -> str | None:
     """Extract Bearer token from Authorization header or cookie."""
     if authorization and authorization.startswith("Bearer "):
         return authorization[7:]
     if access_token:
         return access_token
-    raise UnauthorizedError("No authentication token provided")
+    return None
 
 
 async def get_current_user(
-    token: str = Depends(_extract_token),
+    token: str | None = Depends(_extract_token),
     user_svc: UserService = Depends(get_user_service),
 ) -> User:
+    if token is None and settings.environment == "development":
+        return await user_svc.get_by_id(settings.dev_user_id)
+    if token is None:
+        raise UnauthorizedError("No authentication token provided")
     user_id = decode_access_token(token)
     return await user_svc.get_by_id(user_id)
 
 
 async def get_current_user_id(
-    token: str = Depends(_extract_token),
+    token: str | None = Depends(_extract_token),
 ) -> str:
+    if token is None and settings.environment == "development":
+        return settings.dev_user_id
+    if token is None:
+        raise UnauthorizedError("No authentication token provided")
     return decode_access_token(token)

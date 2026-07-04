@@ -37,5 +37,8 @@ class Settings(BaseSettings):
     environment: Literal["development", "production"] = "development"
     cors_origins: list[str] = ["http://localhost:3000", "http://localhost:5173"]
 
+    # Dev mode — auto-auth when ENVIRONMENT=development and no token provided
+    dev_user_id: str = "dev-user"
+
 
 settings = Settings()
