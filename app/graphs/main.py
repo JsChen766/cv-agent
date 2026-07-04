@@ -1,0 +1,75 @@
+"""
+Main LangGraph graph.
+
+Assembles all subgraphs and the router into a single compiled graph.
+"""
+
+from __future__ import annotations
+
+from langgraph.graph import END, START, StateGraph
+
+from app.graphs.artifact.graph import build_artifact_subgraph
+from app.graphs.experience.graph import build_experience_import_subgraph
+from app.graphs.jd.graph import build_jd_subgraph
+from app.graphs.open_ended import open_ended_node
+from app.graphs.resume.graph import build_resume_subgraph
+from app.graphs.router import route_decision, router_node
+from app.graphs.state import MainState
+
+
+def build_main_graph(checkpointer=None):
+    """Build and compile the main graph with all subgraphs."""
+    builder = StateGraph(MainState)
+
+    # ── Nodes ──────────────────────────────────────────────────────────────────
+    builder.add_node("router", router_node)
+    builder.add_node("open_ended", open_ended_node)
+
+    # Subgraphs compiled as nodes
+    jd_subgraph = build_jd_subgraph().compile()
+    resume_subgraph = build_resume_subgraph().compile()
+    artifact_subgraph = build_artifact_subgraph().compile()
+
+    builder.add_node("jd", jd_subgraph)
+    builder.add_node("resume_generation", resume_subgraph)
+    builder.add_node("artifact", artifact_subgraph)
+
+    experience_subgraph = build_experience_import_subgraph().compile()
+    builder.add_node("experience_import", experience_subgraph)
+
+    # ── Edges ──────────────────────────────────────────────────────────────────
+    builder.add_edge(START, "router")
+    builder.add_conditional_edges(
+        "router",
+        route_decision,
+        {
+            "experience_import": "experience_import",
+            "jd": "jd",
+            "resume_generation": "resume_generation",
+            "artifact": "artifact",
+            "open_ended": "open_ended",
+        },
+    )
+    builder.add_edge("experience_import", END)
+    builder.add_edge("jd", END)
+    builder.add_edge("resume_generation", END)
+    builder.add_edge("artifact", END)
+    builder.add_edge("open_ended", END)
+
+    # ── Compile ────────────────────────────────────────────────────────────────
+    compile_kwargs = {}
+    if checkpointer:
+        compile_kwargs["checkpointer"] = checkpointer
+
+    return builder.compile(**compile_kwargs)
+
+
+# Lazy singleton — only built when first needed
+_graph = None
+
+
+def get_graph(checkpointer=None):
+    global _graph
+    if _graph is None:
+        _graph = build_main_graph(checkpointer)
+    return _graph

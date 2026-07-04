@@ -1,0 +1,93 @@
+"""FastAPI dependency injection wiring."""
+
+from __future__ import annotations
+
+from fastapi import Cookie, Depends, Header, Request
+
+from app.api.auth_utils import decode_access_token
+from app.core.errors import ExternalServiceError, UnauthorizedError
+from app.domain.user.models import User
+from app.domain.user.service import UserService
+from app.infra.db.connection import get_pool
+from app.infra.db.repositories.artifact_repo import PostgresArtifactRepository
+from app.infra.db.repositories.experience_repo import PostgresExperienceRepository
+from app.infra.db.repositories.jd_repo import PostgresJdRepository
+from app.infra.db.repositories.preference_repo import PostgresPreferenceRepository
+from app.infra.db.repositories.resume_repo import PostgresResumeRepository
+from app.infra.db.repositories.user_repo import PostgresUserRepository
+from app.domain.artifact.service import ArtifactService
+from app.domain.experience.service import ExperienceService
+from app.domain.jd.service import JdService
+from app.domain.preference.service import PreferenceService
+from app.domain.resume.service import ResumeService
+import asyncpg
+
+
+# ── Pool ──────────────────────────────────────────────────────────────────────
+
+async def pool_dep():
+    """Return the DB pool, or None if not yet initialised (e.g. during tests)."""
+    try:
+        return get_pool()
+    except RuntimeError:
+        return None
+
+
+# ── Services ──────────────────────────────────────────────────────────────────
+
+def _require_pool(pool):
+    if pool is None:
+        raise ExternalServiceError("Database unavailable")
+    return pool
+
+
+async def get_user_service(pool=Depends(pool_dep)) -> UserService:
+    return UserService(PostgresUserRepository(_require_pool(pool)))
+
+
+async def get_experience_service(pool=Depends(pool_dep)) -> ExperienceService:
+    return ExperienceService(PostgresExperienceRepository(_require_pool(pool)))
+
+
+async def get_jd_service(pool=Depends(pool_dep)) -> JdService:
+    return JdService(PostgresJdRepository(_require_pool(pool)))
+
+
+async def get_resume_service(pool=Depends(pool_dep)) -> ResumeService:
+    return ResumeService(PostgresResumeRepository(_require_pool(pool)))
+
+
+async def get_artifact_service(pool=Depends(pool_dep)) -> ArtifactService:
+    return ArtifactService(PostgresArtifactRepository(_require_pool(pool)))
+
+
+async def get_preference_service(pool=Depends(pool_dep)) -> PreferenceService:
+    return PreferenceService(PostgresPreferenceRepository(_require_pool(pool)))
+
+
+# ── Auth ──────────────────────────────────────────────────────────────────────
+
+def _extract_token(
+    authorization: str | None = Header(default=None),
+    access_token: str | None = Cookie(default=None),
+) -> str:
+    """Extract Bearer token from Authorization header or cookie."""
+    if authorization and authorization.startswith("Bearer "):
+        return authorization[7:]
+    if access_token:
+        return access_token
+    raise UnauthorizedError("No authentication token provided")
+
+
+async def get_current_user(
+    token: str = Depends(_extract_token),
+    user_svc: UserService = Depends(get_user_service),
+) -> User:
+    user_id = decode_access_token(token)
+    return await user_svc.get_by_id(user_id)
+
+
+async def get_current_user_id(
+    token: str = Depends(_extract_token),
+) -> str:
+    return decode_access_token(token)

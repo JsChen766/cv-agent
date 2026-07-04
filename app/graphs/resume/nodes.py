@@ -1,0 +1,338 @@
+"""
+Resume Generation subgraph nodes.
+
+Flow:
+  context_assembly → cot_planning → draft_generation →
+  self_review → [revision → self_review (max 3)] → interrupt_output
+"""
+
+from __future__ import annotations
+
+import json
+import uuid
+from typing import Any
+
+from pydantic import BaseModel
+
+from app.core.config import settings
+from app.core.events import (
+    ContentDiffCompletedEvent,
+    ContentDiffDeltaEvent,
+    ContentDiffStartedEvent,
+    AgentInterruptEvent,
+)
+from app.graphs.resume.state import ResumeGenerationState
+from app.providers.factory import get_provider
+
+
+# ── 1. Context Assembly ───────────────────────────────────────────────────────
+
+async def context_assembly_node(state: ResumeGenerationState) -> dict:
+    """Gather all context needed for resume generation."""
+    from app.memory.context_assembly import assemble_context
+    from app.infra.db.connection import get_pool
+
+    try:
+        pool = get_pool()
+        ctx = await assemble_context(state, pool)
+        return {
+            "jd_text": ctx.jd_text,
+            "relevant_experiences": ctx.experiences,
+            "guideline_instructions": ctx.guideline_instructions,
+            "user_preferences": ctx.preferences,
+            "user_profile": ctx.user_profile,
+            "evidence_pack": ctx.evidence_pack.model_dump() if ctx.evidence_pack else None,
+        }
+    except RuntimeError:
+        # Pool not available (test mode)
+        return {}
+
+
+# ── 2. CoT Planning ───────────────────────────────────────────────────────────
+
+class MatchingPlan(BaseModel):
+    strategy: str
+    key_experiences_to_highlight: list[str]
+    skills_to_emphasize: list[str]
+    tone: str = "professional"
+    structure_suggestions: list[str] = []
+
+
+async def cot_planning_node(state: ResumeGenerationState) -> dict:
+    """Chain-of-thought planning before generation."""
+    provider = get_provider()
+
+    jd_text = state.get("jd_text") or state.get("assembled_jd_text", "")
+    experiences = state.get("relevant_experiences") or state.get("assembled_experiences", [])
+    prefs = state.get("user_preferences") or state.get("assembled_preferences", [])
+    profile = state.get("user_profile") or state.get("assembled_user_profile")
+    intent = state.get("intent_description", "Generate a tailored resume")
+
+    context_parts = [f"Intent: {intent}"]
+    if jd_text:
+        context_parts.append(f"JD Summary:\n{jd_text[:1500]}")
+    if profile:
+        context_parts.append(f"User: {profile.get('current_title', '')} | {profile.get('career_stage', '')}")
+    if experiences:
+        exp_list = "\n".join(f"- {e.get('title')} at {e.get('organization', 'N/A')}" for e in experiences[:6])
+        context_parts.append(f"Available Experiences:\n{exp_list}")
+    if prefs:
+        pref_list = "\n".join(f"- {p.get('rule')}" for p in prefs[:5])
+        context_parts.append(f"User Preferences:\n{pref_list}")
+
+    plan: MatchingPlan = await provider.chat_structured(
+        [
+            {
+                "role": "system",
+                "content": (
+                    "You are a senior resume strategist. Based on the job requirements and "
+                    "available experiences, create a strategic plan for resume generation.\n"
+                    "Think step by step about:\n"
+                    "1. Which experiences best match the JD requirements\n"
+                    "2. What skills to emphasize\n"
+                    "3. The overall tone and structure"
+                ),
+            },
+            {"role": "user", "content": "\n\n".join(context_parts)},
+        ],
+        MatchingPlan,
+        temperature=0.3,
+    )
+
+    return {
+        "matching_plan": plan.model_dump() if plan else None,
+        "generation_strategy": plan.strategy if plan else "standard",
+    }
+
+
+# ── 3. Draft Generation ───────────────────────────────────────────────────────
+
+async def draft_generation_node(state: ResumeGenerationState) -> dict:
+    """Generate resume variant(s) and emit diff events."""
+    provider = get_provider()
+
+    intent = state.get("intent_description", "Generate a tailored resume")
+    jd_text = state.get("jd_text") or ""
+    experiences = state.get("relevant_experiences") or []
+    prefs = state.get("user_preferences") or []
+    plan = state.get("matching_plan") or {}
+    profile = state.get("user_profile") or {}
+    revision_instruction = state.get("revision_instruction")
+
+    # Build generation prompt
+    prompt_parts = [f"Task: {intent}"]
+    if jd_text:
+        prompt_parts.append(f"Job Description:\n{jd_text[:2000]}")
+    if plan:
+        prompt_parts.append(
+            f"Strategy: {plan.get('strategy', '')}\n"
+            f"Key experiences to highlight: {', '.join(plan.get('key_experiences_to_highlight', []))}\n"
+            f"Skills to emphasize: {', '.join(plan.get('skills_to_emphasize', []))}"
+        )
+    if experiences:
+        exp_texts = []
+        for e in experiences[:5]:
+            exp_texts.append(f"**{e.get('title')}** at {e.get('organization', '')}\n{e.get('content', '')[:600]}")
+        prompt_parts.append("Experiences to use:\n" + "\n\n".join(exp_texts))
+    if prefs:
+        pref_rules = "\n".join(f"- {p.get('rule')}" for p in prefs[:8])
+        prompt_parts.append(f"Writing preferences:\n{pref_rules}")
+    if revision_instruction:
+        prompt_parts.append(f"Revision instruction: {revision_instruction}")
+
+    preferred_lang = profile.get("preferred_language", "zh-CN")
+    lang_instruction = "Respond in Chinese (Simplified)." if "zh" in preferred_lang else "Respond in English."
+
+    # Emit diff started event
+    resume_id = state.get("workspace", {}).get("resume_id") or "new"
+    diff_started: ContentDiffStartedEvent = {
+        "event": "content.diff.started",
+        "resume_id": resume_id,
+        "section": "all",
+    }
+
+    # Generate content (non-streaming for now; streaming wired in Phase 12)
+    content = await provider.chat(
+        [
+            {
+                "role": "system",
+                "content": (
+                    f"You are an expert resume writer. {lang_instruction}\n"
+                    "Generate a complete, tailored resume in Markdown format. "
+                    "Include: Summary, Experience, Skills, Education sections. "
+                    "Make every bullet point specific, quantified where possible, "
+                    "and directly relevant to the job requirements."
+                ),
+            },
+            {"role": "user", "content": "\n\n".join(prompt_parts)},
+        ],
+        temperature=0.6,
+        max_tokens=3000,
+    )
+    content_str = str(content)
+
+    # Emit diff delta event (simplified: treat entire content as insertion)
+    diff_delta: ContentDiffDeltaEvent = {
+        "event": "content.diff.delta",
+        "operations": [{"op": "insert", "text": content_str}],
+    }
+    diff_completed: ContentDiffCompletedEvent = {
+        "event": "content.diff.completed",
+        "resume_id": resume_id,
+        "total_insertions": len(content_str.split()),
+        "total_deletions": 0,
+    }
+
+    variant_id = f"variant-{uuid.uuid4()}"
+    variant = {
+        "id": variant_id,
+        "title": "AI Generated Variant",
+        "content": content_str,
+        "score": {
+            "overall": 0.0,
+            "relevance": 0.0,
+            "clarity": 0.0,
+            "evidence_strength": 0.0,
+            "quantified_impact": 0.0,
+        },
+        "evidence_summary": [],
+        "risk_summary": [],
+        "missing_info": [],
+    }
+
+    existing_events = state.get("pending_sse_events", [])
+    return {
+        "variants": [variant],
+        "current_diff": [{"op": "insert", "text": content_str}],
+        "review_iteration": 0,
+        "pending_sse_events": [*existing_events, diff_started, diff_delta, diff_completed],
+    }
+
+
+# ── 4. Self Review ────────────────────────────────────────────────────────────
+
+class ReviewResult(BaseModel):
+    verdict: str  # "pass" | "needs_revision"
+    revision_instruction: str | None = None
+    issues: list[str] = []
+    score_estimate: float = 0.7
+
+
+async def self_review_node(state: ResumeGenerationState) -> dict:
+    """Review generated variants for quality. Max 3 iterations."""
+    iteration = state.get("review_iteration", 0)
+    if iteration >= settings.max_self_review_iterations:
+        return {"review_result": {"verdict": "pass", "issues": [], "score_estimate": 0.7}}
+
+    variants = state.get("variants", [])
+    if not variants:
+        return {"review_result": {"verdict": "pass", "issues": []}}
+
+    content = variants[0].get("content", "")
+    jd_text = state.get("jd_text") or ""
+
+    provider = get_provider()
+    result: ReviewResult = await provider.chat_structured(
+        [
+            {
+                "role": "system",
+                "content": (
+                    "Review this resume for quality. Check:\n"
+                    "1. Are claims specific and verifiable (not vague)?\n"
+                    "2. Does it address the JD requirements?\n"
+                    "3. Are there unsubstantiated superlatives?\n"
+                    "4. Is the language natural and professional?\n\n"
+                    "If issues found, provide a specific revision_instruction. "
+                    "Only fail if there are significant quality issues worth fixing."
+                ),
+            },
+            {
+                "role": "user",
+                "content": f"JD:\n{jd_text[:1000]}\n\nResume:\n{content[:2000]}",
+            },
+        ],
+        ReviewResult,
+        temperature=0.2,
+    )
+
+    return {
+        "review_result": result.model_dump() if result else {"verdict": "pass"},
+        "revision_instruction": result.revision_instruction if result else None,
+    }
+
+
+# ── 5. Revision ───────────────────────────────────────────────────────────────
+
+async def revision_node(state: ResumeGenerationState) -> dict:
+    """Apply revision instruction to improve the draft."""
+    review = state.get("review_result", {})
+    instruction = review.get("revision_instruction") or state.get("revision_instruction")
+
+    if not instruction:
+        return {}
+
+    # Bump iteration count and re-run generation with revision instruction
+    current_iter = state.get("review_iteration", 0)
+    return {
+        "review_iteration": current_iter + 1,
+        "revision_instruction": instruction,
+    }
+
+
+# ── 6. Output / Interrupt ─────────────────────────────────────────────────────
+
+async def output_node(state: ResumeGenerationState) -> dict:
+    """Prepare interrupt payload and halt graph for user review."""
+    from langgraph.types import interrupt
+
+    variants = state.get("variants", [])
+    interrupt_id = str(uuid.uuid4())
+
+    interrupt_event: AgentInterruptEvent = {
+        "event": "agent.interrupt",
+        "interrupt_id": interrupt_id,
+        "type": "resume_review",
+        "message": f"I've generated {len(variants)} resume variant(s). Please review and choose one to accept, or provide feedback.",
+        "variants": [
+            {
+                "id": v.get("id", ""),
+                "title": v.get("title", ""),
+                "score": v.get("score", {}),
+            }
+            for v in variants
+        ],
+        "candidates": [],
+        "action_options": [
+            {"id": "accept", "label": "Accept", "description": "Accept the variant and save to resume"},
+            {"id": "revise", "label": "Revise", "description": "Request changes"},
+            {"id": "discard", "label": "Discard", "description": "Discard and start over"},
+        ],
+    }
+
+    existing_events = state.get("pending_sse_events", [])
+
+    payload = {
+        "interrupt_id": interrupt_id,
+        "type": "resume_review",
+        "variants": variants,
+    }
+
+    # LangGraph interrupt — suspends execution here
+    interrupt(payload)
+
+    return {
+        "interrupt_payload": payload,
+        "pending_sse_events": [*existing_events, interrupt_event],
+    }
+
+
+# ── Routing ───────────────────────────────────────────────────────────────────
+
+def review_route(state: ResumeGenerationState) -> str:
+    """After self_review: go to revision or output."""
+    review = state.get("review_result", {})
+    iteration = state.get("review_iteration", 0)
+
+    if review.get("verdict") == "needs_revision" and iteration < settings.max_self_review_iterations:
+        return "revision"
+    return "output"
