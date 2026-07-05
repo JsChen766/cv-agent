@@ -11,11 +11,11 @@ from __future__ import annotations
 
 import logging
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.api.deps import build_service_container, get_current_user_id, pool_dep
 from app.api.response import ok
@@ -43,6 +43,29 @@ class ChatRequest(BaseModel):
     clientState: ClientState = ClientState()
 
 
+class AssistantMessage(BaseModel):
+    id: str
+    role: Literal["assistant"]
+    content: str
+    createdAt: str
+
+
+class ChatResponseData(BaseModel):
+    threadId: str
+    turnId: str
+    assistantMessage: AssistantMessage
+    workspace: dict[str, Any] = Field(default_factory=dict)
+    nextActions: list[dict[str, Any]] = Field(default_factory=list)
+    suggestedPrompts: list[str] = Field(default_factory=list)
+    interrupt: dict[str, Any] | None = None
+
+
+class ChatResponseEnvelope(BaseModel):
+    success: bool
+    data: ChatResponseData
+    request_id: str
+
+
 class ActionPayload(BaseModel):
     type: str
     payload: dict[str, Any] = {}
@@ -52,6 +75,105 @@ class ActionRequest(BaseModel):
     threadId: str | None = None
     action: ActionPayload
     clientState: ClientState = ClientState()
+
+
+CHAT_RESPONSE_EXAMPLES = {
+    "normal": {
+        "summary": "普通回复",
+        "value": {
+            "success": True,
+            "data": {
+                "threadId": "thread_123",
+                "turnId": "turn_123",
+                "assistantMessage": {
+                    "id": "msg_123",
+                    "role": "assistant",
+                    "content": "我已经整理好了你的经历信息。",
+                    "createdAt": "2026-07-05T12:00:00+00:00",
+                },
+                "workspace": {"jd_id": "jd_123"},
+                "nextActions": [],
+                "suggestedPrompts": [],
+                "interrupt": None,
+            },
+            "request_id": "req_123",
+        },
+    },
+    "confirmationRequired": {
+        "summary": "需要用户确认",
+        "value": {
+            "success": True,
+            "data": {
+                "threadId": "thread_123",
+                "turnId": "turn_123",
+                "assistantMessage": {
+                    "id": "msg_124",
+                    "role": "assistant",
+                    "content": "",
+                    "createdAt": "2026-07-05T12:00:00+00:00",
+                },
+                "workspace": {},
+                "nextActions": [],
+                "suggestedPrompts": [],
+                "interrupt": {
+                    "type": "confirm_action",
+                    "message": "Please confirm before I run 'save_experience'.",
+                    "tool": "save_experience",
+                    "input": {"title": "Backend Engineer", "content": "..."},
+                },
+            },
+            "request_id": "req_124",
+        },
+    },
+}
+
+SSE_STREAM_RESPONSES = {
+    200: {
+        "description": (
+            "Server-Sent Events stream. Each chunk uses `event: <name>` and "
+            "`data: <json>` lines. Frontend process display should primarily "
+            "consume `agent.activity.updated`."
+        ),
+        "content": {
+            "text/event-stream": {
+                "schema": {
+                    "type": "string",
+                    "description": "SSE stream containing agent activity, tool, message, interrupt, completion, and failure events.",
+                },
+                "examples": {
+                    "activity": {
+                        "summary": "Agent process display event",
+                        "value": (
+                            "event: agent.activity.updated\n"
+                            'data: {"event":"agent.activity.updated","thread_id":"thread_123","turn_id":"turn_123","sequence":1,'
+                            '"timestamp":"2026-07-05T12:00:00+00:00","agent_role":"resume_writer","agent_label":"简历写手",'
+                            '"status":"running","action":"正在生成内容草稿"}\n\n'
+                        ),
+                    },
+                    "tool": {
+                        "summary": "Tool call event",
+                        "value": (
+                            "event: agent.tool.started\n"
+                            'data: {"event":"agent.tool.started","tool":"list_resumes","input":{"limit":1}}\n\n'
+                        ),
+                    },
+                    "interrupt": {
+                        "summary": "Confirmation interrupt event",
+                        "value": (
+                            "event: agent.interrupt\n"
+                            'data: {"event":"agent.interrupt","type":"confirm_action","tool":"save_experience",'
+                            '"message":"Please confirm before I run save_experience."}\n\n'
+                        ),
+                    },
+                    "completed": {
+                        "summary": "Stream completion event",
+                        "value": 'event: agent.completed\ndata: {"event":"agent.completed"}\n\n',
+                    },
+                },
+            }
+        },
+    }
+}
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -120,7 +242,11 @@ def _build_response(
 # ── Routes ─────────────────────────────────────────────────────────────────────
 
 
-@router.post("/chat")
+@router.post(
+    "/chat",
+    response_model=ChatResponseEnvelope,
+    responses={200: {"content": {"application/json": {"examples": CHAT_RESPONSE_EXAMPLES}}}},
+)
 async def chat(
     body: ChatRequest,
     request: Request,
@@ -167,7 +293,11 @@ async def chat(
     )
 
 
-@router.post("/chat/stream")
+@router.post(
+    "/chat/stream",
+    response_class=StreamingResponse,
+    responses=SSE_STREAM_RESPONSES,
+)
 async def chat_stream(
     body: ChatRequest,
     user_id: str = Depends(get_current_user_id),

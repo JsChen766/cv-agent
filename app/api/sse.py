@@ -12,6 +12,11 @@ from collections.abc import AsyncGenerator
 from typing import Any
 
 from app.core.events import format_sse
+from app.graphs.activity import (
+    activity_from_interrupt,
+    activity_from_node_event,
+    activity_from_tool_event,
+)
 from app.graphs.state import MainState
 
 logger = logging.getLogger(__name__)
@@ -30,10 +35,35 @@ async def stream_graph_events(
 
     A final `agent.completed` or `agent.failed` event is always emitted.
     """
+    thread_id = initial_state.get("thread_id")
+    turn_id = initial_state.get("current_turn_id")
+    activity_sequence = 0
+
+    def commit_activity(event: dict[str, Any] | None) -> dict[str, Any] | None:
+        nonlocal activity_sequence
+        if event is None:
+            return None
+        activity_sequence += 1
+        event["sequence"] = activity_sequence
+        return event
+
     try:
         async for event in graph.astream_events(initial_state, config=config, version="v2"):
             event_type = event.get("event", "")
+            event_name = event.get("name", "")
             data = event.get("data", {})
+
+            if event_type == "on_chain_start":
+                activity = activity_from_node_event(
+                    event_name,
+                    "running",
+                    thread_id=thread_id,
+                    turn_id=turn_id,
+                    sequence=activity_sequence + 1,
+                )
+                activity = commit_activity(activity)
+                if activity is not None:
+                    yield format_sse(activity)
 
             # LangGraph on_chain_end carries state updates from nodes.
             # We look for pending_sse_events added by nodes and flush them.
@@ -42,11 +72,38 @@ async def stream_graph_events(
                 if isinstance(output, dict):
                     sse_events = output.get("pending_sse_events", [])
                     for sse_evt in sse_events:
+                        activity = activity_from_tool_event(
+                            sse_evt,
+                            thread_id=thread_id,
+                            turn_id=turn_id,
+                            sequence=activity_sequence + 1,
+                        )
+                        activity = commit_activity(activity)
+                        if activity is not None:
+                            yield format_sse(activity)
                         yield format_sse(sse_evt)
+                activity = activity_from_node_event(
+                    event_name,
+                    "completed",
+                    thread_id=thread_id,
+                    turn_id=turn_id,
+                    sequence=activity_sequence + 1,
+                )
+                activity = commit_activity(activity)
+                if activity is not None:
+                    yield format_sse(activity)
 
             # Interrupt events are surfaced as on_chain_end on the graph
             elif event_type == "on_interrupt":
                 payload = data.get("value", {})
+                activity = activity_from_interrupt(
+                    payload,
+                    thread_id=thread_id,
+                    turn_id=turn_id,
+                    sequence=activity_sequence + 1,
+                )
+                activity = commit_activity(activity)
+                yield format_sse(activity)
                 interrupt_sse = {
                     "event": "agent.interrupt",
                     "interrupt_type": payload.get("interrupt_type", "confirmation"),

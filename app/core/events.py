@@ -80,6 +80,31 @@ class AgentToolFailedEvent(TypedDict):
     error: str
 
 
+class AgentActivityToolInfo(TypedDict):
+    name: str
+    label: str
+    status: Literal["running", "waiting_user", "completed", "failed"]
+
+
+class AgentActivityUpdatedEvent(TypedDict, total=False):
+    event: Literal["agent.activity.updated"]
+    thread_id: str | None
+    turn_id: str | None
+    sequence: int
+    timestamp: str
+    agent_role: Literal[
+        "frontdesk",
+        "experience_orchestrator",
+        "jd_analyst",
+        "resume_writer",
+        "resume_reviewer",
+    ]
+    agent_label: str
+    status: Literal["running", "waiting_user", "completed", "failed"]
+    action: str
+    tool: AgentActivityToolInfo
+
+
 # ── Content diff events (resume canvas) ──────────────────────────────────────
 
 class ContentDiffStartedEvent(TypedDict):
@@ -182,6 +207,7 @@ SSEEvent = (
     | AgentToolStartedEvent
     | AgentToolCompletedEvent
     | AgentToolFailedEvent
+    | AgentActivityUpdatedEvent
     | ContentDiffStartedEvent
     | ContentDiffDeltaEvent
     | ContentDiffCompletedEvent
