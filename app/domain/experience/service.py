@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from app.core.errors import ForbiddenError, NotFoundError
+from app.core.errors import NotFoundError
 from app.core.types import (
     CANDIDATE_PREFIX,
     EXP_PREFIX,

@@ -101,7 +101,7 @@ class PostgresPreferenceRepository:
         vec = f"[{','.join(str(v) for v in embedding)}]"
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(
-                f"""
+                """
                 SELECT *, 1 - (embedding <=> $1::vector) AS similarity
                 FROM preferences
                 WHERE user_id=$2 AND active=TRUE AND embedding IS NOT NULL

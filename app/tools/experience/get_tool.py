@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pydantic import BaseModel
 
-from app.tools.base import Tool, ToolContext, ToolResult
+from app.tools.base import ToolContext, ToolResult
 from app.tools.registry import register
 
 
@@ -13,6 +13,7 @@ class GetExperienceInput(BaseModel):
 class GetExperienceTool:
     name = "get_experience"
     description = "Get full details of a specific experience including all revisions"
+    input_schema = GetExperienceInput
     requires_confirmation = False
     risk_level = "low"
 

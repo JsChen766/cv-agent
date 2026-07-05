@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
-from app.tools.base import Tool, ToolContext, ToolResult
+from app.tools.base import ToolContext, ToolResult
 from app.tools.registry import register
 
 
@@ -10,12 +10,13 @@ class ListExperiencesInput(BaseModel):
     category: str | None = None
     tags: list[str] | None = None
     q: str | None = None
-    limit: int = 20
+    limit: int = Field(default=20, ge=1, le=50)
 
 
 class ListExperiencesTool:
     name = "list_experiences"
     description = "List the user's experience library, optionally filtered by category, tags, or search query"
+    input_schema = ListExperiencesInput
     requires_confirmation = False
     risk_level = "low"
 

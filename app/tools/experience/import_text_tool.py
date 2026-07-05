@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.tools.base import ToolContext, ToolResult
 from app.tools.registry import register
@@ -8,13 +8,15 @@ from app.tools.registry import register
 
 class ImportTextInput(BaseModel):
     raw_text: str
-    candidates: list[dict] = []  # pre-parsed by LLM before calling this tool
+    candidates: list[dict] = Field(default_factory=list)
+    source_label: str | None = None
 
 
 class ImportTextTool:
     name = "import_experience_text"
     description = "Import experiences from raw text (resume paste, LinkedIn export, etc.)"
-    requires_confirmation = True
+    input_schema = ImportTextInput
+    requires_confirmation = False
     risk_level = "low"
 
     async def execute(self, input: ImportTextInput, context: ToolContext) -> ToolResult:

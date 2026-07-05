@@ -9,9 +9,7 @@ from app.providers.factory import get_provider
 async def save_jd_node(state: MainState) -> dict:
     """Extract JD info from user message and save it."""
     from pydantic import BaseModel
-    from app.tools.base import ToolContext, ServiceContainer
-    from app.tools.jd.save_tool import SaveJdTool, SaveJdInput
-    from app.tools.registry import get
+
 
     messages = state.get("messages", [])
     extracted = state.get("extracted_params", {})

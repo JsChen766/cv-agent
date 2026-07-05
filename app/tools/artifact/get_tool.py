@@ -13,6 +13,7 @@ class GetArtifactInput(BaseModel):
 class GetArtifactTool:
     name = "get_artifact"
     description = "Retrieve a specific artifact's full content"
+    input_schema = GetArtifactInput
     requires_confirmation = False
     risk_level = "low"
 

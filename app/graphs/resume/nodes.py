@@ -8,32 +8,32 @@ Flow:
 
 from __future__ import annotations
 
-import json
 import uuid
-from typing import Any
 
+from langchain_core.runnables import RunnableConfig
 from pydantic import BaseModel
 
 from app.core.config import settings
 from app.core.events import (
+    AgentInterruptEvent,
     ContentDiffCompletedEvent,
     ContentDiffDeltaEvent,
     ContentDiffStartedEvent,
-    AgentInterruptEvent,
 )
 from app.graphs.resume.state import ResumeGenerationState
+from app.graphs.runtime import pool_from_config
 from app.providers.factory import get_provider
-
 
 # ── 1. Context Assembly ───────────────────────────────────────────────────────
 
-async def context_assembly_node(state: ResumeGenerationState) -> dict:
+async def context_assembly_node(state: ResumeGenerationState, config: RunnableConfig = None) -> dict:
     """Gather all context needed for resume generation."""
     from app.memory.context_assembly import assemble_context
-    from app.infra.db.connection import get_pool
 
     try:
-        pool = get_pool()
+        pool = pool_from_config(config)
+        if pool is None:
+            return {}
         ctx = await assemble_context(state, pool)
         return {
             "jd_text": ctx.jd_text,

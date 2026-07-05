@@ -104,8 +104,8 @@ async def assemble_context(
     evidence_pack = None
     if jd_id and experiences:
         try:
-            from app.rag.evidence.service import EvidenceRagService
             from app.domain.jd.models import JdRequirement
+            from app.rag.evidence.service import EvidenceRagService
             # Fetch JD requirements
             async with pool.acquire() as conn:
                 row = await conn.fetchrow("SELECT requirements FROM jd_records WHERE id=$1", jd_id)

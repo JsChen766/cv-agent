@@ -7,7 +7,6 @@ latest message + thread context and decides which subgraph to invoke.
 
 from __future__ import annotations
 
-import json
 from typing import Any, Literal
 
 from pydantic import BaseModel

@@ -10,14 +10,14 @@ GET  /copilot/sidebar      — sidebar summary data
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from app.api.deps import get_current_user_id, pool_dep
+from app.api.deps import build_service_container, get_current_user_id, pool_dep
 from app.api.response import ok
 from app.api.sse import _build_initial_state, stream_graph_events
 from app.core.types import THREAD_PREFIX, generate_id
@@ -108,7 +108,7 @@ def _build_response(
             "id": generate_id("msg"),
             "role": "assistant",
             "content": assistant_message or "",
-            "createdAt": datetime.now(timezone.utc).isoformat(),
+            "createdAt": datetime.now(UTC).isoformat(),
         },
         "workspace": workspace or {},
         "nextActions": [],
@@ -145,10 +145,14 @@ async def chat(
     turn_id = generate_id("turn")
     workspace = _workspace_from_client_state(body.clientState)
     initial_state = _build_initial_state(thread_id, user_id, body.message, workspace, turn_id)
-    config = {"configurable": {"thread_id": thread_id}}
+    configurable: dict[str, Any] = {"thread_id": thread_id}
+    if _pool:
+        configurable["services"] = build_service_container(_pool)
+        configurable["pool"] = _pool
+    config = {"configurable": configurable}
 
     try:
-        graph = get_graph()
+        graph = get_graph(_get_checkpointer_or_none())
         final_state = await graph.ainvoke(initial_state, config=config)
         assistant_msg = final_state.get("assistant_message", "Done.")
         interrupt_payload = final_state.get("interrupt_payload")
@@ -182,9 +186,13 @@ async def chat_stream(
     turn_id = generate_id("turn")
     workspace = _workspace_from_client_state(body.clientState)
     initial_state = _build_initial_state(thread_id, user_id, body.message, workspace, turn_id)
-    config = {"configurable": {"thread_id": thread_id}}
+    configurable: dict[str, Any] = {"thread_id": thread_id}
+    if _pool:
+        configurable["services"] = build_service_container(_pool)
+        configurable["pool"] = _pool
+    config = {"configurable": configurable}
 
-    graph = get_graph()
+    graph = get_graph(_get_checkpointer_or_none())
 
     return StreamingResponse(
         stream_graph_events(graph, initial_state, config),
@@ -194,6 +202,15 @@ async def chat_stream(
             "X-Accel-Buffering": "no",
         },
     )
+
+
+def _get_checkpointer_or_none():
+    try:
+        from app.infra.db.checkpointer import get_checkpointer
+
+        return get_checkpointer()
+    except RuntimeError:
+        return None
 
 
 @router.post("/actions")

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime
 
 import asyncpg
 
@@ -138,7 +137,7 @@ class PostgresExperienceRepository:
         if not set_parts:
             return await self.get(user_id, experience_id)  # type: ignore[return-value]
 
-        set_parts.append(f"updated_at = NOW()")
+        set_parts.append("updated_at = NOW()")
         values.extend([experience_id, user_id])
         sql = f"""
             UPDATE experiences SET {', '.join(set_parts)}
@@ -173,20 +172,19 @@ class PostgresExperienceRepository:
         content: str,
         source: str,
     ) -> ExperienceRevision:
-        async with self._pool.acquire() as conn:
-            async with conn.transaction():
-                row = await conn.fetchrow(
-                    """
+        async with self._pool.acquire() as conn, conn.transaction():
+            row = await conn.fetchrow(
+                """
                     INSERT INTO experience_revisions (id, experience_id, content, source)
                     VALUES ($1, $2, $3, $4)
                     RETURNING *
                     """,
-                    revision_id, experience_id, content, source,
-                )
-                await conn.execute(
-                    "UPDATE experiences SET current_revision_id=$1, updated_at=NOW() WHERE id=$2",
-                    revision_id, experience_id,
-                )
+                revision_id, experience_id, content, source,
+            )
+            await conn.execute(
+                "UPDATE experiences SET current_revision_id=$1, updated_at=NOW() WHERE id=$2",
+                revision_id, experience_id,
+            )
         return self._to_rev(row)  # type: ignore[arg-type]
 
     # ── Import Jobs ───────────────────────────────────────────────────────────

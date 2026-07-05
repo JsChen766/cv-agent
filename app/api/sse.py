@@ -7,7 +7,6 @@ so the FastAPI route can return a StreamingResponse.
 
 from __future__ import annotations
 
-import json
 import logging
 from collections.abc import AsyncGenerator
 from typing import Any

@@ -152,17 +152,16 @@ class PostgresResumeRepository:
     async def reorder_items(
         self, resume_id: str, ordered_ids: list[str]
     ) -> list[ResumeItem]:
-        async with self._pool.acquire() as conn:
-            async with conn.transaction():
-                for idx, item_id in enumerate(ordered_ids):
-                    await conn.execute(
-                        "UPDATE resume_items SET order_index=$1 WHERE id=$2 AND resume_id=$3",
-                        idx, item_id, resume_id,
-                    )
-                rows = await conn.fetch(
-                    "SELECT * FROM resume_items WHERE resume_id=$1 ORDER BY order_index",
-                    resume_id,
+        async with self._pool.acquire() as conn, conn.transaction():
+            for idx, item_id in enumerate(ordered_ids):
+                await conn.execute(
+                    "UPDATE resume_items SET order_index=$1 WHERE id=$2 AND resume_id=$3",
+                    idx, item_id, resume_id,
                 )
+            rows = await conn.fetch(
+                "SELECT * FROM resume_items WHERE resume_id=$1 ORDER BY order_index",
+                resume_id,
+            )
         return [self._to_item(r) for r in rows]
 
     # ── Variants ──────────────────────────────────────────────────────────────

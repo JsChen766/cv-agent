@@ -1,27 +1,28 @@
 from __future__ import annotations
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.tools.base import ToolContext, ToolResult
 from app.tools.registry import register
 
 
 class SaveExperienceInput(BaseModel):
-    category: str
     title: str
     content: str
+    category: str = "work"
     organization: str | None = None
     role: str | None = None
     start_date: str | None = None
     end_date: str | None = None
-    tags: list[str] = []
+    tags: list[str] = Field(default_factory=list)
 
 
 class SaveExperienceTool:
     name = "save_experience"
     description = "Create a new experience entry in the user's experience library"
-    requires_confirmation = False
-    risk_level = "low"
+    input_schema = SaveExperienceInput
+    requires_confirmation = True
+    risk_level = "medium"
 
     async def execute(self, input: SaveExperienceInput, context: ToolContext) -> ToolResult:
         exp = await context.services.experience.create_experience(

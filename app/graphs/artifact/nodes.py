@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+from langchain_core.runnables import RunnableConfig
+
 from app.core.events import ArtifactCompletedEvent, ArtifactDeltaEvent, ArtifactStartedEvent
 from app.graphs.artifact.registry import get_config
+from app.graphs.runtime import pool_from_config, services_from_config
 from app.graphs.state import MainState
 from app.providers.factory import get_provider
-
 
 _ARTIFACT_PROMPTS = {
     "cover_letter": (
@@ -44,13 +46,14 @@ _ARTIFACT_PROMPTS = {
 }
 
 
-async def artifact_context_assembly_node(state: MainState) -> dict:
+async def artifact_context_assembly_node(state: MainState, config: RunnableConfig = None) -> dict:
     """Fetch context for artifact generation."""
     from app.memory.context_assembly import assemble_context
-    from app.infra.db.connection import get_pool
 
     try:
-        pool = get_pool()
+        pool = pool_from_config(config)
+        if pool is None:
+            return {}
         ctx = await assemble_context(state, pool)
         return {
             "assembled_jd_text": ctx.jd_text,
@@ -62,7 +65,7 @@ async def artifact_context_assembly_node(state: MainState) -> dict:
         return {}
 
 
-async def artifact_draft_node(state: MainState) -> dict:
+async def artifact_draft_node(state: MainState, config: RunnableConfig = None) -> dict:
     """Generate artifact content and save to DB."""
     provider = get_provider()
 
@@ -121,18 +124,12 @@ async def artifact_draft_node(state: MainState) -> dict:
     delta_event: ArtifactDeltaEvent = {"event": "artifact.delta", "content": content_str}
 
     # Save artifact to DB
+    services = services_from_config(config)
     try:
-        from app.infra.db.connection import get_pool
-        from app.infra.db.repositories.artifact_repo import PostgresArtifactRepository
-        from app.domain.artifact.service import ArtifactService
-        from app.core.types import ARTIFACT_PREFIX, generate_id
-
-        pool = get_pool()
-        artifact_id = generate_id(ARTIFACT_PREFIX)
-        repo = PostgresArtifactRepository(pool)
-        svc = ArtifactService(repo)
+        if services is None:
+            raise RuntimeError("Tool services unavailable")
         user_id = state.get("user_id", "")
-        artifact = await svc.create_artifact(
+        artifact = await services.artifact.create_artifact(
             user_id,
             {
                 "type": artifact_type,

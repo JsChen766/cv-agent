@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 
+import asyncpg
 from fastapi import APIRouter, Depends, Request, UploadFile
 from fastapi import File as FastAPIFile
 
@@ -10,7 +11,6 @@ from app.api.response import ok
 from app.core.types import FILE_PREFIX, generate_id
 from app.infra.files.parser import parse_file
 from app.infra.files.storage import get_storage
-import asyncpg
 
 router = APIRouter(tags=["files"])
 

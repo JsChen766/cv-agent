@@ -3,6 +3,10 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 from typing import Any, Protocol
 
+from pydantic import BaseModel, Field
+
+from app.tools.base import Tool
+
 
 class Message(dict):
     """A chat message dict with keys 'role' and 'content'."""
@@ -18,6 +22,18 @@ class Message(dict):
     @classmethod
     def assistant(cls, content: str) -> Message:
         return cls(role="assistant", content=content)
+
+
+class ToolCall(BaseModel):
+    id: str
+    name: str
+    arguments: dict[str, Any]
+
+
+class ChatResult(BaseModel):
+    content: str = ""
+    tool_calls: list[ToolCall] = Field(default_factory=list)
+    raw: Any | None = None
 
 
 class LLMProvider(Protocol):
@@ -38,6 +54,16 @@ class LLMProvider(Protocol):
         *,
         temperature: float = 0.2,
     ) -> Any: ...
+
+    async def chat_with_tools(
+        self,
+        messages: list[dict[str, Any]],
+        tools: list[Tool],
+        *,
+        tool_choice: str | None = "auto",
+        temperature: float = 0.2,
+        max_tokens: int | None = None,
+    ) -> ChatResult: ...
 
     async def embed(self, texts: list[str]) -> list[list[float]]: ...
 

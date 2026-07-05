@@ -66,10 +66,13 @@ def build_main_graph(checkpointer=None):
 
 # Lazy singleton — only built when first needed
 _graph = None
+_graph_checkpointer_id = None
 
 
 def get_graph(checkpointer=None):
-    global _graph
-    if _graph is None:
+    global _graph, _graph_checkpointer_id
+    checkpointer_id = id(checkpointer) if checkpointer is not None else None
+    if _graph is None or _graph_checkpointer_id != checkpointer_id:
         _graph = build_main_graph(checkpointer)
+        _graph_checkpointer_id = checkpointer_id
     return _graph

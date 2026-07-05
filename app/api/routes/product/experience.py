@@ -1,13 +1,14 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Query, Request, UploadFile, File as FastAPIFile
+from fastapi import APIRouter, Depends, Query, Request
 from pydantic import BaseModel
 
-from app.api.deps import get_current_user_id, get_experience_service, get_preference_service, pool_dep
+from app.api.deps import (
+    get_current_user_id,
+    get_experience_service,
+)
 from app.api.response import ok, ok_list
 from app.domain.experience.service import ExperienceService
-from app.domain.preference.service import PreferenceService
-import asyncpg
 
 router = APIRouter(tags=["experiences"])
 

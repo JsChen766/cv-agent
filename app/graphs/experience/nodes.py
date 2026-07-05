@@ -8,11 +8,12 @@ from __future__ import annotations
 
 from typing import Any
 
-from app.core.errors import GraphInterruptError
+from langchain_core.runnables import RunnableConfig
+
 from app.core.events import AgentInterruptEvent
+from app.graphs.runtime import services_from_config
 from app.graphs.state import MainState
 from app.providers.factory import get_provider
-
 
 # ── Parse node ─────────────────────────────────────────────────────────────────
 
@@ -71,7 +72,7 @@ async def parse_import_node(state: MainState) -> dict[str, Any]:
     existing = state.get("pending_sse_events", [])
     thinking_event = {
         "event": "agent.thinking",
-        "content": f"Found {len(candidates)} experience(s) to import. Please review before saving.",
+        "text": f"Found {len(candidates)} experience(s) to import. Please review before saving.",
     }
     return {
         "import_candidates": candidates,
@@ -120,7 +121,7 @@ async def review_import_node(state: MainState) -> dict[str, Any]:
 # ── Save node ─────────────────────────────────────────────────────────────────
 
 
-async def save_import_node(state: MainState) -> dict[str, Any]:
+async def save_import_node(state: MainState, config: RunnableConfig = None) -> dict[str, Any]:
     """
     Persist confirmed candidates to the database via ExperienceService.
     Embeds content for RAG after saving.
@@ -131,23 +132,24 @@ async def save_import_node(state: MainState) -> dict[str, Any]:
     saved_ids: list[str] = []
 
     try:
-        from app.infra.db.connection import get_pool
-        from app.infra.db.repositories.experience_repo import PostgresExperienceRepository
-        from app.domain.experience.service import ExperienceService
-        from app.rag.evidence.indexer import index_experience
-
-        pool = get_pool()
-        repo = PostgresExperienceRepository(pool)
-        svc = ExperienceService(repo)
+        services = services_from_config(config)
+        if services is None:
+            raise RuntimeError("Tool services unavailable")
 
         for candidate in candidates:
-            exp = await svc.create_experience(user_id, candidate)
+            exp = await services.experience.create_experience(
+                user_id,
+                category=candidate.get("category", "work"),
+                title=candidate.get("title", "Untitled experience"),
+                content=candidate.get("content", ""),
+                organization=candidate.get("organization"),
+                role=candidate.get("role"),
+                start_date=candidate.get("start_date"),
+                end_date=candidate.get("end_date"),
+                tags=candidate.get("tags"),
+                source="import",
+            )
             saved_ids.append(exp.id)
-            # Fire-and-forget embedding index
-            try:
-                await index_experience(exp, pool)
-            except Exception:
-                pass  # Non-fatal; indexing can be retried
 
     except Exception as exc:
         existing = state.get("pending_sse_events", [])

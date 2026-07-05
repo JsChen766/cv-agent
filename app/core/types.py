@@ -3,7 +3,6 @@ from __future__ import annotations
 from typing import Literal
 from uuid import uuid4
 
-
 # ── ID helpers ────────────────────────────────────────────────────────────────
 
 def generate_id(prefix: str = "") -> str:

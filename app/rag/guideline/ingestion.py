@@ -24,21 +24,20 @@ async def ingest_file(file_path: str, pool) -> int:
     embed_provider = get_embedding_provider()
     embeddings = await embed_provider.embed(chunks)
 
-    async with pool.acquire() as conn:
-        async with conn.transaction():
-            count = 0
-            for i, (chunk, emb) in enumerate(zip(chunks, embeddings)):
-                chunk_id = str(uuid.uuid4())
-                vec_str = f"[{','.join(str(v) for v in emb)}]"
-                await conn.execute(
-                    """
+    async with pool.acquire() as conn, conn.transaction():
+        count = 0
+        for i, (chunk, emb) in enumerate(zip(chunks, embeddings)):
+            chunk_id = str(uuid.uuid4())
+            vec_str = f"[{','.join(str(v) for v in emb)}]"
+            await conn.execute(
+                """
                     INSERT INTO guideline_chunks (id, content, source_file, chunk_index, embedding)
                     VALUES ($1, $2, $3, $4, $5::vector)
                     ON CONFLICT DO NOTHING
                     """,
-                    chunk_id, chunk, file_path, i, vec_str,
-                )
-                count += 1
+                chunk_id, chunk, file_path, i, vec_str,
+            )
+            count += 1
     return count
 
 
@@ -74,7 +73,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     async def main():
-        from app.infra.db.connection import create_pool, close_pool
+        from app.infra.db.connection import close_pool, create_pool
         pool = await create_pool()
         count = await ingest_file(args.file, pool)
         print(f"Ingested {count} chunks from {args.file}")

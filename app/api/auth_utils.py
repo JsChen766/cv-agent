@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from jose import JWTError, jwt
 
@@ -13,7 +13,7 @@ ALGORITHM = "HS256"
 
 
 def create_access_token(user_id: str) -> str:
-    expire = datetime.now(timezone.utc) + timedelta(
+    expire = datetime.now(UTC) + timedelta(
         minutes=settings.access_token_expire_minutes
     )
     payload = {"sub": user_id, "exp": expire}

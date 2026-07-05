@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from typing import Any, Literal, Protocol
 
-import asyncpg
 from pydantic import BaseModel
 
 from app.domain.artifact.service import ArtifactService
@@ -45,6 +44,7 @@ class ToolResult(BaseModel):
 class Tool(Protocol):
     name: str
     description: str
+    input_schema: type[BaseModel]
     requires_confirmation: bool
     risk_level: Literal["low", "medium", "high"]
 

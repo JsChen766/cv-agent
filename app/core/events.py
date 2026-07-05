@@ -12,7 +12,6 @@ Reference: api-contract.md §3.3
 import json
 from typing import Any, Literal, TypedDict
 
-
 # ── Payload sub-types ─────────────────────────────────────────────────────────
 
 class DiffOperation(TypedDict):

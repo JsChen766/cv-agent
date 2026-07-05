@@ -16,14 +16,22 @@ from app.core.errors import AppError
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # Startup
-    from app.infra.db.connection import close_pool, create_pool
     import logging
+
+    from app.infra.db.checkpointer import close_checkpointer, create_checkpointer
+    from app.infra.db.connection import close_pool, create_pool
+
     try:
         await create_pool()
     except Exception as e:
         logging.warning(f"DB pool init failed (running without DB): {e}")
+    try:
+        await create_checkpointer()
+    except Exception as e:
+        logging.warning(f"LangGraph checkpointer init failed (interrupt resume may be unavailable): {e}")
     yield
     # Shutdown
+    await close_checkpointer()
     await close_pool()
 
 
@@ -66,18 +74,19 @@ async def health() -> dict:
 
 # ── Middleware ────────────────────────────────────────────────────────────────
 from app.api.middleware.request_id import RequestIdMiddleware
+
 app.add_middleware(RequestIdMiddleware)
 
 # ── Routers ───────────────────────────────────────────────────────────────────
 from app.api.routes.auth import router as auth_router
-from app.api.routes.users import router as users_router
+from app.api.routes.copilot import router as copilot_router
 from app.api.routes.files import router as files_router
+from app.api.routes.product.artifact import router as artifact_router
 from app.api.routes.product.experience import router as experience_router
 from app.api.routes.product.jd import router as jd_router
 from app.api.routes.product.resume import router as resume_router
-from app.api.routes.product.artifact import router as artifact_router
-from app.api.routes.copilot import router as copilot_router
 from app.api.routes.threads import router as threads_router
+from app.api.routes.users import router as users_router
 
 app.include_router(auth_router, prefix="/v1")
 app.include_router(users_router, prefix="/v1")

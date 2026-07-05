@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, Request, Response
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel
 
 from app.api.auth_utils import create_access_token
 from app.api.deps import get_current_user, get_user_service

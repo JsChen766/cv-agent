@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from datetime import datetime
-
 import asyncpg
 
 from app.domain.user.models import User, UserProfile

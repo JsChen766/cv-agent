@@ -9,7 +9,6 @@ from __future__ import annotations
 
 from app.memory.thread_state import MessageDict
 
-
 COMPRESSION_THRESHOLD = 20    # messages before we start compressing
 MESSAGES_TO_KEEP = 8          # how many recent messages to keep uncompressed
 

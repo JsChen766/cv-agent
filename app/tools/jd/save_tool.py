@@ -16,8 +16,9 @@ class SaveJdInput(BaseModel):
 class SaveJdTool:
     name = "save_jd"
     description = "Save a job description to the user's JD library"
-    requires_confirmation = False
-    risk_level = "low"
+    input_schema = SaveJdInput
+    requires_confirmation = True
+    risk_level = "medium"
 
     async def execute(self, input: SaveJdInput, context: ToolContext) -> ToolResult:
         jd = await context.services.jd.create_jd(

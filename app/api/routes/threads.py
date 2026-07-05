@@ -11,16 +11,15 @@ POST   /threads/:id/discard      — discard interrupt (user cancelled)
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel
 
-from app.api.deps import get_current_user_id, pool_dep
+from app.api.deps import build_service_container, get_current_user_id, pool_dep
 from app.api.response import ok, ok_list
 from app.core.errors import ForbiddenError, NotFoundError
-from app.core.types import generate_id
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/threads", tags=["threads"])
@@ -151,7 +150,7 @@ async def update_thread(
 
     if updates:
         updates.append(f"updated_at = ${idx}")
-        params.append(datetime.now(timezone.utc))
+        params.append(datetime.now(UTC))
         idx += 1
         params.append(thread_id)
         query = f"UPDATE threads SET {', '.join(updates)} WHERE id = ${idx} RETURNING *"  # noqa: S608
@@ -176,10 +175,12 @@ async def resume_thread(
     Resume a suspended graph after user confirmation.
     Invokes the graph with Command(resume=...) to continue from the interrupt.
     """
-    from app.graphs.main import get_graph
-    from app.api.routes.copilot import _build_response
     from langgraph.types import Command
 
+    from app.api.routes.copilot import _build_response
+    from app.graphs.main import get_graph
+
+    _pool = None
     try:
         from app.infra.db.connection import get_pool as _get_pool
         _pool = _get_pool()
@@ -187,8 +188,12 @@ async def resume_thread(
     except RuntimeError:
         pass
 
-    graph = get_graph()
-    config = {"configurable": {"thread_id": thread_id}}
+    graph = get_graph(_get_checkpointer_or_none())
+    configurable: dict[str, Any] = {"thread_id": thread_id}
+    if _pool:
+        configurable["services"] = build_service_container(_pool)
+        configurable["pool"] = _pool
+    config = {"configurable": configurable}
 
     resume_data = body.confirmedData or {"confirmed": True}
 
@@ -205,6 +210,15 @@ async def resume_thread(
         _build_response(thread_id, body.turnId, assistant_msg, None, interrupt_payload),
         request,
     )
+
+
+def _get_checkpointer_or_none():
+    try:
+        from app.infra.db.checkpointer import get_checkpointer
+
+        return get_checkpointer()
+    except RuntimeError:
+        return None
 
 
 @router.post("/{thread_id}/discard")
@@ -225,8 +239,8 @@ async def discard_thread(
 
         if body.reason:
             # Record rejection signal for preference learning
-            from app.infra.db.repositories.preference_repo import PostgresPreferenceRepository
             from app.domain.preference.service import PreferenceService
+            from app.infra.db.repositories.preference_repo import PostgresPreferenceRepository
             from app.providers.factory import get_embedding_provider
 
             pref_repo = PostgresPreferenceRepository(_pool)

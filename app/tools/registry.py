@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import importlib
+
 from app.tools.base import Tool
 
 _registry: dict[str, Tool] = {}
+_loaded = False
 
 
 def register(tool: Tool) -> None:
@@ -10,22 +13,27 @@ def register(tool: Tool) -> None:
 
 
 def get_all() -> list[Tool]:
+    _ensure_loaded()
     return list(_registry.values())
 
 
 def get(name: str) -> Tool:
+    _ensure_loaded()
     if name not in _registry:
         raise KeyError(f"Tool not found: {name}")
     return _registry[name]
 
 
 def get_names() -> list[str]:
+    _ensure_loaded()
     return list(_registry.keys())
 
 
-# ── Auto-import all tool modules to trigger registration ──────────────────────
+def get_by_names(names: list[str]) -> list[Tool]:
+    return [get(name) for name in names]
+
+
 def _load_all() -> None:
-    import importlib
     tool_modules = [
         "app.tools.experience.list_tool",
         "app.tools.experience.get_tool",
@@ -38,7 +46,12 @@ def _load_all() -> None:
         "app.tools.artifact.get_tool",
     ]
     for module in tool_modules:
-        try:
-            importlib.import_module(module)
-        except ImportError:
-            pass  # tool not yet implemented — skip silently
+        importlib.import_module(module)
+
+
+def _ensure_loaded() -> None:
+    global _loaded
+    if _loaded:
+        return
+    _load_all()
+    _loaded = True
