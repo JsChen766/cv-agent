@@ -27,8 +27,8 @@ async def index_experience(
     content_emb = embeddings[0]
     vec_str = f"[{','.join(str(v) for v in content_emb)}]"
 
-    # 2. Extract claims
-    claims = await extract_claims(content)
+    # 2. Extract claims so extraction failures surface during indexing.
+    await extract_claims(content)
 
     async with pool.acquire() as conn, conn.transaction():
         # Update experience embedding

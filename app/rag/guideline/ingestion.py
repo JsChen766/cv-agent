@@ -26,7 +26,7 @@ async def ingest_file(file_path: str, pool) -> int:
 
     async with pool.acquire() as conn, conn.transaction():
         count = 0
-        for i, (chunk, emb) in enumerate(zip(chunks, embeddings)):
+        for i, (chunk, emb) in enumerate(zip(chunks, embeddings, strict=False)):
             chunk_id = str(uuid.uuid4())
             vec_str = f"[{','.join(str(v) for v in emb)}]"
             await conn.execute(

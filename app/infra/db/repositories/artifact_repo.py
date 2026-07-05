@@ -71,7 +71,6 @@ class PostgresArtifactRepository:
 
     async def update(self, user_id: str, artifact_id: str, patch: dict) -> Artifact:
         allowed = {"title", "content", "word_count"}
-        json_fields: set[str] = set()
         set_parts, values = [], []
         idx = 1
         for k, v in patch.items():

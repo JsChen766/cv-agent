@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 """
 SSE event type definitions.
 
@@ -8,6 +6,8 @@ The `format_sse` helper serialises an event to the wire format.
 
 Reference: api-contract.md §3.3
 """
+
+from __future__ import annotations
 
 import json
 from typing import Any, Literal, TypedDict

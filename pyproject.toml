@@ -51,7 +51,11 @@ line-length = 100
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM"]
-ignore = ["E501"]
+ignore = [
+    "E501",
+    # FastAPI dependency declarations intentionally call Depends/Query/File in signatures.
+    "B008",
+]
 
 [tool.mypy]
 python_version = "3.12"

@@ -1,6 +1,6 @@
-from __future__ import annotations
-
 """FastAPI application entry point."""
+
+from __future__ import annotations
 
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
@@ -9,6 +9,16 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
+from app.api.middleware.request_id import RequestIdMiddleware
+from app.api.routes.auth import router as auth_router
+from app.api.routes.copilot import router as copilot_router
+from app.api.routes.files import router as files_router
+from app.api.routes.product.artifact import router as artifact_router
+from app.api.routes.product.experience import router as experience_router
+from app.api.routes.product.jd import router as jd_router
+from app.api.routes.product.resume import router as resume_router
+from app.api.routes.threads import router as threads_router
+from app.api.routes.users import router as users_router
 from app.core.config import settings
 from app.core.errors import AppError
 
@@ -73,21 +83,9 @@ async def health() -> dict:
 
 
 # ── Middleware ────────────────────────────────────────────────────────────────
-from app.api.middleware.request_id import RequestIdMiddleware
-
 app.add_middleware(RequestIdMiddleware)
 
 # ── Routers ───────────────────────────────────────────────────────────────────
-from app.api.routes.auth import router as auth_router
-from app.api.routes.copilot import router as copilot_router
-from app.api.routes.files import router as files_router
-from app.api.routes.product.artifact import router as artifact_router
-from app.api.routes.product.experience import router as experience_router
-from app.api.routes.product.jd import router as jd_router
-from app.api.routes.product.resume import router as resume_router
-from app.api.routes.threads import router as threads_router
-from app.api.routes.users import router as users_router
-
 app.include_router(auth_router, prefix="/v1")
 app.include_router(users_router, prefix="/v1")
 app.include_router(files_router, prefix="/v1")

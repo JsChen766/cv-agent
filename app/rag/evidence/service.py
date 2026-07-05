@@ -105,9 +105,9 @@ class EvidenceRagService:
         matches: list[EvidenceMatch] = []
         matched_req_count = 0
 
-        for i, (req, req_emb) in enumerate(zip(jd_requirements, req_embeddings)):
+        for req, req_emb in zip(jd_requirements, req_embeddings, strict=False):
             matched_claims = []
-            for j, ((_, claim), claim_emb) in enumerate(zip(all_claims, claim_embeddings)):
+            for (_, claim), claim_emb in zip(all_claims, claim_embeddings, strict=False):
                 similarity = _cosine_sim(req_emb, claim_emb)
                 if similarity >= threshold:
                     matched_claims.append(claim)
@@ -134,7 +134,7 @@ class EvidenceRagService:
 
 
 def _cosine_sim(a: list[float], b: list[float]) -> float:
-    dot = sum(x * y for x, y in zip(a, b))
+    dot = sum(x * y for x, y in zip(a, b, strict=False))
     norm_a = sum(x * x for x in a) ** 0.5
     norm_b = sum(x * x for x in b) ** 0.5
     if norm_a == 0 or norm_b == 0:

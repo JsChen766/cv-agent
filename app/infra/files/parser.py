@@ -61,5 +61,5 @@ def parse_file(content: bytes, mime_type: str) -> str:
     # Fallback: try as text
     try:
         return parse_txt(content)
-    except ValueError:
-        raise ValueError(f"Unsupported file type: {mime_type}")
+    except ValueError as exc:
+        raise ValueError(f"Unsupported file type: {mime_type}") from exc

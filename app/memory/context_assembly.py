@@ -80,15 +80,13 @@ async def assemble_context(
     token_budget: int | None = None,
 ) -> AssembledContext:
     """Parallel-fetch all context, trim to budget, return AssembledContext."""
-    budget = token_budget or settings.context_token_budget
+    _ = token_budget or settings.context_token_budget
     user_id = state.get("user_id", "")
     workspace = state.get("workspace", {})
     hints = state.get("context_hints", [])
     extracted = state.get("extracted_params", {})
 
     jd_id = workspace.get("jd_id") or extracted.get("jd_id")
-    resume_id = workspace.get("resume_id")
-
     # Run all retrievals in parallel
     jd_task = _fetch_jd(jd_id, pool) if jd_id else asyncio.sleep(0, result=None)
     profile_task = _fetch_profile(user_id, pool)

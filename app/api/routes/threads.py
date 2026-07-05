@@ -241,12 +241,9 @@ async def discard_thread(
             # Record rejection signal for preference learning
             from app.domain.preference.service import PreferenceService
             from app.infra.db.repositories.preference_repo import PostgresPreferenceRepository
-            from app.providers.factory import get_embedding_provider
 
             pref_repo = PostgresPreferenceRepository(_pool)
             pref_svc = PreferenceService(pref_repo)
-            embed_provider = get_embedding_provider()
-            embedding = await embed_provider.embed(body.reason)
 
             await pref_svc.record_signal(
                 user_id,
