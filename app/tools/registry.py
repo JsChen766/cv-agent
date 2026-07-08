@@ -44,6 +44,7 @@ def _load_all() -> None:
         "app.tools.resume.list_tool",
         "app.tools.artifact.create_tool",
         "app.tools.artifact.get_tool",
+        "app.tools.actions.product_action_tools",
     ]
     for module in tool_modules:
         importlib.import_module(module)
