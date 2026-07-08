@@ -1,9 +1,9 @@
-# 部署教程 — Docker
+# 部署与本地开发指南
 
 ## 目录
 
 1. [前置要求](#一前置要求)
-2. [本地开发启动](#二本地开发启动)
+2. [本地开发](#二本地开发)
 3. [生产部署](#三生产部署)
 4. [环境变量说明](#四环境变量说明)
 5. [数据库迁移](#五数据库迁移)
@@ -14,66 +14,107 @@
 
 ## 一、前置要求
 
+- Python 3.12+
 - Docker >= 24.0
 - Docker Compose >= 2.20
-- 服务器至少 1GB 内存（推荐 2GB+，LLM 调用是网络 IO，不是本地计算）
 - 一个 LLM API Key（OpenAI / Anthropic / DeepSeek 等）
+- 生产服务器至少 1GB 内存（推荐 2GB+，LLM 调用是网络 IO，不是本地计算）
 
 ---
 
-## 二、本地开发启动
+## 二、本地开发
+
+本地开发默认使用本机 Python 进程运行 API，读取根目录 `.env`。
+
+不要用 Docker 跑本地 API；Docker API 服务读取 `.env.docker`，更接近生产部署路径。开发时可以只用 Docker 跑 PostgreSQL。
+
+### 2.1 准备 `.env`
 
 ```bash
-# 1. 克隆项目
-git clone <your-repo> cv-be && cd cv-be
-
-# 2. 复制环境变量文件
-cp .env.docker .env.docker.local
-# 编辑 .env.docker.local，填入真实的 LLM_API_KEY
-
-# 3. 启动全部服务（postgres + 自动迁移 + api）
-docker compose --env-file .env.docker.local up --build
-
-# 启动成功后访问：
-# API 文档：http://localhost:8000/docs
-# 健康检查：http://localhost:8000/v1/health
+cp .env.example .env
 ```
 
-> **注意**：首次启动会自动执行 `alembic upgrade head`，无需手动迁移。
+编辑 `.env`，至少确认：
+
+```env
+DATABASE_URL=postgresql+asyncpg://cvbe:cvbe@localhost:5432/cvbe
+SECRET_KEY=change-me-in-production-use-openssl-rand-hex-32
+LLM_PROVIDER=openai
+LLM_MODEL=deepseek-v4-flash
+LLM_API_KEY=sk-...
+LLM_BASE_URL=https://api.deepseek.com
+ENVIRONMENT=development
+DEV_AUTO_AUTH=false
+```
+
+本地 API 连本地端口，所以 `DATABASE_URL` 的 host 应为 `localhost`。
+
+### 2.2 启动本地依赖
+
+只启动 PostgreSQL：
+
+```bash
+docker compose up -d postgres
+```
+
+不要执行 `docker compose up api` 或 `docker compose up` 作为本地开发启动方式。
+
+### 2.3 安装依赖并迁移数据库
+
+```bash
+python -m venv .venv
+.\.venv\Scripts\activate
+pip install -e ".[dev]"
+alembic upgrade head
+```
+
+### 2.4 启动本地 API
+
+```bash
+uvicorn app.main:app --host 127.0.0.1 --port 8000
+```
+
+启动成功后访问：
+
+- API 文档：http://localhost:8000/docs
+- 健康检查：http://localhost:8000/v1/health
 
 ---
 
 ## 三、生产部署
 
-### 3.1 准备环境变量
+生产部署使用全 Docker：PostgreSQL、迁移服务、API 都由 Docker Compose 启动。
+
+当前 `docker-compose.yml` 中 `migrate` 和 `api` 固定读取 `.env.docker`，所以生产服务器上应准备 `.env.docker` 文件。
+
+### 3.1 准备 `.env.docker`
 
 ```bash
-cp .env.docker .env.production
+cp .env.docker.example .env.docker
 ```
 
-编辑 `.env.production`，**必须修改**：
+编辑 `.env.docker`，必须修改：
 
 ```env
+DATABASE_URL=postgresql+asyncpg://cvbe:<强密码>@postgres:5432/cvbe
 SECRET_KEY=<用 openssl rand -hex 32 生成>
 LLM_API_KEY=<你的 API Key>
-DATABASE_URL=postgresql+asyncpg://cvbe:<强密码>@postgres:5432/cvbe
 ENVIRONMENT=production
 ```
 
-同时修改 `docker-compose.yml` 中 postgres 的 `POSTGRES_PASSWORD` 与 `DATABASE_URL` 保持一致。
+同时修改 `docker-compose.yml` 中 postgres 的 `POSTGRES_PASSWORD`，并确保它与 `.env.docker` 里的 `DATABASE_URL` 密码一致。
+
+生产 Docker 内部连接 PostgreSQL，所以 `DATABASE_URL` 的 host 应为 `postgres`，不是 `localhost`。
 
 ### 3.2 启动
 
 ```bash
-# 后台运行
-docker compose --env-file .env.production up --build -d
-
-# 查看状态
+docker compose up --build -d
 docker compose ps
-
-# 查看日志
 docker compose logs -f api
 ```
+
+`migrate` 服务会在 PostgreSQL 健康后执行 `alembic upgrade head`，API 会等待迁移完成后启动。
 
 ### 3.3 验证
 
@@ -86,54 +127,62 @@ curl http://localhost:8000/v1/health
 
 ## 四、环境变量说明
 
-| 变量 | 说明 | 必填 |
-|---|---|---|
-| `DATABASE_URL` | asyncpg 连接串，Docker 内 host 填 `postgres` | ✅ |
-| `SECRET_KEY` | JWT 签名密钥，生产必须换 | ✅ |
-| `LLM_PROVIDER` | `openai` 或 `anthropic` | ✅ |
-| `LLM_MODEL` | 模型名，如 `gpt-4o`、`claude-opus-4-8` | ✅ |
-| `LLM_API_KEY` | 对应平台的 API Key | ✅ |
-| `LLM_BASE_URL` | 非官方接口时填写（Azure/DeepSeek/Qwen 等） | ❌ |
-| `EMBEDDING_MODEL` | 嵌入模型，默认 `text-embedding-3-small` | ❌ |
-| `ENVIRONMENT` | `development`（开启 /docs）或 `production` | ❌ |
+| 变量 | 本地开发 `.env` | 生产 `.env.docker` | 必填 |
+|---|---|---|---|
+| `DATABASE_URL` | host 用 `localhost` | host 用 `postgres` | ✅ |
+| `SECRET_KEY` | 可用开发占位值 | 必须换成强随机值 | ✅ |
+| `LLM_PROVIDER` | `openai` 或 `anthropic` | `openai` 或 `anthropic` | ✅ |
+| `LLM_MODEL` | 模型名，如 `deepseek-v4-flash` | 模型名 | ✅ |
+| `LLM_API_KEY` | 对应平台 API Key | 对应平台 API Key | ✅ |
+| `LLM_BASE_URL` | 非官方接口时填写 | 非官方接口时填写 | ❌ |
+| `EMBEDDING_PROVIDER` | `local` 或 `openai` | `local` 或 `openai` | ❌ |
+| `EMBEDDING_MODEL` | 嵌入模型 | 嵌入模型 | ❌ |
+| `EMBEDDING_DIMENSIONS` | 嵌入维度 | 嵌入维度 | ❌ |
+| `EMBEDDING_LOCAL_FILES_ONLY` | 本地模型可设 `true` | 按镜像内模型情况设置 | ❌ |
+| `ENVIRONMENT` | `development` | `production` | ❌ |
 
-### 使用国产模型（如 DeepSeek）
+### 使用 DeepSeek 等 OpenAI-compatible 模型
 
-DeepSeek 兼容 OpenAI format，只需：
+DeepSeek 兼容 OpenAI format，可这样配置：
 
 ```env
 LLM_PROVIDER=openai
-LLM_MODEL=deepseek-chat
+LLM_MODEL=deepseek-v4-flash
 LLM_API_KEY=sk-...
-LLM_BASE_URL=https://api.deepseek.com/v1
-EMBEDDING_MODEL=text-embedding-3-small  # 仍需 OpenAI 的 embedding
+LLM_BASE_URL=https://api.deepseek.com
 ```
 
 ---
 
 ## 五、数据库迁移
 
-`migrate` 服务在每次 `docker compose up` 时自动运行 `alembic upgrade head`，幂等安全。
+本地开发迁移：
 
-**手动迁移（如需）：**
+```bash
+alembic upgrade head
+alembic current
+```
+
+生产迁移由 Compose 的 `migrate` 服务自动执行。需要手动执行时：
 
 ```bash
 docker compose run --rm migrate alembic upgrade head
-
-# 回滚一个版本
-docker compose run --rm migrate alembic downgrade -1
-
-# 查看当前版本
 docker compose run --rm migrate alembic current
 ```
 
-**本地新增迁移文件：**
+回滚一个版本：
 
 ```bash
-# 先确保本地 python 环境有依赖
-pip install -e ".[dev]"
+# 本地
+alembic downgrade -1
 
-# 生成迁移
+# 生产 Docker
+docker compose run --rm migrate alembic downgrade -1
+```
+
+新增迁移文件：
+
+```bash
 alembic revision -m "add_xxx_table"
 # 编辑生成的文件后提交
 ```
@@ -142,14 +191,18 @@ alembic revision -m "add_xxx_table"
 
 ## 六、日志与监控
 
+本地开发：
+
 ```bash
-# 实时查看 api 日志
+# API 日志在 uvicorn 终端中查看
+docker compose logs -f postgres
+```
+
+生产 Docker：
+
+```bash
 docker compose logs -f api
-
-# 只看最近 100 行
 docker compose logs --tail=100 api
-
-# 进入容器调试
 docker compose exec api bash
 ```
 
@@ -159,23 +212,55 @@ docker compose exec api bash
 
 ## 七、常见问题
 
-**Q: `migrate` 服务报 `Connection refused`**
+**Q: 本地开发应该用 `.env` 还是 `.env.docker`？**
 
-postgres 还没就绪。`migrate` 已配置 `depends_on: condition: service_healthy`，如果仍报错，说明 postgres 健康检查未通过，检查磁盘空间和 postgres 日志：`docker compose logs postgres`
+本地开发用 `.env`。本地 API 是本机 Python 进程，配置读取 `.env`；`.env.docker` 留给 Docker Compose 的 `migrate` 和 `api` 服务。
 
-**Q: `api` 服务启动后立即退出**
+**Q: 本地开发能用 Docker PostgreSQL 吗？**
 
-查看日志：`docker compose logs api`。常见原因：`.env.docker` 中 `DATABASE_URL` 的 host 写成了 `localhost` 而非 `postgres`。
+可以。推荐只跑 `docker compose up -d postgres`，然后本地执行 `alembic upgrade head` 和 `uvicorn app.main:app --reload`。
 
-**Q: 想更换 postgres 密码**
+**Q: 本地 API 连不上数据库**
+
+检查 `.env` 中 `DATABASE_URL` 的 host 是否是 `localhost`，并确认 PostgreSQL 已启动：
+
+```bash
+docker compose ps postgres
+docker compose logs postgres
+```
+
+**Q: 生产 `migrate` 服务报 `Connection refused`**
+
+PostgreSQL 还没就绪。`migrate` 已配置 `depends_on: condition: service_healthy`，如果仍报错，检查磁盘空间和 postgres 日志：
+
+```bash
+docker compose logs postgres
+```
+
+**Q: 生产 `api` 服务启动后立即退出**
+
+查看日志：
+
+```bash
+docker compose logs api
+```
+
+常见原因是 `.env.docker` 中 `DATABASE_URL` 的 host 写成了 `localhost`，生产 Docker 内应写 `postgres`。
+
+**Q: 想更换生产 PostgreSQL 密码**
 
 1. 修改 `docker-compose.yml` 中 `POSTGRES_PASSWORD`
-2. 修改 `.env.production` 中 `DATABASE_URL` 密码部分保持一致
-3. 删除旧 volume 并重启：`docker compose down -v && docker compose up -d`
+2. 修改 `.env.docker` 中 `DATABASE_URL` 密码部分
+3. 删除旧 volume 并重启：
+
+```bash
+docker compose down -v
+docker compose up --build -d
+```
 
 **Q: 生产环境想加 Nginx 反代**
 
-在 `docker-compose.yml` 中加一个 `nginx` service，监听 80/443，proxy_pass 到 `api:8000`。`api` 服务的 `ports` 映射可以去掉（只保持内网通信）。
+在 `docker-compose.yml` 中加一个 `nginx` service，监听 80/443，`proxy_pass` 到 `api:8000`。`api` 服务的 `ports` 映射可以去掉，只保持 Docker 内网通信。
 
 **Q: 如何备份数据库**
 
