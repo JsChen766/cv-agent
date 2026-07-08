@@ -1,7 +1,9 @@
 """JD subgraph nodes."""
 
-from __future__ import annotations
+from langchain_core.runnables import RunnableConfig
 
+from app.domain.jd.models import JdRequirementDraft, JdRequirementImportance
+from app.graphs.runtime import services_from_config
 from app.graphs.state import MainState
 from app.providers.factory import get_provider
 
@@ -62,7 +64,9 @@ async def save_jd_node(state: MainState) -> dict[str, object]:
     }
 
 
-async def parse_requirements_node(state: MainState) -> dict[str, object]:
+async def parse_requirements_node(
+    state: MainState, config: RunnableConfig | None = None
+) -> dict[str, object]:
     """Parse JD requirements from raw text."""
     from pydantic import BaseModel
 
@@ -107,6 +111,51 @@ async def parse_requirements_node(state: MainState) -> dict[str, object]:
             for r in result.requirements
         ]
 
-    return {
-        "extracted_params": {**extracted, "requirements": reqs}
+    services = services_from_config(config)
+    if services is None:
+        return {
+            "extracted_params": {**extracted, "requirements": reqs},
+        }
+
+    title_value = extracted.get("title")
+    company_value = extracted.get("company")
+    target_role_value = extracted.get("target_role")
+    jd = await services.jd.create_jd(
+        state.get("user_id", ""),
+        title=title_value if isinstance(title_value, str) and title_value else "Job Description",
+        raw_text=raw_text,
+        company=company_value if isinstance(company_value, str) else None,
+        target_role=target_role_value if isinstance(target_role_value, str) else None,
+        requirements=[
+            JdRequirementDraft(
+                id=req["id"],
+                text=req["text"],
+                category=req["category"],
+                importance=_normalize_importance(req["importance"]),
+            )
+            for req in reqs
+        ],
+    )
+    workspace = dict(state.get("workspace", {}))
+    workspace["jd_id"] = jd.id
+    existing = state.get("pending_sse_events", [])
+    completed_event = {
+        "event": "agent.completed",
+        "message": f"Saved JD '{jd.title}' with {len(jd.requirements)} requirement(s).",
+        "data": {"jd_id": jd.id, "requirements_count": len(jd.requirements)},
     }
+
+    return {
+        "assistant_message": f"Saved JD '{jd.title}' with {len(jd.requirements)} requirement(s).",
+        "workspace": workspace,
+        "extracted_params": {**extracted, "requirements": [r.model_dump() for r in jd.requirements]},
+        "pending_sse_events": [*existing, completed_event],
+    }
+
+
+def _normalize_importance(value: str) -> JdRequirementImportance:
+    if value == "high":
+        return "high"
+    if value == "low":
+        return "low"
+    return "medium"

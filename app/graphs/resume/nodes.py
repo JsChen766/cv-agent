@@ -6,8 +6,6 @@ Flow:
   self_review → [revision → self_review (max 3)] → interrupt_output
 """
 
-from __future__ import annotations
-
 import uuid
 
 from langchain_core.runnables import RunnableConfig
@@ -292,12 +290,24 @@ async def output_node(
 
     variants = state.get("variants", [])
     services = services_from_config(config)
-    workspace = state.get("workspace", {})
-    resume_id = workspace.get("resume_id")
+    workspace = dict(state.get("workspace", {}))
+    resume_id_value = workspace.get("resume_id")
+    resume_id = resume_id_value if isinstance(resume_id_value, str) else None
     variants_for_payload = variants
+    if services is not None and not (isinstance(resume_id, str) and resume_id):
+        jd_id_value = workspace.get("jd_id")
+        jd_id = jd_id_value if isinstance(jd_id_value, str) else None
+        resume = await services.resume.create_resume(
+            state.get("user_id", ""),
+            "AI Generated Resume",
+            jd_id=jd_id,
+        )
+        resume_id = resume.id
+        workspace["resume_id"] = resume.id
     if services is not None and isinstance(resume_id, str) and resume_id:
         saved_variants: list[dict[str, object]] = []
-        jd_id = workspace.get("jd_id")
+        jd_id_value = workspace.get("jd_id")
+        variant_jd_id = jd_id_value if isinstance(jd_id_value, str) else None
         for variant in variants:
             title = variant.get("title")
             content = variant.get("content")
@@ -305,7 +315,7 @@ async def output_node(
                 resume_id,
                 ResumeVariantCreate.model_validate(
                     {
-                        "jd_id": jd_id if isinstance(jd_id, str) else None,
+                        "jd_id": variant_jd_id,
                         "title": title if isinstance(title, str) and title else "AI Generated Variant",
                         "content": content if isinstance(content, str) else "",
                         "score": variant.get("score", {}),
@@ -354,6 +364,7 @@ async def output_node(
     return {
         "assistant_message": _resume_confirmation_message(resume_value),
         "interrupt_payload": None,
+        "workspace": workspace,
         "pending_sse_events": [*existing_events, interrupt_event],
     }
 

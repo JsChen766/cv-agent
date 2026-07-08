@@ -4,8 +4,6 @@ Experience Import subgraph nodes.
 Flow: parse_node → review_node → interrupt (user confirms/edits) → save_node
 """
 
-from __future__ import annotations
-
 import uuid
 from typing import Any
 
@@ -182,7 +180,14 @@ async def save_import_node(
         "message": f"Successfully saved {len(saved_ids)} experience(s).",
         "data": {"saved_ids": saved_ids},
     }
+    workspace = dict(state.get("workspace", {}))
+    existing_ids = workspace.get("experience_ids")
+    if isinstance(existing_ids, list):
+        workspace["experience_ids"] = [*existing_ids, *saved_ids]
+    else:
+        workspace["experience_ids"] = saved_ids
     return {
         "assistant_message": f"Saved {len(saved_ids)} experience(s) to your profile.",
+        "workspace": workspace,
         "pending_sse_events": [*existing, completed_event],
     }

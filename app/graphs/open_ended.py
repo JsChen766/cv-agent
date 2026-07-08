@@ -6,8 +6,6 @@ node is the only free-form tool-calling agent; domain-specific subgraphs remain
 responsible for structured business flows.
 """
 
-from __future__ import annotations
-
 import json
 import uuid
 from typing import Any

@@ -1,7 +1,5 @@
 """Artifact Generation subgraph nodes."""
 
-from __future__ import annotations
-
 from langchain_core.runnables import RunnableConfig
 
 from app.core.events import ArtifactCompletedEvent, ArtifactDeltaEvent, ArtifactStartedEvent
@@ -149,6 +147,9 @@ async def artifact_draft_node(
         real_artifact_id = artifact.id
     except Exception:
         real_artifact_id = f"artifact-temp-{artifact_type}"
+    workspace = dict(state.get("workspace", {}))
+    if not real_artifact_id.startswith("artifact-temp-"):
+        workspace["artifact_id"] = real_artifact_id
 
     completed_event: ArtifactCompletedEvent = {
         "event": "artifact.completed",
@@ -163,6 +164,7 @@ async def artifact_draft_node(
         "artifact_type": artifact_type,
         "artifact_content": content_str,
         "assistant_message": f"I've created your {artifact_type.replace('_', ' ')}. You can view and edit it in the artifact panel.",
+        "workspace": workspace,
         "pending_sse_events": [*existing_events, started_event, delta_event, completed_event],
     }
 
