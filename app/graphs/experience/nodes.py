@@ -6,11 +6,13 @@ Flow: parse_node → review_node → interrupt (user confirms/edits) → save_no
 
 from __future__ import annotations
 
+import uuid
 from typing import Any
 
 from langchain_core.runnables import RunnableConfig
 
 from app.core.events import AgentInterruptEvent
+from app.core.types import ExperienceCategory
 from app.graphs.runtime import services_from_config
 from app.graphs.state import MainState
 from app.providers.factory import get_provider
@@ -94,14 +96,18 @@ async def review_import_node(state: MainState) -> dict[str, Any]:
 
     interrupt_payload: AgentInterruptEvent = {
         "event": "agent.interrupt",
-        "interrupt_type": "experience_import_review",
-        "data": {
-            "candidates": candidates,
-            "message": (
-                f"I've extracted {len(candidates)} experience(s) from your input. "
-                "Please review and confirm which to save (you can edit any field)."
-            ),
-        },
+        "interrupt_id": str(uuid.uuid4()),
+        "type": "experience_import",
+        "message": (
+            f"I've extracted {len(candidates)} experience(s) from your input. "
+            "Please review and confirm which to save (you can edit any field)."
+        ),
+        "variants": [],
+        "candidates": candidates,
+        "action_options": [
+            {"id": "confirm", "label": "Confirm", "description": "Save selected candidates"},
+            {"id": "discard", "label": "Discard", "description": "Do not save candidates"},
+        ],
     }
 
     existing = state.get("pending_sse_events", [])
@@ -121,7 +127,9 @@ async def review_import_node(state: MainState) -> dict[str, Any]:
 # ── Save node ─────────────────────────────────────────────────────────────────
 
 
-async def save_import_node(state: MainState, config: RunnableConfig = None) -> dict[str, Any]:
+async def save_import_node(
+    state: MainState, config: RunnableConfig | None = None
+) -> dict[str, Any]:
     """
     Persist confirmed candidates to the database via ExperienceService.
     Embeds content for RAG after saving.
@@ -137,16 +145,26 @@ async def save_import_node(state: MainState, config: RunnableConfig = None) -> d
             raise RuntimeError("Tool services unavailable")
 
         for candidate in candidates:
+            category_value = candidate.get("category", "work")
+            category: ExperienceCategory = (
+                category_value
+                if category_value in ("work", "project", "education", "volunteer", "other")
+                else "work"
+            )
             exp = await services.experience.create_experience(
                 user_id,
-                category=candidate.get("category", "work"),
-                title=candidate.get("title", "Untitled experience"),
-                content=candidate.get("content", ""),
-                organization=candidate.get("organization"),
-                role=candidate.get("role"),
-                start_date=candidate.get("start_date"),
-                end_date=candidate.get("end_date"),
-                tags=candidate.get("tags"),
+                category=category,
+                title=str(candidate.get("title", "Untitled experience")),
+                content=str(candidate.get("content", "")),
+                organization=(
+                    str(candidate["organization"]) if candidate.get("organization") is not None else None
+                ),
+                role=str(candidate["role"]) if candidate.get("role") is not None else None,
+                start_date=(
+                    str(candidate["start_date"]) if candidate.get("start_date") is not None else None
+                ),
+                end_date=str(candidate["end_date"]) if candidate.get("end_date") is not None else None,
+                tags=candidate.get("tags") if isinstance(candidate.get("tags"), list) else None,
                 source="import",
             )
             saved_ids.append(exp.id)

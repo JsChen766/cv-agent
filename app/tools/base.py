@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from typing import Any, Literal, Protocol
+from typing import Literal, Protocol
 
-from pydantic import BaseModel
+from pydantic import BaseModel, JsonValue
 
 from app.domain.artifact.service import ArtifactService
 from app.domain.experience.service import ExperienceService
@@ -37,7 +37,7 @@ class ToolContext(BaseModel):
 
 class ToolResult(BaseModel):
     status: Literal["success", "needs_input", "failed"]
-    data: Any | None = None
+    data: JsonValue | None = None
     message: str | None = None
 
 

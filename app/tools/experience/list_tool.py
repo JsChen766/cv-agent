@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from pydantic import BaseModel, Field
+from typing import Literal, cast
+
+from pydantic import BaseModel, Field, JsonValue
 
 from app.tools.base import ToolContext, ToolResult
 from app.tools.registry import register
@@ -14,19 +16,20 @@ class ListExperiencesInput(BaseModel):
 
 
 class ListExperiencesTool:
-    name = "list_experiences"
-    description = "List the user's experience library, optionally filtered by category, tags, or search query"
-    input_schema = ListExperiencesInput
-    requires_confirmation = False
-    risk_level = "low"
+    name: str = "list_experiences"
+    description: str = "List the user's experience library, optionally filtered by category, tags, or search query"
+    input_schema: type[BaseModel] = ListExperiencesInput
+    requires_confirmation: bool = False
+    risk_level: Literal["low", "medium", "high"] = "low"
 
-    async def execute(self, input: ListExperiencesInput, context: ToolContext) -> ToolResult:
+    async def execute(self, input: BaseModel, context: ToolContext) -> ToolResult:
+        typed_input = ListExperiencesInput.model_validate(input)
         items, next_cursor = await context.services.experience.list_experiences(
             context.user_id,
-            limit=input.limit,
-            category=input.category,
-            tags=input.tags,
-            q=input.q,
+            limit=typed_input.limit,
+            category=typed_input.category,
+            tags=typed_input.tags,
+            q=typed_input.q,
         )
         return ToolResult(
             status="success",
@@ -37,7 +40,7 @@ class ListExperiencesTool:
                         "title": e.title,
                         "category": e.category,
                         "organization": e.organization,
-                        "tags": e.tags,
+                        "tags": cast("JsonValue", e.tags),
                     }
                     for e in items
                 ],

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Any
+from typing import Any, cast
 
 from app.core.config import settings
 from app.core.errors import ExternalServiceError
@@ -54,4 +54,4 @@ class LocalEmbeddingProvider:
             convert_to_numpy=True,
             show_progress_bar=False,
         )
-        return vectors.astype(float).tolist()
+        return cast("list[list[float]]", vectors.astype(float).tolist())

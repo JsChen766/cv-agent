@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import BaseModel, Field
 
 from app.tools.base import ToolContext, ToolResult
@@ -13,14 +15,15 @@ class ListJdsInput(BaseModel):
 
 
 class ListJdsTool:
-    name = "list_jds"
-    description = "List the user's saved job descriptions"
-    input_schema = ListJdsInput
-    requires_confirmation = False
-    risk_level = "low"
+    name: str = "list_jds"
+    description: str = "List the user's saved job descriptions"
+    input_schema: type[BaseModel] = ListJdsInput
+    requires_confirmation: bool = False
+    risk_level: Literal["low", "medium", "high"] = "low"
 
-    async def execute(self, input: ListJdsInput, context: ToolContext) -> ToolResult:
-        items, _ = await context.services.jd.list_jds(context.user_id, limit=input.limit)
+    async def execute(self, input: BaseModel, context: ToolContext) -> ToolResult:
+        typed_input = ListJdsInput.model_validate(input)
+        items, _ = await context.services.jd.list_jds(context.user_id, limit=typed_input.limit)
         return ToolResult(
             status="success",
             data={

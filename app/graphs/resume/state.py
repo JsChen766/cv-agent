@@ -26,9 +26,6 @@ class ResumeGenerationState(MainState, total=False):
 
     # Generation output
     variants: list[dict[str, Any]]
-    current_diff: list[dict[str, Any]] | None
 
     # Self-review loop
-    review_iteration: int
-    review_result: dict[str, Any] | None
     revision_instruction: str | None

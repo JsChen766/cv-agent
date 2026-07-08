@@ -16,7 +16,7 @@ from app.graphs.resume.nodes import (
 from app.graphs.resume.state import ResumeGenerationState
 
 
-def build_resume_subgraph() -> StateGraph:
+def build_resume_subgraph() -> StateGraph[ResumeGenerationState]:
     builder = StateGraph(ResumeGenerationState)
 
     builder.add_node("context_assembly", context_assembly_node)

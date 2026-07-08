@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import BaseModel, Field
 
 from app.tools.base import ToolContext, ToolResult
@@ -12,15 +14,16 @@ class ListResumesInput(BaseModel):
 
 
 class ListResumesTool:
-    name = "list_resumes"
-    description = "List the user's saved resumes"
-    input_schema = ListResumesInput
-    requires_confirmation = False
-    risk_level = "low"
+    name: str = "list_resumes"
+    description: str = "List the user's saved resumes"
+    input_schema: type[BaseModel] = ListResumesInput
+    requires_confirmation: bool = False
+    risk_level: Literal["low", "medium", "high"] = "low"
 
-    async def execute(self, input: ListResumesInput, context: ToolContext) -> ToolResult:
+    async def execute(self, input: BaseModel, context: ToolContext) -> ToolResult:
+        typed_input = ListResumesInput.model_validate(input)
         items, _ = await context.services.resume.list_resumes(
-            context.user_id, limit=input.limit
+            context.user_id, limit=typed_input.limit
         )
         return ToolResult(
             status="success",

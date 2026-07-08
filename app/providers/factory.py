@@ -3,10 +3,11 @@ from __future__ import annotations
 from functools import lru_cache
 
 from app.core.config import settings
+from app.providers.base import EmbeddingProvider, LLMProvider
 
 
 @lru_cache(maxsize=1)
-def get_provider():
+def get_provider() -> LLMProvider:
     """Return the configured LLM provider singleton."""
     if settings.llm_provider == "anthropic":
         from app.providers.anthropic_format import AnthropicFormatProvider
@@ -17,7 +18,7 @@ def get_provider():
 
 
 @lru_cache(maxsize=1)
-def get_embedding_provider():
+def get_embedding_provider() -> EmbeddingProvider:
     """Return the configured embedding provider singleton."""
     if settings.embedding_provider == "local":
         from app.providers.local_embedding import LocalEmbeddingProvider

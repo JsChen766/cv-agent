@@ -10,8 +10,9 @@ from __future__ import annotations
 
 import json
 from collections.abc import AsyncIterator
-from typing import Any
+from typing import Any, cast
 
+from langchain_core.messages import BaseMessage
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 
 from app.core.config import settings
@@ -56,7 +57,7 @@ class OpenAIFormatProvider:
     ) -> str | AsyncIterator[str]:
         from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
-        lc_msgs = []
+        lc_msgs: list[BaseMessage] = []
         for m in messages:
             role, content = m["role"], m["content"]
             if role == "system":
@@ -66,7 +67,7 @@ class OpenAIFormatProvider:
             elif role == "assistant":
                 lc_msgs.append(AIMessage(content=content))
 
-        llm = self._llm.bind(temperature=temperature)
+        llm = cast(Any, self._llm.bind(temperature=temperature))
         if max_tokens:
             llm = llm.bind(max_tokens=max_tokens)
 
@@ -92,7 +93,7 @@ class OpenAIFormatProvider:
     ) -> Any:
         from langchain_core.messages import HumanMessage, SystemMessage
 
-        lc_msgs = []
+        lc_msgs: list[BaseMessage] = []
         for m in messages:
             role, content = m["role"], m["content"]
             if role == "system":
@@ -100,7 +101,7 @@ class OpenAIFormatProvider:
             else:
                 lc_msgs.append(HumanMessage(content=content))
 
-        structured_llm = self._llm.with_structured_output(schema)  # type: ignore[arg-type]
+        structured_llm = self._llm.with_structured_output(schema)
         try:
             return await structured_llm.ainvoke(lc_msgs)
         except Exception as e:
@@ -179,7 +180,7 @@ class OpenAIFormatProvider:
         temperature: float = 0.2,
         max_tokens: int | None = None,
     ) -> ChatResult:
-        llm = self._llm.bind(temperature=temperature)
+        llm = cast(Any, self._llm.bind(temperature=temperature))
         if max_tokens:
             llm = llm.bind(max_tokens=max_tokens)
         if tools:
@@ -195,10 +196,10 @@ class OpenAIFormatProvider:
             raise ExternalServiceError(f"LLM tool call failed: {e}") from e
 
 
-def _to_lc_messages(messages: list[dict[str, Any]]) -> list[Any]:
+def _to_lc_messages(messages: list[dict[str, Any]]) -> list[BaseMessage]:
     from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 
-    lc_msgs: list[Any] = []
+    lc_msgs: list[BaseMessage] = []
     for message in messages:
         role = message.get("role")
         content = str(message.get("content", ""))

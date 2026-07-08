@@ -14,23 +14,27 @@ Then trims to token budget and returns an AssembledContext.
 from __future__ import annotations
 
 import asyncio
-from typing import Any
+import json
+from typing import TYPE_CHECKING
 
 import asyncpg
 
 from app.core.config import settings
 from app.memory.thread_state import ThreadState
 
+if TYPE_CHECKING:
+    from app.rag.evidence.models import EvidencePack
+
 
 class AssembledContext:
     def __init__(
         self,
         jd_text: str | None,
-        experiences: list[dict],
+        experiences: list[dict[str, object]],
         guideline_instructions: list[str],
-        preferences: list[dict],
-        user_profile: dict | None,
-        evidence_pack: Any | None,
+        preferences: list[dict[str, object]],
+        user_profile: dict[str, object] | None,
+        evidence_pack: EvidencePack | None,
     ) -> None:
         self.jd_text = jd_text
         self.experiences = experiences
@@ -52,10 +56,10 @@ class AssembledContext:
             parts.append(f"## User Profile\n{summary}")
 
         if self.experiences:
-            exp_texts = []
+            exp_texts: list[str] = []
             for e in self.experiences[:5]:  # cap at 5
                 exp_texts.append(
-                    f"**{e.get('title')}** at {e.get('organization', 'N/A')}\n{e.get('content', '')[:500]}"
+                    f"**{e.get('title')}** at {e.get('organization', 'N/A')}\n{str(e.get('content', ''))[:500]}"
                 )
             parts.append("## Relevant Experiences\n" + "\n\n---\n".join(exp_texts))
 
@@ -108,7 +112,6 @@ async def assemble_context(
             async with pool.acquire() as conn:
                 row = await conn.fetchrow("SELECT requirements FROM jd_records WHERE id=$1", jd_id)
             if row:
-                import json
                 raw_reqs = json.loads(row["requirements"]) if isinstance(row["requirements"], str) else row["requirements"]
                 reqs = [JdRequirement(**r) for r in (raw_reqs or [])]
                 if reqs:
@@ -116,10 +119,12 @@ async def assemble_context(
                     from app.rag.evidence.models import ExperienceWithClaims
                     exp_with_claims = [
                         ExperienceWithClaims(
-                            experience_id=e["id"],
-                            title=e.get("title", ""),
-                            organization=e.get("organization"),
-                            content=e.get("content", ""),
+                            experience_id=str(e.get("id", "")),
+                            title=str(e.get("title", "")),
+                            organization=(
+                                str(e["organization"]) if e.get("organization") is not None else None
+                            ),
+                            content=str(e.get("content", "")),
                         )
                         for e in experiences
                     ]
@@ -143,7 +148,7 @@ async def _fetch_jd(jd_id: str, pool: asyncpg.Pool) -> str | None:
     return row["raw_text"] if row else None
 
 
-async def _fetch_profile(user_id: str, pool: asyncpg.Pool) -> dict | None:
+async def _fetch_profile(user_id: str, pool: asyncpg.Pool) -> dict[str, object] | None:
     async with pool.acquire() as conn:
         row = await conn.fetchrow("SELECT * FROM user_profiles WHERE user_id=$1", user_id)
     if not row:
@@ -157,7 +162,7 @@ async def _fetch_profile(user_id: str, pool: asyncpg.Pool) -> dict | None:
     }
 
 
-async def _fetch_preferences(user_id: str, pool: asyncpg.Pool) -> list[dict]:
+async def _fetch_preferences(user_id: str, pool: asyncpg.Pool) -> list[dict[str, object]]:
     async with pool.acquire() as conn:
         rows = await conn.fetch(
             "SELECT rule, category, priority FROM preferences WHERE user_id=$1 AND active=TRUE ORDER BY priority DESC LIMIT 15",
@@ -171,7 +176,7 @@ async def _fetch_experiences(
     user_id: str,
     hints: list[str],
     pool: asyncpg.Pool,
-) -> list[dict]:
+) -> list[dict[str, object]]:
     if jd_id:
         # Semantic retrieval via JD embedding
         async with pool.acquire() as conn:

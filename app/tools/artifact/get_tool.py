@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import BaseModel
 
 from app.tools.base import ToolContext, ToolResult
@@ -11,15 +13,16 @@ class GetArtifactInput(BaseModel):
 
 
 class GetArtifactTool:
-    name = "get_artifact"
-    description = "Retrieve a specific artifact's full content"
-    input_schema = GetArtifactInput
-    requires_confirmation = False
-    risk_level = "low"
+    name: str = "get_artifact"
+    description: str = "Retrieve a specific artifact's full content"
+    input_schema: type[BaseModel] = GetArtifactInput
+    requires_confirmation: bool = False
+    risk_level: Literal["low", "medium", "high"] = "low"
 
-    async def execute(self, input: GetArtifactInput, context: ToolContext) -> ToolResult:
+    async def execute(self, input: BaseModel, context: ToolContext) -> ToolResult:
+        typed_input = GetArtifactInput.model_validate(input)
         artifact = await context.services.artifact.get_artifact(
-            context.user_id, input.artifact_id
+            context.user_id, typed_input.artifact_id
         )
         return ToolResult(
             status="success",

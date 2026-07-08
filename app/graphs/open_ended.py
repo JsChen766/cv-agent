@@ -42,7 +42,9 @@ Respond in the same language the user uses. Be concise, specific, and profession
 _MAX_TOOL_ITERATIONS = 5
 
 
-async def open_ended_node(state: MainState, config: RunnableConfig = None) -> dict:
+async def open_ended_node(
+    state: MainState, config: RunnableConfig | None = None
+) -> dict[str, object]:
     """Handle open-ended queries with optional tool access."""
     provider = get_provider()
     llm_messages = _build_messages(state)
@@ -53,7 +55,7 @@ async def open_ended_node(state: MainState, config: RunnableConfig = None) -> di
     if services is None:
         response = await provider.chat(llm_messages, temperature=0.7, max_tokens=1500)
         content = str(response)
-        events.append(_message_completed(content))
+        events.append(dict(_message_completed(content)))
         return {"assistant_message": content, "pending_sse_events": events}
 
     tool_context = ToolContext(
@@ -105,7 +107,7 @@ async def open_ended_node(state: MainState, config: RunnableConfig = None) -> di
     else:
         content = "I completed the available tool steps, but need more specific direction to continue."
 
-    events.append(_message_completed(content))
+    events.append(dict(_message_completed(content)))
     return {"assistant_message": content, "pending_sse_events": events}
 
 

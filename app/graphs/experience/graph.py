@@ -8,7 +8,7 @@ from app.graphs.experience.nodes import parse_import_node, review_import_node, s
 from app.graphs.state import MainState
 
 
-def build_experience_import_subgraph() -> StateGraph:
+def build_experience_import_subgraph() -> StateGraph[MainState]:
     builder = StateGraph(MainState)
 
     builder.add_node("parse", parse_import_node)

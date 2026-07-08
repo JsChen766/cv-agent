@@ -1,27 +1,31 @@
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import BaseModel, Field
 
+from app.domain.experience.models import ImportCandidateDraft
 from app.tools.base import ToolContext, ToolResult
 from app.tools.registry import register
 
 
 class ImportTextInput(BaseModel):
     raw_text: str
-    candidates: list[dict] = Field(default_factory=list)
+    candidates: list[ImportCandidateDraft] = Field(default_factory=list)
     source_label: str | None = None
 
 
 class ImportTextTool:
     name = "import_experience_text"
     description = "Import experiences from raw text (resume paste, LinkedIn export, etc.)"
-    input_schema = ImportTextInput
+    input_schema: type[BaseModel] = ImportTextInput
     requires_confirmation = False
-    risk_level = "low"
+    risk_level: Literal["low", "medium", "high"] = "low"
 
-    async def execute(self, input: ImportTextInput, context: ToolContext) -> ToolResult:
+    async def execute(self, input: BaseModel, context: ToolContext) -> ToolResult:
+        typed_input = ImportTextInput.model_validate(input)
         job, candidates = await context.services.experience.start_import_from_text(
-            context.user_id, input.raw_text, input.candidates
+            context.user_id, typed_input.raw_text, typed_input.candidates
         )
         return ToolResult(
             status="needs_input",

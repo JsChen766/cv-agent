@@ -21,6 +21,7 @@ class ActiveWorkspace(TypedDict, total=False):
     jd_id: str | None
     resume_id: str | None
     experience_id: str | None
+    experience_ids: list[str]
     artifact_id: str | None
     variant_id: str | None
     resume_item_id: str | None

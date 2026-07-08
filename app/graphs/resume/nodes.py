@@ -11,7 +11,7 @@ from __future__ import annotations
 import uuid
 
 from langchain_core.runnables import RunnableConfig
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.core.config import settings
 from app.core.events import (
@@ -20,13 +20,16 @@ from app.core.events import (
     ContentDiffDeltaEvent,
     ContentDiffStartedEvent,
 )
+from app.domain.resume.models import ResumeVariantCreate
 from app.graphs.resume.state import ResumeGenerationState
-from app.graphs.runtime import pool_from_config
+from app.graphs.runtime import pool_from_config, services_from_config
 from app.providers.factory import get_provider
 
 # ── 1. Context Assembly ───────────────────────────────────────────────────────
 
-async def context_assembly_node(state: ResumeGenerationState, config: RunnableConfig = None) -> dict:
+async def context_assembly_node(
+    state: ResumeGenerationState, config: RunnableConfig | None = None
+) -> dict[str, object]:
     """Gather all context needed for resume generation."""
     from app.memory.context_assembly import assemble_context
 
@@ -55,10 +58,10 @@ class MatchingPlan(BaseModel):
     key_experiences_to_highlight: list[str]
     skills_to_emphasize: list[str]
     tone: str = "professional"
-    structure_suggestions: list[str] = []
+    structure_suggestions: list[str] = Field(default_factory=list)
 
 
-async def cot_planning_node(state: ResumeGenerationState) -> dict:
+async def cot_planning_node(state: ResumeGenerationState) -> dict[str, object]:
     """Chain-of-thought planning before generation."""
     provider = get_provider()
 
@@ -107,7 +110,7 @@ async def cot_planning_node(state: ResumeGenerationState) -> dict:
 
 # ── 3. Draft Generation ───────────────────────────────────────────────────────
 
-async def draft_generation_node(state: ResumeGenerationState) -> dict:
+async def draft_generation_node(state: ResumeGenerationState) -> dict[str, object]:
     """Generate resume variant(s) and emit diff events."""
     provider = get_provider()
 
@@ -214,11 +217,11 @@ async def draft_generation_node(state: ResumeGenerationState) -> dict:
 class ReviewResult(BaseModel):
     verdict: str  # "pass" | "needs_revision"
     revision_instruction: str | None = None
-    issues: list[str] = []
+    issues: list[str] = Field(default_factory=list)
     score_estimate: float = 0.7
 
 
-async def self_review_node(state: ResumeGenerationState) -> dict:
+async def self_review_node(state: ResumeGenerationState) -> dict[str, object]:
     """Review generated variants for quality. Max 3 iterations."""
     iteration = state.get("review_iteration", 0)
     if iteration >= settings.max_self_review_iterations:
@@ -263,9 +266,9 @@ async def self_review_node(state: ResumeGenerationState) -> dict:
 
 # ── 5. Revision ───────────────────────────────────────────────────────────────
 
-async def revision_node(state: ResumeGenerationState) -> dict:
+async def revision_node(state: ResumeGenerationState) -> dict[str, object]:
     """Apply revision instruction to improve the draft."""
-    review = state.get("review_result", {})
+    review = state.get("review_result") or {}
     instruction = review.get("revision_instruction") or state.get("revision_instruction")
 
     if not instruction:
@@ -281,11 +284,39 @@ async def revision_node(state: ResumeGenerationState) -> dict:
 
 # ── 6. Output / Interrupt ─────────────────────────────────────────────────────
 
-async def output_node(state: ResumeGenerationState) -> dict:
+async def output_node(
+    state: ResumeGenerationState, config: RunnableConfig | None = None
+) -> dict[str, object]:
     """Prepare interrupt payload and halt graph for user review."""
     from langgraph.types import interrupt
 
     variants = state.get("variants", [])
+    services = services_from_config(config)
+    workspace = state.get("workspace", {})
+    resume_id = workspace.get("resume_id")
+    variants_for_payload = variants
+    if services is not None and isinstance(resume_id, str) and resume_id:
+        saved_variants: list[dict[str, object]] = []
+        jd_id = workspace.get("jd_id")
+        for variant in variants:
+            title = variant.get("title")
+            content = variant.get("content")
+            saved = await services.resume.save_variant(
+                resume_id,
+                ResumeVariantCreate.model_validate(
+                    {
+                        "jd_id": jd_id if isinstance(jd_id, str) else None,
+                        "title": title if isinstance(title, str) and title else "AI Generated Variant",
+                        "content": content if isinstance(content, str) else "",
+                        "score": variant.get("score", {}),
+                        "evidence_summary": variant.get("evidence_summary", []),
+                        "risk_summary": variant.get("risk_summary", []),
+                        "missing_info": variant.get("missing_info", []),
+                    }
+                ),
+            )
+            saved_variants.append(saved.model_dump(mode="json"))
+        variants_for_payload = saved_variants
     interrupt_id = str(uuid.uuid4())
 
     interrupt_event: AgentInterruptEvent = {
@@ -299,7 +330,7 @@ async def output_node(state: ResumeGenerationState) -> dict:
                 "title": v.get("title", ""),
                 "score": v.get("score", {}),
             }
-            for v in variants
+            for v in variants_for_payload
         ],
         "candidates": [],
         "action_options": [
@@ -314,23 +345,34 @@ async def output_node(state: ResumeGenerationState) -> dict:
     payload = {
         "interrupt_id": interrupt_id,
         "type": "resume_review",
-        "variants": variants,
+        "variants": variants_for_payload,
     }
 
     # LangGraph interrupt — suspends execution here
-    interrupt(payload)
+    resume_value = interrupt(payload)
 
     return {
-        "interrupt_payload": payload,
+        "assistant_message": _resume_confirmation_message(resume_value),
+        "interrupt_payload": None,
         "pending_sse_events": [*existing_events, interrupt_event],
     }
 
 
 # ── Routing ───────────────────────────────────────────────────────────────────
 
+def _resume_confirmation_message(resume_value: object) -> str:
+    if isinstance(resume_value, dict):
+        action = resume_value.get("action") or resume_value.get("decision")
+        if action == "revise":
+            return "Resume review feedback received. I can revise the variant next."
+        if action == "discard":
+            return "Resume variant discarded."
+    return "Resume review confirmed."
+
+
 def review_route(state: ResumeGenerationState) -> str:
     """After self_review: go to revision or output."""
-    review = state.get("review_result", {})
+    review = state.get("review_result") or {}
     iteration = state.get("review_iteration", 0)
 
     if review.get("verdict") == "needs_revision" and iteration < settings.max_self_review_iterations:

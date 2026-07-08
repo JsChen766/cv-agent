@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import BaseModel, Field
 
 from app.tools.base import ToolContext, ToolResult
@@ -15,21 +17,22 @@ class CreateArtifactInput(BaseModel):
 
 
 class CreateArtifactTool:
-    name = "create_artifact"
-    description = "Save a generated artifact (cover letter, self-intro, match report, etc.) to the user's artifact library"
-    input_schema = CreateArtifactInput
-    requires_confirmation = True
-    risk_level = "medium"
+    name: str = "create_artifact"
+    description: str = "Save a generated artifact (cover letter, self-intro, match report, etc.) to the user's artifact library"
+    input_schema: type[BaseModel] = CreateArtifactInput
+    requires_confirmation: bool = True
+    risk_level: Literal["low", "medium", "high"] = "medium"
 
-    async def execute(self, input: CreateArtifactInput, context: ToolContext) -> ToolResult:
+    async def execute(self, input: BaseModel, context: ToolContext) -> ToolResult:
+        typed_input = CreateArtifactInput.model_validate(input)
         artifact = await context.services.artifact.create_artifact(
             context.user_id,
             {
-                "type": input.artifact_type,
-                "title": input.title,
-                "content": input.content,
-                "source_jd_id": input.source_jd_id,
-                "source_experience_ids": input.source_experience_ids,
+                "type": typed_input.artifact_type,
+                "title": typed_input.title,
+                "content": typed_input.content,
+                "source_jd_id": typed_input.source_jd_id,
+                "source_experience_ids": typed_input.source_experience_ids,
             },
         )
         return ToolResult(

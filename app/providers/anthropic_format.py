@@ -5,9 +5,10 @@ Anthropic-format provider (Claude models).
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
-from typing import Any
+from typing import Any, cast
 
 from langchain_anthropic import ChatAnthropic
+from langchain_core.messages import BaseMessage
 
 from app.core.config import settings
 from app.core.errors import ExternalServiceError
@@ -24,8 +25,10 @@ class AnthropicFormatProvider:
     ) -> None:
         self._model = model or settings.llm_model
         self._llm = ChatAnthropic(
-            model=self._model,
+            model_name=self._model,
             api_key=api_key or settings.llm_api_key,  # type: ignore[arg-type]
+            timeout=None,
+            stop=None,
         )
 
     async def chat(
@@ -39,7 +42,7 @@ class AnthropicFormatProvider:
     ) -> str | AsyncIterator[str]:
         from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
-        lc_msgs = []
+        lc_msgs: list[BaseMessage] = []
         for m in messages:
             role, content = m["role"], m["content"]
             if role == "system":
@@ -49,7 +52,7 @@ class AnthropicFormatProvider:
             elif role == "assistant":
                 lc_msgs.append(AIMessage(content=content))
 
-        llm = self._llm.with_config({"temperature": temperature})
+        llm = cast(Any, self._llm.bind(temperature=temperature))
         if max_tokens:
             llm = llm.bind(max_tokens=max_tokens)
 
@@ -80,7 +83,7 @@ class AnthropicFormatProvider:
             else HumanMessage(content=m["content"])
             for m in messages
         ]
-        structured_llm = self._llm.with_structured_output(schema)  # type: ignore[arg-type]
+        structured_llm = self._llm.with_structured_output(schema)
         try:
             return await structured_llm.ainvoke(lc_msgs)
         except Exception as e:
@@ -101,7 +104,7 @@ class AnthropicFormatProvider:
         temperature: float = 0.2,
         max_tokens: int | None = None,
     ) -> ChatResult:
-        llm = self._llm.with_config({"temperature": temperature})
+        llm = cast(Any, self._llm.bind(temperature=temperature))
         if max_tokens:
             llm = llm.bind(max_tokens=max_tokens)
         if tools:
@@ -117,10 +120,10 @@ class AnthropicFormatProvider:
             raise ExternalServiceError(f"Anthropic tool call failed: {e}") from e
 
 
-def _to_lc_messages(messages: list[dict[str, Any]]) -> list[Any]:
+def _to_lc_messages(messages: list[dict[str, Any]]) -> list[BaseMessage]:
     from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 
-    lc_msgs: list[Any] = []
+    lc_msgs: list[BaseMessage] = []
     for message in messages:
         role = message.get("role")
         content = str(message.get("content", ""))

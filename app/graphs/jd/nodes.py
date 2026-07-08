@@ -6,7 +6,7 @@ from app.graphs.state import MainState
 from app.providers.factory import get_provider
 
 
-async def save_jd_node(state: MainState) -> dict:
+async def save_jd_node(state: MainState) -> dict[str, object]:
     """Extract JD info from user message and save it."""
     from pydantic import BaseModel
 
@@ -15,10 +15,14 @@ async def save_jd_node(state: MainState) -> dict:
     extracted = state.get("extracted_params", {})
 
     # If JD data already extracted by router, use it directly
-    raw_text = extracted.get("raw_text") or extracted.get("jd_text")
-    title = extracted.get("title") or extracted.get("jd_title")
-    company = extracted.get("company")
-    target_role = extracted.get("target_role")
+    raw_text_value = extracted.get("raw_text") or extracted.get("jd_text")
+    raw_text = raw_text_value if isinstance(raw_text_value, str) else None
+    title_value = extracted.get("title") or extracted.get("jd_title")
+    title = title_value if isinstance(title_value, str) else None
+    company_value = extracted.get("company")
+    company = company_value if isinstance(company_value, str) else None
+    target_role_value = extracted.get("target_role")
+    target_role = target_role_value if isinstance(target_role_value, str) else None
 
     if not raw_text:
         # Extract from latest user message
@@ -58,12 +62,13 @@ async def save_jd_node(state: MainState) -> dict:
     }
 
 
-async def parse_requirements_node(state: MainState) -> dict:
+async def parse_requirements_node(state: MainState) -> dict[str, object]:
     """Parse JD requirements from raw text."""
     from pydantic import BaseModel
 
     extracted = state.get("extracted_params", {})
-    raw_text = extracted.get("raw_text", "")
+    raw_text_value = extracted.get("raw_text", "")
+    raw_text = raw_text_value if isinstance(raw_text_value, str) else ""
     if not raw_text:
         return {}
 
@@ -94,7 +99,7 @@ async def parse_requirements_node(state: MainState) -> dict:
         temperature=0.1,
     )
 
-    reqs = []
+    reqs: list[dict[str, str]] = []
     if result:
         import uuid
         reqs = [

@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import BaseModel, Field
 
+from app.core.types import ExperienceCategory
 from app.tools.base import ToolContext, ToolResult
 from app.tools.registry import register
 
@@ -9,7 +12,7 @@ from app.tools.registry import register
 class SaveExperienceInput(BaseModel):
     title: str
     content: str
-    category: str = "work"
+    category: ExperienceCategory = "work"
     organization: str | None = None
     role: str | None = None
     start_date: str | None = None
@@ -18,23 +21,24 @@ class SaveExperienceInput(BaseModel):
 
 
 class SaveExperienceTool:
-    name = "save_experience"
-    description = "Create a new experience entry in the user's experience library"
-    input_schema = SaveExperienceInput
-    requires_confirmation = True
-    risk_level = "medium"
+    name: str = "save_experience"
+    description: str = "Create a new experience entry in the user's experience library"
+    input_schema: type[BaseModel] = SaveExperienceInput
+    requires_confirmation: bool = True
+    risk_level: Literal["low", "medium", "high"] = "medium"
 
-    async def execute(self, input: SaveExperienceInput, context: ToolContext) -> ToolResult:
+    async def execute(self, input: BaseModel, context: ToolContext) -> ToolResult:
+        typed_input = SaveExperienceInput.model_validate(input)
         exp = await context.services.experience.create_experience(
             context.user_id,
-            category=input.category,
-            title=input.title,
-            content=input.content,
-            organization=input.organization,
-            role=input.role,
-            start_date=input.start_date,
-            end_date=input.end_date,
-            tags=input.tags,
+            category=typed_input.category,
+            title=typed_input.title,
+            content=typed_input.content,
+            organization=typed_input.organization,
+            role=typed_input.role,
+            start_date=typed_input.start_date,
+            end_date=typed_input.end_date,
+            tags=typed_input.tags,
         )
         return ToolResult(
             status="success",

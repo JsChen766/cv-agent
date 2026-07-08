@@ -46,7 +46,9 @@ _ARTIFACT_PROMPTS = {
 }
 
 
-async def artifact_context_assembly_node(state: MainState, config: RunnableConfig = None) -> dict:
+async def artifact_context_assembly_node(
+    state: MainState, config: RunnableConfig | None = None
+) -> dict[str, object]:
     """Fetch context for artifact generation."""
     from app.memory.context_assembly import assemble_context
 
@@ -65,13 +67,18 @@ async def artifact_context_assembly_node(state: MainState, config: RunnableConfi
         return {}
 
 
-async def artifact_draft_node(state: MainState, config: RunnableConfig = None) -> dict:
+async def artifact_draft_node(
+    state: MainState, config: RunnableConfig | None = None
+) -> dict[str, object]:
     """Generate artifact content and save to DB."""
     provider = get_provider()
 
-    artifact_type = state.get("artifact_type") or state.get("extracted_params", {}).get("artifact_type", "other")
-    intent = state.get("intent_description", "")
-    config = get_config(artifact_type)
+    raw_artifact_type = state.get("artifact_type") or state.get("extracted_params", {}).get(
+        "artifact_type", "other"
+    )
+    artifact_type = str(raw_artifact_type or "other")
+    intent = str(state.get("intent_description") or "")
+    artifact_config = get_config(artifact_type)
 
     jd_text = state.get("assembled_jd_text") or ""
     experiences = state.get("assembled_experiences") or []
@@ -115,7 +122,7 @@ async def artifact_draft_node(state: MainState, config: RunnableConfig = None) -
             {"role": "user", "content": "\n\n".join(context_parts)},
         ],
         temperature=0.7,
-        max_tokens=config.max_tokens,
+        max_tokens=artifact_config.max_tokens,
     )
     content_str = str(content)
     word_count = len(content_str.split())

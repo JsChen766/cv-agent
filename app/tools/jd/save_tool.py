@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import BaseModel
 
 from app.tools.base import ToolContext, ToolResult
@@ -14,19 +16,20 @@ class SaveJdInput(BaseModel):
 
 
 class SaveJdTool:
-    name = "save_jd"
-    description = "Save a job description to the user's JD library"
-    input_schema = SaveJdInput
-    requires_confirmation = True
-    risk_level = "medium"
+    name: str = "save_jd"
+    description: str = "Save a job description to the user's JD library"
+    input_schema: type[BaseModel] = SaveJdInput
+    requires_confirmation: bool = True
+    risk_level: Literal["low", "medium", "high"] = "medium"
 
-    async def execute(self, input: SaveJdInput, context: ToolContext) -> ToolResult:
+    async def execute(self, input: BaseModel, context: ToolContext) -> ToolResult:
+        typed_input = SaveJdInput.model_validate(input)
         jd = await context.services.jd.create_jd(
             context.user_id,
-            title=input.title,
-            raw_text=input.raw_text,
-            company=input.company,
-            target_role=input.target_role,
+            title=typed_input.title,
+            raw_text=typed_input.raw_text,
+            company=typed_input.company,
+            target_role=typed_input.target_role,
         )
         return ToolResult(
             status="success",

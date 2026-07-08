@@ -8,7 +8,7 @@ from app.graphs.jd.nodes import parse_requirements_node, save_jd_node
 from app.graphs.state import MainState
 
 
-def build_jd_subgraph() -> StateGraph:
+def build_jd_subgraph() -> StateGraph[MainState]:
     builder = StateGraph(MainState)
     builder.add_node("save_jd", save_jd_node)
     builder.add_node("parse_requirements", parse_requirements_node)

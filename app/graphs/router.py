@@ -7,9 +7,9 @@ latest message + thread context and decides which subgraph to invoke.
 
 from __future__ import annotations
 
-from typing import Any, Literal
+from typing import Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, JsonValue
 
 from app.core.events import AgentRouteCompletedEvent
 from app.graphs.state import MainState
@@ -22,8 +22,8 @@ class RouterOutput(BaseModel):
     ]
     intent_description: str
     artifact_type: str | None = None
-    context_hints: list[str] = []
-    extracted_params: dict[str, Any] = {}
+    context_hints: list[str] = Field(default_factory=list)
+    extracted_params: dict[str, JsonValue] = Field(default_factory=dict)
     confidence: float = 0.8
 
 
@@ -48,8 +48,28 @@ If confidence < 0.6, use "open_ended".
 """
 
 
-async def router_node(state: MainState) -> dict:
+async def router_node(state: MainState) -> dict[str, object]:
     """Determine target subgraph from latest user message."""
+    preset_target = state.get("target_subgraph")
+    preset_intent = state.get("intent_description")
+    if preset_target and preset_intent:
+        preset_route_event: AgentRouteCompletedEvent = {
+            "event": "agent.route.completed",
+            "target": preset_target,
+            "intent_description": preset_intent,
+            "confidence": 1.0,
+        }
+        existing_events = state.get("pending_sse_events", [])
+        return {
+            "target_subgraph": preset_target,
+            "intent_description": preset_intent,
+            "artifact_type": state.get("artifact_type"),
+            "context_hints": state.get("context_hints", []),
+            "extracted_params": state.get("extracted_params", {}),
+            "router_confidence": 1.0,
+            "pending_sse_events": [*existing_events, preset_route_event],
+        }
+
     messages = state.get("messages", [])
     if not messages:
         return {"target_subgraph": "open_ended", "intent_description": "", "router_confidence": 0.5}

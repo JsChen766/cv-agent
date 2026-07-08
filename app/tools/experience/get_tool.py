@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import BaseModel
 
 from app.tools.base import ToolContext, ToolResult
@@ -11,15 +13,20 @@ class GetExperienceInput(BaseModel):
 
 
 class GetExperienceTool:
-    name = "get_experience"
-    description = "Get full details of a specific experience including all revisions"
-    input_schema = GetExperienceInput
-    requires_confirmation = False
-    risk_level = "low"
+    name: str = "get_experience"
+    description: str = "Get full details of a specific experience including all revisions"
+    input_schema: type[BaseModel] = GetExperienceInput
+    requires_confirmation: bool = False
+    risk_level: Literal["low", "medium", "high"] = "low"
 
-    async def execute(self, input: GetExperienceInput, context: ToolContext) -> ToolResult:
-        exp = await context.services.experience.get_experience(context.user_id, input.experience_id)
-        revisions = await context.services.experience.get_revisions(context.user_id, input.experience_id)
+    async def execute(self, input: BaseModel, context: ToolContext) -> ToolResult:
+        typed_input = GetExperienceInput.model_validate(input)
+        exp = await context.services.experience.get_experience(
+            context.user_id, typed_input.experience_id
+        )
+        revisions = await context.services.experience.get_revisions(
+            context.user_id, typed_input.experience_id
+        )
         return ToolResult(
             status="success",
             data={

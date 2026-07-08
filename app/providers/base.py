@@ -8,7 +8,7 @@ from pydantic import BaseModel, Field
 from app.tools.base import Tool
 
 
-class Message(dict):
+class Message(dict[str, str]):
     """A chat message dict with keys 'role' and 'content'."""
 
     @classmethod

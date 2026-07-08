@@ -11,6 +11,6 @@ def services_from_config(config: RunnableConfig | None) -> ServiceContainer | No
     return services if isinstance(services, ServiceContainer) else None
 
 
-def pool_from_config(config: RunnableConfig | None):
+def pool_from_config(config: RunnableConfig | None) -> object | None:
     configurable = (config or {}).get("configurable", {})
     return configurable.get("pool")

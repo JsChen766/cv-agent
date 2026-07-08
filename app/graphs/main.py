@@ -6,6 +6,8 @@ Assembles all subgraphs and the router into a single compiled graph.
 
 from __future__ import annotations
 
+from typing import Any
+
 from langgraph.graph import END, START, StateGraph
 
 from app.graphs.artifact.graph import build_artifact_subgraph
@@ -17,9 +19,9 @@ from app.graphs.router import route_decision, router_node
 from app.graphs.state import MainState
 
 
-def build_main_graph(checkpointer=None):
+def build_main_graph(checkpointer: Any | None = None) -> Any:
     """Build and compile the main graph with all subgraphs."""
-    builder = StateGraph(MainState)
+    builder: StateGraph[MainState] = StateGraph(MainState)
 
     # ── Nodes ──────────────────────────────────────────────────────────────────
     builder.add_node("router", router_node)
@@ -57,19 +59,17 @@ def build_main_graph(checkpointer=None):
     builder.add_edge("open_ended", END)
 
     # ── Compile ────────────────────────────────────────────────────────────────
-    compile_kwargs = {}
-    if checkpointer:
-        compile_kwargs["checkpointer"] = checkpointer
-
-    return builder.compile(**compile_kwargs)
+    if checkpointer is not None:
+        return builder.compile(checkpointer=checkpointer)
+    return builder.compile()
 
 
 # Lazy singleton — only built when first needed
-_graph = None
+_graph: Any | None = None
 _graph_checkpointer_id = None
 
 
-def get_graph(checkpointer=None):
+def get_graph(checkpointer: Any | None = None) -> Any:
     global _graph, _graph_checkpointer_id
     checkpointer_id = id(checkpointer) if checkpointer is not None else None
     if _graph is None or _graph_checkpointer_id != checkpointer_id:

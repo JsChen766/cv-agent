@@ -8,7 +8,7 @@ from app.graphs.artifact.nodes import artifact_context_assembly_node, artifact_d
 from app.graphs.state import MainState
 
 
-def build_artifact_subgraph() -> StateGraph:
+def build_artifact_subgraph() -> StateGraph[MainState]:
     builder = StateGraph(MainState)
     builder.add_node("context_assembly", artifact_context_assembly_node)
     builder.add_node("draft_generation", artifact_draft_node)
