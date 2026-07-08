@@ -26,7 +26,15 @@ from app.api.schemas import StrictRequestModel
 from app.api.sse import _build_initial_state, stream_graph_events
 from app.core.errors import ExternalServiceError, NotFoundError, ValidationError
 from app.core.types import THREAD_PREFIX, ArtifactType, generate_id
-from app.domain.resume.models import ResumeItemCreate, ResumeItemPatch, ResumeVariantCreate
+from app.domain.resume.models import ResumeVariantCreate
+from app.tools.actions import capabilities as action_capabilities
+from app.tools.actions.models import (
+    ExportResumeInput,
+    GenerateArtifactInput,
+    OptimizeResumeItemInput,
+    RewriteExperienceInput,
+    VariantInput,
+)
 from app.tools.base import ServiceContainer
 
 logger = logging.getLogger(__name__)
@@ -462,13 +470,15 @@ async def chat(
         raise ExternalServiceError("Graph execution failed") from exc
 
     assistant_msg = str(final_state.get("assistant_message") or "Done.")
-    raw_interrupt = final_state.get("interrupt_payload")
-    interrupt_payload = (
-        cast("dict[str, JsonValue]", raw_interrupt) if isinstance(raw_interrupt, dict) else None
+    interrupt_payload = _extract_interrupt_payload(final_state)
+    response_workspace = (
+        cast("JsonObject", final_state.get("workspace"))
+        if isinstance(final_state.get("workspace"), dict)
+        else workspace
     )
 
     return ok(
-        _build_response(thread_id, turn_id, assistant_msg, workspace, interrupt_payload),
+        _build_response(thread_id, turn_id, assistant_msg, response_workspace, interrupt_payload),
         request,
     )
 
@@ -487,6 +497,7 @@ async def chat_stream(
     from app.graphs.main import get_graph
     from app.infra.db.connection import get_pool as _get_pool
 
+    _pool = None
     try:
         _pool = _get_pool()
         thread_id = await _get_or_create_thread(body.threadId, user_id, _pool)
@@ -620,51 +631,23 @@ async def _run_optimize_resume_item_action(
     user_id: str,
     pool: asyncpg.Pool | None,
 ) -> JSONResponse:
-    from app.providers.factory import get_provider
-
     thread_id, turn_id, workspace, services, _graph_config = await _prepare_action_context(
         body, user_id, pool
     )
-    item = await services.resume.get_item_by_id(user_id, payload.resumeItemId)
-    provider = get_provider()
-    instruction = payload.instruction or "Improve clarity, specificity, and measurable impact."
-    result = await provider.chat(
-        [
-            {
-                "role": "system",
-                "content": (
-                    "You are a senior resume editor. Rewrite only the provided resume item. "
-                    "Keep facts grounded in the original text; do not invent employers, metrics, or technologies."
-                ),
-            },
-            {
-                "role": "user",
-                "content": (
-                    f"Instruction: {instruction}\n\n"
-                    f"Title: {item.title or ''}\n\n"
-                    f"Current content:\n{item.content_snapshot}"
-                ),
-            },
-        ],
-        temperature=0.3,
-        max_tokens=900,
-    )
-    optimized = result if isinstance(result, str) else item.content_snapshot
-    updated = await services.resume.update_item_by_id(
+    result = await action_capabilities.optimize_resume_item(
+        services,
         user_id,
-        payload.resumeItemId,
-        ResumeItemPatch(content_snapshot=optimized.strip()),
+        OptimizeResumeItemInput.model_validate(payload.model_dump()),
+        base_workspace=workspace,
     )
-    workspace["resume_id"] = updated.resume_id
-    workspace["resume_item_id"] = updated.id
 
     return ok(
         _build_response(
             thread_id,
             turn_id,
-            "Resume item optimized.",
-            workspace,
-            None,
+            result.message,
+            result.workspace,
+            result.interrupt,
         ),
         request,
     )
@@ -677,55 +660,23 @@ async def _run_rewrite_experience_action(
     user_id: str,
     pool: asyncpg.Pool | None,
 ) -> JSONResponse:
-    from app.providers.factory import get_provider
-
     thread_id, turn_id, workspace, services, _graph_config = await _prepare_action_context(
         body, user_id, pool
     )
-    experience = await services.experience.get_experience(user_id, payload.experienceId)
-    source_content = (
-        experience.current_revision.content if experience.current_revision else ""
-    )
-    provider = get_provider()
-    instruction = payload.instruction or "Rewrite this experience as concise, resume-ready bullets."
-    result = await provider.chat(
-        [
-            {
-                "role": "system",
-                "content": (
-                    "You rewrite career experience notes into resume-ready Markdown. "
-                    "Preserve the factual scope of the original content and avoid unsupported claims."
-                ),
-            },
-            {
-                "role": "user",
-                "content": (
-                    f"Instruction: {instruction}\n\n"
-                    f"Experience: {experience.title}\n"
-                    f"Organization: {experience.organization or ''}\n\n"
-                    f"Original content:\n{source_content}"
-                ),
-            },
-        ],
-        temperature=0.3,
-        max_tokens=1200,
-    )
-    rewritten = result if isinstance(result, str) else source_content
-    revision = await services.experience.add_revision(
+    result = await action_capabilities.rewrite_experience(
+        services,
         user_id,
-        payload.experienceId,
-        rewritten.strip(),
-        source="ai_generated",
+        RewriteExperienceInput.model_validate(payload.model_dump()),
+        base_workspace=workspace,
     )
-    workspace["experience_id"] = experience.id
 
     return ok(
         _build_response(
             thread_id,
             turn_id,
-            f"Experience rewritten and saved as revision {revision.id}.",
-            workspace,
-            None,
+            result.message,
+            result.workspace,
+            result.interrupt,
         ),
         request,
     )
@@ -741,29 +692,20 @@ async def _run_accept_variant_action(
     thread_id, turn_id, workspace, services, _graph_config = await _prepare_action_context(
         body, user_id, pool
     )
-    variant = await services.resume.get_variant(payload.variantId)
-    await services.resume.get_resume(user_id, variant.resume_id)
-    item = await services.resume.add_item(
+    result = await action_capabilities.accept_variant(
+        services,
         user_id,
-        variant.resume_id,
-        ResumeItemCreate(
-            section_type="other",
-            title=variant.title,
-            content_snapshot=variant.content,
-            source_variant_id=variant.id,
-        ),
+        VariantInput.model_validate(payload.model_dump()),
+        base_workspace=workspace,
     )
-    workspace["resume_id"] = variant.resume_id
-    workspace["variant_id"] = variant.id
-    workspace["resume_item_id"] = item.id
 
     return ok(
         _build_response(
             thread_id,
             turn_id,
-            "Variant accepted and saved to the resume.",
-            workspace,
-            None,
+            result.message,
+            result.workspace,
+            result.interrupt,
         ),
         request,
     )
@@ -779,34 +721,20 @@ async def _run_show_evidence_action(
     thread_id, turn_id, workspace, services, _graph_config = await _prepare_action_context(
         body, user_id, pool
     )
-    variant = await services.resume.get_variant(payload.variantId)
-    await services.resume.get_resume(user_id, variant.resume_id)
-    evidence_lines = [
-        f"- {item.requirement_text}: {', '.join(item.supporting_claims) or 'No supporting claim recorded.'}"
-        for item in variant.evidence_summary
-    ]
-    risk_lines = [f"- {item.severity}: {item.text}" for item in variant.risk_summary]
-    missing_lines = [f"- {item}" for item in variant.missing_info]
-    sections = [
-        "Evidence summary:",
-        *(evidence_lines or ["- No evidence records are attached to this variant yet."]),
-        "",
-        "Risks:",
-        *(risk_lines or ["- No risks recorded."]),
-        "",
-        "Missing information:",
-        *(missing_lines or ["- No missing information recorded."]),
-    ]
-    workspace["resume_id"] = variant.resume_id
-    workspace["variant_id"] = variant.id
+    result = await action_capabilities.show_evidence(
+        services,
+        user_id,
+        VariantInput.model_validate(payload.model_dump()),
+        base_workspace=workspace,
+    )
 
     return ok(
         _build_response(
             thread_id,
             turn_id,
-            "\n".join(sections),
-            workspace,
-            None,
+            result.message,
+            result.workspace,
+            result.interrupt,
         ),
         request,
     )
@@ -819,46 +747,23 @@ async def _run_generate_artifact_action(
     user_id: str,
     pool: asyncpg.Pool | None,
 ) -> JSONResponse:
-    from app.graphs.artifact.graph import build_artifact_subgraph
-    from app.infra.db.connection import get_pool as _get_pool
-
-    try:
-        _pool = _get_pool()
-    except RuntimeError:
-        _pool = None
-
-    thread_id = body.threadId
-    if _pool:
-        thread_id = await _get_or_create_thread(body.threadId, user_id, _pool)
-    else:
-        thread_id = body.threadId or generate_id(THREAD_PREFIX)
-
-    turn_id = generate_id("turn")
-    workspace = _workspace_from_client_state(body.clientState)
-    instruction = payload.instruction or f"Generate a {payload.artifactType} artifact."
-    initial_state = _build_initial_state(thread_id, user_id, instruction, workspace, turn_id)
-    initial_state["artifact_type"] = payload.artifactType
-    initial_state["intent_description"] = instruction
-    configurable: dict[str, object] = {"thread_id": thread_id}
-    if _pool:
-        configurable["services"] = build_service_container(_pool)
-        configurable["pool"] = _pool
-    graph_config: RunnableConfig = {"configurable": configurable}
-
-    try:
-        graph = build_artifact_subgraph().compile()
-        final_state = await graph.ainvoke(initial_state, config=graph_config)
-    except Exception as exc:
-        logger.exception("Generate artifact action failed: %s", exc)
-        raise ExternalServiceError("Generate artifact action failed") from exc
+    thread_id, turn_id, workspace, services, _graph_config = await _prepare_action_context(
+        body, user_id, pool
+    )
+    result = await action_capabilities.generate_artifact(
+        services,
+        user_id,
+        GenerateArtifactInput.model_validate(payload.model_dump()),
+        base_workspace=workspace,
+    )
 
     return ok(
         _build_response(
             thread_id,
             turn_id,
-            str(final_state.get("assistant_message") or "Artifact generated."),
-            workspace,
-            None,
+            result.message,
+            result.workspace,
+            result.interrupt,
         ),
         request,
     )
@@ -874,24 +779,19 @@ async def _run_export_resume_action(
     thread_id, turn_id, workspace, services, _graph_config = await _prepare_action_context(
         body, user_id, pool
     )
-    resume = await services.resume.get_resume(user_id, payload.resumeId)
-    variants = await services.resume.list_variants(resume.id)
-    workspace["resume_id"] = resume.id
-    receipt: JsonObject = {
-        "resumeId": resume.id,
-        "title": resume.title,
-        "status": resume.status,
-        "itemCount": len(resume.items),
-        "variantCount": len(variants),
-        "exportMode": "browser_print_pdf",
-    }
+    result = await action_capabilities.export_resume(
+        services,
+        user_id,
+        ExportResumeInput.model_validate(payload.model_dump()),
+        base_workspace=workspace,
+    )
     return ok(
         _build_response(
             thread_id,
             turn_id,
-            "Resume export package prepared. Use the browser print-to-PDF flow to generate the final PDF.",
-            {**workspace, "export": receipt},
-            None,
+            result.message,
+            result.workspace,
+            result.interrupt,
         ),
         request,
     )

@@ -233,9 +233,14 @@ async def resume_thread(
     interrupt_payload = (
         cast("dict[str, JsonValue]", raw_interrupt) if isinstance(raw_interrupt, dict) else None
     )
+    workspace = (
+        cast("dict[str, JsonValue]", final_state.get("workspace"))
+        if isinstance(final_state.get("workspace"), dict)
+        else None
+    )
 
     return ok(
-        _build_response(thread_id, body.turnId, assistant_msg, None, interrupt_payload),
+        _build_response(thread_id, body.turnId, assistant_msg, workspace, interrupt_payload),
         request,
     )
 
