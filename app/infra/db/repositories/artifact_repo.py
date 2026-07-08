@@ -4,6 +4,7 @@ import json
 
 import asyncpg
 
+from app.core.errors import ExternalServiceError, NotFoundError
 from app.domain.artifact.models import Artifact
 from app.infra.db.helpers import parse_jsonb
 
@@ -21,7 +22,7 @@ class PostgresArtifactRepository:
         type: str | None = None,
     ) -> tuple[list[Artifact], str | None]:
         conditions = ["user_id = $1"]
-        values: list = [user_id]
+        values: list[object] = [user_id]
         idx = 2
         if cursor:
             conditions.append(f"id > ${idx}")
@@ -49,7 +50,7 @@ class PostgresArtifactRepository:
             )
         return self._to_artifact(row) if row else None
 
-    async def create(self, artifact_id: str, user_id: str, data: dict) -> Artifact:
+    async def create(self, artifact_id: str, user_id: str, data: dict[str, object]) -> Artifact:
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(
                 """
@@ -67,11 +68,14 @@ class PostgresArtifactRepository:
                 json.dumps(data.get("source_experience_ids", [])),
                 data.get("word_count", 0),
             )
-        return self._to_artifact(row)  # type: ignore[arg-type]
+        if row is None:
+            raise ExternalServiceError("Failed to create artifact")
+        return self._to_artifact(row)
 
-    async def update(self, user_id: str, artifact_id: str, patch: dict) -> Artifact:
+    async def update(self, user_id: str, artifact_id: str, patch: dict[str, object]) -> Artifact:
         allowed = {"title", "content", "word_count"}
-        set_parts, values = [], []
+        set_parts: list[str] = []
+        values: list[object] = []
         idx = 1
         for k, v in patch.items():
             if k not in allowed:
@@ -80,13 +84,18 @@ class PostgresArtifactRepository:
             values.append(v)
             idx += 1
         if not set_parts:
-            return await self.get(user_id, artifact_id)  # type: ignore[return-value]
+            artifact = await self.get(user_id, artifact_id)
+            if artifact is None:
+                raise NotFoundError(f"Artifact not found: {artifact_id}")
+            return artifact
         set_parts.append("updated_at = NOW()")
         values.extend([artifact_id, user_id])
         sql = f"UPDATE artifacts SET {', '.join(set_parts)} WHERE id=${idx} AND user_id=${idx+1} RETURNING *"
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(sql, *values)
-        return self._to_artifact(row)  # type: ignore[arg-type]
+        if row is None:
+            raise NotFoundError(f"Artifact not found: {artifact_id}")
+        return self._to_artifact(row)
 
     async def delete(self, user_id: str, artifact_id: str) -> None:
         async with self._pool.acquire() as conn:

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from app.core.errors import NotFoundError
 from app.core.types import JD_PREFIX, generate_id
-from app.domain.jd.models import JdRecord
+from app.domain.jd.models import JdRecord, JdRequirement, JdRequirementDraft
 from app.domain.jd.repository import JdRepository
 
 
@@ -33,7 +33,7 @@ class JdService:
         raw_text: str,
         company: str | None = None,
         target_role: str | None = None,
-        requirements: list[dict] | None = None,
+        requirements: list[JdRequirementDraft] | None = None,
     ) -> JdRecord:
         jd_id = generate_id(JD_PREFIX)
         return await self._repo.create(
@@ -43,15 +43,31 @@ class JdService:
             raw_text,
             company=company,
             target_role=target_role,
-            requirements=requirements,
+            requirements=self._normalize_requirements(requirements or []),
         )
 
     async def update_requirements(
-        self, user_id: str, jd_id: str, requirements: list[dict]
+        self, user_id: str, jd_id: str, requirements: list[JdRequirementDraft]
     ) -> JdRecord:
         await self.get_jd(user_id, jd_id)  # ownership check
-        return await self._repo.update_requirements(jd_id, requirements)
+        return await self._repo.update_requirements(
+            jd_id, self._normalize_requirements(requirements)
+        )
 
     async def delete_jd(self, user_id: str, jd_id: str) -> None:
         await self.get_jd(user_id, jd_id)
         await self._repo.delete(user_id, jd_id)
+
+    @staticmethod
+    def _normalize_requirements(
+        requirements: list[JdRequirementDraft],
+    ) -> list[JdRequirement]:
+        return [
+            JdRequirement(
+                id=req.id or generate_id("req-"),
+                text=req.text,
+                category=req.category,
+                importance=req.importance,
+            )
+            for req in requirements
+        ]

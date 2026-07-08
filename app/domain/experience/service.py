@@ -5,9 +5,18 @@ from app.core.types import (
     CANDIDATE_PREFIX,
     EXP_PREFIX,
     JOB_PREFIX,
+    ExperienceCategory,
     generate_id,
 )
-from app.domain.experience.models import Experience, ExperienceRevision, ImportCandidate, ImportJob
+from app.domain.experience.models import (
+    Experience,
+    ExperiencePatch,
+    ExperienceRevision,
+    ImportCandidate,
+    ImportCandidateCreate,
+    ImportCandidateDraft,
+    ImportJob,
+)
 from app.domain.experience.repository import ExperienceRepository
 
 
@@ -43,7 +52,7 @@ class ExperienceService:
         self,
         user_id: str,
         *,
-        category: str,
+        category: ExperienceCategory,
         title: str,
         content: str,
         organization: str | None = None,
@@ -74,7 +83,7 @@ class ExperienceService:
     # ── Update meta ───────────────────────────────────────────────────────────
 
     async def update_experience_meta(
-        self, user_id: str, experience_id: str, patch: dict
+        self, user_id: str, experience_id: str, patch: ExperiencePatch
     ) -> Experience:
         await self.get_experience(user_id, experience_id)  # ownership check
         return await self._repo.update(user_id, experience_id, patch)
@@ -110,18 +119,22 @@ class ExperienceService:
         self,
         user_id: str,
         raw_text: str,
-        candidates_data: list[dict],  # pre-parsed by LLM in graph layer
+        candidates_data: list[ImportCandidateDraft],
     ) -> tuple[ImportJob, list[ImportCandidate]]:
         job_id = generate_id(JOB_PREFIX)
         job = await self._repo.create_import_job(job_id, user_id, "text")
 
         candidate_rows = [
-            {
-                "id": generate_id(CANDIDATE_PREFIX),
-                "import_job_id": job_id,
-                "user_id": user_id,
-                **c,
-            }
+            ImportCandidateCreate(
+                id=generate_id(CANDIDATE_PREFIX),
+                import_job_id=job_id,
+                user_id=user_id,
+                category=c.category,
+                title=c.title,
+                content=c.content,
+                organization=c.organization,
+                role=c.role,
+            )
             for c in candidates_data
         ]
         candidates = await self._repo.create_candidates(candidate_rows)
@@ -132,18 +145,22 @@ class ExperienceService:
         self,
         user_id: str,
         file_id: str,
-        candidates_data: list[dict],
+        candidates_data: list[ImportCandidateDraft],
     ) -> tuple[ImportJob, list[ImportCandidate]]:
         job_id = generate_id(JOB_PREFIX)
         job = await self._repo.create_import_job(job_id, user_id, "file", file_id)
 
         candidate_rows = [
-            {
-                "id": generate_id(CANDIDATE_PREFIX),
-                "import_job_id": job_id,
-                "user_id": user_id,
-                **c,
-            }
+            ImportCandidateCreate(
+                id=generate_id(CANDIDATE_PREFIX),
+                import_job_id=job_id,
+                user_id=user_id,
+                category=c.category,
+                title=c.title,
+                content=c.content,
+                organization=c.organization,
+                role=c.role,
+            )
             for c in candidates_data
         ]
         candidates = await self._repo.create_candidates(candidate_rows)

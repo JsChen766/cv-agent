@@ -26,21 +26,22 @@ class ArtifactService:
             raise NotFoundError(f"Artifact not found: {artifact_id}")
         return artifact
 
-    async def create_artifact(self, user_id: str, data: dict) -> Artifact:
+    async def create_artifact(self, user_id: str, data: dict[str, object]) -> Artifact:
         artifact_id = generate_id(ARTIFACT_PREFIX)
         content = data.get("content", "")
-        data["word_count"] = len(content.split())
+        data["word_count"] = len(content.split()) if isinstance(content, str) else 0
         return await self._repo.create(artifact_id, user_id, data)
 
     async def update_artifact(
         self,
         user_id: str,
         artifact_id: str,
-        patch: dict,
+        patch: dict[str, object],
     ) -> Artifact:
         await self.get_artifact(user_id, artifact_id)  # ownership check
-        if "content" in patch:
-            patch["word_count"] = len(patch["content"].split())
+        content = patch.get("content")
+        if isinstance(content, str):
+            patch["word_count"] = len(content.split())
         return await self._repo.update(user_id, artifact_id, patch)
 
     async def delete_artifact(self, user_id: str, artifact_id: str) -> None:

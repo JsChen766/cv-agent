@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncpg
 
+from app.core.errors import ExternalServiceError
 from app.domain.user.models import User, UserProfile
 from app.infra.db.helpers import parse_jsonb
 
@@ -30,7 +31,9 @@ class PostgresUserRepository:
                 """,
                 user_id, email, hashed_password,
             )
-        return self._to_user(row)  # type: ignore[arg-type]
+        if row is None:
+            raise ExternalServiceError("Failed to create user")
+        return self._to_user(row)
 
     async def get_profile(self, user_id: str) -> UserProfile | None:
         async with self._pool.acquire() as conn:
@@ -39,7 +42,7 @@ class PostgresUserRepository:
             )
         return self._to_profile(row) if row else None
 
-    async def upsert_profile(self, user_id: str, data: dict) -> UserProfile:
+    async def upsert_profile(self, user_id: str, data: dict[str, object]) -> UserProfile:
         fields = [
             "full_name", "email", "phone", "location",
             "linkedin_url", "github_url", "personal_website",
@@ -49,7 +52,7 @@ class PostgresUserRepository:
         json_fields = ["target_roles", "target_industries", "target_locations"]
 
         set_parts = []
-        values: list = [user_id]
+        values: list[object] = [user_id]
         idx = 2
         for f in fields:
             if f in data:

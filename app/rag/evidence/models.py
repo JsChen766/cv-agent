@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class Claim(BaseModel):
@@ -14,7 +14,7 @@ class ExperienceWithClaims(BaseModel):
     title: str
     organization: str | None = None
     content: str
-    claims: list[Claim] = []
+    claims: list[Claim] = Field(default_factory=list)
     relevance_score: float = 0.0
 
 
@@ -26,6 +26,6 @@ class EvidenceMatch(BaseModel):
 
 
 class EvidencePack(BaseModel):
-    matches: list[EvidenceMatch] = []
+    matches: list[EvidenceMatch] = Field(default_factory=list)
     coverage_ratio: float = 0.0   # % of requirements with at least one match
     total_requirements: int = 0

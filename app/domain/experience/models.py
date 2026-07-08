@@ -2,9 +2,15 @@ from __future__ import annotations
 
 from datetime import date, datetime
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
-from app.core.types import ExperienceCategory, ExperienceStatus, ImportCandidateStatus, ImportSource
+from app.core.types import (
+    ExperienceCategory,
+    ExperienceStatus,
+    ImportCandidateStatus,
+    ImportJobStatus,
+    ImportSource,
+)
 
 
 class ExperienceRevision(BaseModel):
@@ -24,12 +30,12 @@ class Experience(BaseModel):
     role: str | None = None
     start_date: date | None = None
     end_date: date | None = None
-    tags: list[str] = []
+    tags: list[str] = Field(default_factory=list)
     status: ExperienceStatus = "active"
     current_revision_id: str | None = None
     # Populated on demand
     current_revision: ExperienceRevision | None = None
-    revisions: list[ExperienceRevision] = []
+    revisions: list[ExperienceRevision] = Field(default_factory=list)
     created_at: datetime
     updated_at: datetime
 
@@ -38,10 +44,35 @@ class ImportJob(BaseModel):
     id: str
     user_id: str
     source: ImportSource
-    status: str  # "processing" | "completed" | "failed"
+    status: ImportJobStatus
     file_id: str | None = None
     created_at: datetime
     updated_at: datetime
+
+
+class ExperiencePatch(BaseModel):
+    title: str | None = None
+    organization: str | None = None
+    role: str | None = None
+    category: ExperienceCategory | None = None
+    start_date: str | None = None
+    end_date: str | None = None
+    tags: list[str] | None = None
+    current_revision_id: str | None = None
+
+
+class ImportCandidateDraft(BaseModel):
+    category: ExperienceCategory
+    title: str
+    content: str
+    organization: str | None = None
+    role: str | None = None
+
+
+class ImportCandidateCreate(ImportCandidateDraft):
+    id: str
+    import_job_id: str
+    user_id: str
 
 
 class ImportCandidate(BaseModel):

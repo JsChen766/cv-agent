@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+from pydantic import JsonValue
+
 from app.core.errors import NotFoundError
-from app.core.types import PREF_PREFIX, generate_id
+from app.core.types import PREF_PREFIX, SignalType, generate_id
 from app.domain.preference.models import Preference, PreferenceSignal
 from app.domain.preference.repository import PreferenceRepository
 
@@ -63,9 +65,9 @@ class PreferenceService:
         self,
         user_id: str,
         *,
-        signal_type: str,
+        signal_type: SignalType,
         raw_content: str,
-        context: dict | None = None,
+        context: dict[str, JsonValue] | None = None,
     ) -> PreferenceSignal:
         signal_id = generate_id("sig-")
         return await self._repo.add_signal(
@@ -103,7 +105,7 @@ class PreferenceService:
         similar = await self._repo.find_similar(
             user_id, embedding, settings.preference_dedup_threshold
         )
-        if similar:
+        if len(similar) > 0:
             existing = similar[0]
             return await self._repo.update(
                 existing.id,

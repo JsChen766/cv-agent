@@ -13,8 +13,10 @@ import re
 import uuid
 from pathlib import Path
 
+import asyncpg
 
-async def ingest_file(file_path: str, pool) -> int:
+
+async def ingest_file(file_path: str, pool: asyncpg.Pool) -> int:
     """Chunk a markdown file and upsert into guideline_chunks. Returns chunk count."""
     from app.providers.factory import get_embedding_provider
 
@@ -72,7 +74,7 @@ if __name__ == "__main__":
     parser.add_argument("--file", required=True, help="Path to guidelines markdown file")
     args = parser.parse_args()
 
-    async def main():
+    async def main() -> None:
         from app.infra.db.connection import close_pool, create_pool
         pool = await create_pool()
         count = await ingest_file(args.file, pool)

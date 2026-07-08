@@ -1,10 +1,19 @@
 from __future__ import annotations
 
+import builtins
 import json
 
 import asyncpg
 
-from app.domain.experience.models import Experience, ExperienceRevision, ImportCandidate, ImportJob
+from app.core.types import ExperienceCategory
+from app.domain.experience.models import (
+    Experience,
+    ExperiencePatch,
+    ExperienceRevision,
+    ImportCandidate,
+    ImportCandidateCreate,
+    ImportJob,
+)
 from app.infra.db.helpers import parse_jsonb
 
 
@@ -21,11 +30,11 @@ class PostgresExperienceRepository:
         limit: int = 20,
         cursor: str | None = None,
         category: str | None = None,
-        tags: list[str] | None = None,
+        tags: builtins.list[str] | None = None,
         q: str | None = None,
-    ) -> tuple[list[Experience], str | None]:
+    ) -> tuple[builtins.list[Experience], str | None]:
         conditions = ["user_id = $1", "status = 'active'"]
-        values: list = [user_id]
+        values: builtins.list[object] = [user_id]
         idx = 2
 
         if cursor:
@@ -88,14 +97,14 @@ class PostgresExperienceRepository:
         self,
         experience_id: str,
         user_id: str,
-        category: str,
+        category: ExperienceCategory,
         title: str,
         *,
         organization: str | None = None,
         role: str | None = None,
         start_date: str | None = None,
         end_date: str | None = None,
-        tags: list[str] | None = None,
+        tags: builtins.list[str] | None = None,
     ) -> Experience:
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(
@@ -110,20 +119,24 @@ class PostgresExperienceRepository:
                 organization, role, start_date, end_date,
                 json.dumps(tags or []),
             )
-        return self._to_exp(row)  # type: ignore[arg-type]
+        if row is None:
+            raise RuntimeError("Failed to create experience")
+        return self._to_exp(row)
 
     # ── Update ────────────────────────────────────────────────────────────────
 
-    async def update(self, user_id: str, experience_id: str, patch: dict) -> Experience:
+    async def update(
+        self, user_id: str, experience_id: str, patch: ExperiencePatch
+    ) -> Experience:
         allowed = {
             "title", "organization", "role", "category",
             "start_date", "end_date", "tags", "current_revision_id",
         }
         json_fields = {"tags"}
-        set_parts = []
-        values: list = []
+        set_parts: builtins.list[str] = []
+        values: builtins.list[object] = []
         idx = 1
-        for k, v in patch.items():
+        for k, v in patch.model_dump(exclude_none=True).items():
             if k not in allowed:
                 continue
             if k in json_fields:
@@ -135,7 +148,10 @@ class PostgresExperienceRepository:
             idx += 1
 
         if not set_parts:
-            return await self.get(user_id, experience_id)  # type: ignore[return-value]
+            exp = await self.get(user_id, experience_id)
+            if exp is None:
+                raise RuntimeError(f"Experience not found after ownership check: {experience_id}")
+            return exp
 
         set_parts.append("updated_at = NOW()")
         values.extend([experience_id, user_id])
@@ -146,7 +162,9 @@ class PostgresExperienceRepository:
         """
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(sql, *values)
-        return self._to_exp(row)  # type: ignore[arg-type]
+        if row is None:
+            raise RuntimeError(f"Failed to update experience: {experience_id}")
+        return self._to_exp(row)
 
     async def archive(self, user_id: str, experience_id: str) -> None:
         async with self._pool.acquire() as conn:
@@ -157,7 +175,7 @@ class PostgresExperienceRepository:
 
     # ── Revisions ─────────────────────────────────────────────────────────────
 
-    async def get_revisions(self, experience_id: str) -> list[ExperienceRevision]:
+    async def get_revisions(self, experience_id: str) -> builtins.list[ExperienceRevision]:
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(
                 "SELECT * FROM experience_revisions WHERE experience_id = $1 ORDER BY created_at DESC",
@@ -185,7 +203,9 @@ class PostgresExperienceRepository:
                 "UPDATE experiences SET current_revision_id=$1, updated_at=NOW() WHERE id=$2",
                 revision_id, experience_id,
             )
-        return self._to_rev(row)  # type: ignore[arg-type]
+        if row is None:
+            raise RuntimeError("Failed to create experience revision")
+        return self._to_rev(row)
 
     # ── Import Jobs ───────────────────────────────────────────────────────────
 
@@ -197,7 +217,9 @@ class PostgresExperienceRepository:
                 "INSERT INTO import_jobs (id, user_id, source, file_id) VALUES ($1,$2,$3,$4) RETURNING *",
                 job_id, user_id, source, file_id,
             )
-        return self._to_job(row)  # type: ignore[arg-type]
+        if row is None:
+            raise RuntimeError("Failed to create import job")
+        return self._to_job(row)
 
     async def update_import_job_status(self, job_id: str, status: str) -> None:
         async with self._pool.acquire() as conn:
@@ -206,7 +228,9 @@ class PostgresExperienceRepository:
                 status, job_id,
             )
 
-    async def create_candidates(self, candidates: list[dict]) -> list[ImportCandidate]:
+    async def create_candidates(
+        self, candidates: builtins.list[ImportCandidateCreate]
+    ) -> builtins.list[ImportCandidate]:
         if not candidates:
             return []
         async with self._pool.acquire() as conn:
@@ -221,7 +245,7 @@ class PostgresExperienceRepository:
                 FROM jsonb_array_elements($1::jsonb) AS d
                 RETURNING *
                 """,
-                json.dumps(candidates),
+                json.dumps([c.model_dump(mode="json") for c in candidates]),
             )
         return [self._to_candidate(r) for r in rows]
 
@@ -243,7 +267,9 @@ class PostgresExperienceRepository:
                 "UPDATE import_candidates SET status=$1, updated_at=NOW() WHERE id=$2 RETURNING *",
                 status, candidate_id,
             )
-        return self._to_candidate(row)  # type: ignore[arg-type]
+        if row is None:
+            raise RuntimeError(f"Failed to update import candidate: {candidate_id}")
+        return self._to_candidate(row)
 
     # ── Row mappers ───────────────────────────────────────────────────────────
 

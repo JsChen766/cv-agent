@@ -64,7 +64,7 @@ class EvidenceRagService:
                 title=r["title"],
                 organization=r["organization"],
                 content=r["content"],
-                relevance_score=r["relevance_score"],
+                relevance_score=float(r["relevance_score"]),
             )
             for r in rows
         ]
@@ -139,4 +139,4 @@ def _cosine_sim(a: list[float], b: list[float]) -> float:
     norm_b = sum(x * x for x in b) ** 0.5
     if norm_a == 0 or norm_b == 0:
         return 0.0
-    return dot / (norm_a * norm_b)
+    return float(dot / (norm_a * norm_b))

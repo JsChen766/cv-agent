@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.core.types import CareerStage
 
@@ -29,9 +29,9 @@ class UserProfile(BaseModel):
     current_company: str | None = None
     years_of_experience: int | None = None
     career_stage: CareerStage | None = None
-    target_roles: list[str] = []
-    target_industries: list[str] = []
-    target_locations: list[str] = []
+    target_roles: list[str] = Field(default_factory=list)
+    target_industries: list[str] = Field(default_factory=list)
+    target_locations: list[str] = Field(default_factory=list)
     preferred_language: str = "zh-CN"  # "zh-CN" | "en-US"
     resume_style: str | None = None  # "concise" | "detailed"
     updated_at: datetime | None = None

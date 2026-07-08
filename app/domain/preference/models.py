@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, JsonValue
 
 from app.core.types import PreferenceSource, SignalType
 
@@ -27,6 +27,6 @@ class PreferenceSignal(BaseModel):
     user_id: str
     signal_type: SignalType
     raw_content: str
-    generation_context: dict = {}
+    generation_context: dict[str, JsonValue] = Field(default_factory=dict)
     processed: bool = False
     created_at: datetime

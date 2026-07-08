@@ -1,8 +1,17 @@
 from __future__ import annotations
 
+import builtins
 from typing import Protocol
 
-from app.domain.experience.models import Experience, ExperienceRevision, ImportCandidate, ImportJob
+from app.core.types import ExperienceCategory
+from app.domain.experience.models import (
+    Experience,
+    ExperiencePatch,
+    ExperienceRevision,
+    ImportCandidate,
+    ImportCandidateCreate,
+    ImportJob,
+)
 
 
 class ExperienceRepository(Protocol):
@@ -14,9 +23,9 @@ class ExperienceRepository(Protocol):
         limit: int = 20,
         cursor: str | None = None,
         category: str | None = None,
-        tags: list[str] | None = None,
+        tags: builtins.list[str] | None = None,
         q: str | None = None,
-    ) -> tuple[list[Experience], str | None]:
+    ) -> tuple[builtins.list[Experience], str | None]:
         """Return (items, next_cursor). next_cursor is None when no more pages."""
         ...
 
@@ -26,22 +35,24 @@ class ExperienceRepository(Protocol):
         self,
         experience_id: str,
         user_id: str,
-        category: str,
+        category: ExperienceCategory,
         title: str,
         *,
         organization: str | None = None,
         role: str | None = None,
         start_date: str | None = None,
         end_date: str | None = None,
-        tags: list[str] | None = None,
+        tags: builtins.list[str] | None = None,
     ) -> Experience: ...
 
-    async def update(self, user_id: str, experience_id: str, patch: dict) -> Experience: ...
+    async def update(
+        self, user_id: str, experience_id: str, patch: ExperiencePatch
+    ) -> Experience: ...
 
     async def archive(self, user_id: str, experience_id: str) -> None: ...
 
     # ── Revisions ─────────────────────────────────────────────────────────────
-    async def get_revisions(self, experience_id: str) -> list[ExperienceRevision]: ...
+    async def get_revisions(self, experience_id: str) -> builtins.list[ExperienceRevision]: ...
 
     async def add_revision(
         self,
@@ -59,8 +70,8 @@ class ExperienceRepository(Protocol):
     async def update_import_job_status(self, job_id: str, status: str) -> None: ...
 
     async def create_candidates(
-        self, candidates: list[dict]
-    ) -> list[ImportCandidate]: ...
+        self, candidates: builtins.list[ImportCandidateCreate]
+    ) -> builtins.list[ImportCandidate]: ...
 
     async def get_candidate(
         self, user_id: str, candidate_id: str

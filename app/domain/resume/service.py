@@ -2,7 +2,15 @@ from __future__ import annotations
 
 from app.core.errors import NotFoundError
 from app.core.types import RESUME_PREFIX, VARIANT_PREFIX, generate_id
-from app.domain.resume.models import Resume, ResumeItem, ResumeVariant
+from app.domain.resume.models import (
+    Resume,
+    ResumeItem,
+    ResumeItemCreate,
+    ResumeItemPatch,
+    ResumePatch,
+    ResumeVariant,
+    ResumeVariantCreate,
+)
 from app.domain.resume.repository import ResumeRepository
 
 
@@ -39,7 +47,7 @@ class ResumeService:
         )
 
     async def update_resume(
-        self, user_id: str, resume_id: str, patch: dict
+        self, user_id: str, resume_id: str, patch: ResumePatch
     ) -> Resume:
         await self.get_resume(user_id, resume_id)
         return await self._repo.update(user_id, resume_id, patch)
@@ -50,22 +58,49 @@ class ResumeService:
 
     # ── Items ─────────────────────────────────────────────────────────────────
 
-    async def add_item(self, user_id: str, resume_id: str, data: dict) -> ResumeItem:
+    async def add_item(self, user_id: str, resume_id: str, data: ResumeItemCreate) -> ResumeItem:
         await self.get_resume(user_id, resume_id)
         item_id = generate_id("item-")
         return await self._repo.add_item(item_id, resume_id, data)
 
+    async def get_item_by_id(self, user_id: str, item_id: str) -> ResumeItem:
+        item = await self._repo.get_item_for_user(user_id, item_id)
+        if not item:
+            raise NotFoundError(f"Resume item not found: {item_id}")
+        return item
+
     async def update_item(
-        self, user_id: str, resume_id: str, item_id: str, patch: dict
+        self, user_id: str, resume_id: str, item_id: str, patch: ResumeItemPatch
     ) -> ResumeItem:
         await self.get_resume(user_id, resume_id)
-        return await self._repo.update_item(item_id, patch)
+        item = await self._repo.update_item(user_id, item_id, patch)
+        if item.resume_id != resume_id:
+            raise NotFoundError(f"Resume item not found: {item_id}")
+        return item
+
+    async def update_item_by_id(
+        self, user_id: str, item_id: str, patch: ResumeItemPatch
+    ) -> ResumeItem:
+        item = await self._repo.get_item_for_user(user_id, item_id)
+        if not item:
+            raise NotFoundError(f"Resume item not found: {item_id}")
+        return await self._repo.update_item(user_id, item_id, patch)
 
     async def delete_item(
         self, user_id: str, resume_id: str, item_id: str
     ) -> None:
         await self.get_resume(user_id, resume_id)
-        await self._repo.delete_item(item_id)
+        item = await self._repo.get_item_for_user(user_id, item_id)
+        if not item or item.resume_id != resume_id:
+            raise NotFoundError(f"Resume item not found: {item_id}")
+        deleted = await self._repo.delete_item(user_id, item_id)
+        if not deleted:
+            raise NotFoundError(f"Resume item not found: {item_id}")
+
+    async def delete_item_by_id(self, user_id: str, item_id: str) -> None:
+        deleted = await self._repo.delete_item(user_id, item_id)
+        if not deleted:
+            raise NotFoundError(f"Resume item not found: {item_id}")
 
     async def reorder_items(
         self, user_id: str, resume_id: str, ordered_ids: list[str]
@@ -75,8 +110,13 @@ class ResumeService:
 
     # ── Variants ──────────────────────────────────────────────────────────────
 
-    async def save_variant(self, resume_id: str, data: dict) -> ResumeVariant:
+    async def save_variant(self, resume_id: str, data: ResumeVariantCreate) -> ResumeVariant:
         variant_id = generate_id(VARIANT_PREFIX)
+        return await self._repo.add_variant(variant_id, resume_id, data)
+
+    async def save_variant_with_id(
+        self, resume_id: str, variant_id: str, data: ResumeVariantCreate
+    ) -> ResumeVariant:
         return await self._repo.add_variant(variant_id, resume_id, data)
 
     async def get_variant(self, variant_id: str) -> ResumeVariant:
@@ -84,3 +124,6 @@ class ResumeService:
         if not v:
             raise NotFoundError(f"Variant not found: {variant_id}")
         return v
+
+    async def list_variants(self, resume_id: str) -> list[ResumeVariant]:
+        return await self._repo.list_variants(resume_id)

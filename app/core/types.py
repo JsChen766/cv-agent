@@ -40,6 +40,10 @@ ImportCandidateStatus = Literal["pending", "accepted", "rejected"]
 
 ImportSource = Literal["text", "file"]
 
+ImportJobStatus = Literal["processing", "completed", "failed"]
+
+ThreadStatus = Literal["active", "archived", "deleted"]
+
 ArtifactType = Literal[
     "cover_letter",
     "self_intro",

@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import builtins
 import json
 
 import asyncpg
 
+from app.core.errors import ExternalServiceError, NotFoundError
 from app.domain.preference.models import Preference, PreferenceSignal
 from app.infra.db.helpers import parse_jsonb
 
@@ -19,9 +21,9 @@ class PostgresPreferenceRepository:
         category: str | None = None,
         scope: str | None = None,
         active_only: bool = True,
-    ) -> list[Preference]:
+    ) -> builtins.list[Preference]:
         conditions = ["user_id = $1"]
-        values: list = [user_id]
+        values: builtins.list[object] = [user_id]
         idx = 2
         if active_only:
             conditions.append("active = TRUE")
@@ -49,7 +51,9 @@ class PostgresPreferenceRepository:
             )
         return self._to_pref(row) if row else None
 
-    async def create(self, preference_id: str, user_id: str, data: dict) -> Preference:
+    async def create(
+        self, preference_id: str, user_id: str, data: dict[str, object]
+    ) -> Preference:
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(
                 """
@@ -65,11 +69,14 @@ class PostgresPreferenceRepository:
                 data.get("reinforcement_count", 1), data.get("scope", "global"),
                 data.get("active", True),
             )
-        return self._to_pref(row)  # type: ignore[arg-type]
+        if row is None:
+            raise ExternalServiceError("Failed to create preference")
+        return self._to_pref(row)
 
-    async def update(self, preference_id: str, patch: dict) -> Preference:
+    async def update(self, preference_id: str, patch: dict[str, object]) -> Preference:
         allowed = {"rule", "confidence", "reinforcement_count", "active", "priority"}
-        set_parts, values = [], []
+        set_parts: builtins.list[str] = []
+        values: builtins.list[object] = []
         idx = 1
         for k, v in patch.items():
             if k in allowed:
@@ -79,13 +86,17 @@ class PostgresPreferenceRepository:
         if not set_parts:
             async with self._pool.acquire() as conn:
                 row = await conn.fetchrow("SELECT * FROM preferences WHERE id=$1", preference_id)
-            return self._to_pref(row)  # type: ignore[arg-type]
+            if row is None:
+                raise NotFoundError(f"Preference not found: {preference_id}")
+            return self._to_pref(row)
         set_parts.append("last_reinforced_at = NOW()")
         values.append(preference_id)
         sql = f"UPDATE preferences SET {', '.join(set_parts)} WHERE id=${idx} RETURNING *"
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(sql, *values)
-        return self._to_pref(row)  # type: ignore[arg-type]
+        if row is None:
+            raise NotFoundError(f"Preference not found: {preference_id}")
+        return self._to_pref(row)
 
     async def deactivate(self, user_id: str, preference_id: str) -> None:
         async with self._pool.acquire() as conn:
@@ -95,8 +106,8 @@ class PostgresPreferenceRepository:
             )
 
     async def find_similar(
-        self, user_id: str, embedding: list[float], threshold: float
-    ) -> list[Preference]:
+        self, user_id: str, embedding: builtins.list[float], threshold: float
+    ) -> builtins.list[Preference]:
         """Find preferences with cosine similarity above threshold."""
         vec = f"[{','.join(str(v) for v in embedding)}]"
         async with self._pool.acquire() as conn:
@@ -116,7 +127,7 @@ class PostgresPreferenceRepository:
     # ── Signals ───────────────────────────────────────────────────────────────
 
     async def add_signal(
-        self, signal_id: str, user_id: str, data: dict
+        self, signal_id: str, user_id: str, data: dict[str, object]
     ) -> PreferenceSignal:
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(
@@ -131,9 +142,11 @@ class PostgresPreferenceRepository:
                 json.dumps(data.get("generation_context", {})),
                 data.get("processed", False),
             )
-        return self._to_signal(row)  # type: ignore[arg-type]
+        if row is None:
+            raise ExternalServiceError("Failed to create preference signal")
+        return self._to_signal(row)
 
-    async def get_unprocessed_signals(self, user_id: str) -> list[PreferenceSignal]:
+    async def get_unprocessed_signals(self, user_id: str) -> builtins.list[PreferenceSignal]:
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(
                 "SELECT * FROM preference_signals WHERE user_id=$1 AND processed=FALSE ORDER BY created_at",

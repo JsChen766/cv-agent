@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import builtins
 import json
+from hashlib import sha1
+from typing import cast
 
 import asyncpg
 
-from app.domain.jd.models import JdRecord, JdRequirement
+from app.domain.jd.models import JdRecord, JdRequirement, JdRequirementImportance
 from app.infra.db.helpers import parse_jsonb
 
 
@@ -18,9 +21,9 @@ class PostgresJdRepository:
         *,
         limit: int = 20,
         cursor: str | None = None,
-    ) -> tuple[list[JdRecord], str | None]:
+    ) -> tuple[builtins.list[JdRecord], str | None]:
         conditions = ["user_id = $1"]
-        values: list = [user_id]
+        values: builtins.list[object] = [user_id]
         idx = 2
         if cursor:
             conditions.append(f"id > ${idx}")
@@ -55,7 +58,7 @@ class PostgresJdRepository:
         *,
         company: str | None = None,
         target_role: str | None = None,
-        requirements: list[dict] | None = None,
+        requirements: builtins.list[JdRequirement] | None = None,
     ) -> JdRecord:
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(
@@ -65,12 +68,14 @@ class PostgresJdRepository:
                 RETURNING *
                 """,
                 jd_id, user_id, title, company, target_role, raw_text,
-                json.dumps(requirements or []),
+                json.dumps([r.model_dump(mode="json") for r in (requirements or [])]),
             )
-        return self._to_jd(row)  # type: ignore[arg-type]
+        if row is None:
+            raise RuntimeError("Failed to create JD")
+        return self._to_jd(row)
 
     async def update_requirements(
-        self, jd_id: str, requirements: list[dict]
+        self, jd_id: str, requirements: builtins.list[JdRequirement]
     ) -> JdRecord:
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(
@@ -80,9 +85,11 @@ class PostgresJdRepository:
                 WHERE id=$2
                 RETURNING *
                 """,
-                json.dumps(requirements), jd_id,
+                json.dumps([r.model_dump(mode="json") for r in requirements]), jd_id,
             )
-        return self._to_jd(row)  # type: ignore[arg-type]
+        if row is None:
+            raise RuntimeError(f"Failed to update JD requirements: {jd_id}")
+        return self._to_jd(row)
 
     async def delete(self, user_id: str, jd_id: str) -> None:
         async with self._pool.acquire() as conn:
@@ -93,7 +100,7 @@ class PostgresJdRepository:
     @staticmethod
     def _to_jd(row: asyncpg.Record) -> JdRecord:
         raw_reqs = parse_jsonb(row["requirements"]) or []
-        requirements = [JdRequirement(**r) for r in raw_reqs]
+        requirements = [_to_requirement(r, idx) for idx, r in enumerate(raw_reqs)]
         return JdRecord(
             id=row["id"],
             user_id=row["user_id"],
@@ -105,3 +112,22 @@ class PostgresJdRepository:
             created_at=row["created_at"],
             updated_at=row["updated_at"],
         )
+
+
+def _to_requirement(raw: object, index: int) -> JdRequirement:
+    if not isinstance(raw, dict):
+        raw = {"text": str(raw), "category": "other", "importance": "medium"}
+    text = str(raw.get("text") or "").strip()
+    generated_id = f"req-legacy-{sha1(f'{index}:{text}'.encode()).hexdigest()[:12]}"
+    return JdRequirement(
+        id=str(raw.get("id") or generated_id),
+        text=text,
+        category=str(raw.get("category") or "skill"),
+        importance=_importance(raw.get("importance")),
+    )
+
+
+def _importance(value: object) -> JdRequirementImportance:
+    if value in {"high", "medium", "low"}:
+        return cast("JdRequirementImportance", value)
+    return "medium"

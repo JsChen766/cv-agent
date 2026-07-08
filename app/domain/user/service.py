@@ -17,10 +17,10 @@ class UserService:
     # ── Auth ──────────────────────────────────────────────────────────────────
 
     def hash_password(self, plain: str) -> str:
-        return _pwd_ctx.hash(plain)
+        return str(_pwd_ctx.hash(plain))
 
     def verify_password(self, plain: str, hashed: str) -> bool:
-        return _pwd_ctx.verify(plain, hashed)
+        return bool(_pwd_ctx.verify(plain, hashed))
 
     async def register(self, email: str, password: str) -> User:
         existing = await self._repo.get_by_email(email)
@@ -51,7 +51,7 @@ class UserService:
             return UserProfile(user_id=user_id)
         return profile
 
-    async def update_profile(self, user_id: str, patch: dict) -> UserProfile:
+    async def update_profile(self, user_id: str, patch: dict[str, object]) -> UserProfile:
         # Ensure user exists
         await self.get_by_id(user_id)
         return await self._repo.upsert_profile(user_id, patch)

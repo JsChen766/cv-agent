@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import builtins
 import json
 
 import asyncpg
@@ -8,7 +9,11 @@ from app.domain.resume.models import (
     EvidenceItem,
     Resume,
     ResumeItem,
+    ResumeItemCreate,
+    ResumeItemPatch,
+    ResumePatch,
     ResumeVariant,
+    ResumeVariantCreate,
     RiskItem,
     ScoreBreakdown,
 )
@@ -27,9 +32,9 @@ class PostgresResumeRepository:
         *,
         limit: int = 20,
         cursor: str | None = None,
-    ) -> tuple[list[Resume], str | None]:
+    ) -> tuple[builtins.list[Resume], str | None]:
         conditions = ["user_id = $1"]
-        values: list = [user_id]
+        values: builtins.list[object] = [user_id]
         idx = 2
         if cursor:
             conditions.append(f"id > ${idx}")
@@ -78,25 +83,33 @@ class PostgresResumeRepository:
                 """,
                 resume_id, user_id, title, target_role, jd_id,
             )
-        return self._to_resume(row)  # type: ignore[arg-type]
+        if row is None:
+            raise RuntimeError("Failed to create resume")
+        return self._to_resume(row)
 
-    async def update(self, user_id: str, resume_id: str, patch: dict) -> Resume:
+    async def update(self, user_id: str, resume_id: str, patch: ResumePatch) -> Resume:
         allowed = {"title", "target_role", "jd_id", "status"}
-        set_parts, values = [], []
+        set_parts: builtins.list[str] = []
+        values: builtins.list[object] = []
         idx = 1
-        for k, v in patch.items():
+        for k, v in patch.model_dump(exclude_none=True).items():
             if k in allowed:
                 set_parts.append(f"{k} = ${idx}")
                 values.append(v)
                 idx += 1
         if not set_parts:
-            return await self.get(user_id, resume_id)  # type: ignore[return-value]
+            resume = await self.get(user_id, resume_id)
+            if resume is None:
+                raise RuntimeError(f"Resume not found after ownership check: {resume_id}")
+            return resume
         set_parts.append("updated_at = NOW()")
         values.extend([resume_id, user_id])
         sql = f"UPDATE resumes SET {', '.join(set_parts)} WHERE id=${idx} AND user_id=${idx+1} RETURNING *"
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(sql, *values)
-        return self._to_resume(row)  # type: ignore[arg-type]
+        if row is None:
+            raise RuntimeError(f"Failed to update resume: {resume_id}")
+        return self._to_resume(row)
 
     async def delete(self, user_id: str, resume_id: str) -> None:
         async with self._pool.acquire() as conn:
@@ -106,52 +119,94 @@ class PostgresResumeRepository:
 
     # ── Items ─────────────────────────────────────────────────────────────────
 
-    async def add_item(self, item_id: str, resume_id: str, data: dict) -> ResumeItem:
+    async def add_item(self, item_id: str, resume_id: str, data: ResumeItemCreate) -> ResumeItem:
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(
                 """
                 INSERT INTO resume_items
                     (id, resume_id, section_type, title, content_snapshot,
-                     order_index, source_experience_id)
-                VALUES ($1,$2,$3,$4,$5,$6,$7)
+                     order_index, source_experience_id, source_variant_id)
+                VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
                 RETURNING *
                 """,
                 item_id, resume_id,
-                data.get("section_type", "experience"),
-                data.get("title"),
-                data.get("content_snapshot", ""),
-                data.get("order_index", 0),
-                data.get("source_experience_id"),
+                data.section_type,
+                data.title,
+                data.content_snapshot,
+                data.order_index,
+                data.source_experience_id,
+                data.source_variant_id,
             )
-        return self._to_item(row)  # type: ignore[arg-type]
+        if row is None:
+            raise RuntimeError("Failed to create resume item")
+        return self._to_item(row)
 
-    async def update_item(self, item_id: str, patch: dict) -> ResumeItem:
+    async def get_item_for_user(self, user_id: str, item_id: str) -> ResumeItem | None:
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT ri.*
+                FROM resume_items ri
+                JOIN resumes r ON r.id = ri.resume_id
+                WHERE ri.id = $1 AND r.user_id = $2
+                """,
+                item_id,
+                user_id,
+            )
+        return self._to_item(row) if row else None
+
+    async def update_item(
+        self, user_id: str, item_id: str, patch: ResumeItemPatch
+    ) -> ResumeItem:
         allowed = {"title", "content_snapshot", "order_index", "hidden", "pinned"}
-        set_parts, values = [], []
+        set_parts: builtins.list[str] = []
+        values: builtins.list[object] = []
         idx = 1
-        for k, v in patch.items():
+        for k, v in patch.model_dump(exclude_none=True).items():
             if k in allowed:
                 set_parts.append(f"{k} = ${idx}")
                 values.append(v)
                 idx += 1
         if not set_parts:
-            async with self._pool.acquire() as conn:
-                row = await conn.fetchrow("SELECT * FROM resume_items WHERE id=$1", item_id)
-            return self._to_item(row)  # type: ignore[arg-type]
+            item = await self.get_item_for_user(user_id, item_id)
+            if item is None:
+                raise ValueError(f"Resume item not found: {item_id}")
+            return item
         set_parts.append("updated_at = NOW()")
-        values.append(item_id)
-        sql = f"UPDATE resume_items SET {', '.join(set_parts)} WHERE id=${idx} RETURNING *"
+        values.extend([item_id, user_id])
+        sql = f"""
+            UPDATE resume_items AS ri
+            SET {', '.join(set_parts)}
+            FROM resumes AS r
+            WHERE ri.id = ${idx}
+              AND ri.resume_id = r.id
+              AND r.user_id = ${idx + 1}
+            RETURNING ri.*
+        """
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(sql, *values)
-        return self._to_item(row)  # type: ignore[arg-type]
+        if row is None:
+            raise ValueError(f"Resume item not found: {item_id}")
+        return self._to_item(row)
 
-    async def delete_item(self, item_id: str) -> None:
+    async def delete_item(self, user_id: str, item_id: str) -> bool:
         async with self._pool.acquire() as conn:
-            await conn.execute("DELETE FROM resume_items WHERE id=$1", item_id)
+            result = str(await conn.execute(
+                """
+                DELETE FROM resume_items AS ri
+                USING resumes AS r
+                WHERE ri.id = $1
+                  AND ri.resume_id = r.id
+                  AND r.user_id = $2
+                """,
+                item_id,
+                user_id,
+            ))
+        return result == "DELETE 1"
 
     async def reorder_items(
-        self, resume_id: str, ordered_ids: list[str]
-    ) -> list[ResumeItem]:
+        self, resume_id: str, ordered_ids: builtins.list[str]
+    ) -> builtins.list[ResumeItem]:
         async with self._pool.acquire() as conn, conn.transaction():
             for idx, item_id in enumerate(ordered_ids):
                 await conn.execute(
@@ -166,7 +221,9 @@ class PostgresResumeRepository:
 
     # ── Variants ──────────────────────────────────────────────────────────────
 
-    async def add_variant(self, variant_id: str, resume_id: str, data: dict) -> ResumeVariant:
+    async def add_variant(
+        self, variant_id: str, resume_id: str, data: ResumeVariantCreate
+    ) -> ResumeVariant:
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(
                 """
@@ -177,15 +234,17 @@ class PostgresResumeRepository:
                 RETURNING *
                 """,
                 variant_id, resume_id,
-                data.get("jd_id"),
-                data.get("title", "Variant"),
-                data.get("content", ""),
-                json.dumps(data.get("score", {})),
-                json.dumps(data.get("evidence_summary", [])),
-                json.dumps(data.get("risk_summary", [])),
-                json.dumps(data.get("missing_info", [])),
+                data.jd_id,
+                data.title,
+                data.content,
+                json.dumps(data.score.model_dump(mode="json")),
+                json.dumps([e.model_dump(mode="json") for e in data.evidence_summary]),
+                json.dumps([r.model_dump(mode="json") for r in data.risk_summary]),
+                json.dumps(data.missing_info),
             )
-        return self._to_variant(row)  # type: ignore[arg-type]
+        if row is None:
+            raise RuntimeError("Failed to create resume variant")
+        return self._to_variant(row)
 
     async def get_variant(self, variant_id: str) -> ResumeVariant | None:
         async with self._pool.acquire() as conn:
@@ -194,7 +253,7 @@ class PostgresResumeRepository:
             )
         return self._to_variant(row) if row else None
 
-    async def list_variants(self, resume_id: str) -> list[ResumeVariant]:
+    async def list_variants(self, resume_id: str) -> builtins.list[ResumeVariant]:
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(
                 "SELECT * FROM resume_variants WHERE resume_id=$1 ORDER BY created_at DESC",
