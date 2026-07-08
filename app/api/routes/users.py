@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, Request
-from pydantic import BaseModel
+from fastapi.responses import JSONResponse
+from pydantic import Field
 
 from app.api.deps import (
     get_current_user_id,
@@ -9,13 +10,16 @@ from app.api.deps import (
     get_user_service,
 )
 from app.api.response import ok
+from app.api.schemas import StrictRequestModel
+from app.domain.preference.models import Preference
 from app.domain.preference.service import PreferenceService
+from app.domain.user.models import UserProfile
 from app.domain.user.service import UserService
 
 router = APIRouter(tags=["users"])
 
 
-class UpdateProfileBody(BaseModel):
+class UpdateProfileBody(StrictRequestModel):
     full_name: str | None = None
     phone: str | None = None
     location: str | None = None
@@ -24,7 +28,7 @@ class UpdateProfileBody(BaseModel):
     personal_website: str | None = None
     current_title: str | None = None
     current_company: str | None = None
-    years_of_experience: int | None = None
+    years_of_experience: int | None = Field(default=None, ge=0, le=80)
     career_stage: str | None = None
     target_roles: list[str] | None = None
     target_industries: list[str] | None = None
@@ -33,10 +37,10 @@ class UpdateProfileBody(BaseModel):
     resume_style: str | None = None
 
 
-class AddPreferenceBody(BaseModel):
-    rule: str
-    category: str
-    scope: str = "global"
+class AddPreferenceBody(StrictRequestModel):
+    rule: str = Field(min_length=1)
+    category: str = Field(min_length=1)
+    scope: str = Field(default="global", min_length=1)
 
 
 @router.get("/users/me/profile")
@@ -44,7 +48,7 @@ async def get_profile(
     request: Request,
     user_id: str = Depends(get_current_user_id),
     svc: UserService = Depends(get_user_service),
-):
+) -> JSONResponse:
     profile = await svc.get_profile(user_id)
     return ok(_serialize_profile(profile), request)
 
@@ -55,8 +59,8 @@ async def update_profile(
     request: Request,
     user_id: str = Depends(get_current_user_id),
     svc: UserService = Depends(get_user_service),
-):
-    patch = body.model_dump(exclude_none=True)
+) -> JSONResponse:
+    patch: dict[str, object] = body.model_dump(exclude_none=True)
     profile = await svc.update_profile(user_id, patch)
     return ok(_serialize_profile(profile), request)
 
@@ -66,7 +70,7 @@ async def list_preferences(
     request: Request,
     user_id: str = Depends(get_current_user_id),
     svc: PreferenceService = Depends(get_preference_service),
-):
+) -> JSONResponse:
     prefs = await svc.get_active_preferences(user_id)
     return ok([_serialize_pref(p) for p in prefs], request)
 
@@ -77,7 +81,7 @@ async def add_preference(
     request: Request,
     user_id: str = Depends(get_current_user_id),
     svc: PreferenceService = Depends(get_preference_service),
-):
+) -> JSONResponse:
     pref = await svc.add_explicit_preference(
         user_id, rule=body.rule, category=body.category, scope=body.scope
     )
@@ -90,12 +94,12 @@ async def delete_preference(
     request: Request,
     user_id: str = Depends(get_current_user_id),
     svc: PreferenceService = Depends(get_preference_service),
-):
+) -> JSONResponse:
     await svc.delete_preference(user_id, preference_id)
     return ok({"deleted": True}, request)
 
 
-def _serialize_profile(p) -> dict:
+def _serialize_profile(p: UserProfile) -> dict[str, object]:
     return {
         "fullName": p.full_name,
         "email": p.email,
@@ -116,7 +120,7 @@ def _serialize_profile(p) -> dict:
     }
 
 
-def _serialize_pref(p) -> dict:
+def _serialize_pref(p: Preference) -> dict[str, object]:
     return {
         "id": p.id,
         "rule": p.rule,

@@ -5,6 +5,7 @@ import asyncio
 import asyncpg
 from fastapi import APIRouter, Depends, Request, UploadFile
 from fastapi import File as FastAPIFile
+from fastapi.responses import JSONResponse
 
 from app.api.deps import get_current_user_id, pool_dep
 from app.api.response import ok
@@ -30,7 +31,7 @@ async def upload_file(
     file: UploadFile = FastAPIFile(...),
     user_id: str = Depends(get_current_user_id),
     pool: asyncpg.Pool = Depends(pool_dep),
-):
+) -> JSONResponse:
     content = await file.read()
     if len(content) > MAX_FILE_SIZE:
         from app.core.errors import ValidationError
@@ -72,7 +73,7 @@ async def parse_uploaded_file(
     request: Request,
     user_id: str = Depends(get_current_user_id),
     pool: asyncpg.Pool = Depends(pool_dep),
-):
+) -> JSONResponse:
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
             "SELECT * FROM uploaded_files WHERE id=$1 AND user_id=$2", file_id, user_id

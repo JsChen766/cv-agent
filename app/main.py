@@ -78,7 +78,7 @@ async def app_error_handler(request: Request, exc: AppError) -> JSONResponse:
 
 # ── Health check ──────────────────────────────────────────────────────────────
 @app.get("/v1/health")
-async def health() -> dict:
+async def health() -> dict[str, str]:
     return {"status": "ok", "version": "0.1.0"}
 
 

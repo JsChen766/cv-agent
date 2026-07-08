@@ -12,14 +12,19 @@ from __future__ import annotations
 
 import logging
 from datetime import UTC, datetime
-from typing import Any
+from typing import cast
 
-from fastapi import APIRouter, Depends, Request
-from pydantic import BaseModel
+import asyncpg
+from fastapi import APIRouter, Depends, Query, Request
+from fastapi.responses import JSONResponse
+from langchain_core.runnables import RunnableConfig
+from pydantic import Field, JsonValue
 
 from app.api.deps import build_service_container, get_current_user_id, pool_dep
 from app.api.response import ok, ok_list
-from app.core.errors import ForbiddenError, NotFoundError
+from app.api.schemas import StrictRequestModel
+from app.core.errors import ConflictError, ExternalServiceError, ForbiddenError, NotFoundError
+from app.core.types import ThreadStatus
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/threads", tags=["threads"])
@@ -28,25 +33,27 @@ router = APIRouter(prefix="/threads", tags=["threads"])
 # ── Schemas ────────────────────────────────────────────────────────────────────
 
 
-class UpdateThreadRequest(BaseModel):
-    title: str | None = None
-    status: str | None = None  # active | archived | deleted
+class UpdateThreadRequest(StrictRequestModel):
+    title: str | None = Field(default=None, min_length=1)
+    status: ThreadStatus | None = None
 
 
-class ResumeRequest(BaseModel):
-    turnId: str
-    confirmedData: dict[str, Any] | None = None  # optional override passed back to graph
+class ResumeRequest(StrictRequestModel):
+    turnId: str = Field(min_length=1)
+    confirmedData: dict[str, JsonValue] | None = None
 
 
-class DiscardRequest(BaseModel):
-    turnId: str
-    reason: str | None = None
+class DiscardRequest(StrictRequestModel):
+    turnId: str = Field(min_length=1)
+    reason: str | None = Field(default=None, min_length=1)
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 
-async def _require_thread(pool, thread_id: str, user_id: str) -> dict[str, Any]:
+async def _require_thread(
+    pool: asyncpg.Pool, thread_id: str, user_id: str
+) -> dict[str, object]:
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
             "SELECT * FROM threads WHERE id = $1",
@@ -57,7 +64,7 @@ async def _require_thread(pool, thread_id: str, user_id: str) -> dict[str, Any]:
     d = dict(row)
     if d.get("user_id") != user_id:
         raise ForbiddenError("You do not own this thread")
-    return d
+    return cast("dict[str, object]", d)
 
 
 # ── Routes ─────────────────────────────────────────────────────────────────────
@@ -66,22 +73,19 @@ async def _require_thread(pool, thread_id: str, user_id: str) -> dict[str, Any]:
 @router.get("")
 async def list_threads(
     request: Request,
-    limit: int = 20,
-    cursor: str | None = None,
+    limit: int = Query(20, ge=1, le=100),
+    cursor: datetime | None = Query(None),
     user_id: str = Depends(get_current_user_id),
-    pool=Depends(pool_dep),
-):
+    pool: asyncpg.Pool = Depends(pool_dep),
+) -> JSONResponse:
     try:
         from app.infra.db.connection import get_pool as _get_pool
-        from app.infra.db.helpers import cursor_decode
-
         _pool = _get_pool()
-        params: list[Any] = [user_id, limit + 1]
+        params: list[object] = [user_id, limit + 1]
         query = "SELECT * FROM threads WHERE user_id = $1 AND status != 'deleted'"
         if cursor:
-            cursor_val = cursor_decode(cursor)
             query += " AND updated_at < $3"
-            params.append(cursor_val)
+            params.append(cursor)
         query += " ORDER BY updated_at DESC LIMIT $2"
 
         async with _pool.acquire() as conn:
@@ -90,8 +94,12 @@ async def list_threads(
         items = [dict(r) for r in rows[: limit]]
         next_cursor = None
         if len(rows) > limit:
-            from app.infra.db.helpers import cursor_encode
-            next_cursor = cursor_encode(str(rows[limit - 1]["updated_at"]))
+            updated_at = rows[limit - 1]["updated_at"]
+            next_cursor = (
+                updated_at.isoformat()
+                if isinstance(updated_at, datetime)
+                else str(updated_at)
+            )
 
         return ok_list(items, next_cursor, request)
     except RuntimeError:
@@ -103,8 +111,8 @@ async def get_thread(
     thread_id: str,
     request: Request,
     user_id: str = Depends(get_current_user_id),
-    pool=Depends(pool_dep),
-):
+    pool: asyncpg.Pool = Depends(pool_dep),
+) -> JSONResponse:
     try:
         from app.infra.db.connection import get_pool as _get_pool
         _pool = _get_pool()
@@ -129,14 +137,14 @@ async def update_thread(
     body: UpdateThreadRequest,
     request: Request,
     user_id: str = Depends(get_current_user_id),
-    pool=Depends(pool_dep),
-):
+    pool: asyncpg.Pool = Depends(pool_dep),
+) -> JSONResponse:
     from app.infra.db.connection import get_pool as _get_pool
     _pool = _get_pool()
     await _require_thread(_pool, thread_id, user_id)
 
     updates: list[str] = []
-    params: list[Any] = []
+    params: list[object] = []
     idx = 1
 
     if body.title is not None:
@@ -156,10 +164,14 @@ async def update_thread(
         query = f"UPDATE threads SET {', '.join(updates)} WHERE id = ${idx} RETURNING *"  # noqa: S608
         async with _pool.acquire() as conn:
             row = await conn.fetchrow(query, *params)
+        if row is None:
+            raise ExternalServiceError("Failed to update thread")
         return ok(dict(row), request)
 
     async with _pool.acquire() as conn:
         row = await conn.fetchrow("SELECT * FROM threads WHERE id = $1", thread_id)
+    if row is None:
+        raise NotFoundError(f"Thread '{thread_id}' not found")
     return ok(dict(row), request)
 
 
@@ -169,8 +181,8 @@ async def resume_thread(
     body: ResumeRequest,
     request: Request,
     user_id: str = Depends(get_current_user_id),
-    pool=Depends(pool_dep),
-):
+    pool: asyncpg.Pool = Depends(pool_dep),
+) -> JSONResponse:
     """
     Resume a suspended graph after user confirmation.
     Invokes the graph with Command(resume=...) to continue from the interrupt.
@@ -188,23 +200,39 @@ async def resume_thread(
     except RuntimeError:
         pass
 
-    graph = get_graph(_get_checkpointer_or_none())
-    configurable: dict[str, Any] = {"thread_id": thread_id}
+    checkpointer = _get_checkpointer_or_none()
+    if checkpointer is None:
+        raise ConflictError("Thread has no persisted pending interrupt to resume")
+
+    graph = get_graph(checkpointer)
+    configurable: dict[str, object] = {"thread_id": thread_id}
     if _pool:
         configurable["services"] = build_service_container(_pool)
         configurable["pool"] = _pool
-    config = {"configurable": configurable}
+    config: RunnableConfig = {"configurable": configurable}
 
     resume_data = body.confirmedData or {"confirmed": True}
 
     try:
+        snapshot = await graph.aget_state(config)
+    except Exception as exc:
+        logger.exception("Resume state load error: %s", exc)
+        raise ExternalServiceError("Could not load thread resume state") from exc
+
+    if not getattr(snapshot, "next", ()):
+        raise ConflictError("Thread has no pending interrupt to resume")
+
+    try:
         final_state = await graph.ainvoke(Command(resume=resume_data), config=config)
-        assistant_msg = final_state.get("assistant_message", "Done.")
-        interrupt_payload = final_state.get("interrupt_payload")
     except Exception as exc:
         logger.exception("Resume error: %s", exc)
-        assistant_msg = "An error occurred resuming the conversation."
-        interrupt_payload = None
+        raise ExternalServiceError("Graph resume failed") from exc
+
+    assistant_msg = str(final_state.get("assistant_message") or "Done.")
+    raw_interrupt = final_state.get("interrupt_payload")
+    interrupt_payload = (
+        cast("dict[str, JsonValue]", raw_interrupt) if isinstance(raw_interrupt, dict) else None
+    )
 
     return ok(
         _build_response(thread_id, body.turnId, assistant_msg, None, interrupt_payload),
@@ -212,11 +240,11 @@ async def resume_thread(
     )
 
 
-def _get_checkpointer_or_none():
+def _get_checkpointer_or_none() -> object | None:
     try:
         from app.infra.db.checkpointer import get_checkpointer
 
-        return get_checkpointer()
+        return cast("object", get_checkpointer())
     except RuntimeError:
         return None
 
@@ -227,18 +255,21 @@ async def discard_thread(
     body: DiscardRequest,
     request: Request,
     user_id: str = Depends(get_current_user_id),
-    pool=Depends(pool_dep),
-):
+    pool: asyncpg.Pool = Depends(pool_dep),
+) -> JSONResponse:
     """
     Discard a pending interrupt.  Optionally records rejection signal to PreferenceBank.
     """
+    _pool = None
     try:
         from app.infra.db.connection import get_pool as _get_pool
         _pool = _get_pool()
         await _require_thread(_pool, thread_id, user_id)
+    except RuntimeError:
+        _pool = None
 
-        if body.reason:
-            # Record rejection signal for preference learning
+    if _pool is not None and body.reason:
+        try:
             from app.domain.preference.service import PreferenceService
             from app.infra.db.repositories.preference_repo import PostgresPreferenceRepository
 
@@ -255,8 +286,8 @@ async def discard_thread(
                     "turn_id": body.turnId,
                 },
             )
-    except Exception as exc:
-        logger.warning("Discard signal recording failed: %s", exc)
+        except Exception as exc:
+            logger.warning("Discard signal recording failed: %s", exc)
 
     return ok(
         {

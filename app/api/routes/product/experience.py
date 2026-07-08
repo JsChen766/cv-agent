@@ -1,13 +1,23 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, Query, Request
-from pydantic import BaseModel
+from fastapi.responses import JSONResponse
+from pydantic import Field
 
 from app.api.deps import (
     get_current_user_id,
     get_experience_service,
 )
 from app.api.response import ok, ok_list
+from app.api.schemas import StrictRequestModel
+from app.core.types import ExperienceCategory
+from app.domain.experience.models import (
+    Experience,
+    ExperiencePatch,
+    ExperienceRevision,
+    ImportCandidate,
+    ImportCandidateDraft,
+)
 from app.domain.experience.service import ExperienceService
 
 router = APIRouter(tags=["experiences"])
@@ -15,37 +25,63 @@ router = APIRouter(tags=["experiences"])
 
 # ── Request bodies ────────────────────────────────────────────────────────────
 
-class CreateExperienceBody(BaseModel):
-    category: str
-    title: str
-    content: str
+class CreateExperienceBody(StrictRequestModel):
+    category: ExperienceCategory
+    title: str = Field(min_length=1)
+    content: str = Field(min_length=1)
     organization: str | None = None
     role: str | None = None
     start_date: str | None = None
     end_date: str | None = None
-    tags: list[str] = []
+    tags: list[str] = Field(default_factory=list)
 
 
-class UpdateExperienceBody(BaseModel):
+class UpdateExperienceBody(StrictRequestModel):
     title: str | None = None
     organization: str | None = None
     role: str | None = None
-    category: str | None = None
+    category: ExperienceCategory | None = None
     start_date: str | None = None
     end_date: str | None = None
     tags: list[str] | None = None
 
+    def to_patch(self) -> ExperiencePatch:
+        return ExperiencePatch(
+            title=self.title,
+            organization=self.organization,
+            role=self.role,
+            category=self.category,
+            start_date=self.start_date,
+            end_date=self.end_date,
+            tags=self.tags,
+        )
 
-class AddRevisionBody(BaseModel):
-    content: str
-    source: str = "manual"
+
+class AddRevisionBody(StrictRequestModel):
+    content: str = Field(min_length=1)
+    source: str = Field(default="manual", min_length=1)
 
 
-class ImportTextBody(BaseModel):
-    raw_text: str
-    # candidates are pre-extracted by caller in this phase;
-    # in Phase 11 the graph does the LLM extraction
-    candidates: list[dict] = []
+class ImportCandidateBody(StrictRequestModel):
+    category: ExperienceCategory
+    title: str = Field(min_length=1)
+    content: str = Field(min_length=1)
+    organization: str | None = None
+    role: str | None = None
+
+    def to_domain(self) -> ImportCandidateDraft:
+        return ImportCandidateDraft(
+            category=self.category,
+            title=self.title,
+            content=self.content,
+            organization=self.organization,
+            role=self.role,
+        )
+
+
+class ImportTextBody(StrictRequestModel):
+    raw_text: str = Field(min_length=1)
+    candidates: list[ImportCandidateBody] = Field(default_factory=list)
 
 
 # ── Routes ────────────────────────────────────────────────────────────────────
@@ -55,18 +91,18 @@ async def list_experiences(
     request: Request,
     limit: int = Query(20, ge=1, le=100),
     cursor: str | None = Query(None),
-    category: str | None = Query(None),
-    tags: list[str] = Query(default=[]),
+    category: ExperienceCategory | None = Query(None),
+    tags: list[str] | None = Query(default=None),
     q: str | None = Query(None),
     user_id: str = Depends(get_current_user_id),
     svc: ExperienceService = Depends(get_experience_service),
-):
+) -> JSONResponse:
     items, next_cursor = await svc.list_experiences(
         user_id,
         limit=limit,
         cursor=cursor,
         category=category,
-        tags=tags or None,
+        tags=tags,
         q=q,
     )
     return ok_list(
@@ -82,7 +118,7 @@ async def create_experience(
     request: Request,
     user_id: str = Depends(get_current_user_id),
     svc: ExperienceService = Depends(get_experience_service),
-):
+) -> JSONResponse:
     exp = await svc.create_experience(
         user_id,
         category=body.category,
@@ -103,7 +139,7 @@ async def get_experience(
     request: Request,
     user_id: str = Depends(get_current_user_id),
     svc: ExperienceService = Depends(get_experience_service),
-):
+) -> JSONResponse:
     exp = await svc.get_experience(user_id, experience_id)
     revisions = await svc.get_revisions(user_id, experience_id)
     data = _serialize_exp(exp)
@@ -118,9 +154,8 @@ async def update_experience(
     request: Request,
     user_id: str = Depends(get_current_user_id),
     svc: ExperienceService = Depends(get_experience_service),
-):
-    patch = body.model_dump(exclude_none=True)
-    exp = await svc.update_experience_meta(user_id, experience_id, patch)
+) -> JSONResponse:
+    exp = await svc.update_experience_meta(user_id, experience_id, body.to_patch())
     return ok(_serialize_exp(exp), request)
 
 
@@ -130,7 +165,7 @@ async def archive_experience(
     request: Request,
     user_id: str = Depends(get_current_user_id),
     svc: ExperienceService = Depends(get_experience_service),
-):
+) -> JSONResponse:
     await svc.archive_experience(user_id, experience_id)
     return ok({"archived": True}, request)
 
@@ -142,7 +177,7 @@ async def add_revision(
     request: Request,
     user_id: str = Depends(get_current_user_id),
     svc: ExperienceService = Depends(get_experience_service),
-):
+) -> JSONResponse:
     rev = await svc.add_revision(user_id, experience_id, body.content, body.source)
     return ok(_serialize_rev(rev), request, status_code=201)
 
@@ -155,13 +190,15 @@ async def import_from_text(
     request: Request,
     user_id: str = Depends(get_current_user_id),
     svc: ExperienceService = Depends(get_experience_service),
-):
+) -> JSONResponse:
     """
     Phase 5 version: caller must supply pre-parsed candidates.
     Phase 11 will wire this through the LangGraph experience_import subgraph.
     """
     job, candidates = await svc.start_import_from_text(
-        user_id, body.raw_text, body.candidates
+        user_id,
+        body.raw_text,
+        [candidate.to_domain() for candidate in body.candidates],
     )
     return ok(
         {
@@ -179,7 +216,7 @@ async def accept_candidate(
     request: Request,
     user_id: str = Depends(get_current_user_id),
     svc: ExperienceService = Depends(get_experience_service),
-):
+) -> JSONResponse:
     exp = await svc.accept_candidate(user_id, candidate_id)
     return ok(_serialize_exp(exp), request, status_code=201)
 
@@ -190,15 +227,15 @@ async def reject_candidate(
     request: Request,
     user_id: str = Depends(get_current_user_id),
     svc: ExperienceService = Depends(get_experience_service),
-):
+) -> JSONResponse:
     await svc.reject_candidate(user_id, candidate_id)
     return ok({"rejected": True}, request)
 
 
 # ── Serialisers ───────────────────────────────────────────────────────────────
 
-def _serialize_exp(exp) -> dict:
-    d = {
+def _serialize_exp(exp: Experience) -> dict[str, object]:
+    data: dict[str, object] = {
         "id": exp.id,
         "category": exp.category,
         "title": exp.title,
@@ -213,11 +250,11 @@ def _serialize_exp(exp) -> dict:
         "updatedAt": exp.updated_at.isoformat(),
     }
     if exp.current_revision:
-        d["currentRevision"] = _serialize_rev(exp.current_revision)
-    return d
+        data["currentRevision"] = _serialize_rev(exp.current_revision)
+    return data
 
 
-def _serialize_rev(rev) -> dict:
+def _serialize_rev(rev: ExperienceRevision) -> dict[str, object]:
     return {
         "id": rev.id,
         "experienceId": rev.experience_id,
@@ -227,7 +264,7 @@ def _serialize_rev(rev) -> dict:
     }
 
 
-def _serialize_candidate(c) -> dict:
+def _serialize_candidate(c: ImportCandidate) -> dict[str, object]:
     return {
         "id": c.id,
         "category": c.category,

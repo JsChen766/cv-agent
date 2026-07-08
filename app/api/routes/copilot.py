@@ -10,37 +10,46 @@ GET  /copilot/sidebar      — sidebar summary data
 from __future__ import annotations
 
 import logging
+from collections.abc import Mapping
 from datetime import UTC, datetime
-from typing import Any, Literal
+from typing import Literal, cast
 
+import asyncpg
 from fastapi import APIRouter, Depends, Request
-from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, Field
+from fastapi.responses import JSONResponse, StreamingResponse
+from langchain_core.runnables import RunnableConfig
+from pydantic import BaseModel, Field, JsonValue, model_validator
 
 from app.api.deps import build_service_container, get_current_user_id, pool_dep
 from app.api.response import ok
+from app.api.schemas import StrictRequestModel
 from app.api.sse import _build_initial_state, stream_graph_events
-from app.core.types import THREAD_PREFIX, generate_id
+from app.core.errors import ExternalServiceError, NotFoundError, ValidationError
+from app.core.types import THREAD_PREFIX, ArtifactType, generate_id
+from app.domain.resume.models import ResumeItemCreate, ResumeItemPatch, ResumeVariantCreate
+from app.tools.base import ServiceContainer
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/copilot", tags=["copilot"])
+
+JsonObject = dict[str, JsonValue]
 
 
 # ── Request / Response schemas ─────────────────────────────────────────────────
 
 
-class ClientState(BaseModel):
+class ClientState(StrictRequestModel):
     locale: str = "zh-CN"
     activeJdId: str | None = None
     activeResumeId: str | None = None
     activeArtifactId: str | None = None
-    activeExperienceIds: list[str] = []
+    activeExperienceIds: list[str] = Field(default_factory=list)
 
 
-class ChatRequest(BaseModel):
+class ChatRequest(StrictRequestModel):
     threadId: str | None = None
-    message: str
-    clientState: ClientState = ClientState()
+    message: str = Field(min_length=1)
+    clientState: ClientState = Field(default_factory=ClientState)
 
 
 class AssistantMessage(BaseModel):
@@ -54,10 +63,10 @@ class ChatResponseData(BaseModel):
     threadId: str
     turnId: str
     assistantMessage: AssistantMessage
-    workspace: dict[str, Any] = Field(default_factory=dict)
-    nextActions: list[dict[str, Any]] = Field(default_factory=list)
+    workspace: JsonObject = Field(default_factory=dict)
+    nextActions: list[dict[str, JsonValue]] = Field(default_factory=list)
     suggestedPrompts: list[str] = Field(default_factory=list)
-    interrupt: dict[str, Any] | None = None
+    interrupt: dict[str, JsonValue] | None = None
 
 
 class ChatResponseEnvelope(BaseModel):
@@ -66,15 +75,87 @@ class ChatResponseEnvelope(BaseModel):
     request_id: str
 
 
-class ActionPayload(BaseModel):
-    type: str
-    payload: dict[str, Any] = {}
+ActionType = Literal[
+    "optimize_resume_item",
+    "rewrite_experience",
+    "generate_resume_from_jd",
+    "accept_variant",
+    "show_evidence",
+    "generate_artifact",
+    "export_resume",
+]
 
 
-class ActionRequest(BaseModel):
+class _ActionPayloadBase(StrictRequestModel):
+    pass
+
+
+class OptimizeResumeItemPayload(_ActionPayloadBase):
+    resumeItemId: str = Field(min_length=1)
+    instruction: str = ""
+
+
+class RewriteExperiencePayload(_ActionPayloadBase):
+    experienceId: str = Field(min_length=1)
+    instruction: str = ""
+
+
+class GenerateResumeFromJdPayload(_ActionPayloadBase):
+    jdId: str = Field(min_length=1)
+
+
+class VariantPayload(_ActionPayloadBase):
+    variantId: str = Field(min_length=1)
+
+
+class GenerateArtifactPayload(_ActionPayloadBase):
+    artifactType: ArtifactType
+    instruction: str = ""
+
+
+class ExportResumePayload(_ActionPayloadBase):
+    resumeId: str = Field(min_length=1)
+
+
+ParsedActionPayload = (
+    OptimizeResumeItemPayload
+    | RewriteExperiencePayload
+    | GenerateResumeFromJdPayload
+    | VariantPayload
+    | GenerateArtifactPayload
+    | ExportResumePayload
+)
+
+
+_ACTION_PAYLOAD_MODELS: dict[str, type[_ActionPayloadBase]] = {
+    "optimize_resume_item": OptimizeResumeItemPayload,
+    "rewrite_experience": RewriteExperiencePayload,
+    "generate_resume_from_jd": GenerateResumeFromJdPayload,
+    "accept_variant": VariantPayload,
+    "show_evidence": VariantPayload,
+    "generate_artifact": GenerateArtifactPayload,
+    "export_resume": ExportResumePayload,
+}
+
+
+class ActionPayload(StrictRequestModel):
+    type: ActionType
+    payload: JsonObject = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def validate_payload(self) -> ActionPayload:
+        self.payload_model()
+        return self
+
+    def payload_model(self) -> ParsedActionPayload:
+        model = _ACTION_PAYLOAD_MODELS[self.type]
+        return cast("ParsedActionPayload", model.model_validate(self.payload))
+
+
+class ActionRequest(StrictRequestModel):
     threadId: str | None = None
     action: ActionPayload
-    clientState: ClientState = ClientState()
+    clientState: ClientState = Field(default_factory=ClientState)
 
 
 CHAT_RESPONSE_EXAMPLES = {
@@ -179,7 +260,9 @@ SSE_STREAM_RESPONSES = {
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 
-async def _get_or_create_thread(thread_id: str | None, user_id: str, pool) -> str:
+async def _get_or_create_thread(
+    thread_id: str | None, user_id: str, pool: asyncpg.Pool
+) -> str:
     """Return existing thread_id or create a new thread row."""
     if thread_id:
         async with pool.acquire() as conn:
@@ -203,8 +286,8 @@ async def _get_or_create_thread(thread_id: str | None, user_id: str, pool) -> st
     return new_id
 
 
-def _workspace_from_client_state(cs: ClientState) -> dict[str, Any]:
-    workspace: dict[str, Any] = {}
+def _workspace_from_client_state(cs: ClientState) -> JsonObject:
+    workspace: JsonObject = {}
     if cs.activeJdId:
         workspace["jd_id"] = cs.activeJdId
     if cs.activeResumeId:
@@ -212,7 +295,7 @@ def _workspace_from_client_state(cs: ClientState) -> dict[str, Any]:
     if cs.activeArtifactId:
         workspace["artifact_id"] = cs.activeArtifactId
     if cs.activeExperienceIds:
-        workspace["experience_ids"] = cs.activeExperienceIds
+        workspace["experience_ids"] = cast("JsonValue", cs.activeExperienceIds)
     return workspace
 
 
@@ -220,9 +303,9 @@ def _build_response(
     thread_id: str,
     turn_id: str,
     assistant_message: str,
-    workspace: dict[str, Any] | None = None,
-    interrupt: dict[str, Any] | None = None,
-) -> dict[str, Any]:
+    workspace: JsonObject | None = None,
+    interrupt: JsonObject | None = None,
+) -> dict[str, object]:
     return {
         "threadId": thread_id,
         "turnId": turn_id,
@@ -239,6 +322,100 @@ def _build_response(
     }
 
 
+def _require_action_pool(pool: asyncpg.Pool | None) -> asyncpg.Pool:
+    if pool is not None:
+        return pool
+    try:
+        from app.infra.db.connection import get_pool as _get_pool
+
+        return _get_pool()
+    except RuntimeError as exc:
+        raise ExternalServiceError("Database unavailable") from exc
+
+
+async def _prepare_action_context(
+    body: ActionRequest,
+    user_id: str,
+    pool: asyncpg.Pool | None,
+) -> tuple[str, str, JsonObject, ServiceContainer, RunnableConfig]:
+    checked_pool = _require_action_pool(pool)
+    thread_id = await _get_or_create_thread(body.threadId, user_id, checked_pool)
+    turn_id = generate_id("turn")
+    workspace = _workspace_from_client_state(body.clientState)
+    services = build_service_container(checked_pool)
+    config: RunnableConfig = {
+        "configurable": {
+            "thread_id": thread_id,
+            "services": services,
+            "pool": checked_pool,
+        }
+    }
+    return thread_id, turn_id, workspace, services, config
+
+
+def _extract_interrupt_payload(final_state: object) -> JsonObject | None:
+    if not isinstance(final_state, dict):
+        return None
+    raw_interrupt = final_state.get("interrupt_payload")
+    if isinstance(raw_interrupt, dict):
+        return cast("JsonObject", raw_interrupt)
+    interrupts = final_state.get("__interrupt__")
+    if not isinstance(interrupts, (list, tuple)) or not interrupts:
+        return None
+    value = getattr(interrupts[0], "value", None)
+    if isinstance(value, dict):
+        return cast("JsonObject", value)
+    return None
+
+
+def _final_assistant_message(final_state: object, fallback: str) -> str:
+    if isinstance(final_state, dict):
+        message = final_state.get("assistant_message")
+        if isinstance(message, str) and message:
+            return message
+    return fallback
+
+
+async def _ensure_interrupt_variants_persisted(
+    services: ServiceContainer,
+    *,
+    resume_id: str,
+    jd_id: str | None,
+    interrupt_payload: JsonObject | None,
+) -> None:
+    if interrupt_payload is None:
+        return
+    variants = interrupt_payload.get("variants")
+    if not isinstance(variants, list):
+        return
+    for variant in variants:
+        if not isinstance(variant, dict):
+            continue
+        variant_id = variant.get("id")
+        if not isinstance(variant_id, str) or not variant_id:
+            continue
+        try:
+            await services.resume.get_variant(variant_id)
+            continue
+        except NotFoundError:
+            pass
+        await services.resume.save_variant_with_id(
+            resume_id,
+            variant_id,
+            ResumeVariantCreate.model_validate(
+                {
+                    "jd_id": jd_id,
+                    "title": variant.get("title", "AI Generated Variant"),
+                    "content": variant.get("content", ""),
+                    "score": variant.get("score", {}),
+                    "evidence_summary": variant.get("evidence_summary", []),
+                    "risk_summary": variant.get("risk_summary", []),
+                    "missing_info": variant.get("missing_info", []),
+                }
+            ),
+        )
+
+
 # ── Routes ─────────────────────────────────────────────────────────────────────
 
 
@@ -251,8 +428,8 @@ async def chat(
     body: ChatRequest,
     request: Request,
     user_id: str = Depends(get_current_user_id),
-    pool=Depends(pool_dep),
-):
+    pool: asyncpg.Pool = Depends(pool_dep),
+) -> JSONResponse:
     """Non-streaming chat — runs graph synchronously and returns final response."""
     from app.graphs.main import get_graph
     from app.infra.db.connection import get_pool as _get_pool
@@ -271,21 +448,24 @@ async def chat(
     turn_id = generate_id("turn")
     workspace = _workspace_from_client_state(body.clientState)
     initial_state = _build_initial_state(thread_id, user_id, body.message, workspace, turn_id)
-    configurable: dict[str, Any] = {"thread_id": thread_id}
+    configurable: dict[str, object] = {"thread_id": thread_id}
     if _pool:
         configurable["services"] = build_service_container(_pool)
         configurable["pool"] = _pool
-    config = {"configurable": configurable}
+    config: RunnableConfig = {"configurable": configurable}
 
     try:
         graph = get_graph(_get_checkpointer_or_none())
         final_state = await graph.ainvoke(initial_state, config=config)
-        assistant_msg = final_state.get("assistant_message", "Done.")
-        interrupt_payload = final_state.get("interrupt_payload")
     except Exception as exc:
         logger.exception("Graph error: %s", exc)
-        assistant_msg = "An error occurred. Please try again."
-        interrupt_payload = None
+        raise ExternalServiceError("Graph execution failed") from exc
+
+    assistant_msg = str(final_state.get("assistant_message") or "Done.")
+    raw_interrupt = final_state.get("interrupt_payload")
+    interrupt_payload = (
+        cast("dict[str, JsonValue]", raw_interrupt) if isinstance(raw_interrupt, dict) else None
+    )
 
     return ok(
         _build_response(thread_id, turn_id, assistant_msg, workspace, interrupt_payload),
@@ -296,13 +476,13 @@ async def chat(
 @router.post(
     "/chat/stream",
     response_class=StreamingResponse,
-    responses=SSE_STREAM_RESPONSES,
+    responses=SSE_STREAM_RESPONSES,  # type: ignore[arg-type]
 )
 async def chat_stream(
     body: ChatRequest,
     user_id: str = Depends(get_current_user_id),
-    pool=Depends(pool_dep),
-):
+    pool: asyncpg.Pool = Depends(pool_dep),
+) -> StreamingResponse:
     """SSE streaming chat."""
     from app.graphs.main import get_graph
     from app.infra.db.connection import get_pool as _get_pool
@@ -316,11 +496,11 @@ async def chat_stream(
     turn_id = generate_id("turn")
     workspace = _workspace_from_client_state(body.clientState)
     initial_state = _build_initial_state(thread_id, user_id, body.message, workspace, turn_id)
-    configurable: dict[str, Any] = {"thread_id": thread_id}
+    configurable: dict[str, object] = {"thread_id": thread_id}
     if _pool:
         configurable["services"] = build_service_container(_pool)
         configurable["pool"] = _pool
-    config = {"configurable": configurable}
+    config: RunnableConfig = {"configurable": configurable}
 
     graph = get_graph(_get_checkpointer_or_none())
 
@@ -334,11 +514,11 @@ async def chat_stream(
     )
 
 
-def _get_checkpointer_or_none():
+def _get_checkpointer_or_none() -> object | None:
     try:
         from app.infra.db.checkpointer import get_checkpointer
 
-        return get_checkpointer()
+        return cast("object", get_checkpointer())
     except RuntimeError:
         return None
 
@@ -348,40 +528,381 @@ async def product_action(
     body: ActionRequest,
     request: Request,
     user_id: str = Depends(get_current_user_id),
-    pool=Depends(pool_dep),
-):
+    pool: asyncpg.Pool | None = Depends(pool_dep),
+) -> JSONResponse:
     """
     Explicit product action endpoint.
-    Translates the action into a natural-language message and routes through the graph.
+    Runs supported product actions through deterministic graph branches.
     """
-    action_messages = {
-        "optimize_resume_item": "Please optimize resume item {resumeItemId}. {instruction}",
-        "rewrite_experience": "Please rewrite experience {experienceId}. Instruction: {instruction}",
-        "generate_resume_from_jd": "Generate a resume targeting JD {jdId}.",
-        "accept_variant": "Accept variant {variantId} and save it as the active resume.",
-        "show_evidence": "Show evidence for variant {variantId}.",
-        "generate_artifact": "Generate a {artifactType} artifact. {instruction}",
-        "export_resume": "Export resume {resumeId}.",
-    }
+    payload = body.action.payload_model()
+    if isinstance(payload, GenerateResumeFromJdPayload):
+        return await _run_generate_resume_from_jd_action(body, payload, request, user_id, pool)
+    if isinstance(payload, OptimizeResumeItemPayload):
+        return await _run_optimize_resume_item_action(body, payload, request, user_id, pool)
+    if isinstance(payload, RewriteExperiencePayload):
+        return await _run_rewrite_experience_action(body, payload, request, user_id, pool)
+    if isinstance(payload, VariantPayload) and body.action.type == "accept_variant":
+        return await _run_accept_variant_action(body, payload, request, user_id, pool)
+    if isinstance(payload, VariantPayload) and body.action.type == "show_evidence":
+        return await _run_show_evidence_action(body, payload, request, user_id, pool)
+    if isinstance(payload, GenerateArtifactPayload):
+        return await _run_generate_artifact_action(body, payload, request, user_id, pool)
+    if isinstance(payload, ExportResumePayload):
+        return await _run_export_resume_action(body, payload, request, user_id, pool)
 
-    template = action_messages.get(body.action.type, "Perform action: {type}")
-    message = template.format(type=body.action.type, **body.action.payload)
+    raise ValidationError(f"Action '{body.action.type}' is not implemented yet")
 
-    # Re-use the chat endpoint logic
-    chat_body = ChatRequest(
-        threadId=body.threadId,
-        message=message,
-        clientState=body.clientState,
+
+async def _run_generate_resume_from_jd_action(
+    body: ActionRequest,
+    payload: GenerateResumeFromJdPayload,
+    request: Request,
+    user_id: str,
+    pool: asyncpg.Pool | None,
+) -> JSONResponse:
+    from app.graphs.main import get_graph
+
+    thread_id, turn_id, workspace, services, graph_config = await _prepare_action_context(
+        body, user_id, pool
     )
-    return await chat(chat_body, request, user_id, pool)
+    jd = await services.jd.get_jd(user_id, payload.jdId)
+    if body.clientState.activeResumeId:
+        resume = await services.resume.get_resume(user_id, body.clientState.activeResumeId)
+    else:
+        title = f"Resume for {jd.target_role or jd.title}"
+        resume = await services.resume.create_resume(
+            user_id,
+            title,
+            target_role=jd.target_role,
+            jd_id=jd.id,
+        )
+    workspace["jd_id"] = jd.id
+    workspace["resume_id"] = resume.id
+
+    instruction = f"Generate a tailored resume for JD '{jd.title}'."
+    initial_state = _build_initial_state(thread_id, user_id, instruction, workspace, turn_id)
+    initial_state["target_subgraph"] = "resume_generation"
+    initial_state["intent_description"] = instruction
+
+    try:
+        graph = get_graph(_get_checkpointer_or_none())
+        final_state = await graph.ainvoke(initial_state, config=graph_config)
+    except Exception as exc:
+        logger.exception("Generate resume from JD action failed: %s", exc)
+        raise ExternalServiceError("Generate resume from JD action failed") from exc
+
+    interrupt_payload = _extract_interrupt_payload(final_state)
+    await _ensure_interrupt_variants_persisted(
+        services,
+        resume_id=resume.id,
+        jd_id=jd.id,
+        interrupt_payload=interrupt_payload,
+    )
+    return ok(
+        _build_response(
+            thread_id,
+            turn_id,
+            _final_assistant_message(
+                final_state,
+                "I've generated a resume variant for review.",
+            ),
+            workspace,
+            interrupt_payload,
+        ),
+        request,
+    )
+
+
+async def _run_optimize_resume_item_action(
+    body: ActionRequest,
+    payload: OptimizeResumeItemPayload,
+    request: Request,
+    user_id: str,
+    pool: asyncpg.Pool | None,
+) -> JSONResponse:
+    from app.providers.factory import get_provider
+
+    thread_id, turn_id, workspace, services, _graph_config = await _prepare_action_context(
+        body, user_id, pool
+    )
+    item = await services.resume.get_item_by_id(user_id, payload.resumeItemId)
+    provider = get_provider()
+    instruction = payload.instruction or "Improve clarity, specificity, and measurable impact."
+    result = await provider.chat(
+        [
+            {
+                "role": "system",
+                "content": (
+                    "You are a senior resume editor. Rewrite only the provided resume item. "
+                    "Keep facts grounded in the original text; do not invent employers, metrics, or technologies."
+                ),
+            },
+            {
+                "role": "user",
+                "content": (
+                    f"Instruction: {instruction}\n\n"
+                    f"Title: {item.title or ''}\n\n"
+                    f"Current content:\n{item.content_snapshot}"
+                ),
+            },
+        ],
+        temperature=0.3,
+        max_tokens=900,
+    )
+    optimized = result if isinstance(result, str) else item.content_snapshot
+    updated = await services.resume.update_item_by_id(
+        user_id,
+        payload.resumeItemId,
+        ResumeItemPatch(content_snapshot=optimized.strip()),
+    )
+    workspace["resume_id"] = updated.resume_id
+    workspace["resume_item_id"] = updated.id
+
+    return ok(
+        _build_response(
+            thread_id,
+            turn_id,
+            "Resume item optimized.",
+            workspace,
+            None,
+        ),
+        request,
+    )
+
+
+async def _run_rewrite_experience_action(
+    body: ActionRequest,
+    payload: RewriteExperiencePayload,
+    request: Request,
+    user_id: str,
+    pool: asyncpg.Pool | None,
+) -> JSONResponse:
+    from app.providers.factory import get_provider
+
+    thread_id, turn_id, workspace, services, _graph_config = await _prepare_action_context(
+        body, user_id, pool
+    )
+    experience = await services.experience.get_experience(user_id, payload.experienceId)
+    source_content = (
+        experience.current_revision.content if experience.current_revision else ""
+    )
+    provider = get_provider()
+    instruction = payload.instruction or "Rewrite this experience as concise, resume-ready bullets."
+    result = await provider.chat(
+        [
+            {
+                "role": "system",
+                "content": (
+                    "You rewrite career experience notes into resume-ready Markdown. "
+                    "Preserve the factual scope of the original content and avoid unsupported claims."
+                ),
+            },
+            {
+                "role": "user",
+                "content": (
+                    f"Instruction: {instruction}\n\n"
+                    f"Experience: {experience.title}\n"
+                    f"Organization: {experience.organization or ''}\n\n"
+                    f"Original content:\n{source_content}"
+                ),
+            },
+        ],
+        temperature=0.3,
+        max_tokens=1200,
+    )
+    rewritten = result if isinstance(result, str) else source_content
+    revision = await services.experience.add_revision(
+        user_id,
+        payload.experienceId,
+        rewritten.strip(),
+        source="ai_generated",
+    )
+    workspace["experience_id"] = experience.id
+
+    return ok(
+        _build_response(
+            thread_id,
+            turn_id,
+            f"Experience rewritten and saved as revision {revision.id}.",
+            workspace,
+            None,
+        ),
+        request,
+    )
+
+
+async def _run_accept_variant_action(
+    body: ActionRequest,
+    payload: VariantPayload,
+    request: Request,
+    user_id: str,
+    pool: asyncpg.Pool | None,
+) -> JSONResponse:
+    thread_id, turn_id, workspace, services, _graph_config = await _prepare_action_context(
+        body, user_id, pool
+    )
+    variant = await services.resume.get_variant(payload.variantId)
+    await services.resume.get_resume(user_id, variant.resume_id)
+    item = await services.resume.add_item(
+        user_id,
+        variant.resume_id,
+        ResumeItemCreate(
+            section_type="other",
+            title=variant.title,
+            content_snapshot=variant.content,
+            source_variant_id=variant.id,
+        ),
+    )
+    workspace["resume_id"] = variant.resume_id
+    workspace["variant_id"] = variant.id
+    workspace["resume_item_id"] = item.id
+
+    return ok(
+        _build_response(
+            thread_id,
+            turn_id,
+            "Variant accepted and saved to the resume.",
+            workspace,
+            None,
+        ),
+        request,
+    )
+
+
+async def _run_show_evidence_action(
+    body: ActionRequest,
+    payload: VariantPayload,
+    request: Request,
+    user_id: str,
+    pool: asyncpg.Pool | None,
+) -> JSONResponse:
+    thread_id, turn_id, workspace, services, _graph_config = await _prepare_action_context(
+        body, user_id, pool
+    )
+    variant = await services.resume.get_variant(payload.variantId)
+    await services.resume.get_resume(user_id, variant.resume_id)
+    evidence_lines = [
+        f"- {item.requirement_text}: {', '.join(item.supporting_claims) or 'No supporting claim recorded.'}"
+        for item in variant.evidence_summary
+    ]
+    risk_lines = [f"- {item.severity}: {item.text}" for item in variant.risk_summary]
+    missing_lines = [f"- {item}" for item in variant.missing_info]
+    sections = [
+        "Evidence summary:",
+        *(evidence_lines or ["- No evidence records are attached to this variant yet."]),
+        "",
+        "Risks:",
+        *(risk_lines or ["- No risks recorded."]),
+        "",
+        "Missing information:",
+        *(missing_lines or ["- No missing information recorded."]),
+    ]
+    workspace["resume_id"] = variant.resume_id
+    workspace["variant_id"] = variant.id
+
+    return ok(
+        _build_response(
+            thread_id,
+            turn_id,
+            "\n".join(sections),
+            workspace,
+            None,
+        ),
+        request,
+    )
+
+
+async def _run_generate_artifact_action(
+    body: ActionRequest,
+    payload: GenerateArtifactPayload,
+    request: Request,
+    user_id: str,
+    pool: asyncpg.Pool | None,
+) -> JSONResponse:
+    from app.graphs.artifact.graph import build_artifact_subgraph
+    from app.infra.db.connection import get_pool as _get_pool
+
+    try:
+        _pool = _get_pool()
+    except RuntimeError:
+        _pool = None
+
+    thread_id = body.threadId
+    if _pool:
+        thread_id = await _get_or_create_thread(body.threadId, user_id, _pool)
+    else:
+        thread_id = body.threadId or generate_id(THREAD_PREFIX)
+
+    turn_id = generate_id("turn")
+    workspace = _workspace_from_client_state(body.clientState)
+    instruction = payload.instruction or f"Generate a {payload.artifactType} artifact."
+    initial_state = _build_initial_state(thread_id, user_id, instruction, workspace, turn_id)
+    initial_state["artifact_type"] = payload.artifactType
+    initial_state["intent_description"] = instruction
+    configurable: dict[str, object] = {"thread_id": thread_id}
+    if _pool:
+        configurable["services"] = build_service_container(_pool)
+        configurable["pool"] = _pool
+    graph_config: RunnableConfig = {"configurable": configurable}
+
+    try:
+        graph = build_artifact_subgraph().compile()
+        final_state = await graph.ainvoke(initial_state, config=graph_config)
+    except Exception as exc:
+        logger.exception("Generate artifact action failed: %s", exc)
+        raise ExternalServiceError("Generate artifact action failed") from exc
+
+    return ok(
+        _build_response(
+            thread_id,
+            turn_id,
+            str(final_state.get("assistant_message") or "Artifact generated."),
+            workspace,
+            None,
+        ),
+        request,
+    )
+
+
+async def _run_export_resume_action(
+    body: ActionRequest,
+    payload: ExportResumePayload,
+    request: Request,
+    user_id: str,
+    pool: asyncpg.Pool | None,
+) -> JSONResponse:
+    thread_id, turn_id, workspace, services, _graph_config = await _prepare_action_context(
+        body, user_id, pool
+    )
+    resume = await services.resume.get_resume(user_id, payload.resumeId)
+    variants = await services.resume.list_variants(resume.id)
+    workspace["resume_id"] = resume.id
+    receipt: JsonObject = {
+        "resumeId": resume.id,
+        "title": resume.title,
+        "status": resume.status,
+        "itemCount": len(resume.items),
+        "variantCount": len(variants),
+        "exportMode": "browser_print_pdf",
+    }
+    return ok(
+        _build_response(
+            thread_id,
+            turn_id,
+            "Resume export package prepared. Use the browser print-to-PDF flow to generate the final PDF.",
+            {**workspace, "export": receipt},
+            None,
+        ),
+        request,
+    )
 
 
 @router.get("/sidebar")
 async def sidebar(
     request: Request,
     user_id: str = Depends(get_current_user_id),
-    pool=Depends(pool_dep),
-):
+    pool: asyncpg.Pool = Depends(pool_dep),
+) -> JSONResponse:
     """Return sidebar summary: recent threads, experiences, JDs, resumes, artifacts."""
     try:
         from app.infra.db.connection import get_pool as _get_pool
@@ -409,8 +930,8 @@ async def sidebar(
                 user_id,
             )
 
-        def _row(r):
-            return dict(r)
+        def _row(record: Mapping[str, object]) -> dict[str, object]:
+            return dict(record)
 
         return ok(
             {

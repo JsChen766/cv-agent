@@ -8,7 +8,7 @@ clean ActiveWorkspace dict to attach to the graph state.
 
 from __future__ import annotations
 
-from typing import Any
+import asyncpg
 
 from app.core.errors import ForbiddenError, NotFoundError
 from app.memory.thread_state import ActiveWorkspace
@@ -16,8 +16,8 @@ from app.memory.thread_state import ActiveWorkspace
 
 async def build_workspace(
     user_id: str,
-    hints: dict[str, Any],
-    pool,
+    hints: dict[str, object],
+    pool: asyncpg.Pool,
 ) -> ActiveWorkspace:
     """
     Validate workspace hints and return a clean ActiveWorkspace.
@@ -30,27 +30,34 @@ async def build_workspace(
     """
     workspace: ActiveWorkspace = {}
 
-    if jd_id := hints.get("jd_id"):
+    jd_id = hints.get("jd_id")
+    if isinstance(jd_id, str):
         workspace["jd_id"] = await _validate_owned(pool, "jd_records", jd_id, user_id, "JD")
 
-    if resume_id := hints.get("resume_id"):
+    resume_id = hints.get("resume_id")
+    if isinstance(resume_id, str):
         workspace["resume_id"] = await _validate_owned(pool, "resumes", resume_id, user_id, "Resume")
 
-    if artifact_id := hints.get("artifact_id"):
+    artifact_id = hints.get("artifact_id")
+    if isinstance(artifact_id, str):
         workspace["artifact_id"] = await _validate_owned(
             pool, "artifacts", artifact_id, user_id, "Artifact"
         )
 
-    if exp_ids := hints.get("experience_ids"):
-        validated = []
+    exp_ids = hints.get("experience_ids")
+    if isinstance(exp_ids, list):
+        validated: list[str] = []
         for eid in exp_ids:
-            validated.append(await _validate_owned(pool, "experiences", eid, user_id, "Experience"))
+            if isinstance(eid, str):
+                validated.append(await _validate_owned(pool, "experiences", eid, user_id, "Experience"))
         workspace["experience_ids"] = validated
 
     return workspace
 
 
-async def _validate_owned(pool, table: str, record_id: str, user_id: str, label: str) -> str:
+async def _validate_owned(
+    pool: asyncpg.Pool, table: str, record_id: str, user_id: str, label: str
+) -> str:
     """Check record exists and belongs to user_id. Returns record_id."""
     async with pool.acquire() as conn:
         row = await conn.fetchrow(

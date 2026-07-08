@@ -1,46 +1,84 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, Query, Request
-from pydantic import BaseModel
+from fastapi.responses import JSONResponse
+from pydantic import Field
 
 from app.api.deps import get_current_user_id, get_resume_service
 from app.api.response import ok, ok_list
+from app.api.schemas import StrictRequestModel
+from app.domain.resume.models import (
+    Resume,
+    ResumeItem,
+    ResumeItemCreate,
+    ResumeItemPatch,
+    ResumePatch,
+    ResumeSectionType,
+    ResumeStatus,
+    ResumeVariant,
+)
 from app.domain.resume.service import ResumeService
 
 router = APIRouter(tags=["resumes"])
 
 
-class CreateResumeBody(BaseModel):
-    title: str
+class CreateResumeBody(StrictRequestModel):
+    title: str = Field(min_length=1)
     target_role: str | None = None
     jd_id: str | None = None
 
 
-class UpdateResumeBody(BaseModel):
+class UpdateResumeBody(StrictRequestModel):
     title: str | None = None
     target_role: str | None = None
     jd_id: str | None = None
-    status: str | None = None
+    status: ResumeStatus | None = None
+
+    def to_patch(self) -> ResumePatch:
+        return ResumePatch(
+            title=self.title,
+            target_role=self.target_role,
+            jd_id=self.jd_id,
+            status=self.status,
+        )
 
 
-class AddItemBody(BaseModel):
-    section_type: str
+class AddItemBody(StrictRequestModel):
+    section_type: ResumeSectionType
     title: str | None = None
     content_snapshot: str = ""
-    order_index: int = 0
+    order_index: int = Field(default=0, ge=0)
     source_experience_id: str | None = None
 
+    def to_create(self) -> ResumeItemCreate:
+        return ResumeItemCreate(
+            section_type=self.section_type,
+            title=self.title,
+            content_snapshot=self.content_snapshot,
+            order_index=self.order_index,
+            source_experience_id=self.source_experience_id,
+        )
 
-class UpdateItemBody(BaseModel):
+
+class UpdateItemBody(StrictRequestModel):
     title: str | None = None
     content_snapshot: str | None = None
-    order_index: int | None = None
+    order_index: int | None = Field(default=None, ge=0)
     hidden: bool | None = None
     pinned: bool | None = None
 
+    def to_patch(self) -> ResumeItemPatch:
+        return ResumeItemPatch(
+            title=self.title,
+            content_snapshot=self.content_snapshot,
+            order_index=self.order_index,
+            hidden=self.hidden,
+            pinned=self.pinned,
+        )
 
-class ReorderBody(BaseModel):
-    ordered_ids: list[str]
+
+class ReorderBody(StrictRequestModel):
+    ordered_ids: list[str] = Field(min_length=1)
 
 
 @router.get("/product/resumes")
@@ -50,7 +88,7 @@ async def list_resumes(
     cursor: str | None = Query(None),
     user_id: str = Depends(get_current_user_id),
     svc: ResumeService = Depends(get_resume_service),
-):
+) -> JSONResponse:
     items, next_cursor = await svc.list_resumes(user_id, limit=limit, cursor=cursor)
     return ok_list([_serialize(r) for r in items], next_cursor, request)
 
@@ -61,7 +99,7 @@ async def create_resume(
     request: Request,
     user_id: str = Depends(get_current_user_id),
     svc: ResumeService = Depends(get_resume_service),
-):
+) -> JSONResponse:
     resume = await svc.create_resume(
         user_id, body.title, target_role=body.target_role, jd_id=body.jd_id
     )
@@ -74,7 +112,7 @@ async def get_resume(
     request: Request,
     user_id: str = Depends(get_current_user_id),
     svc: ResumeService = Depends(get_resume_service),
-):
+) -> JSONResponse:
     resume = await svc.get_resume(user_id, resume_id)
     return ok(_serialize_full(resume), request)
 
@@ -86,9 +124,8 @@ async def update_resume(
     request: Request,
     user_id: str = Depends(get_current_user_id),
     svc: ResumeService = Depends(get_resume_service),
-):
-    patch = body.model_dump(exclude_none=True)
-    resume = await svc.update_resume(user_id, resume_id, patch)
+) -> JSONResponse:
+    resume = await svc.update_resume(user_id, resume_id, body.to_patch())
     return ok(_serialize(resume), request)
 
 
@@ -99,8 +136,8 @@ async def add_item(
     request: Request,
     user_id: str = Depends(get_current_user_id),
     svc: ResumeService = Depends(get_resume_service),
-):
-    item = await svc.add_item(user_id, resume_id, body.model_dump())
+) -> JSONResponse:
+    item = await svc.add_item(user_id, resume_id, body.to_create())
     return ok(_serialize_item(item), request, status_code=201)
 
 
@@ -111,11 +148,8 @@ async def update_item(
     request: Request,
     user_id: str = Depends(get_current_user_id),
     svc: ResumeService = Depends(get_resume_service),
-):
-    # We don't verify resume_id ownership again here — item_id is sufficient
-    # In production add a lookup to confirm item belongs to user's resume
-    patch = body.model_dump(exclude_none=True)
-    item = await svc.update_item(user_id, "any", item_id, patch)
+) -> JSONResponse:
+    item = await svc.update_item_by_id(user_id, item_id, body.to_patch())
     return ok(_serialize_item(item), request)
 
 
@@ -125,8 +159,8 @@ async def delete_item(
     request: Request,
     user_id: str = Depends(get_current_user_id),
     svc: ResumeService = Depends(get_resume_service),
-):
-    await svc.delete_item(user_id, "any", item_id)
+) -> JSONResponse:
+    await svc.delete_item_by_id(user_id, item_id)
     return ok({"deleted": True}, request)
 
 
@@ -137,14 +171,14 @@ async def reorder_items(
     request: Request,
     user_id: str = Depends(get_current_user_id),
     svc: ResumeService = Depends(get_resume_service),
-):
+) -> JSONResponse:
     items = await svc.reorder_items(user_id, resume_id, body.ordered_ids)
     return ok([_serialize_item(i) for i in items], request)
 
 
 # ── Serialisers ───────────────────────────────────────────────────────────────
 
-def _serialize(r) -> dict:
+def _serialize(r: Resume) -> dict[str, object]:
     return {
         "id": r.id,
         "title": r.title,
@@ -156,14 +190,14 @@ def _serialize(r) -> dict:
     }
 
 
-def _serialize_full(r) -> dict:
+def _serialize_full(r: Resume) -> dict[str, object]:
     d = _serialize(r)
     d["items"] = [_serialize_item(i) for i in r.items]
     d["variants"] = [_serialize_variant(v) for v in r.variants]
     return d
 
 
-def _serialize_item(i) -> dict:
+def _serialize_item(i: ResumeItem) -> dict[str, object]:
     return {
         "id": i.id,
         "resumeId": i.resume_id,
@@ -178,7 +212,7 @@ def _serialize_item(i) -> dict:
     }
 
 
-def _serialize_variant(v) -> dict:
+def _serialize_variant(v: ResumeVariant) -> dict[str, object]:
     return {
         "id": v.id,
         "title": v.title,

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncpg
 from fastapi import Cookie, Depends, Header
 
 from app.api.auth_utils import decode_access_token
@@ -25,7 +26,7 @@ from app.tools.base import ServiceContainer
 
 # ── Pool ──────────────────────────────────────────────────────────────────────
 
-async def pool_dep():
+async def pool_dep() -> asyncpg.Pool | None:
     """Return the DB pool, or None if not yet initialised (e.g. during tests)."""
     try:
         return get_pool()
@@ -35,13 +36,13 @@ async def pool_dep():
 
 # ── Services ──────────────────────────────────────────────────────────────────
 
-def _require_pool(pool):
+def _require_pool(pool: asyncpg.Pool | None) -> asyncpg.Pool:
     if pool is None:
         raise ExternalServiceError("Database unavailable")
     return pool
 
 
-def build_service_container(pool) -> ServiceContainer:
+def build_service_container(pool: asyncpg.Pool | None) -> ServiceContainer:
     checked_pool = _require_pool(pool)
     return ServiceContainer(
         experience=ExperienceService(PostgresExperienceRepository(checked_pool)),
@@ -53,27 +54,27 @@ def build_service_container(pool) -> ServiceContainer:
     )
 
 
-async def get_user_service(pool=Depends(pool_dep)) -> UserService:
+async def get_user_service(pool: asyncpg.Pool | None = Depends(pool_dep)) -> UserService:
     return UserService(PostgresUserRepository(_require_pool(pool)))
 
 
-async def get_experience_service(pool=Depends(pool_dep)) -> ExperienceService:
+async def get_experience_service(pool: asyncpg.Pool | None = Depends(pool_dep)) -> ExperienceService:
     return ExperienceService(PostgresExperienceRepository(_require_pool(pool)))
 
 
-async def get_jd_service(pool=Depends(pool_dep)) -> JdService:
+async def get_jd_service(pool: asyncpg.Pool | None = Depends(pool_dep)) -> JdService:
     return JdService(PostgresJdRepository(_require_pool(pool)))
 
 
-async def get_resume_service(pool=Depends(pool_dep)) -> ResumeService:
+async def get_resume_service(pool: asyncpg.Pool | None = Depends(pool_dep)) -> ResumeService:
     return ResumeService(PostgresResumeRepository(_require_pool(pool)))
 
 
-async def get_artifact_service(pool=Depends(pool_dep)) -> ArtifactService:
+async def get_artifact_service(pool: asyncpg.Pool | None = Depends(pool_dep)) -> ArtifactService:
     return ArtifactService(PostgresArtifactRepository(_require_pool(pool)))
 
 
-async def get_preference_service(pool=Depends(pool_dep)) -> PreferenceService:
+async def get_preference_service(pool: asyncpg.Pool | None = Depends(pool_dep)) -> PreferenceService:
     return PreferenceService(PostgresPreferenceRepository(_require_pool(pool)))
 
 
@@ -93,7 +94,7 @@ def _extract_token(
 
 async def get_current_user(
     token: str | None = Depends(_extract_token),
-    pool=Depends(pool_dep),
+    pool: asyncpg.Pool | None = Depends(pool_dep),
 ) -> User:
     if token is None and settings.environment == "development" and settings.dev_auto_auth:
         user_svc = UserService(PostgresUserRepository(_require_pool(pool)))

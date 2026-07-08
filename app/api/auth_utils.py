@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from typing import cast
 
 from jose import JWTError, jwt
 
@@ -17,15 +18,15 @@ def create_access_token(user_id: str) -> str:
         minutes=settings.access_token_expire_minutes
     )
     payload = {"sub": user_id, "exp": expire}
-    return jwt.encode(payload, settings.secret_key, algorithm=ALGORITHM)
+    return str(jwt.encode(payload, settings.secret_key, algorithm=ALGORITHM))
 
 
 def decode_access_token(token: str) -> str:
     """Return user_id from a valid token, raise UnauthorizedError otherwise."""
     try:
-        payload = jwt.decode(token, settings.secret_key, algorithms=[ALGORITHM])
-        user_id: str | None = payload.get("sub")
-        if not user_id:
+        payload = cast("dict[str, object]", jwt.decode(token, settings.secret_key, algorithms=[ALGORITHM]))
+        user_id = payload.get("sub")
+        if not isinstance(user_id, str) or not user_id:
             raise UnauthorizedError("Invalid token payload")
         return user_id
     except JWTError as e:
