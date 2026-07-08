@@ -91,6 +91,24 @@ async def router_node(state: MainState) -> dict[str, object]:
 
     context_str = "\n".join(context_parts) if context_parts else "No active context."
     user_msg = messages[-1]["content"] if messages[-1]["role"] == "user" else ""
+    heuristic = _heuristic_route(user_msg)
+    if heuristic is not None:
+        route_event: AgentRouteCompletedEvent = {
+            "event": "agent.route.completed",
+            "target": heuristic.target_subgraph,
+            "intent_description": heuristic.intent_description,
+            "confidence": heuristic.confidence,
+        }
+        existing_events = state.get("pending_sse_events", [])
+        return {
+            "target_subgraph": heuristic.target_subgraph,
+            "intent_description": heuristic.intent_description,
+            "artifact_type": heuristic.artifact_type,
+            "context_hints": heuristic.context_hints,
+            "extracted_params": heuristic.extracted_params,
+            "router_confidence": heuristic.confidence,
+            "pending_sse_events": [*existing_events, route_event],
+        }
 
     provider = get_provider()
     routing: RouterOutput = await provider.chat_structured(
@@ -110,7 +128,7 @@ async def router_node(state: MainState) -> dict[str, object]:
     )
 
     # Emit routing event
-    route_event: AgentRouteCompletedEvent = {
+    llm_route_event: AgentRouteCompletedEvent = {
         "event": "agent.route.completed",
         "target": routing.target_subgraph,
         "intent_description": routing.intent_description,
@@ -125,10 +143,122 @@ async def router_node(state: MainState) -> dict[str, object]:
         "context_hints": routing.context_hints,
         "extracted_params": routing.extracted_params,
         "router_confidence": routing.confidence,
-        "pending_sse_events": [*existing_events, route_event],
+        "pending_sse_events": [*existing_events, llm_route_event],
     }
 
 
 def route_decision(state: MainState) -> str:
     """Conditional edge: returns the target subgraph name."""
     return state.get("target_subgraph") or "open_ended"
+
+
+def _heuristic_route(user_msg: str) -> RouterOutput | None:
+    text = user_msg.strip()
+    if not text:
+        return None
+    lower = text.lower()
+
+    save_terms = (
+        "保存",
+        "存一下",
+        "存下来",
+        "存下",
+        "记录",
+        "新增",
+        "添加",
+        "导入",
+        "帮我存",
+        "save",
+        "add",
+        "import",
+    )
+    has_save_intent = any(term in lower for term in save_terms)
+
+    experience_terms = (
+        "项目经历",
+        "工作经历",
+        "实习经历",
+        "教育经历",
+        "经历",
+        "负责",
+        "担任",
+        "任职",
+        "做过",
+        "参与",
+        "experience",
+    )
+    jd_terms = (
+        "jd",
+        "职位描述",
+        "岗位描述",
+        "岗位",
+        "招聘要求",
+        "职位要求",
+        "职位",
+        "岗位要求",
+        "job description",
+    )
+    not_jd_terms = ("不是jd", "不是 jd", "不是岗位", "不是职位描述", "但不是jd")
+    not_experience_terms = ("不是我的经历", "别把这个当我的经历", "不是经历")
+    resume_terms = ("简历", "resume", "cv")
+
+    if (
+        has_save_intent
+        and any(term in lower for term in jd_terms)
+        and not any(term in lower for term in not_jd_terms)
+    ):
+        return RouterOutput(
+            target_subgraph="jd",
+            intent_description="Save the pasted job description and extract requirements.",
+            context_hints=["active_jd"],
+            extracted_params={"raw_text": text},
+            confidence=0.95,
+        )
+
+    if (
+        has_save_intent
+        and any(term in lower for term in experience_terms)
+        and not any(term in lower for term in not_experience_terms)
+    ):
+        return RouterOutput(
+            target_subgraph="experience_import",
+            intent_description="Save the user's pasted experience content into the experience library.",
+            context_hints=["profile"],
+            extracted_params={"raw_text": text},
+            confidence=0.95,
+        )
+
+    artifact_map = {
+        "自我介绍": "self_intro",
+        "self intro": "self_intro",
+        "self-intro": "self_intro",
+        "cover letter": "cover_letter",
+        "求职信": "cover_letter",
+        "匹配报告": "match_report",
+        "match report": "match_report",
+        "面试准备": "interview_prep",
+        "interview prep": "interview_prep",
+        "linkedin": "linkedin_summary",
+    }
+    for term, artifact_type in artifact_map.items():
+        if term in lower:
+            return RouterOutput(
+                target_subgraph="artifact",
+                intent_description=f"Generate a {artifact_type} artifact.",
+                artifact_type=artifact_type,
+                context_hints=["active_jd", "experiences"],
+                extracted_params={},
+                confidence=0.9,
+            )
+
+    generation_terms = ("生成", "写", "优化", "修改", "改", "润色", "generate", "rewrite", "improve")
+    if any(term in lower for term in resume_terms) and any(term in lower for term in generation_terms):
+        return RouterOutput(
+            target_subgraph="resume_generation",
+            intent_description="Generate or improve resume content.",
+            context_hints=["active_jd", "active_resume", "experiences"],
+            extracted_params={},
+            confidence=0.9,
+        )
+
+    return None

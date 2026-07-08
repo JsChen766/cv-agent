@@ -9,11 +9,13 @@ from __future__ import annotations
 
 import logging
 from collections.abc import AsyncGenerator, AsyncIterator, Mapping
+from datetime import UTC, datetime
 from typing import Any, Protocol, cast
 
 from langchain_core.runnables import RunnableConfig
 
 from app.core.events import format_sse
+from app.core.types import generate_id
 from app.graphs.activity import (
     activity_from_interrupt,
     activity_from_node_event,
@@ -51,6 +53,7 @@ async def stream_graph_events(
     thread_id = initial_state.get("thread_id")
     turn_id = initial_state.get("current_turn_id")
     activity_sequence = 0
+    final_state: dict[str, Any] = dict(initial_state)
 
     def commit_activity(event: dict[str, Any] | None) -> dict[str, Any] | None:
         nonlocal activity_sequence
@@ -83,6 +86,7 @@ async def stream_graph_events(
             if event_type == "on_chain_end":
                 output = data.get("output", {})
                 if isinstance(output, dict):
+                    final_state.update(output)
                     sse_events = output.get("pending_sse_events", [])
                     for sse_evt in sse_events:
                         activity = activity_from_tool_event(
@@ -95,6 +99,25 @@ async def stream_graph_events(
                         if committed_activity is not None:
                             yield format_sse(committed_activity)
                         yield format_sse(sse_evt)
+                    interrupt_payload = _extract_interrupt_payload(output)
+                    if interrupt_payload is not None:
+                        activity = activity_from_interrupt(
+                            interrupt_payload,
+                            thread_id=thread_id,
+                            turn_id=turn_id,
+                            sequence=activity_sequence + 1,
+                        )
+                        committed_activity = commit_activity(activity)
+                        if committed_activity is not None:
+                            yield format_sse(committed_activity)
+                        yield format_sse(
+                            {
+                                "event": "agent.interrupt",
+                                "interrupt_type": interrupt_payload.get("type", "confirmation"),
+                                "data": interrupt_payload,
+                            }
+                        )
+                        return
                 activity = activity_from_node_event(
                     event_name,
                     "completed",
@@ -135,8 +158,33 @@ async def stream_graph_events(
         yield format_sse(failed_event)
         return
 
+    snapshot_interrupt = await _snapshot_interrupt_payload(graph, config)
+    if snapshot_interrupt is not None:
+        activity = activity_from_interrupt(
+            snapshot_interrupt,
+            thread_id=thread_id,
+            turn_id=turn_id,
+            sequence=activity_sequence + 1,
+        )
+        committed_activity = commit_activity(activity)
+        if committed_activity is not None:
+            yield format_sse(committed_activity)
+        yield format_sse(
+            {
+                "event": "agent.interrupt",
+                "interrupt_type": snapshot_interrupt.get("type", "confirmation"),
+                "data": snapshot_interrupt,
+            }
+        )
+        return
+
     # Normal completion
-    completed_event = {"event": "agent.completed"}
+    completed_event = {
+        "event": "agent.completed",
+        "threadId": thread_id,
+        "turnId": turn_id,
+        "response": _build_completed_response(final_state),
+    }
     yield format_sse(completed_event)
 
 
@@ -157,3 +205,59 @@ def _build_initial_state(
         "current_turn_id": turn_id,
         "turn_count": 0,
     }
+
+
+def _build_completed_response(state: Mapping[str, Any]) -> dict[str, Any]:
+    thread_id = str(state.get("thread_id") or "")
+    turn_id = str(state.get("current_turn_id") or "")
+    workspace = state.get("workspace")
+    interrupt = state.get("interrupt_payload")
+    return {
+        "threadId": thread_id,
+        "turnId": turn_id,
+        "assistantMessage": {
+            "id": generate_id("msg"),
+            "role": "assistant",
+            "content": str(state.get("assistant_message") or ""),
+            "createdAt": datetime.now(UTC).isoformat(),
+        },
+        "workspace": workspace if isinstance(workspace, dict) else {},
+        "nextActions": [],
+        "suggestedPrompts": [],
+        "interrupt": interrupt if isinstance(interrupt, dict) else None,
+    }
+
+
+def _extract_interrupt_payload(output: Mapping[str, Any]) -> dict[str, Any] | None:
+    direct = output.get("interrupt_payload")
+    if isinstance(direct, dict):
+        return direct
+    interrupts = output.get("__interrupt__")
+    if not isinstance(interrupts, (list, tuple)) or not interrupts:
+        return None
+    value = getattr(interrupts[0], "value", None)
+    return value if isinstance(value, dict) else None
+
+
+async def _snapshot_interrupt_payload(
+    graph: EventStreamingGraph,
+    config: RunnableConfig,
+) -> dict[str, Any] | None:
+    aget_state = getattr(graph, "aget_state", None)
+    if aget_state is None:
+        return None
+    try:
+        snapshot = await aget_state(config)
+    except Exception:
+        return None
+    interrupts = getattr(snapshot, "interrupts", None)
+    if isinstance(interrupts, (list, tuple)) and interrupts:
+        value = getattr(interrupts[0], "value", None)
+        return value if isinstance(value, dict) else None
+    for task in getattr(snapshot, "tasks", ()) or ():
+        task_interrupts = getattr(task, "interrupts", None)
+        if isinstance(task_interrupts, (list, tuple)) and task_interrupts:
+            value = getattr(task_interrupts[0], "value", None)
+            if isinstance(value, dict):
+                return value
+    return None
