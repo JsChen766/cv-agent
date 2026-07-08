@@ -1,4 +1,4 @@
-# Optimization0705 Plan
+# Agent Runtime Optimization Plan
 
 > Date: 2026-07-05
 > Scope: Agent runtime, tool/function calling, process trace/SSE, interrupt persistence, and related architecture cleanup.
