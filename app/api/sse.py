@@ -8,7 +8,7 @@ so the FastAPI route can return a StreamingResponse.
 from __future__ import annotations
 
 import logging
-from collections.abc import AsyncGenerator, AsyncIterator, Mapping
+from collections.abc import AsyncGenerator, AsyncIterator, Generator, Mapping
 from datetime import UTC, datetime
 from typing import Any, Protocol, cast
 
@@ -101,22 +101,8 @@ async def stream_graph_events(
                         yield format_sse(sse_evt)
                     interrupt_payload = _extract_interrupt_payload(output)
                     if interrupt_payload is not None:
-                        activity = activity_from_interrupt(
-                            interrupt_payload,
-                            thread_id=thread_id,
-                            turn_id=turn_id,
-                            sequence=activity_sequence + 1,
-                        )
-                        committed_activity = commit_activity(activity)
-                        if committed_activity is not None:
-                            yield format_sse(committed_activity)
-                        yield format_sse(
-                            {
-                                "event": "agent.interrupt",
-                                "interrupt_type": interrupt_payload.get("type", "confirmation"),
-                                "data": interrupt_payload,
-                            }
-                        )
+                        for sse in _emit_interrupt_sse(interrupt_payload, activity_sequence, commit_activity, thread_id, turn_id):
+                            yield sse
                         return
                 activity = activity_from_node_event(
                     event_name,
@@ -132,22 +118,9 @@ async def stream_graph_events(
             # Interrupt events are surfaced as on_chain_end on the graph
             elif event_type == "on_interrupt":
                 payload = data.get("value", {})
-                activity = activity_from_interrupt(
-                    payload,
-                    thread_id=thread_id,
-                    turn_id=turn_id,
-                    sequence=activity_sequence + 1,
-                )
-                committed_activity = commit_activity(activity)
-                if committed_activity is not None:
-                    yield format_sse(committed_activity)
-                interrupt_sse = {
-                    "event": "agent.interrupt",
-                    "interrupt_type": payload.get("interrupt_type", "confirmation"),
-                    "data": payload.get("data", payload),
-                }
-                yield format_sse(interrupt_sse)
-                return  # Suspend streaming; client polls /threads/{id}/state
+                for sse in _emit_interrupt_sse(payload, activity_sequence, commit_activity, thread_id, turn_id):
+                    yield sse
+                return  # Suspend streaming
 
     except Exception as exc:
         logger.exception("Graph execution error: %s", exc)
@@ -160,22 +133,15 @@ async def stream_graph_events(
 
     snapshot_interrupt = await _snapshot_interrupt_payload(graph, config)
     if snapshot_interrupt is not None:
-        activity = activity_from_interrupt(
-            snapshot_interrupt,
-            thread_id=thread_id,
-            turn_id=turn_id,
-            sequence=activity_sequence + 1,
-        )
-        committed_activity = commit_activity(activity)
-        if committed_activity is not None:
-            yield format_sse(committed_activity)
-        yield format_sse(
-            {
-                "event": "agent.interrupt",
-                "interrupt_type": snapshot_interrupt.get("type", "confirmation"),
-                "data": snapshot_interrupt,
-            }
-        )
+        for sse in _emit_interrupt_sse(snapshot_interrupt, activity_sequence, commit_activity, thread_id, turn_id):
+            yield sse
+        return
+
+    # Fallback: check final_state for __interrupt__ (helps when checkpointer unavailable)
+    from_state = _extract_interrupt_payload(final_state)
+    if from_state is not None:
+        for sse in _emit_interrupt_sse(from_state, activity_sequence, commit_activity, thread_id, turn_id):
+            yield sse
         return
 
     # Normal completion
@@ -207,11 +173,36 @@ def _build_initial_state(
     }
 
 
+def _emit_interrupt_sse(
+    payload: dict[str, Any],
+    activity_sequence: int,
+    commit_activity: Any,
+    thread_id: str | None,
+    turn_id: str | None,
+) -> Generator[str, None, None]:
+    activity = activity_from_interrupt(
+        payload,
+        thread_id=thread_id,
+        turn_id=turn_id,
+        sequence=activity_sequence + 1,
+    )
+    committed_activity = commit_activity(activity)
+    if committed_activity is not None:
+        yield format_sse(committed_activity)
+    yield format_sse({
+        "event": "agent.interrupt",
+        "interrupt_type": payload.get("type", "confirmation"),
+        "data": payload,
+    })
+
+
 def _build_completed_response(state: Mapping[str, Any]) -> dict[str, Any]:
     thread_id = str(state.get("thread_id") or "")
     turn_id = str(state.get("current_turn_id") or "")
     workspace = state.get("workspace")
     interrupt = state.get("interrupt_payload")
+    if not isinstance(interrupt, dict):
+        interrupt = _extract_interrupt_payload(state)
     return {
         "threadId": thread_id,
         "turnId": turn_id,

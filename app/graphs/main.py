@@ -4,9 +4,8 @@ Main LangGraph graph.
 Assembles all subgraphs and the router into a single compiled graph.
 """
 
-from typing import Any, cast
+from typing import Any
 
-from langchain_core.runnables import RunnableConfig
 from langgraph.graph import END, START, StateGraph
 
 from app.graphs.artifact.graph import build_artifact_subgraph
@@ -22,15 +21,19 @@ def build_main_graph(checkpointer: Any | None = None) -> Any:
     """Build and compile the main graph with all subgraphs."""
     builder: StateGraph[MainState] = StateGraph(MainState)
 
+    # ── Subgraphs compiled with same checkpointer ──────────────────────────
+    jd_subgraph = build_jd_subgraph().compile(checkpointer=checkpointer)
+    resume_subgraph = build_resume_subgraph().compile(checkpointer=checkpointer)
+    artifact_subgraph = build_artifact_subgraph().compile(checkpointer=checkpointer)
+    experience_subgraph = build_experience_import_subgraph().compile(checkpointer=checkpointer)
+
     # ── Nodes ──────────────────────────────────────────────────────────────────
     builder.add_node("router", router_node)
     builder.add_node("open_ended", open_ended_node)
-
-    # Subgraphs compiled as nodes
-    builder.add_node("jd", _run_jd_subgraph)
-    builder.add_node("resume_generation", _run_resume_subgraph)
-    builder.add_node("artifact", _run_artifact_subgraph)
-    builder.add_node("experience_import", _run_experience_subgraph)
+    builder.add_node("jd", jd_subgraph)
+    builder.add_node("resume_generation", resume_subgraph)
+    builder.add_node("artifact", artifact_subgraph)
+    builder.add_node("experience_import", experience_subgraph)
 
     # ── Edges ──────────────────────────────────────────────────────────────────
     builder.add_edge(START, "router")
@@ -69,31 +72,3 @@ def get_graph(checkpointer: Any | None = None) -> Any:
         _graph = build_main_graph(checkpointer)
         _graph_checkpointer_id = checkpointer_id
     return _graph
-
-
-async def _run_jd_subgraph(
-    state: MainState, config: RunnableConfig | None = None
-) -> dict[str, Any]:
-    graph: Any = build_jd_subgraph().compile()
-    return cast("dict[str, Any]", await graph.ainvoke(state, config=config))
-
-
-async def _run_resume_subgraph(
-    state: MainState, config: RunnableConfig | None = None
-) -> dict[str, Any]:
-    graph: Any = build_resume_subgraph().compile()
-    return cast("dict[str, Any]", await graph.ainvoke(state, config=config))
-
-
-async def _run_artifact_subgraph(
-    state: MainState, config: RunnableConfig | None = None
-) -> dict[str, Any]:
-    graph: Any = build_artifact_subgraph().compile()
-    return cast("dict[str, Any]", await graph.ainvoke(state, config=config))
-
-
-async def _run_experience_subgraph(
-    state: MainState, config: RunnableConfig | None = None
-) -> dict[str, Any]:
-    graph: Any = build_experience_import_subgraph().compile()
-    return cast("dict[str, Any]", await graph.ainvoke(state, config=config))

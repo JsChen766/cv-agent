@@ -4,13 +4,17 @@ from datetime import UTC, datetime
 from typing import Any, cast
 
 import pytest
+from langgraph.checkpoint.memory import MemorySaver
+from langgraph.graph import END, START, StateGraph
 from pydantic import BaseModel
 
 from app.domain.jd.models import JdRecord, JdRequirement
 from app.domain.resume.models import Resume, ResumeVariant, ResumeVariantCreate
 from app.graphs.jd.nodes import parse_requirements_node
 from app.graphs.resume.nodes import output_node
+from app.graphs.resume.state import ResumeGenerationState
 from app.tools.base import ServiceContainer
+from langchain_core.runnables import RunnableConfig
 
 
 class _FakeJdProvider:
@@ -162,3 +166,38 @@ async def test_resume_output_creates_resume_for_natural_language_flow(
     assert pending_events[0]["variants"] == [
         {"id": "variant-1", "title": "Draft", "score": {"overall": 0.0, "relevance": 0.0, "clarity": 0.0, "evidence_strength": 0.0, "quantified_impact": 0.0}}
     ]
+
+
+async def test_resume_subgraph_interrupt_persisted_via_checkpointer() -> None:
+    """Verify that output_node's interrupt() is persisted when subgraph runs with a
+    checkpointer — the core fix for natural-language resume generation."""
+    checkpointer = MemorySaver()
+    builder = StateGraph(ResumeGenerationState)
+    builder.add_node("output", output_node)
+    builder.add_edge(START, "output")
+    builder.add_edge("output", END)
+    graph = builder.compile(checkpointer=checkpointer)
+
+    thread_id = "test-resume-interrupt-1"
+    state: ResumeGenerationState = {
+        "user_id": "user-1",
+        "workspace": {"jd_id": "jd-1"},
+        "variants": [{"title": "Draft", "content": "Resume markdown"}],
+        "pending_sse_events": [],
+    }
+    config: RunnableConfig = {"configurable": {"thread_id": thread_id}}
+
+    result = await graph.ainvoke(state, config=config)
+
+    assert "__interrupt__" in result, (
+        "Graph should have interrupted, but __interrupt__ is missing"
+    )
+
+    state_after = await graph.aget_state(config)
+    assert state_after.next, "Graph state should have a pending interrupt after suspension"
+
+    from langgraph.types import Command
+
+    resume_result = await graph.ainvoke(Command(resume={"confirmed": True}), config=config)
+    assert resume_result.get("assistant_message") == "Resume review confirmed."
+    assert resume_result.get("workspace") == {"jd_id": "jd-1"}

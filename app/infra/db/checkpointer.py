@@ -9,17 +9,28 @@ _checkpointer_cm: Any | None = None
 
 
 async def create_checkpointer() -> Any:
-    """Create and setup the LangGraph PostgreSQL checkpointer."""
+    """Create and setup the LangGraph checkpointer.
+
+    Uses PostgreSQL (AsyncPostgresSaver) when available, falls back to
+    in-memory MemorySaver (useful on Windows where psycopg async has
+    compatibility issues with ProactorEventLoop).
+    """
     global _checkpointer, _checkpointer_cm
     if _checkpointer is not None:
         return _checkpointer
 
-    from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
+    try:
+        from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver as _SaverCls
 
-    dsn = settings.database_url.replace("+asyncpg", "")
-    _checkpointer_cm = AsyncPostgresSaver.from_conn_string(dsn)
-    _checkpointer = await _checkpointer_cm.__aenter__()
-    await _checkpointer.setup()
+        dsn = settings.database_url.replace("+asyncpg", "")
+        _checkpointer_cm = _SaverCls.from_conn_string(dsn)
+        _checkpointer = await _checkpointer_cm.__aenter__()
+        await _checkpointer.setup()
+    except Exception:
+        _checkpointer_cm = None
+        from langgraph.checkpoint.memory import MemorySaver
+
+        _checkpointer = MemorySaver()
     return _checkpointer
 
 
