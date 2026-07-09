@@ -74,15 +74,14 @@ def test_chat_request_accepts_frontend_client_state_fields() -> None:
 
 
 async def test_build_chat_initial_state_uses_uploaded_file_text(monkeypatch: Any) -> None:
-    import app.infra.files.parser as parser_mod
+    import app.api.routes.copilot as copilot_route
     import app.infra.files.storage as storage_mod
 
+    async def parse_for_request(content: bytes, mime_type: str) -> str:
+        return "Parsed resume experience from the uploaded file."
+
     monkeypatch.setattr(storage_mod, "get_storage", lambda: _FakeStorage())
-    monkeypatch.setattr(
-        parser_mod,
-        "parse_file",
-        lambda content, mime_type: "Parsed resume experience from the uploaded file.",
-    )
+    monkeypatch.setattr(copilot_route, "parse_file_for_request", parse_for_request)
 
     body = ChatRequest.model_validate(
         {

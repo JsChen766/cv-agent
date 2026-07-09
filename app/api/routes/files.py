@@ -1,16 +1,14 @@
 from __future__ import annotations
 
-import asyncio
-
 import asyncpg
 from fastapi import APIRouter, Depends, Request, UploadFile
 from fastapi import File as FastAPIFile
 from fastapi.responses import JSONResponse
 
 from app.api.deps import get_current_user_id, pool_dep
+from app.api.file_parsing import parse_file_for_request
 from app.api.response import ok
 from app.core.types import FILE_PREFIX, generate_id
-from app.infra.files.parser import parse_file
 from app.infra.files.storage import get_storage
 
 router = APIRouter(tags=["files"])
@@ -85,8 +83,7 @@ async def parse_uploaded_file(
     storage = get_storage()
     content = await storage.get(row["storage_path"])
 
-    # Run synchronous parsing in thread pool
-    parsed_text = await asyncio.to_thread(parse_file, content, row["mime_type"])
+    parsed_text = await parse_file_for_request(content, row["mime_type"])
 
     # Cache parsed text
     async with pool.acquire() as conn:
