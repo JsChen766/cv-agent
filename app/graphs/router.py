@@ -92,6 +92,25 @@ async def router_node(state: MainState) -> dict[str, object]:
     context_str = "\n".join(context_parts) if context_parts else "No active context."
     user_msg = messages[-1]["content"] if messages[-1]["role"] == "user" else ""
     existing_extracted = cast("dict[str, JsonValue]", state.get("extracted_params", {}))
+    upload_route = _uploaded_file_import_route(existing_extracted)
+    if upload_route is not None:
+        upload_route_event: AgentRouteCompletedEvent = {
+            "event": "agent.route.completed",
+            "target": upload_route.target_subgraph,
+            "intent_description": upload_route.intent_description,
+            "confidence": upload_route.confidence,
+        }
+        existing_events = state.get("pending_sse_events", [])
+        return {
+            "target_subgraph": upload_route.target_subgraph,
+            "intent_description": upload_route.intent_description,
+            "artifact_type": upload_route.artifact_type,
+            "context_hints": upload_route.context_hints,
+            "extracted_params": upload_route.extracted_params,
+            "router_confidence": upload_route.confidence,
+            "pending_sse_events": [*existing_events, upload_route_event],
+        }
+
     heuristic = _heuristic_route(user_msg, existing_extracted)
     if heuristic is not None:
         route_event: AgentRouteCompletedEvent = {
@@ -278,6 +297,29 @@ def _heuristic_route(
         )
 
     return None
+
+
+def _uploaded_file_import_route(
+    existing_extracted: dict[str, JsonValue],
+) -> RouterOutput | None:
+    raw_text = existing_extracted.get("raw_text")
+    source = existing_extracted.get("source")
+    file_id = existing_extracted.get("file_id") or existing_extracted.get("uploaded_file_id")
+    if (
+        source != "uploaded_file"
+        or not isinstance(raw_text, str)
+        or not raw_text.strip()
+        or not isinstance(file_id, str)
+        or not file_id
+    ):
+        return None
+    return RouterOutput(
+        target_subgraph="experience_import",
+        intent_description="Import experience candidates from the uploaded resume file.",
+        context_hints=["uploaded_resume", "profile"],
+        extracted_params=existing_extracted,
+        confidence=0.98,
+    )
 
 
 def _merge_existing_raw_text(
