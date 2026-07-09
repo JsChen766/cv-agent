@@ -49,6 +49,33 @@ async def test_router_routes_chinese_save_experience_without_llm() -> None:
     assert extracted["raw_text"].startswith("保存这段项目经历")
 
 
+async def test_router_preserves_uploaded_raw_text_for_experience_import() -> None:
+    result = await router_node(
+        {
+            "messages": [
+                {
+                    "role": "user",
+                    "content": "save this experience",
+                    "turn_id": None,
+                }
+            ],
+            "workspace": {"file_id": "file-1"},
+            "extracted_params": {
+                "raw_text": "Parsed resume experience from the uploaded file.",
+                "source": "uploaded_file",
+                "file_id": "file-1",
+            },
+            "pending_sse_events": [],
+        }
+    )
+
+    assert result["target_subgraph"] == "experience_import"
+    extracted = cast("dict[str, str]", result["extracted_params"])
+    assert extracted["raw_text"] == "Parsed resume experience from the uploaded file."
+    assert extracted["source"] == "uploaded_file"
+    assert extracted["file_id"] == "file-1"
+
+
 async def test_router_routes_chinese_save_jd_without_llm() -> None:
     result = await router_node(
         {

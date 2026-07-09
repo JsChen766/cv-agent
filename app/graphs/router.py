@@ -7,7 +7,7 @@ latest message + thread context and decides which subgraph to invoke.
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Literal, cast
 
 from pydantic import BaseModel, Field, JsonValue
 
@@ -91,7 +91,8 @@ async def router_node(state: MainState) -> dict[str, object]:
 
     context_str = "\n".join(context_parts) if context_parts else "No active context."
     user_msg = messages[-1]["content"] if messages[-1]["role"] == "user" else ""
-    heuristic = _heuristic_route(user_msg)
+    existing_extracted = cast("dict[str, JsonValue]", state.get("extracted_params", {}))
+    heuristic = _heuristic_route(user_msg, existing_extracted)
     if heuristic is not None:
         route_event: AgentRouteCompletedEvent = {
             "event": "agent.route.completed",
@@ -141,7 +142,11 @@ async def router_node(state: MainState) -> dict[str, object]:
         "intent_description": routing.intent_description,
         "artifact_type": routing.artifact_type,
         "context_hints": routing.context_hints,
-        "extracted_params": routing.extracted_params,
+        "extracted_params": _merge_existing_raw_text(
+            routing.target_subgraph,
+            routing.extracted_params,
+            existing_extracted,
+        ),
         "router_confidence": routing.confidence,
         "pending_sse_events": [*existing_events, llm_route_event],
     }
@@ -152,7 +157,10 @@ def route_decision(state: MainState) -> str:
     return state.get("target_subgraph") or "open_ended"
 
 
-def _heuristic_route(user_msg: str) -> RouterOutput | None:
+def _heuristic_route(
+    user_msg: str,
+    existing_extracted: dict[str, JsonValue] | None = None,
+) -> RouterOutput | None:
     text = user_msg.strip()
     if not text:
         return None
@@ -211,7 +219,11 @@ def _heuristic_route(user_msg: str) -> RouterOutput | None:
             target_subgraph="jd",
             intent_description="Save the pasted job description and extract requirements.",
             context_hints=["active_jd"],
-            extracted_params={"raw_text": text},
+            extracted_params=_merge_existing_raw_text(
+                "jd",
+                {"raw_text": text},
+                existing_extracted,
+            ),
             confidence=0.95,
         )
 
@@ -224,7 +236,11 @@ def _heuristic_route(user_msg: str) -> RouterOutput | None:
             target_subgraph="experience_import",
             intent_description="Save the user's pasted experience content into the experience library.",
             context_hints=["profile"],
-            extracted_params={"raw_text": text},
+            extracted_params=_merge_existing_raw_text(
+                "experience_import",
+                {"raw_text": text},
+                existing_extracted,
+            ),
             confidence=0.95,
         )
 
@@ -262,3 +278,20 @@ def _heuristic_route(user_msg: str) -> RouterOutput | None:
         )
 
     return None
+
+
+def _merge_existing_raw_text(
+    target_subgraph: str,
+    route_params: dict[str, JsonValue],
+    existing_extracted: dict[str, JsonValue] | None,
+) -> dict[str, JsonValue]:
+    if target_subgraph not in {"experience_import", "jd"}:
+        return route_params
+    if not existing_extracted:
+        return route_params
+    raw_text = existing_extracted.get("raw_text")
+    if not isinstance(raw_text, str) or not raw_text.strip():
+        return route_params
+    merged = {**route_params, **existing_extracted}
+    merged["raw_text"] = raw_text
+    return merged

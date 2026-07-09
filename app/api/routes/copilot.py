@@ -9,6 +9,7 @@ GET  /copilot/sidebar      — sidebar summary data
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import Mapping
 from datetime import UTC, datetime
@@ -18,7 +19,7 @@ import asyncpg
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from langchain_core.runnables import RunnableConfig
-from pydantic import BaseModel, Field, JsonValue, model_validator
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
 
 from app.api.deps import build_service_container, get_current_user_id, pool_dep
 from app.api.response import ok
@@ -27,6 +28,7 @@ from app.api.sse import _build_initial_state, stream_graph_events
 from app.core.errors import ExternalServiceError, NotFoundError, ValidationError
 from app.core.types import THREAD_PREFIX, ArtifactType, generate_id
 from app.domain.resume.models import ResumeVariantCreate
+from app.graphs.state import MainState
 from app.tools.actions import capabilities as action_capabilities
 from app.tools.actions.models import (
     ExportResumeInput,
@@ -41,17 +43,39 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/copilot", tags=["copilot"])
 
 JsonObject = dict[str, JsonValue]
+MAX_CHAT_UPLOAD_TEXT_CHARS = 80_000
 
 
 # ── Request / Response schemas ─────────────────────────────────────────────────
 
 
+class ResumeUploadState(StrictRequestModel):
+    model_config = ConfigDict(extra="ignore")
+
+    fileId: str | None = None
+    id: str | None = None
+    originalName: str | None = None
+    fileName: str | None = None
+    name: str | None = None
+    mimeType: str | None = None
+
+
 class ClientState(StrictRequestModel):
+    model_config = ConfigDict(extra="ignore")
+
     locale: str = "zh-CN"
     activeJdId: str | None = None
     activeResumeId: str | None = None
     activeArtifactId: str | None = None
     activeExperienceIds: list[str] = Field(default_factory=list)
+    activeThreadId: str | None = None
+    activeFileId: str | None = None
+    uploadedFileId: str | None = None
+    resumeFileId: str | None = None
+    fileId: str | None = None
+    resumeUpload: ResumeUploadState | None = None
+    intentSource: str | None = None
+    sourceComponent: str | None = None
 
 
 class ChatRequest(StrictRequestModel):
@@ -304,7 +328,112 @@ def _workspace_from_client_state(cs: ClientState) -> JsonObject:
         workspace["artifact_id"] = cs.activeArtifactId
     if cs.activeExperienceIds:
         workspace["experience_ids"] = cast("JsonValue", cs.activeExperienceIds)
+    upload_file_id = _upload_file_id_from_client_state(cs)
+    if upload_file_id:
+        workspace["file_id"] = upload_file_id
+        workspace["uploaded_file_id"] = upload_file_id
+        if cs.resumeFileId:
+            workspace["resume_file_id"] = cs.resumeFileId
     return workspace
+
+
+def _upload_file_id_from_client_state(cs: ClientState) -> str | None:
+    upload = cs.resumeUpload
+    if upload is not None:
+        for value in (upload.fileId, upload.id):
+            if value:
+                return value
+    for value in (cs.resumeFileId, cs.uploadedFileId, cs.activeFileId, cs.fileId):
+        if value:
+            return value
+    return None
+
+
+def _upload_original_name_from_client_state(cs: ClientState) -> str | None:
+    upload = cs.resumeUpload
+    if upload is None:
+        return None
+    for value in (upload.originalName, upload.fileName, upload.name):
+        if value:
+            return value
+    return None
+
+
+async def _build_chat_initial_state(
+    *,
+    thread_id: str,
+    user_id: str,
+    message: str,
+    client_state: ClientState,
+    turn_id: str,
+    pool: asyncpg.Pool | None,
+) -> MainState:
+    workspace = _workspace_from_client_state(client_state)
+    initial_state = _build_initial_state(thread_id, user_id, message, workspace, turn_id)
+    upload_params = await _upload_extracted_params(client_state, user_id, pool)
+    if upload_params:
+        initial_state["extracted_params"] = upload_params
+        initial_state["context_hints"] = ["uploaded_resume", "profile"]
+    return initial_state
+
+
+async def _upload_extracted_params(
+    cs: ClientState,
+    user_id: str,
+    pool: asyncpg.Pool | None,
+) -> JsonObject | None:
+    file_id = _upload_file_id_from_client_state(cs)
+    if not file_id:
+        return None
+    if pool is None:
+        raise ExternalServiceError("Uploaded file cannot be read because the database is unavailable")
+
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT * FROM uploaded_files WHERE id=$1 AND user_id=$2",
+            file_id,
+            user_id,
+        )
+    if not row:
+        raise NotFoundError(f"File not found: {file_id}")
+
+    record = dict(row)
+    raw_parsed_text = record.get("parsed_text")
+    if isinstance(raw_parsed_text, str) and raw_parsed_text.strip():
+        parsed_text = raw_parsed_text
+    else:
+        from app.infra.files.parser import parse_file
+        from app.infra.files.storage import get_storage
+
+        storage = get_storage()
+        content = await storage.get(str(record["storage_path"]))
+        parsed_text = await asyncio.to_thread(parse_file, content, str(record["mime_type"]))
+        async with pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE uploaded_files SET parsed_text=$1 WHERE id=$2",
+                parsed_text,
+                file_id,
+            )
+
+    parsed_text = parsed_text.strip()
+    truncated = len(parsed_text) > MAX_CHAT_UPLOAD_TEXT_CHARS
+    if truncated:
+        parsed_text = parsed_text[:MAX_CHAT_UPLOAD_TEXT_CHARS]
+    original_name = _upload_original_name_from_client_state(cs) or record.get("filename")
+
+    params: JsonObject = {
+        "raw_text": parsed_text,
+        "source": "uploaded_file",
+        "file_id": file_id,
+        "uploaded_file_id": file_id,
+        "truncated": truncated,
+    }
+    if isinstance(original_name, str) and original_name:
+        params["original_name"] = original_name
+    mime_type = record.get("mime_type")
+    if isinstance(mime_type, str) and mime_type:
+        params["mime_type"] = mime_type
+    return params
 
 
 def _build_response(
@@ -454,8 +583,14 @@ async def chat(
         thread_id = body.threadId or generate_id(THREAD_PREFIX)
 
     turn_id = generate_id("turn")
-    workspace = _workspace_from_client_state(body.clientState)
-    initial_state = _build_initial_state(thread_id, user_id, body.message, workspace, turn_id)
+    initial_state = await _build_chat_initial_state(
+        thread_id=thread_id,
+        user_id=user_id,
+        message=body.message,
+        client_state=body.clientState,
+        turn_id=turn_id,
+        pool=_pool,
+    )
     configurable: dict[str, object] = {"thread_id": thread_id}
     if _pool:
         configurable["services"] = build_service_container(_pool)
@@ -474,7 +609,7 @@ async def chat(
     response_workspace = (
         cast("JsonObject", final_state.get("workspace"))
         if isinstance(final_state.get("workspace"), dict)
-        else workspace
+        else cast("JsonObject", initial_state.get("workspace", {}))
     )
 
     return ok(
@@ -505,8 +640,14 @@ async def chat_stream(
         thread_id = body.threadId or generate_id(THREAD_PREFIX)
 
     turn_id = generate_id("turn")
-    workspace = _workspace_from_client_state(body.clientState)
-    initial_state = _build_initial_state(thread_id, user_id, body.message, workspace, turn_id)
+    initial_state = await _build_chat_initial_state(
+        thread_id=thread_id,
+        user_id=user_id,
+        message=body.message,
+        client_state=body.clientState,
+        turn_id=turn_id,
+        pool=_pool,
+    )
     configurable: dict[str, object] = {"thread_id": thread_id}
     if _pool:
         configurable["services"] = build_service_container(_pool)
