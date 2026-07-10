@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from app.core.errors import (
     ConflictError,
+    FileParseTimeoutError,
     ForbiddenError,
     NotFoundError,
     UnauthorizedError,
@@ -43,3 +44,10 @@ def test_to_dict_contains_required_keys():
 def test_validation_error_status():
     err = ValidationError("bad input")
     assert err.http_status == 422
+
+
+def test_file_parse_timeout_error_status():
+    err = FileParseTimeoutError("slow file")
+    assert err.http_status == 408
+    assert err.code == "file_parse_timeout"
+    assert err.retryable is True

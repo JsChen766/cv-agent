@@ -21,7 +21,7 @@ from langchain_core.runnables import RunnableConfig
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
 
 from app.api.deps import build_service_container, get_current_user_id, pool_dep
-from app.api.file_parsing import parse_file_for_request
+from app.api.file_parsing import find_cached_parsed_text_for_upload, parse_file_for_request
 from app.api.response import ok
 from app.api.schemas import StrictRequestModel
 from app.api.sse import _build_initial_state, stream_graph_events
@@ -406,7 +406,21 @@ async def _upload_extracted_params(
 
         storage = get_storage()
         content = await storage.get(str(record["storage_path"]))
-        parsed_text = await parse_file_for_request(content, str(record["mime_type"]))
+        parsed_text = None
+        if record.get("size_bytes") is not None:
+            async with pool.acquire() as conn:
+                parsed_text = await find_cached_parsed_text_for_upload(
+                    conn=conn,
+                    storage=storage,
+                    user_id=user_id,
+                    file_id=file_id,
+                    filename=str(record["filename"]),
+                    mime_type=str(record["mime_type"]),
+                    size_bytes=int(record["size_bytes"]),
+                    content=content,
+                )
+        if parsed_text is None:
+            parsed_text = await parse_file_for_request(content, str(record["mime_type"]))
         async with pool.acquire() as conn:
             await conn.execute(
                 "UPDATE uploaded_files SET parsed_text=$1 WHERE id=$2",

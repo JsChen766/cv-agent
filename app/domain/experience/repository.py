@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import builtins
+from datetime import date
 from typing import Protocol
 
 from app.core.types import ExperienceCategory
@@ -40,8 +41,8 @@ class ExperienceRepository(Protocol):
         *,
         organization: str | None = None,
         role: str | None = None,
-        start_date: str | None = None,
-        end_date: str | None = None,
+        start_date: date | None = None,
+        end_date: date | None = None,
         tags: builtins.list[str] | None = None,
     ) -> Experience: ...
 

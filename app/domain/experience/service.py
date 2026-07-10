@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import date
+
 from app.core.errors import NotFoundError
 from app.core.types import (
     CANDIDATE_PREFIX,
@@ -18,6 +20,20 @@ from app.domain.experience.models import (
     ImportJob,
 )
 from app.domain.experience.repository import ExperienceRepository
+
+
+def _parse_optional_date(value: date | str | None) -> date | None:
+    if value is None:
+        return None
+    if isinstance(value, date):
+        return value
+
+    normalized = value.strip()
+    if not normalized or normalized == "present":
+        return None
+    if len(normalized) == 7:
+        normalized = f"{normalized}-01"
+    return date.fromisoformat(normalized)
 
 
 class ExperienceService:
@@ -57,8 +73,8 @@ class ExperienceService:
         content: str,
         organization: str | None = None,
         role: str | None = None,
-        start_date: str | None = None,
-        end_date: str | None = None,
+        start_date: date | str | None = None,
+        end_date: date | str | None = None,
         tags: list[str] | None = None,
         source: str = "manual",
     ) -> Experience:
@@ -71,8 +87,8 @@ class ExperienceService:
             title,
             organization=organization,
             role=role,
-            start_date=start_date,
-            end_date=end_date,
+            start_date=_parse_optional_date(start_date),
+            end_date=_parse_optional_date(end_date),
             tags=tags,
         )
         revision = await self._repo.add_revision(rev_id, exp_id, content, source)
@@ -86,6 +102,13 @@ class ExperienceService:
         self, user_id: str, experience_id: str, patch: ExperiencePatch
     ) -> Experience:
         await self.get_experience(user_id, experience_id)  # ownership check
+        normalized_dates: dict[str, date | None] = {}
+        if patch.start_date is not None:
+            normalized_dates["start_date"] = _parse_optional_date(patch.start_date)
+        if patch.end_date is not None:
+            normalized_dates["end_date"] = _parse_optional_date(patch.end_date)
+        if normalized_dates:
+            patch = patch.model_copy(update=normalized_dates)
         return await self._repo.update(user_id, experience_id, patch)
 
     # ── Add revision ──────────────────────────────────────────────────────────

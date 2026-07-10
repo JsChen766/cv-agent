@@ -55,8 +55,8 @@ class ExperiencePatch(BaseModel):
     organization: str | None = None
     role: str | None = None
     category: ExperienceCategory | None = None
-    start_date: str | None = None
-    end_date: str | None = None
+    start_date: date | str | None = None
+    end_date: date | str | None = None
     tags: list[str] | None = None
     current_revision_id: str | None = None
 

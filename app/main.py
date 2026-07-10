@@ -30,6 +30,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     from app.infra.db.checkpointer import close_checkpointer, create_checkpointer
     from app.infra.db.connection import close_pool, create_pool
+    from app.infra.files.parser import warm_file_parsers
 
     try:
         await create_pool()
@@ -39,6 +40,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         await create_checkpointer()
     except Exception as e:
         logging.warning(f"LangGraph checkpointer init failed (interrupt resume may be unavailable): {e}")
+    try:
+        warm_file_parsers()
+    except Exception as e:
+        logging.warning(f"File parser warm-up failed (parsing may be unavailable): {e}")
     yield
     # Shutdown
     await close_checkpointer()

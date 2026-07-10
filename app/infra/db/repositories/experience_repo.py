@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import builtins
 import json
+from datetime import date
 
 import asyncpg
 
@@ -102,8 +103,8 @@ class PostgresExperienceRepository:
         *,
         organization: str | None = None,
         role: str | None = None,
-        start_date: str | None = None,
-        end_date: str | None = None,
+        start_date: date | None = None,
+        end_date: date | None = None,
         tags: builtins.list[str] | None = None,
     ) -> Experience:
         async with self._pool.acquire() as conn:

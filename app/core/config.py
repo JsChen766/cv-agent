@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Literal
 
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -32,6 +33,9 @@ class Settings(BaseSettings):
     preference_dedup_threshold: float = 0.85
     context_token_budget: int = 6000
     max_self_review_iterations: int = 3
+
+    # Files
+    file_parse_timeout_seconds: float = Field(default=60.0, gt=0)
 
     # App
     environment: Literal["development", "production"] = "development"

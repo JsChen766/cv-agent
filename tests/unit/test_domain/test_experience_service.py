@@ -1,12 +1,17 @@
 """Unit tests for ExperienceService — no database required."""
 
-from datetime import datetime
+from datetime import date, datetime
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from app.core.errors import NotFoundError
-from app.domain.experience.models import Experience, ExperienceRevision, ImportCandidate
+from app.domain.experience.models import (
+    Experience,
+    ExperiencePatch,
+    ExperienceRevision,
+    ImportCandidate,
+)
 from app.domain.experience.service import ExperienceService
 
 
@@ -88,10 +93,45 @@ async def test_create_experience_calls_add_revision(svc, repo):
     repo.add_revision.assert_called_once()
 
 
+async def test_create_experience_converts_iso_date_strings_before_repo(svc, repo):
+    exp = _make_exp()
+    rev = _make_rev()
+    repo.create.return_value = exp
+    repo.add_revision.return_value = rev
+
+    await svc.create_experience(
+        "user-1",
+        category="work",
+        title="Engineer",
+        content="# content",
+        start_date="2025-09-01",
+        end_date="2025-12",
+    )
+
+    assert repo.create.call_args.kwargs["start_date"] == date(2025, 9, 1)
+    assert repo.create.call_args.kwargs["end_date"] == date(2025, 12, 1)
+
+
 async def test_archive_calls_repo(svc, repo):
     repo.get.return_value = _make_exp()
     await svc.archive_experience("user-1", "exp-1")
     repo.archive.assert_called_once_with("user-1", "exp-1")
+
+
+async def test_update_experience_meta_converts_iso_date_strings_before_repo(svc, repo):
+    exp = _make_exp()
+    repo.get.return_value = exp
+    repo.update.return_value = exp
+
+    await svc.update_experience_meta(
+        "user-1",
+        "exp-1",
+        ExperiencePatch(start_date="2025-09-01", end_date="2025-12"),
+    )
+
+    sent_patch = repo.update.call_args.args[2]
+    assert sent_patch.start_date == date(2025, 9, 1)
+    assert sent_patch.end_date == date(2025, 12, 1)
 
 
 async def test_accept_candidate_creates_experience(svc, repo):

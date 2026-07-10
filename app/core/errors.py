@@ -62,6 +62,13 @@ class ValidationError(AppError):
     http_status = 422
 
 
+class FileParseTimeoutError(AppError):
+    code = "file_parse_timeout"
+    message = "File parsing timed out"
+    http_status = 408
+    retryable = True
+
+
 class ConflictError(AppError):
     code = "conflict"
     message = "Resource already exists"
