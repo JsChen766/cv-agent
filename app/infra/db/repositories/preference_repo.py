@@ -7,7 +7,7 @@ import asyncpg
 
 from app.core.errors import ExternalServiceError, NotFoundError
 from app.domain.preference.models import Preference, PreferenceSignal
-from app.infra.db.helpers import parse_jsonb
+from app.infra.db.helpers import column_is_vector, parse_jsonb
 
 
 class PostgresPreferenceRepository:
@@ -111,6 +111,8 @@ class PostgresPreferenceRepository:
         """Find preferences with cosine similarity above threshold."""
         vec = f"[{','.join(str(v) for v in embedding)}]"
         async with self._pool.acquire() as conn:
+            if not await column_is_vector(conn, "preferences", "embedding"):
+                return []
             rows = await conn.fetch(
                 """
                 SELECT *, 1 - (embedding <=> $1::vector) AS similarity

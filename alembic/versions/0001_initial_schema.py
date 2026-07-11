@@ -7,8 +7,9 @@ Create Date: 2026-07-04
 
 from __future__ import annotations
 
-from alembic import op
 import sqlalchemy as sa
+
+from alembic import op
 
 revision = "0001"
 down_revision = None
@@ -16,13 +17,68 @@ branch_labels = None
 depends_on = None
 
 
+def _has_vector_type() -> bool:
+    conn = op.get_bind()
+    return bool(conn.scalar(sa.text("SELECT to_regtype('vector') IS NOT NULL")))
+
+
+def _can_create_extension() -> bool:
+    conn = op.get_bind()
+    return bool(
+        conn.scalar(
+            sa.text("SELECT rolsuper FROM pg_roles WHERE rolname = current_user")
+        )
+    )
+
+
+def _embedding_column(dimensions: int) -> str:
+    if _has_vector_type():
+        return f"vector({dimensions})"
+    return "DOUBLE PRECISION[]"
+
+
+def _owns_table(table: str) -> bool:
+    conn = op.get_bind()
+    return bool(
+        conn.scalar(
+            sa.text(
+                """
+                SELECT pg_get_userbyid(c.relowner) = current_user
+                FROM pg_class c
+                JOIN pg_namespace n ON n.oid = c.relnamespace
+                WHERE n.nspname = current_schema()
+                  AND c.relname = :table
+                """
+            ),
+            {"table": table},
+        )
+    )
+
+
+def _create_index(sql: str, table: str) -> None:
+    if _owns_table(table):
+        op.execute(sql)
+
+
+def _create_vector_index(name: str, table: str, lists: int) -> None:
+    if not _has_vector_type() or not _owns_table(table):
+        return
+    op.execute(
+        f"CREATE INDEX IF NOT EXISTS {name} "
+        f"ON {table} USING ivfflat (embedding vector_cosine_ops) WITH (lists = {lists})"
+    )
+
+
 def upgrade() -> None:
     # ── pgvector extension ────────────────────────────────────────────────────
-    op.execute("CREATE EXTENSION IF NOT EXISTS vector")
+    if not _has_vector_type() and _can_create_extension():
+        op.execute("CREATE EXTENSION IF NOT EXISTS vector")
+
+    embedding_column = _embedding_column(1536)
 
     # ── users ─────────────────────────────────────────────────────────────────
     op.execute("""
-    CREATE TABLE users (
+    CREATE TABLE IF NOT EXISTS users (
         id          TEXT PRIMARY KEY,
         email       TEXT NOT NULL UNIQUE,
         hashed_password TEXT NOT NULL,
@@ -33,7 +89,7 @@ def upgrade() -> None:
     """)
 
     op.execute("""
-    CREATE TABLE user_profiles (
+    CREATE TABLE IF NOT EXISTS user_profiles (
         user_id             TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
         full_name           TEXT,
         email               TEXT,
@@ -56,8 +112,8 @@ def upgrade() -> None:
     """)
 
     # ── experiences ───────────────────────────────────────────────────────────
-    op.execute("""
-    CREATE TABLE experiences (
+    op.execute(f"""
+    CREATE TABLE IF NOT EXISTS experiences (
         id                  TEXT PRIMARY KEY,
         user_id             TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
         category            TEXT NOT NULL,
@@ -69,37 +125,35 @@ def upgrade() -> None:
         tags                JSONB NOT NULL DEFAULT '[]',
         status              TEXT NOT NULL DEFAULT 'active',
         current_revision_id TEXT,
-        embedding           vector(1536),
+        embedding           {embedding_column},
         created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
         updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )
     """)
 
-    op.execute("CREATE INDEX idx_experiences_user_id ON experiences(user_id)")
-    op.execute("CREATE INDEX idx_experiences_status ON experiences(status)")
-    op.execute(
-        "CREATE INDEX idx_experiences_embedding "
-        "ON experiences USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100)"
-    )
+    _create_index("CREATE INDEX IF NOT EXISTS idx_experiences_user_id ON experiences(user_id)", "experiences")
+    _create_index("CREATE INDEX IF NOT EXISTS idx_experiences_status ON experiences(status)", "experiences")
+    _create_vector_index("idx_experiences_embedding", "experiences", 100)
 
-    op.execute("""
-    CREATE TABLE experience_revisions (
+    op.execute(f"""
+    CREATE TABLE IF NOT EXISTS experience_revisions (
         id              TEXT PRIMARY KEY,
         experience_id   TEXT NOT NULL REFERENCES experiences(id) ON DELETE CASCADE,
         content         TEXT NOT NULL,
         source          TEXT NOT NULL DEFAULT 'manual',
-        embedding       vector(1536),
+        embedding       {embedding_column},
         created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )
     """)
 
-    op.execute("""
-    CREATE INDEX idx_revisions_experience_id ON experience_revisions(experience_id);
-    """)
+    _create_index(
+        "CREATE INDEX IF NOT EXISTS idx_revisions_experience_id ON experience_revisions(experience_id)",
+        "experience_revisions",
+    )
 
     # ── import jobs & candidates ──────────────────────────────────────────────
     op.execute("""
-    CREATE TABLE import_jobs (
+    CREATE TABLE IF NOT EXISTS import_jobs (
         id          TEXT PRIMARY KEY,
         user_id     TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
         source      TEXT NOT NULL,
@@ -111,7 +165,7 @@ def upgrade() -> None:
     """)
 
     op.execute("""
-    CREATE TABLE import_candidates (
+    CREATE TABLE IF NOT EXISTS import_candidates (
         id              TEXT PRIMARY KEY,
         import_job_id   TEXT NOT NULL REFERENCES import_jobs(id) ON DELETE CASCADE,
         user_id         TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -128,7 +182,7 @@ def upgrade() -> None:
 
     # ── jd_records ────────────────────────────────────────────────────────────
     op.execute("""
-    CREATE TABLE jd_records (
+    CREATE TABLE IF NOT EXISTS jd_records (
         id          TEXT PRIMARY KEY,
         user_id     TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
         title       TEXT NOT NULL,
@@ -141,11 +195,11 @@ def upgrade() -> None:
     )
     """)
 
-    op.execute("CREATE INDEX idx_jd_user_id ON jd_records(user_id);")
+    _create_index("CREATE INDEX IF NOT EXISTS idx_jd_user_id ON jd_records(user_id)", "jd_records")
 
     # ── resumes ───────────────────────────────────────────────────────────────
     op.execute("""
-    CREATE TABLE resumes (
+    CREATE TABLE IF NOT EXISTS resumes (
         id          TEXT PRIMARY KEY,
         user_id     TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
         title       TEXT NOT NULL,
@@ -158,7 +212,7 @@ def upgrade() -> None:
     """)
 
     op.execute("""
-    CREATE TABLE resume_items (
+    CREATE TABLE IF NOT EXISTS resume_items (
         id                    TEXT PRIMARY KEY,
         resume_id             TEXT NOT NULL REFERENCES resumes(id) ON DELETE CASCADE,
         section_type          TEXT NOT NULL,
@@ -174,10 +228,13 @@ def upgrade() -> None:
     )
     """)
 
-    op.execute("CREATE INDEX idx_resume_items_resume_id ON resume_items(resume_id);")
+    _create_index(
+        "CREATE INDEX IF NOT EXISTS idx_resume_items_resume_id ON resume_items(resume_id)",
+        "resume_items",
+    )
 
     op.execute("""
-    CREATE TABLE resume_variants (
+    CREATE TABLE IF NOT EXISTS resume_variants (
         id               TEXT PRIMARY KEY,
         resume_id        TEXT NOT NULL REFERENCES resumes(id) ON DELETE CASCADE,
         jd_id            TEXT REFERENCES jd_records(id) ON DELETE SET NULL,
@@ -191,11 +248,14 @@ def upgrade() -> None:
     )
     """)
 
-    op.execute("CREATE INDEX idx_variants_resume_id ON resume_variants(resume_id);")
+    _create_index(
+        "CREATE INDEX IF NOT EXISTS idx_variants_resume_id ON resume_variants(resume_id)",
+        "resume_variants",
+    )
 
     # ── artifacts ─────────────────────────────────────────────────────────────
     op.execute("""
-    CREATE TABLE artifacts (
+    CREATE TABLE IF NOT EXISTS artifacts (
         id                      TEXT PRIMARY KEY,
         user_id                 TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
         type                    TEXT NOT NULL,
@@ -209,11 +269,11 @@ def upgrade() -> None:
     )
     """)
 
-    op.execute("CREATE INDEX idx_artifacts_user_id ON artifacts(user_id);")
+    _create_index("CREATE INDEX IF NOT EXISTS idx_artifacts_user_id ON artifacts(user_id)", "artifacts")
 
     # ── preferences ───────────────────────────────────────────────────────────
-    op.execute("""
-    CREATE TABLE preferences (
+    op.execute(f"""
+    CREATE TABLE IF NOT EXISTS preferences (
         id                   TEXT PRIMARY KEY,
         user_id              TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
         rule                 TEXT NOT NULL,
@@ -224,21 +284,18 @@ def upgrade() -> None:
         reinforcement_count  INTEGER NOT NULL DEFAULT 1,
         scope                TEXT NOT NULL DEFAULT 'global',
         active               BOOLEAN NOT NULL DEFAULT TRUE,
-        embedding            vector(1536),
+        embedding            {embedding_column},
         created_at           TIMESTAMPTZ NOT NULL DEFAULT NOW(),
         last_reinforced_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )
     """)
 
-    op.execute("CREATE INDEX idx_preferences_user_id ON preferences(user_id)")
-    op.execute("CREATE INDEX idx_preferences_active ON preferences(active)")
-    op.execute(
-        "CREATE INDEX idx_preferences_embedding "
-        "ON preferences USING ivfflat (embedding vector_cosine_ops) WITH (lists = 10)"
-    )
+    _create_index("CREATE INDEX IF NOT EXISTS idx_preferences_user_id ON preferences(user_id)", "preferences")
+    _create_index("CREATE INDEX IF NOT EXISTS idx_preferences_active ON preferences(active)", "preferences")
+    _create_vector_index("idx_preferences_embedding", "preferences", 10)
 
     op.execute("""
-    CREATE TABLE preference_signals (
+    CREATE TABLE IF NOT EXISTS preference_signals (
         id                   TEXT PRIMARY KEY,
         user_id              TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
         signal_type          TEXT NOT NULL,
@@ -250,25 +307,23 @@ def upgrade() -> None:
     """)
 
     # ── guideline_chunks (RAG) ────────────────────────────────────────────────
-    op.execute("""
-    CREATE TABLE guideline_chunks (
+    op.execute(f"""
+    CREATE TABLE IF NOT EXISTS guideline_chunks (
         id          TEXT PRIMARY KEY,
         content     TEXT NOT NULL,
         source_file TEXT,
         chunk_index INTEGER NOT NULL DEFAULT 0,
-        embedding   vector(1536),
-        metadata    JSONB NOT NULL DEFAULT '{}',
+        embedding   {embedding_column},
+        metadata    JSONB NOT NULL DEFAULT '{{}}',
         created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )
     """)
 
-    op.execute("""
-    CREATE INDEX idx_guideline_embedding ON guideline_chunks USING ivfflat (embedding vector_cosine_ops) WITH (lists = 10);
-    """)
+    _create_vector_index("idx_guideline_embedding", "guideline_chunks", 10)
 
     # ── files (upload tracking) ───────────────────────────────────────────────
     op.execute("""
-    CREATE TABLE uploaded_files (
+    CREATE TABLE IF NOT EXISTS uploaded_files (
         id          TEXT PRIMARY KEY,
         user_id     TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
         filename    TEXT NOT NULL,
@@ -282,7 +337,7 @@ def upgrade() -> None:
 
     # ── sessions (auth) ───────────────────────────────────────────────────────
     op.execute("""
-    CREATE TABLE user_sessions (
+    CREATE TABLE IF NOT EXISTS user_sessions (
         id          TEXT PRIMARY KEY,
         user_id     TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
         token_hash  TEXT NOT NULL UNIQUE,
@@ -291,11 +346,14 @@ def upgrade() -> None:
     )
     """)
 
-    op.execute("CREATE INDEX idx_sessions_token_hash ON user_sessions(token_hash);")
+    _create_index(
+        "CREATE INDEX IF NOT EXISTS idx_sessions_token_hash ON user_sessions(token_hash)",
+        "user_sessions",
+    )
 
     # ── idempotency keys ──────────────────────────────────────────────────────
     op.execute("""
-    CREATE TABLE idempotency_keys (
+    CREATE TABLE IF NOT EXISTS idempotency_keys (
         key         TEXT PRIMARY KEY,
         user_id     TEXT NOT NULL,
         status_code INTEGER NOT NULL,

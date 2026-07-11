@@ -11,6 +11,7 @@ import asyncpg
 
 from app.core.config import settings
 from app.domain.jd.models import JdRequirement
+from app.infra.db.helpers import column_is_vector
 from app.providers.factory import get_embedding_provider
 from app.rag.evidence.models import Claim, EvidenceMatch, EvidencePack, ExperienceWithClaims
 
@@ -41,6 +42,8 @@ class EvidenceRagService:
         vec_str = f"[{','.join(str(v) for v in avg_vec)}]"
 
         async with self._pool.acquire() as conn:
+            if not await column_is_vector(conn, "experiences", "embedding"):
+                return []
             rows = await conn.fetch(
                 """
                 SELECT

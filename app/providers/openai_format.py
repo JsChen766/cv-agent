@@ -39,11 +39,15 @@ class OpenAIFormatProvider:
             api_key=self._api_key,  # type: ignore[arg-type]
             base_url=self._base_url,
             streaming=False,
+            timeout=60,
+            max_retries=3,
         )
         self._embed = OpenAIEmbeddings(
             model=embedding_model or settings.embedding_model,
             api_key=self._api_key,  # type: ignore[arg-type]
             base_url=self._base_url,
+            request_timeout=60,
+            max_retries=3,
         )
 
     async def chat(

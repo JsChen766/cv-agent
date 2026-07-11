@@ -170,6 +170,14 @@ def _build_initial_state(
         "pending_sse_events": [],
         "current_turn_id": turn_id,
         "turn_count": 0,
+        # Explicitly clear routing/interrupt fields so a fresh turn is not
+        # short-circuited by a stale preset from the previous turn's
+        # checkpointer state (e.g. a prior open_ended run leaving
+        # target_subgraph="open_ended" pinned).
+        "target_subgraph": None,
+        "intent_description": None,
+        "assistant_message": None,
+        "interrupt_payload": None,
     }
 
 

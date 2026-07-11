@@ -9,8 +9,9 @@ GET  /copilot/sidebar      — sidebar summary data
 
 from __future__ import annotations
 
+import json
 import logging
-from collections.abc import Mapping
+from collections.abc import AsyncGenerator, Mapping
 from datetime import UTC, datetime
 from typing import Literal, cast
 
@@ -318,6 +319,48 @@ async def _get_or_create_thread(
     return new_id
 
 
+async def _persist_message(
+    pool: asyncpg.Pool | None,
+    *,
+    thread_id: str,
+    role: str,
+    content: str,
+    turn_id: str | None = None,
+    metadata: dict[str, JsonValue] | None = None,
+) -> None:
+    """Persist a chat message into thread_messages so history can be re-loaded.
+
+    Silent no-op if the pool is unavailable or the write fails, so a database
+    hiccup never breaks the user-facing chat flow.
+    """
+    if pool is None:
+        return
+    if not isinstance(content, str) or not content:
+        return
+    meta: dict[str, JsonValue] = dict(metadata or {})
+    if turn_id:
+        meta.setdefault("turn_id", turn_id)
+    try:
+        async with pool.acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO thread_messages (id, thread_id, role, content, metadata, created_at)
+                VALUES ($1, $2, $3, $4, $5::jsonb, NOW())
+                """,
+                generate_id("msg"),
+                thread_id,
+                role,
+                content,
+                json.dumps(meta),
+            )
+            await conn.execute(
+                "UPDATE threads SET updated_at = NOW() WHERE id = $1",
+                thread_id,
+            )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Failed to persist %s message for thread %s: %s", role, thread_id, exc)
+
+
 def _workspace_from_client_state(cs: ClientState) -> JsonObject:
     workspace: JsonObject = {}
     if cs.activeJdId:
@@ -610,6 +653,14 @@ async def chat(
         configurable["pool"] = _pool
     config: RunnableConfig = {"configurable": configurable}
 
+    await _persist_message(
+        _pool,
+        thread_id=thread_id,
+        role="user",
+        content=body.message,
+        turn_id=turn_id,
+    )
+
     try:
         graph = get_graph(_get_checkpointer_or_none())
         final_state = await graph.ainvoke(initial_state, config=config)
@@ -623,6 +674,15 @@ async def chat(
         cast("JsonObject", final_state.get("workspace"))
         if isinstance(final_state.get("workspace"), dict)
         else cast("JsonObject", initial_state.get("workspace", {}))
+    )
+
+    await _persist_message(
+        _pool,
+        thread_id=thread_id,
+        role="assistant",
+        content=assistant_msg,
+        turn_id=turn_id,
+        metadata={"interrupt": bool(interrupt_payload)},
     )
 
     return ok(
@@ -669,8 +729,64 @@ async def chat_stream(
 
     graph = get_graph(_get_checkpointer_or_none())
 
+    await _persist_message(
+        _pool,
+        thread_id=thread_id,
+        role="user",
+        content=body.message,
+        turn_id=turn_id,
+    )
+
+    async def _stream_with_persistence() -> AsyncGenerator[str, None]:
+        assistant_saved = False
+        async for chunk in stream_graph_events(graph, initial_state, config):
+            yield chunk
+            if assistant_saved:
+                continue
+            try:
+                # Chunk format: "event: <name>\ndata: <json>\n\n"
+                data_line = None
+                for line in chunk.splitlines():
+                    if line.startswith("data:"):
+                        data_line = line[len("data:") :].strip()
+                        break
+                if not data_line:
+                    continue
+                payload = json.loads(data_line)
+                evt = payload.get("event")
+                if evt == "agent.completed":
+                    response = payload.get("response") or {}
+                    assistant_message = response.get("assistantMessage") or {}
+                    content = str(assistant_message.get("content") or "")
+                    await _persist_message(
+                        _pool,
+                        thread_id=thread_id,
+                        role="assistant",
+                        content=content,
+                        turn_id=turn_id,
+                        metadata={"interrupt": bool(response.get("interrupt"))},
+                    )
+                    assistant_saved = True
+                elif evt == "agent.interrupt":
+                    # Persist a placeholder so the sidebar/history entry still has
+                    # the user message visible when they revisit the thread.
+                    assistant_saved = True
+                elif evt == "agent.failed":
+                    err = payload.get("error") or {}
+                    await _persist_message(
+                        _pool,
+                        thread_id=thread_id,
+                        role="assistant",
+                        content=str(err.get("message") or "Agent failed"),
+                        turn_id=turn_id,
+                        metadata={"error": True},
+                    )
+                    assistant_saved = True
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("SSE persistence hook failed: %s", exc)
+
     return StreamingResponse(
-        stream_graph_events(graph, initial_state, config),
+        _stream_with_persistence(),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",

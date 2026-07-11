@@ -27,6 +27,32 @@ def parse_jsonb(value: str | None) -> Any:
     return value  # asyncpg may already have decoded it
 
 
+async def has_pgvector(conn: asyncpg.Connection) -> bool:
+    return bool(await conn.fetchval("SELECT to_regtype('vector') IS NOT NULL"))
+
+
+async def column_is_vector(
+    conn: asyncpg.Connection,
+    table: str,
+    column: str,
+) -> bool:
+    regtype = await conn.fetchval(
+        """
+        SELECT format_type(a.atttypid, a.atttypmod)
+        FROM pg_attribute a
+        JOIN pg_class c ON c.oid = a.attrelid
+        JOIN pg_namespace n ON n.oid = c.relnamespace
+        WHERE n.nspname = current_schema()
+          AND c.relname = $1
+          AND a.attname = $2
+          AND NOT a.attisdropped
+        """,
+        table,
+        column,
+    )
+    return isinstance(regtype, str) and regtype.startswith("vector")
+
+
 def cursor_encode(row_id: str) -> str:
     return row_id
 

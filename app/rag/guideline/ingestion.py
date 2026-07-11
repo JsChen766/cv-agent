@@ -15,6 +15,8 @@ from pathlib import Path
 
 import asyncpg
 
+from app.infra.db.helpers import column_is_vector
+
 
 async def ingest_file(file_path: str, pool: asyncpg.Pool) -> int:
     """Chunk a markdown file and upsert into guideline_chunks. Returns chunk count."""
@@ -27,17 +29,28 @@ async def ingest_file(file_path: str, pool: asyncpg.Pool) -> int:
     embeddings = await embed_provider.embed(chunks)
 
     async with pool.acquire() as conn, conn.transaction():
+        use_vector = await column_is_vector(conn, "guideline_chunks", "embedding")
         count = 0
         for i, (chunk, emb) in enumerate(zip(chunks, embeddings, strict=False)):
             chunk_id = str(uuid.uuid4())
-            vec_str = f"[{','.join(str(v) for v in emb)}]"
-            await conn.execute(
-                """
+            embedding: str | list[float]
+            if use_vector:
+                embedding = f"[{','.join(str(v) for v in emb)}]"
+                insert_sql = """
                     INSERT INTO guideline_chunks (id, content, source_file, chunk_index, embedding)
                     VALUES ($1, $2, $3, $4, $5::vector)
                     ON CONFLICT DO NOTHING
-                    """,
-                chunk_id, chunk, file_path, i, vec_str,
+                    """
+            else:
+                embedding = emb
+                insert_sql = """
+                    INSERT INTO guideline_chunks (id, content, source_file, chunk_index, embedding)
+                    VALUES ($1, $2, $3, $4, $5)
+                    ON CONFLICT DO NOTHING
+                    """
+            await conn.execute(
+                insert_sql,
+                chunk_id, chunk, file_path, i, embedding,
             )
             count += 1
     return count

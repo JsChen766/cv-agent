@@ -239,6 +239,18 @@ async def resume_thread(
         else None
     )
 
+    if _pool is not None and not interrupt_payload:
+        from app.api.routes.copilot import _persist_message
+
+        await _persist_message(
+            _pool,
+            thread_id=thread_id,
+            role="assistant",
+            content=assistant_msg,
+            turn_id=body.turnId,
+            metadata={"resumed": True},
+        )
+
     return ok(
         _build_response(thread_id, body.turnId, assistant_msg, workspace, interrupt_payload),
         request,

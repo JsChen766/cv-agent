@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncpg
 
+from app.infra.db.helpers import column_is_vector
 from app.providers.factory import get_embedding_provider
 
 
@@ -29,6 +30,8 @@ class GuidelineRagService:
         vec_str = f"[{','.join(str(v) for v in query_vec)}]"
 
         async with self._pool.acquire() as conn:
+            if not await column_is_vector(conn, "guideline_chunks", "embedding"):
+                return await self.retrieve_fallback(query, top_k=top_k)
             rows = await conn.fetch(
                 """
                 SELECT content, 1 - (embedding <=> $1::vector) AS similarity
