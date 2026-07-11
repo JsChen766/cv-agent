@@ -4,12 +4,14 @@ from __future__ import annotations
 
 from datetime import datetime
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from langgraph.checkpoint.memory import MemorySaver
+from langgraph.types import Command
 
-from app.graphs.jd.nodes import jd_confirm_node, jd_persist_node, parse_requirements_node
-
+from app.graphs.jd.graph import build_jd_subgraph
+from app.graphs.jd.nodes import jd_confirm_node, jd_persist_node
 
 # ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -68,11 +70,97 @@ async def test_jd_confirm_node_triggers_interrupt_and_returns_confirmed(
 
     result = await jd_confirm_node(state)
 
-    assert result["_jd_confirmed"] is True
-    assert result["_jd_candidate"]["title"] == "Backend Engineer"
+    assert result["jd_confirmed"] is True
+    assert result["jd_candidate"]["title"] == "Backend Engineer"
     # interrupt SSE event appended
     events = result["pending_sse_events"]
     assert any(e.get("event") == "agent.interrupt" and e.get("type") == "jd_save" for e in events)
+
+
+async def test_jd_confirm_node_accepts_confirm_action_option(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The JD interrupt action option must resume into the save path."""
+    monkeypatch.setattr("app.graphs.jd.nodes.interrupt", lambda payload: {"action": "confirm"})
+
+    state: dict[str, Any] = {
+        "extracted_params": {"title": "Backend Engineer", "raw_text": "Build APIs"},
+        "pending_sse_events": [],
+    }
+
+    result = await jd_confirm_node(state)
+
+    assert result["jd_confirmed"] is True
+
+
+async def test_jd_confirm_node_accepts_edited_candidate_without_confirmed_flag(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An edited candidate submitted by the confirm UI is an affirmative save."""
+    monkeypatch.setattr(
+        "app.graphs.jd.nodes.interrupt",
+        lambda payload: {"candidate": {"title": "Senior Backend Engineer"}},
+    )
+
+    state: dict[str, Any] = {
+        "extracted_params": {"title": "Backend Engineer", "raw_text": "Build APIs"},
+        "pending_sse_events": [],
+    }
+
+    result = await jd_confirm_node(state)
+
+    assert result["jd_confirmed"] is True
+    assert result["jd_candidate"]["title"] == "Senior Backend Engineer"
+
+
+async def test_jd_subgraph_resume_preserves_confirmation_and_persists(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Exercise the real graph schema so JD-only state cannot be silently dropped."""
+
+    class Provider:
+        async def chat_structured(self, messages: Any, response_model: Any, **kwargs: Any) -> Any:
+            fields = getattr(response_model, "model_fields", {})
+            if "requirements" in fields:
+                return response_model(requirements=[])
+            return response_model(title="Backend Engineer", company="Acme", target_role="Engineer")
+
+    monkeypatch.setattr("app.graphs.jd.nodes.get_provider", lambda: Provider())
+    services = _make_services(_make_jd_record())
+    graph = build_jd_subgraph().compile(checkpointer=MemorySaver())
+    config: dict[str, Any] = {
+        "configurable": {"thread_id": "thread-jd-resume", "services": services}
+    }
+
+    first = await graph.ainvoke(
+        {
+            "thread_id": "thread-jd-resume",
+            "user_id": "user-1",
+            "extracted_params": {"title": "Backend Engineer", "raw_text": "Build APIs"},
+            "workspace": {},
+            "pending_sse_events": [],
+        },
+        config=config,
+    )
+    assert first.get("__interrupt__")
+
+    result = await graph.ainvoke(
+        Command(
+            resume={
+                "confirmed": True,
+                "candidate": {
+                    "title": "Backend Engineer",
+                    "raw_text": "Build APIs",
+                    "requirements": [],
+                },
+            }
+        ),
+        config=config,
+    )
+
+    services.jd.create_jd.assert_awaited_once()
+    assert result["workspace"]["jd_id"] == "jd-1"
+    assert "已加入 JD 匹配记录" in result["assistant_message"]
 
 
 async def test_jd_confirm_node_triggers_interrupt_and_returns_discarded(
@@ -92,7 +180,7 @@ async def test_jd_confirm_node_triggers_interrupt_and_returns_discarded(
 
     result = await jd_confirm_node(state)
 
-    assert result["_jd_confirmed"] is False
+    assert result["jd_confirmed"] is False
 
 
 async def test_jd_confirm_node_merges_candidate_override(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -106,7 +194,7 @@ async def test_jd_confirm_node_merges_candidate_override(monkeypatch: pytest.Mon
 
     result = await jd_confirm_node(state)
 
-    assert result["_jd_candidate"]["title"] == "Senior Backend Engineer"
+    assert result["jd_candidate"]["title"] == "Senior Backend Engineer"
 
 
 # ── jd_persist_node ───────────────────────────────────────────────────────────
@@ -120,8 +208,8 @@ async def test_jd_persist_node_saves_when_confirmed() -> None:
     state: dict[str, Any] = {
         "user_id": "user-1",
         "thread_id": "thread-abc",
-        "_jd_confirmed": True,
-        "_jd_candidate": {
+        "jd_confirmed": True,
+        "jd_candidate": {
             "title": "Backend Engineer",
             "company": "Acme",
             "target_role": None,
@@ -152,8 +240,8 @@ async def test_jd_persist_node_skips_db_when_discarded() -> None:
     state: dict[str, Any] = {
         "user_id": "user-1",
         "thread_id": "thread-abc",
-        "_jd_confirmed": False,
-        "_jd_candidate": {"title": "x", "raw_text": "x", "requirements": []},
+        "jd_confirmed": False,
+        "jd_candidate": {"title": "x", "raw_text": "x", "requirements": []},
         "extracted_params": {},
         "workspace": {},
         "pending_sse_events": [],

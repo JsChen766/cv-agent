@@ -537,20 +537,24 @@ def _upload_original_name_from_client_state(cs: ClientState) -> str | None:
     return None
 
 
-async def _drain_pending_interrupt(graph: object, config: RunnableConfig) -> None:
-    """If the graph is suspended at an interrupt, drain it so the next turn starts fresh."""
-    from langgraph.types import Command
+async def _reject_if_pending_interrupt(graph: object, config: RunnableConfig) -> None:
+    """Do not let a new message implicitly consume a confirmation request."""
+    from app.api.interrupts import pending_interrupt_from_snapshot
+    from app.core.errors import ConflictError
 
+    aget_state = getattr(graph, "aget_state", None)
+    if not callable(aget_state):
+        return
     try:
-        aget_state = getattr(graph, "aget_state", None)
-        ainvoke = getattr(graph, "ainvoke", None)
-        if not callable(aget_state) or not callable(ainvoke):
-            return
         snapshot = await aget_state(config)
-        if snapshot and getattr(snapshot, "next", None):
-            await ainvoke(Command(resume={"action": "preempted"}), config=config)
     except Exception as exc:
-        logger.warning("Failed to drain pending interrupt: %s", exc)
+        logger.warning("Pending interrupt state load failed: %s", exc)
+        return
+    if pending_interrupt_from_snapshot(snapshot) is not None:
+        raise ConflictError(
+            "Thread has a pending confirmation; resume or discard it before sending a new message",
+            code="pending_interrupt_exists",
+        )
 
 
 async def _build_chat_initial_state(
@@ -836,7 +840,7 @@ async def chat(
 
     try:
         graph = get_graph(_get_checkpointer_or_none())
-        await _drain_pending_interrupt(graph, config)
+        await _reject_if_pending_interrupt(graph, config)
         final_state = await graph.ainvoke(initial_state, config=config)
     except Exception as exc:
         logger.exception("Graph error: %s", exc)
@@ -921,7 +925,7 @@ async def chat_stream(
     config: RunnableConfig = {"configurable": configurable}
 
     graph = get_graph(_get_checkpointer_or_none())
-    await _drain_pending_interrupt(graph, config)
+    await _reject_if_pending_interrupt(graph, config)
 
     await _persist_message(
         _pool,

@@ -39,6 +39,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     try:
         await create_checkpointer()
     except Exception as e:
+        if settings.environment == "production":
+            raise RuntimeError("Persistent LangGraph checkpointer is required in production") from e
         logging.warning(f"LangGraph checkpointer init failed (interrupt resume may be unavailable): {e}")
     try:
         warm_file_parsers()

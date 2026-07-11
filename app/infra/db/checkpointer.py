@@ -27,7 +27,12 @@ async def create_checkpointer() -> Any:
         _checkpointer = await _checkpointer_cm.__aenter__()
         await _checkpointer.setup()
     except Exception:
+        if _checkpointer_cm is not None:
+            await _checkpointer_cm.__aexit__(None, None, None)
         _checkpointer_cm = None
+        if settings.environment == "production":
+            _checkpointer = None
+            raise
         from langgraph.checkpoint.memory import MemorySaver
 
         _checkpointer = MemorySaver()

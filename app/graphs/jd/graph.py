@@ -10,11 +10,11 @@ from app.graphs.jd.nodes import (
     jd_persist_node,
     parse_requirements_node,
 )
-from app.graphs.state import MainState
+from app.graphs.jd.state import JdState
 
 
-def build_jd_subgraph() -> StateGraph[MainState]:
-    builder = StateGraph(MainState)
+def build_jd_subgraph() -> StateGraph[JdState]:
+    builder = StateGraph(JdState)
     builder.add_node("extract_jd", extract_jd_node)
     builder.add_node("parse_requirements", parse_requirements_node)
     builder.add_node("jd_confirm", jd_confirm_node)

@@ -1,7 +1,5 @@
 """JD subgraph nodes."""
 
-from __future__ import annotations
-
 import uuid
 from typing import Any
 
@@ -9,12 +7,12 @@ from langchain_core.runnables import RunnableConfig
 from langgraph.types import interrupt
 
 from app.domain.jd.models import JdRequirementDraft, JdRequirementImportance
+from app.graphs.jd.state import JdState
 from app.graphs.runtime import services_from_config
-from app.graphs.state import MainState
 from app.providers.factory import get_provider
 
 
-async def extract_jd_node(state: MainState) -> dict[str, Any]:
+async def extract_jd_node(state: JdState) -> dict[str, Any]:
     """Extract title/company/target_role from user message. Does NOT persist."""
     from pydantic import BaseModel
 
@@ -72,7 +70,7 @@ async def extract_jd_node(state: MainState) -> dict[str, Any]:
 
 
 async def parse_requirements_node(
-    state: MainState, config: RunnableConfig | None = None
+    state: JdState, config: RunnableConfig | None = None
 ) -> dict[str, Any]:
     """Parse JD requirements from raw text. Stores in extracted_params; does NOT persist."""
     from pydantic import BaseModel
@@ -127,7 +125,7 @@ async def parse_requirements_node(
     }
 
 
-async def jd_confirm_node(state: MainState) -> dict[str, Any]:
+async def jd_confirm_node(state: JdState) -> dict[str, Any]:
     """Interrupt to ask the user whether to save the extracted JD."""
     from app.core.events import AgentInterruptEvent
 
@@ -169,27 +167,45 @@ async def jd_confirm_node(state: MainState) -> dict[str, Any]:
 
     # User discarded or a new chat message preempted this interrupt.
     if isinstance(resume_value, dict) and resume_value.get("action") in ("preempted", "discard"):
-        return {**new_state, "interrupt_payload": None, "_jd_confirmed": False, "_jd_candidate": candidate}
+        return {
+            **new_state,
+            "interrupt_payload": None,
+            "jd_confirmed": False,
+            "jd_candidate": candidate,
+        }
 
+    # Confirmation interrupts throughout the product use action-option ids
+    # (for example, {"action": "confirm"}).  Some clients submit only an
+    # edited candidate on resume; that is also an affirmative JD save.  An
+    # explicit rejection must always win over every affirmative shorthand.
     confirmed = False
     merged_candidate = candidate
     if isinstance(resume_value, dict):
-        confirmed = bool(resume_value.get("confirmed", False))
+        action = resume_value.get("action") or resume_value.get("decision")
+        explicitly_rejected = resume_value.get("confirmed") is False or action in {
+            "preempted",
+            "discard",
+        }
+        confirmed = not explicitly_rejected and (
+            resume_value.get("confirmed") is True
+            or action in {"confirm", "accept", "save"}
+            or isinstance(resume_value.get("candidate"), dict)
+        )
         if "candidate" in resume_value and isinstance(resume_value["candidate"], dict):
             merged_candidate = {**candidate, **resume_value["candidate"]}
 
     return {
         **new_state,
         "interrupt_payload": None,
-        "_jd_confirmed": confirmed,
-        "_jd_candidate": merged_candidate,
+        "jd_confirmed": confirmed,
+        "jd_candidate": merged_candidate,
     }
 
 
-async def jd_persist_node(state: MainState, config: RunnableConfig | None = None) -> dict[str, Any]:
+async def jd_persist_node(state: JdState, config: RunnableConfig | None = None) -> dict[str, Any]:
     """Persist JD if confirmed; update assistant_message and workspace."""
-    confirmed = state.get("_jd_confirmed", False)
-    candidate: dict[str, Any] = state.get("_jd_candidate") or {}  # type: ignore[assignment]
+    confirmed = state.get("jd_confirmed", False)
+    candidate: dict[str, Any] = state.get("jd_candidate") or {}  # type: ignore[assignment]
     extracted = state.get("extracted_params", {})
     existing = state.get("pending_sse_events", [])
 
@@ -202,8 +218,8 @@ async def jd_persist_node(state: MainState, config: RunnableConfig | None = None
         return {
             "assistant_message": "已忽略该 JD。",
             "pending_sse_events": [*existing, completed_event],
-            "_jd_confirmed": None,
-            "_jd_candidate": None,
+            "jd_confirmed": None,
+            "jd_candidate": None,
         }
 
     services = services_from_config(config)
@@ -216,8 +232,8 @@ async def jd_persist_node(state: MainState, config: RunnableConfig | None = None
         return {
             "assistant_message": "JD 服务不可用，无法保存。",
             "pending_sse_events": [*existing, completed_event],
-            "_jd_confirmed": None,
-            "_jd_candidate": None,
+            "jd_confirmed": None,
+            "jd_candidate": None,
         }
 
     reqs_raw = candidate.get("requirements") or []
@@ -267,8 +283,8 @@ async def jd_persist_node(state: MainState, config: RunnableConfig | None = None
             "requirements": [r.model_dump() for r in jd.requirements],
         },
         "pending_sse_events": [*existing, completed_event],
-        "_jd_confirmed": None,
-        "_jd_candidate": None,
+        "jd_confirmed": None,
+        "jd_candidate": None,
     }
 
 

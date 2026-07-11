@@ -4,6 +4,7 @@ from datetime import UTC, datetime
 from typing import Any, cast
 
 import pytest
+from langchain_core.runnables import RunnableConfig
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, StateGraph
 from pydantic import BaseModel
@@ -14,7 +15,6 @@ from app.graphs.jd.nodes import jd_persist_node, parse_requirements_node
 from app.graphs.resume.nodes import output_node
 from app.graphs.resume.state import ResumeGenerationState
 from app.tools.base import ServiceContainer
-from langchain_core.runnables import RunnableConfig
 
 
 class _FakeJdProvider:
@@ -107,8 +107,8 @@ async def test_jd_graph_persists_saved_jd_and_returns_workspace(
         {
             "user_id": "user-1",
             "thread_id": "thread-test",
-            "_jd_confirmed": True,
-            "_jd_candidate": {
+            "jd_confirmed": True,
+            "jd_candidate": {
                 "title": "高级后端工程师",
                 "company": "Acme",
                 "target_role": "Backend Engineer",

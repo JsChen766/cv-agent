@@ -266,14 +266,7 @@ async def _snapshot_interrupt_payload(
         snapshot = await aget_state(config)
     except Exception:
         return None
-    interrupts = getattr(snapshot, "interrupts", None)
-    if isinstance(interrupts, (list, tuple)) and interrupts:
-        value = getattr(interrupts[0], "value", None)
-        return value if isinstance(value, dict) else None
-    for task in getattr(snapshot, "tasks", ()) or ():
-        task_interrupts = getattr(task, "interrupts", None)
-        if isinstance(task_interrupts, (list, tuple)) and task_interrupts:
-            value = getattr(task_interrupts[0], "value", None)
-            if isinstance(value, dict):
-                return value
-    return None
+    from app.api.interrupts import pending_interrupt_from_snapshot
+
+    pending = pending_interrupt_from_snapshot(snapshot)
+    return pending.payload if pending is not None else None

@@ -10,6 +10,7 @@ POST   /threads/:id/discard      — discard interrupt (user cancelled)
 
 from __future__ import annotations
 
+import json
 import logging
 from datetime import UTC, datetime
 from typing import cast
@@ -21,6 +22,7 @@ from langchain_core.runnables import RunnableConfig
 from pydantic import Field, JsonValue
 
 from app.api.deps import build_service_container, get_current_user_id, pool_dep
+from app.api.interrupts import PendingInterrupt, pending_interrupt_from_snapshot
 from app.api.response import ok, ok_list
 from app.api.schemas import StrictRequestModel
 from app.core.errors import ConflictError, ExternalServiceError, ForbiddenError, NotFoundError
@@ -41,11 +43,13 @@ class UpdateThreadRequest(StrictRequestModel):
 
 class ResumeRequest(StrictRequestModel):
     turnId: str = Field(min_length=1)
+    interruptId: str | None = Field(default=None, min_length=1)
     confirmedData: dict[str, JsonValue] | None = None
 
 
 class DiscardRequest(StrictRequestModel):
     turnId: str = Field(min_length=1)
+    interruptId: str | None = Field(default=None, min_length=1)
     reason: str | None = Field(default=None, min_length=1)
 
 
@@ -86,6 +90,120 @@ def _decode_metadata(raw_metadata: object) -> dict[str, object]:
             return {}
         return decoded if isinstance(decoded, dict) else {}
     return {}
+
+
+def _pending_interrupt_or_conflict(
+    snapshot: object | None,
+    *,
+    turn_id: str,
+    interrupt_id: str | None,
+) -> PendingInterrupt:
+    pending = pending_interrupt_from_snapshot(snapshot)
+    if pending is None:
+        raise ConflictError("Thread has no pending interrupt", code="no_pending_interrupt")
+    if pending.turn_id != turn_id:
+        raise ConflictError(
+            "This confirmation belongs to an older turn",
+            code="stale_interrupt_operation",
+        )
+    if interrupt_id is not None and pending.interrupt_id != interrupt_id:
+        raise ConflictError(
+            "This confirmation belongs to an older interrupt",
+            code="stale_interrupt_operation",
+        )
+    if pending.interrupt_id is None:
+        raise ConflictError("Pending interrupt has no stable identifier", code="invalid_pending_interrupt")
+    return pending
+
+
+async def _completed_interrupt_operation(
+    pool: asyncpg.Pool | None,
+    *,
+    thread_id: str,
+    turn_id: str,
+    action: str,
+) -> dict[str, JsonValue] | None:
+    if pool is None:
+        return None
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT response FROM thread_interrupt_operations "
+            "WHERE thread_id = $1 AND turn_id = $2 AND action = $3 AND status = 'completed' "
+            "ORDER BY completed_at DESC LIMIT 1",
+            thread_id,
+            turn_id,
+            action,
+        )
+    if row is None:
+        return None
+    response = _decode_metadata(row["response"])
+    return cast("dict[str, JsonValue]", response) if response else None
+
+
+async def _claim_interrupt_operation(
+    pool: asyncpg.Pool | None,
+    *,
+    thread_id: str,
+    turn_id: str,
+    interrupt_id: str,
+    action: str,
+) -> dict[str, JsonValue] | None:
+    """Claim the thread operation once; completed retries return their first response."""
+    if pool is None:
+        return None
+    async with pool.acquire() as conn:
+        inserted = await conn.fetchrow(
+            "INSERT INTO thread_interrupt_operations "
+            "(thread_id, turn_id, interrupt_id, action, status) "
+            "VALUES ($1, $2, $3, $4, 'in_progress') "
+            "ON CONFLICT DO NOTHING RETURNING thread_id",
+            thread_id,
+            turn_id,
+            interrupt_id,
+            action,
+        )
+        if inserted is not None:
+            return None
+        row = await conn.fetchrow(
+            "SELECT status, response FROM thread_interrupt_operations "
+            "WHERE thread_id = $1 AND turn_id = $2 AND interrupt_id = $3 AND action = $4",
+            thread_id,
+            turn_id,
+            interrupt_id,
+            action,
+        )
+        if row is not None and row["status"] == "completed":
+            response = _decode_metadata(row["response"])
+            return cast("dict[str, JsonValue]", response)
+    raise ConflictError(
+        "An interrupt operation is already in progress for this thread; retry shortly",
+        code="interrupt_operation_in_progress",
+        retryable=True,
+    )
+
+
+async def _complete_interrupt_operation(
+    pool: asyncpg.Pool | None,
+    *,
+    thread_id: str,
+    turn_id: str,
+    interrupt_id: str,
+    action: str,
+    response: dict[str, JsonValue],
+) -> None:
+    if pool is None:
+        return
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "UPDATE thread_interrupt_operations "
+            "SET status = 'completed', response = $5::jsonb, completed_at = NOW() "
+            "WHERE thread_id = $1 AND turn_id = $2 AND interrupt_id = $3 AND action = $4",
+            thread_id,
+            turn_id,
+            interrupt_id,
+            action,
+            json.dumps(response),
+        )
 
 
 # ── Routes ─────────────────────────────────────────────────────────────────────
@@ -206,10 +324,11 @@ async def get_thread(
         cfg: RunnableConfig = {"configurable": {"thread_id": thread_id}}
         try:
             snapshot = await graph.aget_state(cfg)
-            if snapshot and getattr(snapshot, "next", None):
-                raw_interrupt = getattr(snapshot, "values", {}).get("interrupt_payload")
-                if isinstance(raw_interrupt, dict):
-                    interrupt_payload = cast("dict[str, object]", raw_interrupt)
+            from app.api.interrupts import pending_interrupt_from_snapshot
+
+            pending = pending_interrupt_from_snapshot(snapshot)
+            if pending is not None:
+                interrupt_payload = pending.payload
         except Exception:
             pass
 
@@ -380,6 +499,15 @@ async def resume_thread(
     if checkpointer is None:
         raise ConflictError("Thread has no persisted pending interrupt to resume")
 
+    completed = await _completed_interrupt_operation(
+        _pool,
+        thread_id=thread_id,
+        turn_id=body.turnId,
+        action="resume",
+    )
+    if completed is not None:
+        return ok(completed, request)
+
     graph = get_graph(checkpointer)
     configurable: dict[str, object] = {"thread_id": thread_id}
     if _pool:
@@ -395,8 +523,20 @@ async def resume_thread(
         logger.exception("Resume state load error: %s", exc)
         raise ExternalServiceError("Could not load thread resume state") from exc
 
-    if not getattr(snapshot, "next", ()):
-        raise ConflictError("Thread has no pending interrupt to resume")
+    pending = _pending_interrupt_or_conflict(
+        snapshot,
+        turn_id=body.turnId,
+        interrupt_id=body.interruptId,
+    )
+    claimed = await _claim_interrupt_operation(
+        _pool,
+        thread_id=thread_id,
+        turn_id=body.turnId,
+        interrupt_id=pending.interrupt_id,
+        action="resume",
+    )
+    if claimed is not None:
+        return ok(claimed, request)
 
     try:
         final_state = await graph.ainvoke(Command(resume=resume_data), config=config)
@@ -427,10 +567,19 @@ async def resume_thread(
             metadata={"resumed": True},
         )
 
-    return ok(
+    response = cast(
+        "dict[str, JsonValue]",
         _build_response(thread_id, body.turnId, assistant_msg, workspace, interrupt_payload),
-        request,
     )
+    await _complete_interrupt_operation(
+        _pool,
+        thread_id=thread_id,
+        turn_id=body.turnId,
+        interrupt_id=pending.interrupt_id,
+        action="resume",
+        response=response,
+    )
+    return ok(response, request)
 
 
 def _get_checkpointer_or_none() -> object | None:
@@ -461,6 +610,47 @@ async def discard_thread(
     except RuntimeError:
         _pool = None
 
+    checkpointer = _get_checkpointer_or_none()
+    if checkpointer is None:
+        raise ConflictError("Thread has no persisted pending interrupt to discard")
+
+    completed = await _completed_interrupt_operation(
+        _pool,
+        thread_id=thread_id,
+        turn_id=body.turnId,
+        action="discard",
+    )
+    if completed is not None:
+        return ok(completed, request)
+
+    from app.graphs.main import get_graph
+
+    graph = get_graph(checkpointer)
+    configurable: dict[str, object] = {"thread_id": thread_id}
+    if _pool:
+        configurable["pool"] = _pool
+        configurable["services"] = build_service_container(_pool)
+    cfg: RunnableConfig = {"configurable": configurable}
+    try:
+        snapshot = await graph.aget_state(cfg)
+    except Exception as exc:
+        logger.exception("Discard state load error: %s", exc)
+        raise ExternalServiceError("Could not load thread discard state") from exc
+    pending = _pending_interrupt_or_conflict(
+        snapshot,
+        turn_id=body.turnId,
+        interrupt_id=body.interruptId,
+    )
+    claimed = await _claim_interrupt_operation(
+        _pool,
+        thread_id=thread_id,
+        turn_id=body.turnId,
+        interrupt_id=pending.interrupt_id,
+        action="discard",
+    )
+    if claimed is not None:
+        return ok(claimed, request)
+
     if _pool is not None and body.reason:
         try:
             from app.domain.preference.service import PreferenceService
@@ -482,32 +672,25 @@ async def discard_thread(
         except Exception as exc:
             logger.warning("Discard signal recording failed: %s", exc)
 
-    # Drain the pending interrupt in the graph so the next turn starts fresh.
-    checkpointer = _get_checkpointer_or_none()
-    if checkpointer is not None:
-        from langgraph.types import Command
+    from langgraph.types import Command
 
-        from app.graphs.main import get_graph
+    try:
+        await graph.ainvoke(Command(resume={"action": "discard"}), config=cfg)
+    except Exception as exc:
+        logger.exception("Discard error: %s", exc)
+        raise ExternalServiceError("Graph discard failed") from exc
 
-        graph = get_graph(checkpointer)
-        configurable: dict[str, object] = {"thread_id": thread_id}
-        if _pool:
-            from app.api.deps import build_service_container
-            configurable["pool"] = _pool
-            configurable["services"] = build_service_container(_pool)
-        cfg: RunnableConfig = {"configurable": configurable}
-        try:
-            snapshot = await graph.aget_state(cfg)
-            if snapshot and getattr(snapshot, "next", None):
-                await graph.ainvoke(Command(resume={"action": "discard"}), config=cfg)
-        except Exception as exc:
-            logger.warning("Discard interrupt drain failed: %s", exc)
-
-    return ok(
-        {
-            "threadId": thread_id,
-            "turnId": body.turnId,
-            "status": "discarded",
-        },
-        request,
+    response: dict[str, JsonValue] = {
+        "threadId": thread_id,
+        "turnId": body.turnId,
+        "status": "discarded",
+    }
+    await _complete_interrupt_operation(
+        _pool,
+        thread_id=thread_id,
+        turn_id=body.turnId,
+        interrupt_id=pending.interrupt_id,
+        action="discard",
+        response=response,
     )
+    return ok(response, request)
