@@ -295,15 +295,14 @@ SSE_STREAM_RESPONSES = {
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 
-async def _get_or_create_thread(
-    thread_id: str | None, user_id: str, pool: asyncpg.Pool
-) -> str:
+async def _get_or_create_thread(thread_id: str | None, user_id: str, pool: asyncpg.Pool) -> str:
     """Return existing thread_id or create a new thread row."""
     if thread_id:
         async with pool.acquire() as conn:
             row = await conn.fetchrow(
                 "SELECT id FROM threads WHERE id = $1 AND user_id = $2",
-                thread_id, user_id,
+                thread_id,
+                user_id,
             )
         if row:
             return thread_id
@@ -316,7 +315,9 @@ async def _get_or_create_thread(
             VALUES ($1, $2, $3, 'active', NOW(), NOW())
             ON CONFLICT DO NOTHING
             """,
-            new_id, user_id, "New conversation",
+            new_id,
+            user_id,
+            "New conversation",
         )
     return new_id
 
@@ -397,6 +398,15 @@ def _resume_canvas_metadata(
     if not variants:
         return None
     resume_id = workspace.get("resume_id") if isinstance(workspace, Mapping) else None
+    if not isinstance(resume_id, str):
+        variant_resume_ids = {
+            raw_variant.get("resume_id") or raw_variant.get("resumeId")
+            for raw_variant in raw_variants
+            if isinstance(raw_variant, Mapping)
+            and isinstance(raw_variant.get("resume_id") or raw_variant.get("resumeId"), str)
+        }
+        if len(variant_resume_ids) == 1:
+            resume_id = next(iter(variant_resume_ids))
     selected_variant = variants[0]
     presentation: dict[str, JsonValue] = {
         "type": "resume_canvas",
@@ -579,8 +589,7 @@ async def _build_chat_initial_state(
                     thread_id,
                 )
             historical = [
-                {"role": r["role"], "content": r["content"], "turn_id": None}
-                for r in rows[-20:]
+                {"role": r["role"], "content": r["content"], "turn_id": None} for r in rows[-20:]
             ]
         except Exception as exc:
             logger.warning("Failed to load thread history: %s", exc)
@@ -605,7 +614,9 @@ async def _upload_extracted_params(
     if not file_id:
         return None
     if pool is None:
-        raise ExternalServiceError("Uploaded file cannot be read because the database is unavailable")
+        raise ExternalServiceError(
+            "Uploaded file cannot be read because the database is unavailable"
+        )
 
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
@@ -954,7 +965,9 @@ async def chat_stream(
                     response = payload.get("response")
                     response = response if isinstance(response, dict) else {}
                     assistant_message = response.get("assistantMessage")
-                    assistant_message = assistant_message if isinstance(assistant_message, dict) else {}
+                    assistant_message = (
+                        assistant_message if isinstance(assistant_message, dict) else {}
+                    )
                     content = str(assistant_message.get("content") or "")
                     interrupt = response.get("interrupt")
                     workspace = response.get("workspace")
@@ -962,7 +975,9 @@ async def chat_stream(
                         _pool,
                         thread_id=thread_id,
                         turn_id=turn_id,
-                        workspace=workspace if isinstance(workspace, dict) else initial_state.get("workspace"),
+                        workspace=workspace
+                        if isinstance(workspace, dict)
+                        else initial_state.get("workspace"),
                         interrupt=interrupt if isinstance(interrupt, dict) else None,
                         content=content or "简历草稿已生成，可在画布中查看和编辑。",
                     )
@@ -1325,6 +1340,7 @@ async def sidebar(
     """Return sidebar summary: recent threads, experiences, JDs, resumes, artifacts."""
     try:
         from app.infra.db.connection import get_pool as _get_pool
+
         _pool = _get_pool()
 
         async with _pool.acquire() as conn:

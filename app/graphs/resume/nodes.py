@@ -22,8 +22,11 @@ from app.domain.resume.models import ResumeVariantCreate
 from app.graphs.resume.state import ResumeGenerationState
 from app.graphs.runtime import pool_from_config, services_from_config
 from app.providers.factory import get_provider
+from app.tools.actions import capabilities as action_capabilities
+from app.tools.actions.models import VariantInput
 
 # ── 1. Context Assembly ───────────────────────────────────────────────────────
+
 
 async def context_assembly_node(
     state: ResumeGenerationState, config: RunnableConfig | None = None
@@ -51,6 +54,7 @@ async def context_assembly_node(
 
 # ── 2. CoT Planning ───────────────────────────────────────────────────────────
 
+
 class MatchingPlan(BaseModel):
     strategy: str
     key_experiences_to_highlight: list[str]
@@ -73,9 +77,13 @@ async def cot_planning_node(state: ResumeGenerationState) -> dict[str, object]:
     if jd_text:
         context_parts.append(f"JD Summary:\n{jd_text[:1500]}")
     if profile:
-        context_parts.append(f"User: {profile.get('current_title', '')} | {profile.get('career_stage', '')}")
+        context_parts.append(
+            f"User: {profile.get('current_title', '')} | {profile.get('career_stage', '')}"
+        )
     if experiences:
-        exp_list = "\n".join(f"- {e.get('title')} at {e.get('organization', 'N/A')}" for e in experiences[:6])
+        exp_list = "\n".join(
+            f"- {e.get('title')} at {e.get('organization', 'N/A')}" for e in experiences[:6]
+        )
         context_parts.append(f"Available Experiences:\n{exp_list}")
     if prefs:
         pref_list = "\n".join(f"- {p.get('rule')}" for p in prefs[:5])
@@ -108,6 +116,7 @@ async def cot_planning_node(state: ResumeGenerationState) -> dict[str, object]:
 
 # ── 3. Draft Generation ───────────────────────────────────────────────────────
 
+
 async def draft_generation_node(state: ResumeGenerationState) -> dict[str, object]:
     """Generate resume variant(s) and emit diff events."""
     provider = get_provider()
@@ -133,7 +142,9 @@ async def draft_generation_node(state: ResumeGenerationState) -> dict[str, objec
     if experiences:
         exp_texts = []
         for e in experiences[:5]:
-            exp_texts.append(f"**{e.get('title')}** at {e.get('organization', '')}\n{e.get('content', '')[:600]}")
+            exp_texts.append(
+                f"**{e.get('title')}** at {e.get('organization', '')}\n{e.get('content', '')[:600]}"
+            )
         prompt_parts.append("Experiences to use:\n" + "\n\n".join(exp_texts))
     if prefs:
         pref_rules = "\n".join(f"- {p.get('rule')}" for p in prefs[:8])
@@ -142,7 +153,9 @@ async def draft_generation_node(state: ResumeGenerationState) -> dict[str, objec
         prompt_parts.append(f"Revision instruction: {revision_instruction}")
 
     preferred_lang = profile.get("preferred_language", "zh-CN")
-    lang_instruction = "Respond in Chinese (Simplified)." if "zh" in preferred_lang else "Respond in English."
+    lang_instruction = (
+        "Respond in Chinese (Simplified)." if "zh" in preferred_lang else "Respond in English."
+    )
 
     # Emit diff started event
     resume_id = state.get("workspace", {}).get("resume_id") or "new"
@@ -212,6 +225,7 @@ async def draft_generation_node(state: ResumeGenerationState) -> dict[str, objec
 
 # ── 4. Self Review ────────────────────────────────────────────────────────────
 
+
 class ReviewResult(BaseModel):
     verdict: str  # "pass" | "needs_revision"
     revision_instruction: str | None = None
@@ -264,6 +278,7 @@ async def self_review_node(state: ResumeGenerationState) -> dict[str, object]:
 
 # ── 5. Revision ───────────────────────────────────────────────────────────────
 
+
 async def revision_node(state: ResumeGenerationState) -> dict[str, object]:
     """Apply revision instruction to improve the draft."""
     review = state.get("review_result") or {}
@@ -282,6 +297,52 @@ async def revision_node(state: ResumeGenerationState) -> dict[str, object]:
 
 # ── 6. Output / Interrupt ─────────────────────────────────────────────────────
 
+
+async def persist_resume_draft_node(
+    state: ResumeGenerationState, config: RunnableConfig | None = None
+) -> dict[str, object]:
+    """Persist the resume and variants before entering the review interrupt."""
+    services = services_from_config(config)
+    if services is None:
+        return {}
+
+    workspace = dict(state.get("workspace", {}))
+    resume_id_value = workspace.get("resume_id")
+    resume_id = resume_id_value if isinstance(resume_id_value, str) else None
+    jd_id_value = workspace.get("jd_id")
+    jd_id = jd_id_value if isinstance(jd_id_value, str) else None
+    if not resume_id:
+        resume = await services.resume.create_resume(
+            state.get("user_id", ""),
+            "AI Generated Resume",
+            jd_id=jd_id,
+        )
+        resume_id = resume.id
+        workspace["resume_id"] = resume.id
+
+    saved_variants: list[dict[str, object]] = []
+    for variant in state.get("variants", []):
+        title = variant.get("title")
+        content = variant.get("content")
+        saved = await services.resume.save_variant(
+            resume_id,
+            ResumeVariantCreate.model_validate(
+                {
+                    "jd_id": jd_id,
+                    "title": title if isinstance(title, str) and title else "AI Generated Variant",
+                    "content": content if isinstance(content, str) else "",
+                    "score": variant.get("score", {}),
+                    "evidence_summary": variant.get("evidence_summary", []),
+                    "risk_summary": variant.get("risk_summary", []),
+                    "missing_info": variant.get("missing_info", []),
+                }
+            ),
+        )
+        saved_variants.append(saved.model_dump(mode="json"))
+
+    return {"workspace": workspace, "variants": saved_variants}
+
+
 async def output_node(
     state: ResumeGenerationState, config: RunnableConfig | None = None
 ) -> dict[str, object]:
@@ -291,42 +352,6 @@ async def output_node(
     variants = state.get("variants", [])
     services = services_from_config(config)
     workspace = dict(state.get("workspace", {}))
-    resume_id_value = workspace.get("resume_id")
-    resume_id = resume_id_value if isinstance(resume_id_value, str) else None
-    variants_for_payload = variants
-    if services is not None and not (isinstance(resume_id, str) and resume_id):
-        jd_id_value = workspace.get("jd_id")
-        jd_id = jd_id_value if isinstance(jd_id_value, str) else None
-        resume = await services.resume.create_resume(
-            state.get("user_id", ""),
-            "AI Generated Resume",
-            jd_id=jd_id,
-        )
-        resume_id = resume.id
-        workspace["resume_id"] = resume.id
-    if services is not None and isinstance(resume_id, str) and resume_id:
-        saved_variants: list[dict[str, object]] = []
-        jd_id_value = workspace.get("jd_id")
-        variant_jd_id = jd_id_value if isinstance(jd_id_value, str) else None
-        for variant in variants:
-            title = variant.get("title")
-            content = variant.get("content")
-            saved = await services.resume.save_variant(
-                resume_id,
-                ResumeVariantCreate.model_validate(
-                    {
-                        "jd_id": variant_jd_id,
-                        "title": title if isinstance(title, str) and title else "AI Generated Variant",
-                        "content": content if isinstance(content, str) else "",
-                        "score": variant.get("score", {}),
-                        "evidence_summary": variant.get("evidence_summary", []),
-                        "risk_summary": variant.get("risk_summary", []),
-                        "missing_info": variant.get("missing_info", []),
-                    }
-                ),
-            )
-            saved_variants.append(saved.model_dump(mode="json"))
-        variants_for_payload = saved_variants
     interrupt_id = str(uuid.uuid4())
 
     interrupt_event: AgentInterruptEvent = {
@@ -340,11 +365,15 @@ async def output_node(
                 "title": v.get("title", ""),
                 "score": v.get("score", {}),
             }
-            for v in variants_for_payload
+            for v in variants
         ],
         "candidates": [],
         "action_options": [
-            {"id": "accept", "label": "Accept", "description": "Accept the variant and save to resume"},
+            {
+                "id": "accept",
+                "label": "Accept",
+                "description": "Accept the variant and save to resume",
+            },
             {"id": "revise", "label": "Revise", "description": "Request changes"},
             {"id": "discard", "label": "Discard", "description": "Discard and start over"},
         ],
@@ -355,7 +384,10 @@ async def output_node(
     payload = {
         "interrupt_id": interrupt_id,
         "type": "resume_review",
-        "variants": variants_for_payload,
+        "message": interrupt_event["message"],
+        "variants": variants,
+        "action_options": interrupt_event["action_options"],
+        "workspace": workspace,
     }
 
     # LangGraph interrupt — suspends execution here
@@ -363,7 +395,33 @@ async def output_node(
 
     # User discarded or a new chat message preempted this interrupt.
     if isinstance(resume_value, dict) and resume_value.get("action") in ("preempted", "discard"):
-        return {"interrupt_payload": None, "assistant_message": ""}
+        return {
+            "interrupt_payload": None,
+            "assistant_message": "Resume variant discarded.",
+            "workspace": workspace,
+        }
+
+    action = None
+    selected_variant_id = None
+    if isinstance(resume_value, dict):
+        action = resume_value.get("action") or resume_value.get("decision")
+        selected = resume_value.get("selected_variant_id") or resume_value.get("variant_id")
+        selected_variant_id = selected if isinstance(selected, str) else None
+    if action in {"accept", "confirm"}:
+        valid_variant_ids = {
+            variant.get("id") for variant in variants if isinstance(variant.get("id"), str)
+        }
+        if selected_variant_id not in valid_variant_ids:
+            raise ValueError("Selected resume variant does not belong to this review")
+        if services is None:
+            raise RuntimeError("Resume service unavailable while accepting variant")
+        accepted = await action_capabilities.accept_variant(
+            services,
+            state.get("user_id", ""),
+            VariantInput(variantId=selected_variant_id),
+            base_workspace=workspace,
+        )
+        workspace.update(accepted.workspace)
 
     return {
         "assistant_message": _resume_confirmation_message(resume_value),
@@ -375,9 +433,12 @@ async def output_node(
 
 # ── Routing ───────────────────────────────────────────────────────────────────
 
+
 def _resume_confirmation_message(resume_value: object) -> str:
     if isinstance(resume_value, dict):
         action = resume_value.get("action") or resume_value.get("decision")
+        if action in {"accept", "confirm"}:
+            return "Resume variant accepted and saved."
         if action == "revise":
             return "Resume review feedback received. I can revise the variant next."
         if action == "discard":
@@ -390,6 +451,9 @@ def review_route(state: ResumeGenerationState) -> str:
     review = state.get("review_result") or {}
     iteration = state.get("review_iteration", 0)
 
-    if review.get("verdict") == "needs_revision" and iteration < settings.max_self_review_iterations:
+    if (
+        review.get("verdict") == "needs_revision"
+        and iteration < settings.max_self_review_iterations
+    ):
         return "revision"
     return "output"

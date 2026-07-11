@@ -62,9 +62,7 @@ class SaveResumeCanvasRequest(StrictRequestModel):
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 
-async def _require_thread(
-    pool: asyncpg.Pool, thread_id: str, user_id: str
-) -> dict[str, object]:
+async def _require_thread(pool: asyncpg.Pool, thread_id: str, user_id: str) -> dict[str, object]:
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
             "SELECT * FROM threads WHERE id = $1",
@@ -92,6 +90,57 @@ def _decode_metadata(raw_metadata: object) -> dict[str, object]:
     return {}
 
 
+def _resume_canvas_references(metadata: dict[str, object]) -> tuple[set[str], str | None]:
+    presentation = metadata.get("presentation")
+    if not isinstance(presentation, dict) or presentation.get("type") != "resume_canvas":
+        return set(), None
+    raw_variant_ids = presentation.get("variant_ids")
+    variant_ids = (
+        {value for value in raw_variant_ids if isinstance(value, str)}
+        if isinstance(raw_variant_ids, list)
+        else set()
+    )
+    variants = presentation.get("variants")
+    if isinstance(variants, list):
+        variant_ids.update(
+            variant["id"]
+            for variant in variants
+            if isinstance(variant, dict) and isinstance(variant.get("id"), str)
+        )
+    resume_item_id = presentation.get("resume_item_id")
+    return variant_ids, resume_item_id if isinstance(resume_item_id, str) else None
+
+
+def _hydrate_resume_canvas_resume_id(
+    metadata: dict[str, object],
+    *,
+    variant_resume_ids: dict[str, str],
+    item_resume_ids: dict[str, str],
+) -> str | None:
+    """Recover a historical canvas's resume ID from durable product records."""
+    presentation = metadata.get("presentation")
+    if not isinstance(presentation, dict) or presentation.get("type") != "resume_canvas":
+        return None
+    existing = presentation.get("resume_id")
+    if isinstance(existing, str) and existing:
+        return existing
+
+    variant_ids, resume_item_id = _resume_canvas_references(metadata)
+    candidates = {
+        variant_resume_ids[variant_id]
+        for variant_id in variant_ids
+        if variant_id in variant_resume_ids
+    }
+    if resume_item_id in item_resume_ids:
+        candidates.add(item_resume_ids[resume_item_id])
+    if len(candidates) != 1:
+        return None
+
+    resume_id = next(iter(candidates))
+    presentation["resume_id"] = resume_id
+    return resume_id
+
+
 def _pending_interrupt_or_conflict(
     snapshot: object | None,
     *,
@@ -112,7 +161,9 @@ def _pending_interrupt_or_conflict(
             code="stale_interrupt_operation",
         )
     if pending.interrupt_id is None:
-        raise ConflictError("Pending interrupt has no stable identifier", code="invalid_pending_interrupt")
+        raise ConflictError(
+            "Pending interrupt has no stable identifier", code="invalid_pending_interrupt"
+        )
     return pending
 
 
@@ -219,6 +270,7 @@ async def list_threads(
 ) -> JSONResponse:
     try:
         from app.infra.db.connection import get_pool as _get_pool
+
         _pool = _get_pool()
         params: list[object] = [user_id, limit + 1]
         query = "SELECT * FROM threads WHERE user_id = $1 AND status != 'deleted'"
@@ -230,14 +282,12 @@ async def list_threads(
         async with _pool.acquire() as conn:
             rows = await conn.fetch(query, *params)
 
-        items = [dict(r) for r in rows[: limit]]
+        items = [dict(r) for r in rows[:limit]]
         next_cursor = None
         if len(rows) > limit:
             updated_at = rows[limit - 1]["updated_at"]
             next_cursor = (
-                updated_at.isoformat()
-                if isinstance(updated_at, datetime)
-                else str(updated_at)
+                updated_at.isoformat() if isinstance(updated_at, datetime) else str(updated_at)
             )
 
         return ok_list(items, next_cursor, request)
@@ -254,6 +304,7 @@ async def get_thread(
 ) -> JSONResponse:
     try:
         from app.infra.db.connection import get_pool as _get_pool
+
         _pool = _get_pool()
         raw_thread = await _require_thread(_pool, thread_id, user_id)
 
@@ -263,6 +314,35 @@ async def get_thread(
                 "WHERE thread_id = $1 ORDER BY created_at ASC",
                 thread_id,
             )
+            canvas_variant_ids: set[str] = set()
+            canvas_item_ids: set[str] = set()
+            for message_row in msg_rows:
+                variant_ids, resume_item_id = _resume_canvas_references(
+                    _decode_metadata(message_row["metadata"])
+                )
+                canvas_variant_ids.update(variant_ids)
+                if resume_item_id:
+                    canvas_item_ids.add(resume_item_id)
+            variant_resume_rows = (
+                await conn.fetch(
+                    "SELECT id, resume_id FROM resume_variants WHERE id = ANY($1::text[])",
+                    list(canvas_variant_ids),
+                )
+                if canvas_variant_ids
+                else []
+            )
+            item_resume_rows = (
+                await conn.fetch(
+                    "SELECT id, resume_id FROM resume_items WHERE id = ANY($1::text[])",
+                    list(canvas_item_ids),
+                )
+                if canvas_item_ids
+                else []
+            )
+            variant_resume_ids = {
+                str(row["id"]): str(row["resume_id"]) for row in variant_resume_rows
+            }
+            item_resume_ids = {str(row["id"]): str(row["resume_id"]) for row in item_resume_rows}
             # Recover workspace: latest artifact, latest JD linked to this thread,
             # latest resume linked to this thread.
             artifact_row = await conn.fetchrow(
@@ -279,6 +359,8 @@ async def get_thread(
         msg_rows = []
         artifact_row = None
         jd_row = None
+        variant_resume_ids = {}
+        item_resume_ids = {}
 
     # Normalise thread fields to camelCase for frontend.
     created_at = raw_thread.get("created_at")
@@ -287,24 +369,40 @@ async def get_thread(
         "id": raw_thread.get("id"),
         "title": raw_thread.get("title"),
         "status": raw_thread.get("status"),
-        "createdAt": created_at.isoformat() if isinstance(created_at, datetime) else str(created_at or ""),
-        "updatedAt": updated_at.isoformat() if isinstance(updated_at, datetime) else str(updated_at or ""),
+        "createdAt": created_at.isoformat()
+        if isinstance(created_at, datetime)
+        else str(created_at or ""),
+        "updatedAt": updated_at.isoformat()
+        if isinstance(updated_at, datetime)
+        else str(updated_at or ""),
     }
 
     # Normalise messages.
     messages_out = []
+    latest_resume_id: str | None = None
     for row in msg_rows:
         msg_created = row["created_at"]
         meta = _decode_metadata(row["metadata"])
+        canvas_resume_id = _hydrate_resume_canvas_resume_id(
+            meta,
+            variant_resume_ids=variant_resume_ids,
+            item_resume_ids=item_resume_ids,
+        )
+        if canvas_resume_id:
+            latest_resume_id = canvas_resume_id
         turn_id = meta.get("turn_id")
-        messages_out.append({
-            "id": row["id"],
-            "role": row["role"],
-            "content": row["content"],
-            "metadata": meta,
-            "turnId": turn_id,
-            "createdAt": msg_created.isoformat() if isinstance(msg_created, datetime) else str(msg_created or ""),
-        })
+        messages_out.append(
+            {
+                "id": row["id"],
+                "role": row["role"],
+                "content": row["content"],
+                "metadata": meta,
+                "turnId": turn_id,
+                "createdAt": msg_created.isoformat()
+                if isinstance(msg_created, datetime)
+                else str(msg_created or ""),
+            }
+        )
 
     # Build workspace from DB relationships.
     workspace: dict[str, object] = {}
@@ -314,12 +412,15 @@ async def get_thread(
         workspace["artifact_title"] = artifact_row["title"]
     if jd_row:
         workspace["jd_id"] = jd_row["id"]
+    if latest_resume_id:
+        workspace["resume_id"] = latest_resume_id
 
     # Try to recover pending interrupt from the graph checkpointer.
     interrupt_payload = None
     checkpointer = _get_checkpointer_or_none()
     if checkpointer is not None:
         from app.graphs.main import get_graph
+
         graph = get_graph(checkpointer)
         cfg: RunnableConfig = {"configurable": {"thread_id": thread_id}}
         try:
@@ -435,6 +536,7 @@ async def update_thread(
     pool: asyncpg.Pool = Depends(pool_dep),
 ) -> JSONResponse:
     from app.infra.db.connection import get_pool as _get_pool
+
     _pool = _get_pool()
     await _require_thread(_pool, thread_id, user_id)
 
@@ -490,6 +592,7 @@ async def resume_thread(
     _pool = None
     try:
         from app.infra.db.connection import get_pool as _get_pool
+
         _pool = _get_pool()
         await _require_thread(_pool, thread_id, user_id)
     except RuntimeError:
@@ -555,6 +658,28 @@ async def resume_thread(
         else None
     )
 
+    if (
+        _pool is not None
+        and pending.payload.get("type") == "resume_review"
+        and resume_data.get("action") in {"accept", "confirm"}
+        and isinstance(workspace, dict)
+    ):
+        from app.api.routes.copilot import _mark_resume_canvas_accepted
+
+        selected = resume_data.get("selected_variant_id") or resume_data.get("variant_id")
+        resume_item_id = workspace.get("resume_item_id")
+        canvas_message_id = resume_data.get("canvas_message_id")
+        if isinstance(selected, str) and isinstance(resume_item_id, str):
+            await _mark_resume_canvas_accepted(
+                _pool,
+                thread_id=thread_id,
+                variant_id=selected,
+                resume_item_id=resume_item_id,
+                canvas_message_id=(
+                    canvas_message_id if isinstance(canvas_message_id, str) else None
+                ),
+            )
+
     if _pool is not None and not interrupt_payload:
         from app.api.routes.copilot import _persist_message
 
@@ -605,6 +730,7 @@ async def discard_thread(
     _pool = None
     try:
         from app.infra.db.connection import get_pool as _get_pool
+
         _pool = _get_pool()
         await _require_thread(_pool, thread_id, user_id)
     except RuntimeError:

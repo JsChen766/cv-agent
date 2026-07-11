@@ -15,6 +15,7 @@ from app.api.routes.copilot import (
     _resume_canvas_metadata,
 )
 from app.api.routes.product.jd import _serialize
+from app.api.routes.threads import _hydrate_resume_canvas_resume_id
 from app.domain.jd.models import JdRecord
 
 
@@ -104,6 +105,46 @@ def test_resume_canvas_metadata_keeps_renderable_snapshot_and_variant_reference(
 
 def test_resume_canvas_metadata_ignores_non_resume_interrupts() -> None:
     assert _resume_canvas_metadata({"type": "experience_import"}, {}) is None
+
+
+def test_resume_canvas_metadata_recovers_resume_id_from_persisted_variant() -> None:
+    metadata = _resume_canvas_metadata(
+        {
+            "type": "resume_review",
+            "variants": [
+                {
+                    "id": "variant-1",
+                    "resume_id": "resume-1",
+                    "content": "# Resume",
+                }
+            ],
+        },
+        {},
+    )
+
+    assert metadata is not None
+    assert metadata["resume_id"] == "resume-1"
+
+
+def test_historical_resume_canvas_is_hydrated_from_variant_relation() -> None:
+    metadata: dict[str, object] = {
+        "presentation": {
+            "type": "resume_canvas",
+            "variant_ids": ["variant-legacy"],
+            "variants": [{"id": "variant-legacy", "content": "# Resume"}],
+        }
+    }
+
+    resume_id = _hydrate_resume_canvas_resume_id(
+        metadata,
+        variant_resume_ids={"variant-legacy": "resume-legacy"},
+        item_resume_ids={},
+    )
+
+    assert resume_id == "resume-legacy"
+    presentation = metadata["presentation"]
+    assert isinstance(presentation, dict)
+    assert presentation["resume_id"] == "resume-legacy"
 
 
 def test_variant_payload_accepts_canvas_message_id() -> None:

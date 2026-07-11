@@ -10,9 +10,15 @@ from langgraph.graph import END, START, StateGraph
 from pydantic import BaseModel
 
 from app.domain.jd.models import JdRecord, JdRequirement
-from app.domain.resume.models import Resume, ResumeVariant, ResumeVariantCreate
+from app.domain.resume.models import (
+    Resume,
+    ResumeItem,
+    ResumeItemCreate,
+    ResumeVariant,
+    ResumeVariantCreate,
+)
 from app.graphs.jd.nodes import jd_persist_node, parse_requirements_node
-from app.graphs.resume.nodes import output_node
+from app.graphs.resume.nodes import output_node, persist_resume_draft_node
 from app.graphs.resume.state import ResumeGenerationState
 from app.tools.base import ServiceContainer
 
@@ -131,6 +137,8 @@ async def test_jd_graph_persists_saved_jd_and_returns_workspace(
 class _FakeResumeService:
     def __init__(self) -> None:
         self.created_resume_id: str | None = None
+        self.resume: Resume | None = None
+        self.variant: ResumeVariant | None = None
 
     async def create_resume(
         self,
@@ -142,7 +150,7 @@ class _FakeResumeService:
     ) -> Resume:
         now = datetime.now(UTC)
         self.created_resume_id = "resume-1"
-        return Resume(
+        self.resume = Resume(
             id="resume-1",
             user_id=user_id,
             title=title,
@@ -153,9 +161,10 @@ class _FakeResumeService:
             created_at=now,
             updated_at=now,
         )
+        return self.resume
 
     async def save_variant(self, resume_id: str, data: ResumeVariantCreate) -> ResumeVariant:
-        return ResumeVariant(
+        self.variant = ResumeVariant(
             id="variant-1",
             resume_id=resume_id,
             jd_id=data.jd_id,
@@ -167,16 +176,43 @@ class _FakeResumeService:
             missing_info=data.missing_info,
             created_at=datetime.now(UTC),
         )
+        return self.variant
+
+    async def get_variant(self, variant_id: str) -> ResumeVariant:
+        assert self.variant is not None and self.variant.id == variant_id
+        return self.variant
+
+    async def get_resume(self, user_id: str, resume_id: str) -> Resume:
+        assert self.resume is not None and self.resume.id == resume_id
+        return self.resume
+
+    async def add_item(self, user_id: str, resume_id: str, data: ResumeItemCreate) -> ResumeItem:
+        assert self.resume is not None and self.resume.id == resume_id
+        now = datetime.now(UTC)
+        item = ResumeItem(
+            id="item-1",
+            resume_id=resume_id,
+            section_type=data.section_type,
+            title=data.title,
+            content_snapshot=data.content_snapshot,
+            order_index=data.order_index,
+            source_experience_id=data.source_experience_id,
+            source_variant_id=data.source_variant_id,
+            created_at=now,
+            updated_at=now,
+        )
+        self.resume.items.append(item)
+        return item
 
 
-async def test_resume_output_creates_resume_for_natural_language_flow(
+async def test_resume_draft_persists_before_output_interrupt(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     service = _FakeResumeService()
     services = ServiceContainer.model_construct(resume=service)
     monkeypatch.setattr("langgraph.types.interrupt", lambda payload: {"confirmed": True})
 
-    result = await output_node(
+    persisted = await persist_resume_draft_node(
         {
             "user_id": "user-1",
             "workspace": {"jd_id": "jd-1"},
@@ -187,6 +223,16 @@ async def test_resume_output_creates_resume_for_natural_language_flow(
     )
 
     assert service.created_resume_id == "resume-1"
+    assert persisted["workspace"] == {"jd_id": "jd-1", "resume_id": "resume-1"}
+    result = await output_node(
+        {
+            "user_id": "user-1",
+            "workspace": persisted["workspace"],
+            "variants": persisted["variants"],
+            "pending_sse_events": [],
+        },
+        {"configurable": {"services": services}},
+    )
     assert result["workspace"] == {"jd_id": "jd-1", "resume_id": "resume-1"}
     pending_events = cast("list[dict[str, Any]]", result["pending_sse_events"])
     assert pending_events[0]["variants"] == [
@@ -235,3 +281,52 @@ async def test_resume_subgraph_interrupt_persisted_via_checkpointer() -> None:
     resume_result = await graph.ainvoke(Command(resume={"confirmed": True}), config=config)
     assert resume_result.get("assistant_message") == "Resume review confirmed."
     assert resume_result.get("workspace") == {"jd_id": "jd-1"}
+
+
+async def test_resume_review_accept_saves_variant_and_consumes_interrupt() -> None:
+    service = _FakeResumeService()
+    services = ServiceContainer.model_construct(resume=service)
+    checkpointer = MemorySaver()
+    builder = StateGraph(ResumeGenerationState)
+    builder.add_node("persist_draft", persist_resume_draft_node)
+    builder.add_node("output", output_node)
+    builder.add_edge(START, "persist_draft")
+    builder.add_edge("persist_draft", "output")
+    builder.add_edge("output", END)
+    graph = builder.compile(checkpointer=checkpointer)
+    config: RunnableConfig = {
+        "configurable": {
+            "thread_id": "test-resume-accept",
+            "services": services,
+        }
+    }
+
+    interrupted = await graph.ainvoke(
+        {
+            "user_id": "user-1",
+            "workspace": {"jd_id": "jd-1"},
+            "variants": [{"title": "Draft", "content": "Resume markdown"}],
+            "pending_sse_events": [],
+        },
+        config=config,
+    )
+
+    assert interrupted["workspace"] == {"jd_id": "jd-1", "resume_id": "resume-1"}
+    assert interrupted["__interrupt__"][0].value["workspace"]["resume_id"] == "resume-1"
+
+    from langgraph.types import Command
+
+    accepted = await graph.ainvoke(
+        Command(
+            resume={
+                "action": "accept",
+                "selected_variant_id": "variant-1",
+            }
+        ),
+        config=config,
+    )
+
+    assert "__interrupt__" not in accepted
+    assert accepted["workspace"]["resume_item_id"] == "item-1"
+    assert service.resume is not None
+    assert [item.source_variant_id for item in service.resume.items] == ["variant-1"]

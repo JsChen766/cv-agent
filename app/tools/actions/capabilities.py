@@ -128,17 +128,22 @@ async def accept_variant(
     base_workspace: Mapping[str, JsonValue] | None = None,
 ) -> ProductActionResult:
     variant = await services.resume.get_variant(payload.variantId)
-    await services.resume.get_resume(user_id, variant.resume_id)
-    item = await services.resume.add_item(
-        user_id,
-        variant.resume_id,
-        ResumeItemCreate(
-            section_type="other",
-            title=variant.title,
-            content_snapshot=variant.content,
-            source_variant_id=variant.id,
-        ),
+    resume = await services.resume.get_resume(user_id, variant.resume_id)
+    item = next(
+        (candidate for candidate in resume.items if candidate.source_variant_id == variant.id),
+        None,
     )
+    if item is None:
+        item = await services.resume.add_item(
+            user_id,
+            variant.resume_id,
+            ResumeItemCreate(
+                section_type="other",
+                title=variant.title,
+                content_snapshot=variant.content,
+                source_variant_id=variant.id,
+            ),
+        )
     workspace = _workspace(base_workspace)
     workspace["resume_id"] = variant.resume_id
     workspace["variant_id"] = variant.id
@@ -221,9 +226,7 @@ async def generate_artifact(
             "content": content_str.strip(),
             "source_jd_id": jd_id if isinstance(jd_id, str) else None,
             "source_experience_ids": (
-                [str(item) for item in experience_ids]
-                if isinstance(experience_ids, list)
-                else []
+                [str(item) for item in experience_ids] if isinstance(experience_ids, list) else []
             ),
         },
     )
@@ -321,7 +324,10 @@ async def generate_resume_from_jd(
     workspace["jd_id"] = jd.id
     workspace["resume_id"] = resume.id
     workspace["variant_id"] = variant.id
-    data = cast(JsonValue, {"resumeId": resume.id, "jdId": jd.id, "variant": variant.model_dump(mode="json")})
+    data = cast(
+        JsonValue,
+        {"resumeId": resume.id, "jdId": jd.id, "variant": variant.model_dump(mode="json")},
+    )
     return ProductActionResult(
         message="I've generated a resume variant for review.",
         workspace=workspace,
@@ -338,4 +344,3 @@ def _artifact_title(artifact_type: str) -> str:
         "linkedin_summary": "LinkedIn Summary",
     }
     return titles.get(artifact_type, "Career Artifact")
-
