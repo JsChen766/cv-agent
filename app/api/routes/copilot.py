@@ -27,6 +27,7 @@ from app.api.response import ok
 from app.api.schemas import StrictRequestModel
 from app.api.sse import _build_initial_state, stream_graph_events
 from app.core.errors import ExternalServiceError, NotFoundError, ValidationError
+from app.core.events import format_sse
 from app.core.types import THREAD_PREFIX, ArtifactType, generate_id
 from app.domain.resume.models import ResumeVariantCreate
 from app.graphs.state import MainState
@@ -139,6 +140,7 @@ class GenerateResumeFromJdPayload(_ActionPayloadBase):
 
 class VariantPayload(_ActionPayloadBase):
     variantId: str = Field(min_length=1)
+    canvasMessageId: str | None = None
 
 
 class GenerateArtifactPayload(_ActionPayloadBase):
@@ -327,27 +329,28 @@ async def _persist_message(
     content: str,
     turn_id: str | None = None,
     metadata: dict[str, JsonValue] | None = None,
-) -> None:
+) -> str | None:
     """Persist a chat message into thread_messages so history can be re-loaded.
 
     Silent no-op if the pool is unavailable or the write fails, so a database
     hiccup never breaks the user-facing chat flow.
     """
     if pool is None:
-        return
+        return None
     if not isinstance(content, str) or not content:
-        return
+        return None
     meta: dict[str, JsonValue] = dict(metadata or {})
     if turn_id:
         meta.setdefault("turn_id", turn_id)
     try:
+        message_id = generate_id("msg")
         async with pool.acquire() as conn:
             await conn.execute(
                 """
                 INSERT INTO thread_messages (id, thread_id, role, content, metadata, created_at)
                 VALUES ($1, $2, $3, $4, $5::jsonb, NOW())
                 """,
-                generate_id("msg"),
+                message_id,
                 thread_id,
                 role,
                 content,
@@ -357,8 +360,140 @@ async def _persist_message(
                 "UPDATE threads SET updated_at = NOW() WHERE id = $1",
                 thread_id,
             )
+        return message_id
     except Exception as exc:  # noqa: BLE001
         logger.warning("Failed to persist %s message for thread %s: %s", role, thread_id, exc)
+        return None
+
+
+def _resume_canvas_metadata(
+    interrupt: Mapping[str, object] | None,
+    workspace: Mapping[str, object] | None,
+) -> dict[str, JsonValue] | None:
+    """Build the durable, frontend-renderable representation of a resume canvas."""
+    if not isinstance(interrupt, Mapping) or interrupt.get("type") != "resume_review":
+        return None
+    raw_variants = interrupt.get("variants")
+    if not isinstance(raw_variants, list):
+        return None
+
+    variants: list[dict[str, JsonValue]] = []
+    for raw_variant in raw_variants:
+        if not isinstance(raw_variant, Mapping):
+            continue
+        variant_id = raw_variant.get("id")
+        content = raw_variant.get("content")
+        if not isinstance(variant_id, str) or not isinstance(content, str):
+            continue
+        variant: dict[str, JsonValue] = {"id": variant_id, "content": content}
+        title = raw_variant.get("title")
+        if isinstance(title, str):
+            variant["title"] = title
+        score = raw_variant.get("score")
+        if isinstance(score, dict):
+            variant["score"] = cast("JsonValue", score)
+        variants.append(variant)
+
+    if not variants:
+        return None
+    resume_id = workspace.get("resume_id") if isinstance(workspace, Mapping) else None
+    selected_variant = variants[0]
+    presentation: dict[str, JsonValue] = {
+        "type": "resume_canvas",
+        "schema_version": 1,
+        "variant_ids": [variant["id"] for variant in variants],
+        "variants": cast("JsonValue", variants),
+        "selected_variant_id": selected_variant["id"],
+        "content_snapshot": selected_variant["content"],
+        "status": "reviewing",
+    }
+    if isinstance(resume_id, str):
+        presentation["resume_id"] = resume_id
+    return presentation
+
+
+async def _persist_resume_canvas_message(
+    pool: asyncpg.Pool | None,
+    *,
+    thread_id: str,
+    turn_id: str,
+    workspace: Mapping[str, object] | None,
+    interrupt: Mapping[str, object] | None,
+    content: str = "简历草稿已生成，可在画布中查看和编辑。",
+) -> str | None:
+    presentation = _resume_canvas_metadata(interrupt, workspace)
+    if presentation is None:
+        return None
+    return await _persist_message(
+        pool,
+        thread_id=thread_id,
+        role="assistant",
+        content=content,
+        turn_id=turn_id,
+        metadata={"presentation": presentation},
+    )
+
+
+async def _mark_resume_canvas_accepted(
+    pool: asyncpg.Pool | None,
+    *,
+    thread_id: str,
+    variant_id: str,
+    resume_item_id: str,
+    canvas_message_id: str | None = None,
+) -> None:
+    """Mark the exact historical canvas as accepted without moving it in the timeline."""
+    if pool is None:
+        return
+    try:
+        async with pool.acquire() as conn:
+            if canvas_message_id:
+                row = await conn.fetchrow(
+                    "SELECT id, metadata FROM thread_messages WHERE id = $1 AND thread_id = $2",
+                    canvas_message_id,
+                    thread_id,
+                )
+            else:
+                row = await conn.fetchrow(
+                    """
+                    SELECT id, metadata FROM thread_messages
+                    WHERE thread_id = $1
+                      AND role = 'assistant'
+                      AND metadata->'presentation'->>'type' = 'resume_canvas'
+                      AND metadata->'presentation'->'variant_ids' ? $2
+                    ORDER BY created_at DESC
+                    LIMIT 1
+                    """,
+                    thread_id,
+                    variant_id,
+                )
+            if row is None:
+                return
+            metadata = row["metadata"]
+            if not isinstance(metadata, dict):
+                metadata = json.loads(metadata) if isinstance(metadata, str) else {}
+            presentation = metadata.get("presentation")
+            if not isinstance(presentation, dict) or presentation.get("type") != "resume_canvas":
+                return
+            variant_ids = presentation.get("variant_ids")
+            if not isinstance(variant_ids, list) or variant_id not in variant_ids:
+                return
+            presentation.update(
+                {
+                    "status": "accepted",
+                    "selected_variant_id": variant_id,
+                    "resume_item_id": resume_item_id,
+                }
+            )
+            metadata["presentation"] = presentation
+            await conn.execute(
+                "UPDATE thread_messages SET metadata = $1::jsonb WHERE id = $2 AND thread_id = $3",
+                json.dumps(metadata),
+                row["id"],
+                thread_id,
+            )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Failed to mark resume canvas accepted in thread %s: %s", thread_id, exc)
 
 
 def _workspace_from_client_state(cs: ClientState) -> JsonObject:
@@ -402,14 +537,18 @@ def _upload_original_name_from_client_state(cs: ClientState) -> str | None:
     return None
 
 
-async def _drain_pending_interrupt(graph: object, config: "RunnableConfig") -> None:
+async def _drain_pending_interrupt(graph: object, config: RunnableConfig) -> None:
     """If the graph is suspended at an interrupt, drain it so the next turn starts fresh."""
     from langgraph.types import Command
 
     try:
-        snapshot = await graph.aget_state(config)  # type: ignore[union-attr]
+        aget_state = getattr(graph, "aget_state", None)
+        ainvoke = getattr(graph, "ainvoke", None)
+        if not callable(aget_state) or not callable(ainvoke):
+            return
+        snapshot = await aget_state(config)
         if snapshot and getattr(snapshot, "next", None):
-            await graph.ainvoke(Command(resume={"action": "preempted"}), config=config)  # type: ignore[union-attr]
+            await ainvoke(Command(resume={"action": "preempted"}), config=config)
     except Exception as exc:
         logger.warning("Failed to drain pending interrupt: %s", exc)
 
@@ -504,7 +643,7 @@ async def _upload_extracted_params(
                 file_id,
             )
 
-    parsed_text = parsed_text.strip()
+    parsed_text = (parsed_text or "").strip()
     truncated = len(parsed_text) > MAX_CHAT_UPLOAD_TEXT_CHARS
     if truncated:
         parsed_text = parsed_text[:MAX_CHAT_UPLOAD_TEXT_CHARS]
@@ -531,12 +670,13 @@ def _build_response(
     assistant_message: str,
     workspace: JsonObject | None = None,
     interrupt: JsonObject | None = None,
+    assistant_message_id: str | None = None,
 ) -> dict[str, object]:
     return {
         "threadId": thread_id,
         "turnId": turn_id,
         "assistantMessage": {
-            "id": generate_id("msg"),
+            "id": assistant_message_id or generate_id("msg"),
             "role": "assistant",
             "content": assistant_message or "",
             "createdAt": datetime.now(UTC).isoformat(),
@@ -710,17 +850,36 @@ async def chat(
         else cast("JsonObject", initial_state.get("workspace", {}))
     )
 
-    await _persist_message(
+    canvas_message_id = await _persist_resume_canvas_message(
         _pool,
         thread_id=thread_id,
-        role="assistant",
-        content=assistant_msg,
         turn_id=turn_id,
-        metadata={"interrupt": bool(interrupt_payload)},
+        workspace=response_workspace,
+        interrupt=interrupt_payload,
+        content=assistant_msg or "简历草稿已生成，可在画布中查看和编辑。",
     )
+    if canvas_message_id and interrupt_payload is not None:
+        interrupt_payload["canvas_message_id"] = canvas_message_id
+    assistant_message_id = canvas_message_id
+    if canvas_message_id is None:
+        assistant_message_id = await _persist_message(
+            _pool,
+            thread_id=thread_id,
+            role="assistant",
+            content=assistant_msg,
+            turn_id=turn_id,
+            metadata={"interrupt": bool(interrupt_payload)},
+        )
 
     return ok(
-        _build_response(thread_id, turn_id, assistant_msg, response_workspace, interrupt_payload),
+        _build_response(
+            thread_id,
+            turn_id,
+            assistant_msg,
+            response_workspace,
+            interrupt_payload,
+            assistant_message_id,
+        ),
         request,
     )
 
@@ -775,9 +934,6 @@ async def chat_stream(
     async def _stream_with_persistence() -> AsyncGenerator[str, None]:
         assistant_saved = False
         async for chunk in stream_graph_events(graph, initial_state, config):
-            yield chunk
-            if assistant_saved:
-                continue
             try:
                 # Chunk format: "event: <name>\ndata: <json>\n\n"
                 data_line = None
@@ -786,27 +942,53 @@ async def chat_stream(
                         data_line = line[len("data:") :].strip()
                         break
                 if not data_line:
+                    yield chunk
                     continue
                 payload = json.loads(data_line)
                 evt = payload.get("event")
-                if evt == "agent.completed":
-                    response = payload.get("response") or {}
-                    assistant_message = response.get("assistantMessage") or {}
+                if not assistant_saved and evt == "agent.completed":
+                    response = payload.get("response")
+                    response = response if isinstance(response, dict) else {}
+                    assistant_message = response.get("assistantMessage")
+                    assistant_message = assistant_message if isinstance(assistant_message, dict) else {}
                     content = str(assistant_message.get("content") or "")
-                    await _persist_message(
+                    interrupt = response.get("interrupt")
+                    workspace = response.get("workspace")
+                    canvas_message_id = await _persist_resume_canvas_message(
                         _pool,
                         thread_id=thread_id,
-                        role="assistant",
-                        content=content,
                         turn_id=turn_id,
-                        metadata={"interrupt": bool(response.get("interrupt"))},
+                        workspace=workspace if isinstance(workspace, dict) else initial_state.get("workspace"),
+                        interrupt=interrupt if isinstance(interrupt, dict) else None,
+                        content=content or "简历草稿已生成，可在画布中查看和编辑。",
                     )
+                    if canvas_message_id is None:
+                        canvas_message_id = await _persist_message(
+                            _pool,
+                            thread_id=thread_id,
+                            role="assistant",
+                            content=content,
+                            turn_id=turn_id,
+                            metadata={"interrupt": bool(interrupt)},
+                        )
+                    if canvas_message_id:
+                        assistant_message["id"] = canvas_message_id
+                        chunk = format_sse(payload)
                     assistant_saved = True
-                elif evt == "agent.interrupt":
-                    # Persist a placeholder so the sidebar/history entry still has
-                    # the user message visible when they revisit the thread.
+                elif not assistant_saved and evt == "agent.interrupt":
+                    interrupt = payload.get("data")
+                    canvas_message_id = await _persist_resume_canvas_message(
+                        _pool,
+                        thread_id=thread_id,
+                        turn_id=turn_id,
+                        workspace=initial_state.get("workspace"),
+                        interrupt=interrupt if isinstance(interrupt, dict) else None,
+                    )
+                    if canvas_message_id and isinstance(interrupt, dict):
+                        interrupt["canvas_message_id"] = canvas_message_id
+                        chunk = format_sse(payload)
                     assistant_saved = True
-                elif evt == "agent.failed":
+                elif not assistant_saved and evt == "agent.failed":
                     err = payload.get("error") or {}
                     await _persist_message(
                         _pool,
@@ -819,6 +1001,7 @@ async def chat_stream(
                     assistant_saved = True
             except Exception as exc:  # noqa: BLE001
                 logger.warning("SSE persistence hook failed: %s", exc)
+            yield chunk
 
     return StreamingResponse(
         _stream_with_persistence(),
@@ -920,16 +1103,28 @@ async def _run_generate_resume_from_jd_action(
         jd_id=jd.id,
         interrupt_payload=interrupt_payload,
     )
+    assistant_message = _final_assistant_message(
+        final_state,
+        "I've generated a resume variant for review.",
+    )
+    canvas_message_id = await _persist_resume_canvas_message(
+        _require_action_pool(pool),
+        thread_id=thread_id,
+        turn_id=turn_id,
+        workspace=workspace,
+        interrupt=interrupt_payload,
+        content=assistant_message,
+    )
+    if canvas_message_id and interrupt_payload is not None:
+        interrupt_payload["canvas_message_id"] = canvas_message_id
     return ok(
         _build_response(
             thread_id,
             turn_id,
-            _final_assistant_message(
-                final_state,
-                "I've generated a resume variant for review.",
-            ),
+            assistant_message,
             workspace,
             interrupt_payload,
+            canvas_message_id,
         ),
         request,
     )
@@ -1006,9 +1201,18 @@ async def _run_accept_variant_action(
     result = await action_capabilities.accept_variant(
         services,
         user_id,
-        VariantInput.model_validate(payload.model_dump()),
+        VariantInput(variantId=payload.variantId),
         base_workspace=workspace,
     )
+    resume_item_id = result.workspace.get("resume_item_id")
+    if isinstance(resume_item_id, str):
+        await _mark_resume_canvas_accepted(
+            _require_action_pool(pool),
+            thread_id=thread_id,
+            variant_id=payload.variantId,
+            resume_item_id=resume_item_id,
+            canvas_message_id=payload.canvasMessageId,
+        )
 
     return ok(
         _build_response(

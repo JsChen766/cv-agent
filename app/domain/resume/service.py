@@ -10,6 +10,7 @@ from app.domain.resume.models import (
     ResumePatch,
     ResumeVariant,
     ResumeVariantCreate,
+    ResumeVariantPatch,
 )
 from app.domain.resume.repository import ResumeRepository
 
@@ -124,6 +125,13 @@ class ResumeService:
         if not v:
             raise NotFoundError(f"Variant not found: {variant_id}")
         return v
+
+    async def update_variant(
+        self, user_id: str, variant_id: str, patch: ResumeVariantPatch
+    ) -> ResumeVariant:
+        variant = await self.get_variant(variant_id)
+        await self.get_resume(user_id, variant.resume_id)
+        return await self._repo.update_variant(user_id, variant_id, patch)
 
     async def list_variants(self, resume_id: str) -> list[ResumeVariant]:
         return await self._repo.list_variants(resume_id)

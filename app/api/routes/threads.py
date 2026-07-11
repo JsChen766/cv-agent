@@ -25,6 +25,7 @@ from app.api.response import ok, ok_list
 from app.api.schemas import StrictRequestModel
 from app.core.errors import ConflictError, ExternalServiceError, ForbiddenError, NotFoundError
 from app.core.types import ThreadStatus
+from app.domain.resume.models import ResumeItemPatch, ResumeVariantPatch
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/threads", tags=["threads"])
@@ -48,6 +49,12 @@ class DiscardRequest(StrictRequestModel):
     reason: str | None = Field(default=None, min_length=1)
 
 
+class SaveResumeCanvasRequest(StrictRequestModel):
+    selectedVariantId: str = Field(min_length=1)
+    content: str = Field(min_length=1)
+    title: str | None = Field(default=None, min_length=1)
+
+
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 
@@ -65,6 +72,20 @@ async def _require_thread(
     if d.get("user_id") != user_id:
         raise ForbiddenError("You do not own this thread")
     return cast("dict[str, object]", d)
+
+
+def _decode_metadata(raw_metadata: object) -> dict[str, object]:
+    if isinstance(raw_metadata, dict):
+        return dict(raw_metadata)
+    if isinstance(raw_metadata, str):
+        import json
+
+        try:
+            decoded = json.loads(raw_metadata)
+        except Exception:
+            return {}
+        return decoded if isinstance(decoded, dict) else {}
+    return {}
 
 
 # ── Routes ─────────────────────────────────────────────────────────────────────
@@ -156,14 +177,8 @@ async def get_thread(
     messages_out = []
     for row in msg_rows:
         msg_created = row["created_at"]
-        meta = row["metadata"]
-        if isinstance(meta, str):
-            import json as _json
-            try:
-                meta = _json.loads(meta)
-            except Exception:
-                meta = {}
-        turn_id = meta.get("turn_id") if isinstance(meta, dict) else None
+        meta = _decode_metadata(row["metadata"])
+        turn_id = meta.get("turn_id")
         messages_out.append({
             "id": row["id"],
             "role": row["role"],
@@ -204,6 +219,89 @@ async def get_thread(
             "messages": messages_out,
             "workspace": workspace,
             "interrupt": interrupt_payload,
+        },
+        request,
+    )
+
+
+@router.patch("/{thread_id}/messages/{message_id}/resume-canvas")
+async def save_resume_canvas(
+    thread_id: str,
+    message_id: str,
+    body: SaveResumeCanvasRequest,
+    request: Request,
+    user_id: str = Depends(get_current_user_id),
+    pool: asyncpg.Pool = Depends(pool_dep),
+) -> JSONResponse:
+    """Persist an edited resume canvas without changing its place in the chat timeline."""
+    import json
+
+    from app.infra.db.connection import get_pool as _get_pool
+
+    _pool = _get_pool()
+    await _require_thread(_pool, thread_id, user_id)
+    async with _pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT metadata FROM thread_messages WHERE id = $1 AND thread_id = $2",
+            message_id,
+            thread_id,
+        )
+    if row is None:
+        raise NotFoundError(f"Message '{message_id}' not found")
+
+    metadata = _decode_metadata(row["metadata"])
+    presentation = metadata.get("presentation")
+    if not isinstance(presentation, dict) or presentation.get("type") != "resume_canvas":
+        raise NotFoundError(f"Resume canvas '{message_id}' not found")
+    variants = presentation.get("variants")
+    if not isinstance(variants, list):
+        raise NotFoundError(f"Resume canvas '{message_id}' has no editable variants")
+    variant = next(
+        (
+            item
+            for item in variants
+            if isinstance(item, dict) and item.get("id") == body.selectedVariantId
+        ),
+        None,
+    )
+    if not isinstance(variant, dict):
+        raise NotFoundError(f"Resume variant '{body.selectedVariantId}' is not in this canvas")
+
+    services = build_service_container(_pool)
+    updated_variant = await services.resume.update_variant(
+        user_id,
+        body.selectedVariantId,
+        ResumeVariantPatch(title=body.title, content=body.content),
+    )
+    resume_item_id = presentation.get("resume_item_id")
+    if isinstance(resume_item_id, str):
+        await services.resume.update_item_by_id(
+            user_id,
+            resume_item_id,
+            ResumeItemPatch(
+                title=updated_variant.title,
+                content_snapshot=updated_variant.content,
+            ),
+        )
+
+    variant["content"] = updated_variant.content
+    variant["title"] = updated_variant.title
+    presentation["selected_variant_id"] = updated_variant.id
+    presentation["content_snapshot"] = updated_variant.content
+    presentation["status"] = "edited"
+    metadata["presentation"] = presentation
+    async with _pool.acquire() as conn:
+        await conn.execute(
+            "UPDATE thread_messages SET metadata = $1::jsonb WHERE id = $2 AND thread_id = $3",
+            json.dumps(metadata),
+            message_id,
+            thread_id,
+        )
+
+    return ok(
+        {
+            "messageId": message_id,
+            "presentation": presentation,
         },
         request,
     )

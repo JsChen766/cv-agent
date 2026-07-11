@@ -11,6 +11,7 @@ from app.domain.resume.models import (
     ResumePatch,
     ResumeVariant,
     ResumeVariantCreate,
+    ResumeVariantPatch,
 )
 
 
@@ -58,5 +59,9 @@ class ResumeRepository(Protocol):
     ) -> ResumeVariant: ...
 
     async def get_variant(self, variant_id: str) -> ResumeVariant | None: ...
+
+    async def update_variant(
+        self, user_id: str, variant_id: str, patch: ResumeVariantPatch
+    ) -> ResumeVariant: ...
 
     async def list_variants(self, resume_id: str) -> builtins.list[ResumeVariant]: ...

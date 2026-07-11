@@ -14,6 +14,7 @@ from app.domain.resume.models import (
     ResumePatch,
     ResumeVariant,
     ResumeVariantCreate,
+    ResumeVariantPatch,
     RiskItem,
     ScoreBreakdown,
 )
@@ -252,6 +253,39 @@ class PostgresResumeRepository:
                 "SELECT * FROM resume_variants WHERE id=$1", variant_id
             )
         return self._to_variant(row) if row else None
+
+    async def update_variant(
+        self, user_id: str, variant_id: str, patch: ResumeVariantPatch
+    ) -> ResumeVariant:
+        values: builtins.list[object] = []
+        set_parts: builtins.list[str] = []
+        idx = 1
+        for key, value in patch.model_dump(exclude_none=True).items():
+            if key in {"title", "content"}:
+                set_parts.append(f"{key} = ${idx}")
+                values.append(value)
+                idx += 1
+        if not set_parts:
+            variant = await self.get_variant(variant_id)
+            if variant is None:
+                raise ValueError(f"Resume variant not found: {variant_id}")
+            return variant
+
+        values.extend([variant_id, user_id])
+        sql = f"""
+            UPDATE resume_variants AS rv
+            SET {', '.join(set_parts)}
+            FROM resumes AS r
+            WHERE rv.id = ${idx}
+              AND rv.resume_id = r.id
+              AND r.user_id = ${idx + 1}
+            RETURNING rv.*
+        """
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(sql, *values)
+        if row is None:
+            raise ValueError(f"Resume variant not found: {variant_id}")
+        return self._to_variant(row)
 
     async def list_variants(self, resume_id: str) -> builtins.list[ResumeVariant]:
         async with self._pool.acquire() as conn:

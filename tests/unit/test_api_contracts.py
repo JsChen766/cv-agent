@@ -12,6 +12,7 @@ from app.api.routes.copilot import (
     OptimizeResumeItemPayload,
     RewriteExperiencePayload,
     VariantPayload,
+    _resume_canvas_metadata,
 )
 from app.api.routes.product.jd import _serialize
 from app.domain.jd.models import JdRecord
@@ -76,6 +77,39 @@ def test_action_payload_rejects_extra_fields() -> None:
             type="generate_artifact",
             payload={"artifactType": "self_intro", "unexpected": "nope"},
         )
+
+
+def test_resume_canvas_metadata_keeps_renderable_snapshot_and_variant_reference() -> None:
+    metadata = _resume_canvas_metadata(
+        {
+            "type": "resume_review",
+            "variants": [
+                {
+                    "id": "variant-1",
+                    "title": "Tailored Resume",
+                    "content": "# Resume",
+                    "score": {"overall": 0.9},
+                }
+            ],
+        },
+        {"resume_id": "resume-1"},
+    )
+
+    assert metadata is not None
+    assert metadata["type"] == "resume_canvas"
+    assert metadata["resume_id"] == "resume-1"
+    assert metadata["variant_ids"] == ["variant-1"]
+    assert metadata["content_snapshot"] == "# Resume"
+
+
+def test_resume_canvas_metadata_ignores_non_resume_interrupts() -> None:
+    assert _resume_canvas_metadata({"type": "experience_import"}, {}) is None
+
+
+def test_variant_payload_accepts_canvas_message_id() -> None:
+    payload = VariantPayload(variantId="variant-1", canvasMessageId="msg-1")
+
+    assert payload.canvasMessageId == "msg-1"
 
 
 def test_jd_serialize_includes_source_thread_id() -> None:

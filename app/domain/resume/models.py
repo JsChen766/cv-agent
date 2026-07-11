@@ -107,3 +107,14 @@ class ResumeVariantCreate(BaseModel):
     evidence_summary: list[EvidenceItem] = Field(default_factory=list)
     risk_summary: list[RiskItem] = Field(default_factory=list)
     missing_info: list[str] = Field(default_factory=list)
+
+
+class ResumeVariantPatch(BaseModel):
+    """Editable fields of a generated resume variant."""
+
+    title: str | None = None
+    content: str | None = None
+
+    @property
+    def has_changes(self) -> bool:
+        return bool(self.model_dump(exclude_none=True))

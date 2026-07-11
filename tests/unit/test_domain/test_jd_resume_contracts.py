@@ -3,7 +3,13 @@ from unittest.mock import AsyncMock, MagicMock
 
 from app.domain.jd.models import JdRecord, JdRequirementDraft
 from app.domain.jd.service import JdService
-from app.domain.resume.models import ResumeItem, ResumeItemPatch
+from app.domain.resume.models import (
+    Resume,
+    ResumeItem,
+    ResumeItemPatch,
+    ResumeVariant,
+    ResumeVariantPatch,
+)
 from app.domain.resume.service import ResumeService
 
 
@@ -90,3 +96,34 @@ async def test_resume_item_update_by_id_uses_user_item_lookup() -> None:
     assert result.title == "New"
     repo.get_item_for_user.assert_awaited_once_with("user-1", "item-1")
     repo.update_item.assert_awaited_once_with("user-1", "item-1", patch)
+
+
+async def test_resume_variant_update_checks_resume_ownership_before_write() -> None:
+    now = datetime.now()
+    variant = ResumeVariant(
+        id="variant-1",
+        resume_id="resume-1",
+        title="Original",
+        content="# Original",
+        created_at=now,
+    )
+    resume = Resume(
+        id="resume-1",
+        user_id="user-1",
+        title="Resume",
+        created_at=now,
+        updated_at=now,
+    )
+    patch = ResumeVariantPatch(content="# Edited")
+    updated = variant.model_copy(update={"content": "# Edited"})
+    repo = MagicMock()
+    repo.get_variant = AsyncMock(return_value=variant)
+    repo.get = AsyncMock(return_value=resume)
+    repo.update_variant = AsyncMock(return_value=updated)
+    service = ResumeService(repo)
+
+    result = await service.update_variant("user-1", "variant-1", patch)
+
+    assert result.content == "# Edited"
+    repo.get.assert_awaited_once_with("user-1", "resume-1")
+    repo.update_variant.assert_awaited_once_with("user-1", "variant-1", patch)

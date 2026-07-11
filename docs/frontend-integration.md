@@ -250,6 +250,11 @@ data: <json>
 ```
 
 - **前端用途**：简历预览面板的实时刷新。
+
+> 持久化规则：`content.diff.*` 只用于当前生成过程的即时展示。收到后续
+> `resume_review` 后，后端会创建一条 role 为 `assistant` 的历史消息，并将完整画布
+> 快照放在 `message.metadata.presentation`。重新进入 Thread 时，必须以这条消息的
+> `createdAt` 顺序渲染画布，不能依赖 SSE 重放或全局 workspace。
 - 当前后端实现是"整段一次性 insert"，不是真的 token 级 diff；`operations` 里目前只有一个 `insert` op。前端把 `text` 作为完整 Markdown 渲染即可。
 - 未来会拆成真正的增量 op，前端应实现成"按顺序 apply 一串 op"的形式（支持 `insert` / `delete` / `equal`）。
 
@@ -336,7 +341,8 @@ data: <json>
 前端应：
 1. 把 `variants[*].content` 渲染到简历预览面板；
 2. 提供三个动作（`accept` / `revise` / `discard`）；
-3. **注意**：`resume_review` 的 `accept` 不用调 `/threads/{id}/resume`，而是调 `POST /v1/copilot/actions {type: "accept_variant", payload: {variantId}}`（见 §6.3）。resume 子图的中断只做"预览+等待"，最终落库是通过 action 完成的。
+3. `data.canvas_message_id` 是该画布所在历史消息的 ID；前端应保存它。
+4. **注意**：`resume_review` 的 `accept` 不用调 `/threads/{id}/resume`，而是调 `POST /v1/copilot/actions {type: "accept_variant", payload: {variantId, canvasMessageId}}`（见 §6.3）。resume 子图的中断只做"预览+等待"，最终落库是通过 action 完成的。
 
 **（c）`jd_save` — JD 保存确认**
 
@@ -565,11 +571,29 @@ async function chatStream(
 
 | 用户点击 | 前端调用 |
 |---|---|
-| **Accept** | `POST /v1/copilot/actions {type:"accept_variant", payload:{variantId}}` |
+| **Accept** | `POST /v1/copilot/actions {type:"accept_variant", payload:{variantId, canvasMessageId}}` |
 | **Revise** | `POST /v1/copilot/actions {type:"generate_resume_from_jd", payload:{jdId}, clientState:{activeResumeId}}` 重新跑一遍，或用 `optimize_resume_item`（先 accept 再改） |
 | **Discard** | 什么都不用调；直接开新 Thread 或让用户重新描述需求 |
 
 原因：目前 resume 子图的 interrupt 之后**没有再连回 draft_generation 节点**，所以 `resume` 端点对 resume_review 无效。
+
+### 5.4 保存编辑后的简历画布
+
+用户直接编辑画布后，前端必须先保存，不能只更新本地状态：
+
+```http
+PATCH /v1/threads/{threadId}/messages/{canvasMessageId}/resume-canvas
+Content-Type: application/json
+
+{
+  "selectedVariantId": "variant-xxx",
+  "content": "# 编辑后的简历 Markdown",
+  "title": "可选的新标题"
+}
+```
+
+该接口会同时更新 resume variant、已采纳时对应的 resume item，以及历史消息内的
+`content_snapshot`；因此刷新或重新进入历史会话时显示的仍是编辑后的版本。
 
 ---
 
@@ -594,7 +618,7 @@ async function chatStream(
 | `optimize_resume_item` | `{resumeItemId, instruction?}` | 优化单条简历条目 | 覆盖写 `resume_items.content_snapshot`；返回 `data.workspace.resume_item_id` |
 | `rewrite_experience` | `{experienceId, instruction?}` | 重写单条经历 | 新增 `experience_revisions` 记录，返回 `data.revisionId`（**不覆盖**原经历） |
 | `generate_resume_from_jd` | `{jdId}` | 从 JD 生成简历 | 走 resume 子图，返回时**带 interrupt**（`type:resume_review`）；前端渲染 variant 预览 |
-| `accept_variant` | `{variantId}` | 采纳一个 variant | 把 variant 内容作为一个 `resume_item` 追加到简历 |
+| `accept_variant` | `{variantId, canvasMessageId?}` | 采纳一个 variant | 把 variant 内容作为一个 `resume_item` 追加到简历，并更新对应历史画布状态 |
 | `show_evidence` | `{variantId}` | 拉证据链 | 返回该 variant 引用的经历证据 |
 | `generate_artifact` | `{artifactType, instruction?}` | 生成 Artifact | 落库到 `artifacts`；`artifactType` ∈ `cover_letter` \| `self_intro` \| `match_report` \| `interview_prep` \| `linkedin_summary` \| `other` |
 | `export_resume` | `{resumeId}` | 导出简历 | 返回一份可打印的 payload；PDF 由前端浏览器 print-to-PDF |
@@ -633,7 +657,7 @@ POST /v1/copilot/actions
 ```json
 POST /v1/copilot/actions
 {
-  "action": { "type": "accept_variant", "payload": { "variantId": "variant-xxx" } }
+  "action": { "type": "accept_variant", "payload": { "variantId": "variant-xxx", "canvasMessageId": "msg-xxx" } }
 }
 ```
 
@@ -805,6 +829,12 @@ Router 的启发式规则（后端 `router.py`）：
 4. 收到 `agent.interrupt(type=resume_review)`：把 `data.variants[i].content` 作为可切换的候选版本；
 5. 用户 Accept 后调 `POST /v1/copilot/actions {type:accept_variant}` → 收到 `workspace.resume_item_id` → 调 `GET /v1/product/resumes/{resume_id}` 拿定稿。
 
+**历史重放（必做）**：加载 `GET /v1/threads/{threadId}` 后，按 `messages` 数组顺序渲染。
+若某条消息满足 `message.metadata.presentation.type === "resume_canvas"`，在该消息位置渲染
+画布，初始内容使用 `presentation.content_snapshot`，候选版本使用
+`presentation.variants`。`status` 可为 `reviewing`、`edited` 或 `accepted`；不要用
+`workspace.resume_id` 推断画布的位置或内容。
+
 ### 10.2 Artifact 预览（文本类走聊天渲染）
 
 当前所有 Artifact 类型（`cover_letter` / `self_intro` / `match_report` / `interview_prep` / `linkedin_summary`）默认**不走画布事件**，完整 Markdown 直接出现在 `assistantMessage` 里，像普通消息一样在聊天流中渲染。
@@ -875,7 +905,7 @@ POST /copilot/actions { type:generate_resume_from_jd, payload:{jdId} }
 
 前端把 variants[0].content 渲染到简历预览面板, 弹 Accept/Revise/Discard
     │
-    ├─ Accept  → POST /copilot/actions { type:accept_variant, payload:{variantId} }
+    ├─ Accept  → POST /copilot/actions { type:accept_variant, payload:{variantId, canvasMessageId} }
     │             → resume_item_id (落库到 resume_items)
     │
     ├─ Revise  → 新 Thread + POST /copilot/actions { type:generate_resume_from_jd, ... }
@@ -983,6 +1013,21 @@ export interface ThreadDetailResponse {
   };
   interrupt: InterruptPayload | null;  // non-null if thread is suspended at an interrupt
 }
+
+export interface ResumeCanvasPresentation {
+  type: "resume_canvas";
+  schema_version: 1;
+  resume_id?: string;
+  variant_ids: string[];
+  variants: Array<{ id: string; title?: string; content: string; score?: Record<string, number> }>;
+  selected_variant_id: string;
+  content_snapshot: string;
+  status: "reviewing" | "edited" | "accepted";
+  resume_item_id?: string;
+}
+
+// 对 ThreadDetailResponse.messages[i].metadata：
+// metadata.presentation 可为 ResumeCanvasPresentation；存在时在该 message 的位置渲染画布。
 
 // ── /copilot/chat & chat/stream ────────────────────────────
 export interface ChatRequest {
@@ -1099,7 +1144,7 @@ export interface ActionRequest {
     | { type: "optimize_resume_item"; payload: { resumeItemId: string; instruction?: string } }
     | { type: "rewrite_experience"; payload: { experienceId: string; instruction?: string } }
     | { type: "generate_resume_from_jd"; payload: { jdId: string } }
-    | { type: "accept_variant"; payload: { variantId: string } }
+    | { type: "accept_variant"; payload: { variantId: string; canvasMessageId?: string } }
     | { type: "show_evidence"; payload: { variantId: string } }
     | { type: "generate_artifact"; payload: { artifactType: string; instruction?: string } }
     | { type: "export_resume"; payload: { resumeId: string } };
