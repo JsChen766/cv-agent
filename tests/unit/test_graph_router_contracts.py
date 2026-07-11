@@ -1,6 +1,6 @@
 from typing import cast
 
-from app.graphs.router import router_node
+from app.graphs.router import RouterOutput, _normalize_llm_routing, router_node
 
 
 async def test_router_node_uses_preset_route_without_llm() -> None:
@@ -26,6 +26,26 @@ async def test_router_node_uses_preset_route_without_llm() -> None:
             "confidence": 1.0,
         }
     ]
+
+
+def test_low_confidence_specialized_route_is_normalized_to_clarify() -> None:
+    routing = RouterOutput(
+        target_subgraph="resume_generation",
+        intent_description="Maybe edit something",
+        confidence=0.4,
+    )
+
+    assert _normalize_llm_routing(routing).target_subgraph == "clarify"
+
+
+def test_fuzzy_specialized_route_is_normalized_to_open_ended() -> None:
+    routing = RouterOutput(
+        target_subgraph="artifact",
+        intent_description="Possibly write something",
+        confidence=0.65,
+    )
+
+    assert _normalize_llm_routing(routing).target_subgraph == "open_ended"
 
 
 async def test_router_routes_chinese_save_experience_without_llm() -> None:
@@ -120,6 +140,34 @@ async def test_router_routes_chinese_save_jd_without_llm() -> None:
     assert result["target_subgraph"] == "jd"
     extracted = cast("dict[str, str]", result["extracted_params"])
     assert extracted["raw_text"].startswith("帮我保存这个 JD")
+
+
+async def test_router_clarifies_bare_jd_save_instruction_without_content() -> None:
+    result = await router_node(
+        {
+            "messages": [
+                {"role": "user", "content": "帮我保存一个 JD", "turn_id": None}
+            ],
+            "workspace": {},
+            "pending_sse_events": [],
+        }
+    )
+
+    assert result["target_subgraph"] == "clarify"
+
+
+async def test_router_clarifies_bare_experience_save_instruction_without_content() -> None:
+    result = await router_node(
+        {
+            "messages": [
+                {"role": "user", "content": "帮我添加一段工作经历", "turn_id": None}
+            ],
+            "workspace": {},
+            "pending_sse_events": [],
+        }
+    )
+
+    assert result["target_subgraph"] == "clarify"
 
 
 async def test_router_prioritizes_explicit_jd_over_responsibility_words() -> None:

@@ -4,7 +4,6 @@ import builtins
 import contextlib
 import json
 from hashlib import sha1
-from typing import cast
 
 import asyncpg
 
@@ -22,19 +21,35 @@ class PostgresJdRepository:
         *,
         limit: int = 20,
         cursor: str | None = None,
+        q: str | None = None,
+        company: str | None = None,
     ) -> tuple[builtins.list[JdRecord], str | None]:
         conditions = ["user_id = $1"]
         values: builtins.list[object] = [user_id]
         idx = 2
+        if q:
+            conditions.append(
+                f"(title ILIKE ${idx} OR company ILIKE ${idx} "
+                f"OR target_role ILIKE ${idx} OR raw_text ILIKE ${idx})"
+            )
+            values.append(f"%{q}%")
+            idx += 1
+        if company:
+            conditions.append(f"company ILIKE ${idx}")
+            values.append(f"%{company}%")
+            idx += 1
         if cursor:
-            conditions.append(f"id > ${idx}")
+            conditions.append(
+                f"(created_at, id) < (SELECT created_at, id FROM jd_records "
+                f"WHERE id = ${idx} AND user_id = $1)"
+            )
             values.append(cursor)
             idx += 1
         values.append(limit + 1)
         sql = f"""
             SELECT * FROM jd_records
             WHERE {" AND ".join(conditions)}
-            ORDER BY created_at DESC, id
+            ORDER BY created_at DESC, id DESC
             LIMIT ${idx}
         """
         async with self._pool.acquire() as conn:
@@ -141,5 +156,8 @@ def _to_requirement(raw: object, index: int) -> JdRequirement:
 
 def _importance(value: object) -> JdRequirementImportance:
     if value in {"high", "medium", "low"}:
-        return cast("JdRequirementImportance", value)
+        if value == "high":
+            return "high"
+        if value == "low":
+            return "low"
     return "medium"

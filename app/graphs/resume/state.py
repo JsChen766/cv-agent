@@ -29,3 +29,4 @@ class ResumeGenerationState(MainState, total=False):
 
     # Self-review loop
     revision_instruction: str | None
+    resume_user_action: str | None

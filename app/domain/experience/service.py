@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import logging
 from datetime import date
+from typing import Protocol
 
 from app.core.errors import NotFoundError
 from app.core.types import (
@@ -21,6 +23,12 @@ from app.domain.experience.models import (
 )
 from app.domain.experience.repository import ExperienceRepository
 
+logger = logging.getLogger(__name__)
+
+
+class ExperienceIndexer(Protocol):
+    async def index(self, experience_id: str, revision_id: str, content: str) -> None: ...
+
 
 def _parse_optional_date(value: date | str | None) -> date | None:
     if value is None:
@@ -29,7 +37,7 @@ def _parse_optional_date(value: date | str | None) -> date | None:
         return value
 
     normalized = value.strip()
-    if not normalized or normalized == "present":
+    if not normalized or normalized.lower() == "present":
         return None
     if len(normalized) == 7:
         normalized = f"{normalized}-01"
@@ -37,8 +45,13 @@ def _parse_optional_date(value: date | str | None) -> date | None:
 
 
 class ExperienceService:
-    def __init__(self, repo: ExperienceRepository) -> None:
+    def __init__(
+        self,
+        repo: ExperienceRepository,
+        indexer: ExperienceIndexer | None = None,
+    ) -> None:
         self._repo = repo
+        self._indexer = indexer
 
     # ── List / Get ────────────────────────────────────────────────────────────
 
@@ -94,6 +107,7 @@ class ExperienceService:
         revision = await self._repo.add_revision(rev_id, exp_id, content, source)
         exp.current_revision = revision
         exp.current_revision_id = revision.id
+        await self._index_revision(exp.id, revision.id, content)
         return exp
 
     # ── Update meta ───────────────────────────────────────────────────────────
@@ -122,7 +136,24 @@ class ExperienceService:
     ) -> ExperienceRevision:
         await self.get_experience(user_id, experience_id)  # ownership check
         rev_id = generate_id("rev-")
-        return await self._repo.add_revision(rev_id, experience_id, content, source)
+        revision = await self._repo.add_revision(rev_id, experience_id, content, source)
+        await self._index_revision(experience_id, revision.id, content)
+        return revision
+
+    async def _index_revision(
+        self, experience_id: str, revision_id: str, content: str
+    ) -> None:
+        if self._indexer is None or not content.strip():
+            return
+        try:
+            await self._indexer.index(experience_id, revision_id, content)
+        except Exception as exc:  # indexing is best-effort after the durable write
+            logger.warning(
+                "Experience indexing failed for %s revision %s: %s",
+                experience_id,
+                revision_id,
+                exc,
+            )
 
     async def get_revisions(
         self, user_id: str, experience_id: str

@@ -9,6 +9,9 @@ _loaded = False
 
 
 def register(tool: Tool) -> None:
+    existing = _registry.get(tool.name)
+    if existing is not None and existing is not tool:
+        raise ValueError(f"Tool already registered: {tool.name}")
     _registry[tool.name] = tool
 
 

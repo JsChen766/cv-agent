@@ -7,13 +7,13 @@ needs to know about the current conversation context.
 
 from __future__ import annotations
 
-from typing import Any, TypedDict
+from typing import Any, NotRequired, TypedDict
 
 
 class MessageDict(TypedDict):
     role: str    # "user" | "assistant" | "tool"
     content: str
-    turn_id: str | None
+    turn_id: NotRequired[str | None]
 
 
 class ActiveWorkspace(TypedDict, total=False):

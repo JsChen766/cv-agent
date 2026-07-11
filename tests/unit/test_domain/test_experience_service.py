@@ -93,6 +93,38 @@ async def test_create_experience_calls_add_revision(svc, repo):
     repo.add_revision.assert_called_once()
 
 
+async def test_create_experience_indexes_durable_revision(repo):
+    exp = _make_exp()
+    rev = _make_rev()
+    repo.create.return_value = exp
+    repo.add_revision.return_value = rev
+    indexer = MagicMock()
+    indexer.index = AsyncMock()
+    service = ExperienceService(repo, indexer)
+
+    await service.create_experience(
+        "user-1", category="work", title="Engineer", content="# measurable impact"
+    )
+
+    indexer.index.assert_awaited_once_with(exp.id, rev.id, "# measurable impact")
+
+
+async def test_create_experience_keeps_write_when_optional_indexing_fails(repo):
+    exp = _make_exp()
+    rev = _make_rev()
+    repo.create.return_value = exp
+    repo.add_revision.return_value = rev
+    indexer = MagicMock()
+    indexer.index = AsyncMock(side_effect=RuntimeError("embedding unavailable"))
+    service = ExperienceService(repo, indexer)
+
+    result = await service.create_experience(
+        "user-1", category="work", title="Engineer", content="# content"
+    )
+
+    assert result.current_revision_id == rev.id
+
+
 async def test_create_experience_converts_iso_date_strings_before_repo(svc, repo):
     exp = _make_exp()
     rev = _make_rev()

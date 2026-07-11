@@ -39,7 +39,10 @@ class PostgresExperienceRepository:
         idx = 2
 
         if cursor:
-            conditions.append(f"id > ${idx}")
+            conditions.append(
+                f"(created_at, id) < (SELECT created_at, id FROM experiences "
+                f"WHERE id = ${idx} AND user_id = $1)"
+            )
             values.append(cursor)
             idx += 1
         if category:
@@ -51,7 +54,11 @@ class PostgresExperienceRepository:
             values.append(json.dumps(tags))
             idx += 1
         if q:
-            conditions.append(f"(title ILIKE ${idx} OR organization ILIKE ${idx})")
+            conditions.append(
+                f"(title ILIKE ${idx} OR organization ILIKE ${idx} OR role ILIKE ${idx} "
+                f"OR EXISTS (SELECT 1 FROM experience_revisions er "
+                f"WHERE er.id = experiences.current_revision_id AND er.content ILIKE ${idx}))"
+            )
             values.append(f"%{q}%")
             idx += 1
 
@@ -60,7 +67,7 @@ class PostgresExperienceRepository:
         sql = f"""
             SELECT * FROM experiences
             WHERE {where}
-            ORDER BY created_at DESC, id
+            ORDER BY created_at DESC, id DESC
             LIMIT ${idx}
         """
         async with self._pool.acquire() as conn:

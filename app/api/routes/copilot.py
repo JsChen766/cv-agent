@@ -31,6 +31,7 @@ from app.core.events import format_sse
 from app.core.types import THREAD_PREFIX, ArtifactType, generate_id
 from app.domain.resume.models import ResumeVariantCreate
 from app.graphs.state import MainState
+from app.memory.thread_state import MessageDict
 from app.tools.actions import capabilities as action_capabilities
 from app.tools.actions.models import (
     ExportResumeInput,
@@ -525,6 +526,23 @@ def _workspace_from_client_state(cs: ClientState) -> JsonObject:
     return workspace
 
 
+async def _verified_workspace_from_client_state(
+    cs: ClientState,
+    user_id: str,
+    pool: asyncpg.Pool,
+) -> JsonObject:
+    """Validate every persisted workspace reference while preserving upload hints."""
+    from app.api.copilot.workspace_builder import build_workspace
+
+    raw = _workspace_from_client_state(cs)
+    verified = cast("JsonObject", await build_workspace(user_id, raw, pool))
+    for key in ("file_id", "uploaded_file_id", "resume_file_id"):
+        value = raw.get(key)
+        if isinstance(value, str):
+            verified[key] = value
+    return verified
+
+
 def _upload_file_id_from_client_state(cs: ClientState) -> str | None:
     upload = cs.resumeUpload
     if upload is not None:
@@ -576,21 +594,22 @@ async def _build_chat_initial_state(
     turn_id: str,
     pool: asyncpg.Pool | None,
 ) -> MainState:
-    workspace = _workspace_from_client_state(client_state)
+    workspace = (
+        await _verified_workspace_from_client_state(client_state, user_id, pool)
+        if pool is not None
+        else _workspace_from_client_state(client_state)
+    )
 
-    # Load recent conversation history from DB so the router has context.
+    # Load recent conversation history plus the durable rolling summary.
     historical: list[dict[str, object]] = []
+    rolling_summary: str | None = None
+    turn_count = 1
     if pool:
         try:
-            async with pool.acquire() as conn:
-                rows = await conn.fetch(
-                    "SELECT role, content FROM thread_messages "
-                    "WHERE thread_id = $1 ORDER BY created_at ASC",
-                    thread_id,
-                )
-            historical = [
-                {"role": r["role"], "content": r["content"], "turn_id": None} for r in rows[-20:]
-            ]
+            historical, rolling_summary, turn_count = await _load_thread_memory(
+                pool,
+                thread_id,
+            )
         except Exception as exc:
             logger.warning("Failed to load thread history: %s", exc)
 
@@ -598,11 +617,72 @@ async def _build_chat_initial_state(
     messages = [*historical, current_msg]
 
     initial_state = _build_initial_state(thread_id, user_id, messages, workspace, turn_id)
+    initial_state["rolling_summary"] = rolling_summary
+    initial_state["turn_count"] = turn_count
     upload_params = await _upload_extracted_params(client_state, user_id, pool)
     if upload_params:
         initial_state["extracted_params"] = upload_params
         initial_state["context_hints"] = ["uploaded_resume", "profile"]
     return initial_state
+
+
+async def _load_thread_memory(
+    pool: asyncpg.Pool,
+    thread_id: str,
+) -> tuple[list[dict[str, object]], str | None, int]:
+    """Load only unsummarized history and incrementally compact it when needed."""
+    from app.memory.rolling_summary import maybe_compress
+
+    async with pool.acquire() as conn:
+        thread_row = await conn.fetchrow(
+            "SELECT rolling_summary, summarized_message_count, turn_count "
+            "FROM threads WHERE id=$1",
+            thread_id,
+        )
+        if thread_row is None:
+            return [], None, 1
+        summarized_count = max(0, int(thread_row["summarized_message_count"] or 0))
+        rows = await conn.fetch(
+            "SELECT role, content FROM thread_messages "
+            "WHERE thread_id=$1 ORDER BY created_at ASC OFFSET $2",
+            thread_id,
+            summarized_count,
+        )
+
+    existing_summary = (
+        thread_row["rolling_summary"]
+        if isinstance(thread_row["rolling_summary"], str)
+        else None
+    )
+    unsummarized: list[MessageDict] = [
+        {"role": row["role"], "content": row["content"], "turn_id": None}
+        for row in rows
+        if row["role"] in {"user", "assistant"}
+    ]
+    try:
+        summary, recent = await maybe_compress(unsummarized, existing_summary)
+    except Exception as exc:
+        logger.warning("Rolling summary generation failed for thread %s: %s", thread_id, exc)
+        summary, recent = existing_summary, unsummarized[-20:]
+    newly_summarized = len(unsummarized) - len(recent)
+    next_summarized_count = summarized_count + newly_summarized
+
+    current_turn_count = max(0, int(thread_row["turn_count"] or 0))
+    try:
+        async with pool.acquire() as conn:
+            updated_turn_count = await conn.fetchval(
+                "UPDATE threads SET rolling_summary=$1, summarized_message_count=$2, "
+                "turn_count=turn_count+1, updated_at=NOW() WHERE id=$3 RETURNING turn_count",
+                summary,
+                next_summarized_count,
+                thread_id,
+            )
+    except Exception as exc:
+        logger.warning("Rolling memory persistence failed for thread %s: %s", thread_id, exc)
+        updated_turn_count = current_turn_count + 1
+
+    historical = [dict(message) for message in recent[-20:]]
+    return historical, summary, int(updated_turn_count or 1)
 
 
 async def _upload_extracted_params(
@@ -722,7 +802,11 @@ async def _prepare_action_context(
     checked_pool = _require_action_pool(pool)
     thread_id = await _get_or_create_thread(body.threadId, user_id, checked_pool)
     turn_id = generate_id("turn")
-    workspace = _workspace_from_client_state(body.clientState)
+    workspace = await _verified_workspace_from_client_state(
+        body.clientState,
+        user_id,
+        checked_pool,
+    )
     services = build_service_container(checked_pool)
     config: RunnableConfig = {
         "configurable": {

@@ -25,7 +25,10 @@ class PostgresArtifactRepository:
         values: list[object] = [user_id]
         idx = 2
         if cursor:
-            conditions.append(f"id > ${idx}")
+            conditions.append(
+                f"(updated_at, id) < (SELECT updated_at, id FROM artifacts "
+                f"WHERE id = ${idx} AND user_id = $1)"
+            )
             values.append(cursor)
             idx += 1
         if type:
@@ -35,7 +38,7 @@ class PostgresArtifactRepository:
         values.append(limit + 1)
         sql = f"""
             SELECT * FROM artifacts WHERE {' AND '.join(conditions)}
-            ORDER BY updated_at DESC, id LIMIT ${idx}
+            ORDER BY updated_at DESC, id DESC LIMIT ${idx}
         """
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(sql, *values)
@@ -120,7 +123,7 @@ class PostgresArtifactRepository:
             type=row["type"],
             title=row["title"],
             content=row["content"],
-            thread_id=row["thread_id"] if "thread_id" in row.keys() else None,
+            thread_id=row.get("thread_id"),
             source_jd_id=row["source_jd_id"],
             source_experience_ids=parse_jsonb(row["source_experience_ids"]) or [],
             word_count=row["word_count"],

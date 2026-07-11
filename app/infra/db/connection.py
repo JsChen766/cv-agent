@@ -17,7 +17,7 @@ from app.core.config import settings
 _pool: asyncpg.Pool | None = None
 
 
-async def _init_connection(conn: asyncpg.Connection) -> None:  # type: ignore[type-arg]
+async def _init_connection(conn: asyncpg.Connection) -> None:
     await conn.set_type_codec(
         "jsonb",
         encoder=json.dumps,

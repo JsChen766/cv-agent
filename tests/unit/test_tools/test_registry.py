@@ -1,4 +1,6 @@
-from app.tools.registry import get, get_all, get_names
+import pytest
+
+from app.tools.registry import get, get_all, get_names, register
 
 
 def test_registry_lazy_loads_tools() -> None:
@@ -17,3 +19,11 @@ def test_registered_tools_have_input_schema() -> None:
 
         assert tool.input_schema.model_json_schema()["type"] == "object"
         assert tool.name == name
+
+
+def test_registry_rejects_duplicate_tool_names() -> None:
+    existing = get("list_jds")
+    duplicate = type("DuplicateTool", (), {**vars(type(existing)), "name": "list_jds"})()
+
+    with pytest.raises(ValueError, match="already registered"):
+        register(duplicate)

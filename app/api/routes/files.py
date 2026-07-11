@@ -34,6 +34,8 @@ EXTENSION_MIME_MAP: dict[str, str] = {
 }
 
 MAX_FILE_SIZE = 10 * 1024 * 1024  # 10 MB
+MAX_DOCX_UNCOMPRESSED_SIZE = 50 * 1024 * 1024
+MAX_DOCX_MEMBERS = 10_000
 
 
 def _validate_file_content(content: bytes, mime_type: str) -> None:
@@ -44,11 +46,18 @@ def _validate_file_content(content: bytes, mime_type: str) -> None:
         raise ValidationError("文件内容不是有效的 PDF")
     if (
         mime_type == "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-        and not zipfile.is_zipfile(io.BytesIO(content))
     ):
         from app.core.errors import ValidationError
 
-        raise ValidationError("文件内容不是有效的 DOCX")
+        buffer = io.BytesIO(content)
+        if not zipfile.is_zipfile(buffer):
+            raise ValidationError("文件内容不是有效的 DOCX")
+        buffer.seek(0)
+        with zipfile.ZipFile(buffer) as archive:
+            members = archive.infolist()
+            uncompressed_size = sum(member.file_size for member in members)
+        if len(members) > MAX_DOCX_MEMBERS or uncompressed_size > MAX_DOCX_UNCOMPRESSED_SIZE:
+            raise ValidationError("DOCX 解压后内容过大")
 
 
 @router.post("/files/upload", status_code=201)
@@ -58,7 +67,7 @@ async def upload_file(
     user_id: str = Depends(get_current_user_id),
     pool: asyncpg.Pool = Depends(pool_dep),
 ) -> JSONResponse:
-    content = await file.read()
+    content = await file.read(MAX_FILE_SIZE + 1)
     if len(content) > MAX_FILE_SIZE:
         from app.core.errors import ValidationError
         raise ValidationError("File exceeds 10 MB limit")

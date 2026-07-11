@@ -11,10 +11,12 @@ class Claim(BaseModel):
 
 class ExperienceWithClaims(BaseModel):
     experience_id: str
+    revision_id: str | None = None
     title: str
     organization: str | None = None
     content: str
     claims: list[Claim] = Field(default_factory=list)
+    claims_indexed: bool = False
     relevance_score: float = 0.0
 
 

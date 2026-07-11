@@ -1,35 +1,23 @@
 from __future__ import annotations
 
 import json
-from typing import Any
+from typing import Any, Protocol
 
 from pydantic import BaseModel
 
-from app.tools.base import Tool, ToolResult
+from app.providers.tool_schema import to_anthropic_tool, to_openai_tool
+from app.tools.base import ToolResult
+
+__all__ = ["to_anthropic_tool", "to_openai_tool", "validate_tool_input"]
 
 
-def to_openai_tool(tool: Tool) -> dict[str, Any]:
-    """Convert an internal tool definition to an OpenAI-compatible tool schema."""
-    return {
-        "type": "function",
-        "function": {
-            "name": tool.name,
-            "description": tool.description,
-            "parameters": _json_schema(tool),
-        },
-    }
+class SchemaTool(Protocol):
+    name: str
+    description: str
+    input_schema: type[BaseModel]
 
 
-def to_anthropic_tool(tool: Tool) -> dict[str, Any]:
-    """Convert an internal tool definition to an Anthropic-compatible tool schema."""
-    return {
-        "name": tool.name,
-        "description": tool.description,
-        "input_schema": _json_schema(tool),
-    }
-
-
-def validate_tool_input(tool: Tool, raw_args: dict[str, Any] | str | None) -> BaseModel:
+def validate_tool_input(tool: SchemaTool, raw_args: dict[str, Any] | str | None) -> BaseModel:
     """Validate model-produced arguments with the tool's Pydantic input schema."""
     if raw_args is None:
         data: dict[str, Any] = {}
@@ -49,11 +37,3 @@ def summarize_tool_result(result: ToolResult) -> str:
     if result.status == "needs_input":
         return "Tool needs user input."
     return "Tool failed."
-
-
-def _json_schema(tool: Tool) -> dict[str, Any]:
-    schema = tool.input_schema.model_json_schema()
-    schema.setdefault("type", "object")
-    schema.setdefault("properties", {})
-    schema.setdefault("required", [])
-    return schema

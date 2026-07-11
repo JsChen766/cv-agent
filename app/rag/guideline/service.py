@@ -25,13 +25,17 @@ class GuidelineRagService:
         top_k: int = 5,
     ) -> list[str]:
         """Return top-k guideline instruction strings for the given query."""
+        async with self._pool.acquire() as conn:
+            use_vector = await column_is_vector(conn, "guideline_chunks", "embedding")
+        if not use_vector:
+            return await self.retrieve_fallback(query, top_k=top_k)
         embeddings = await self._embed.embed([query])
+        if not embeddings or not embeddings[0]:
+            return await self.retrieve_fallback(query, top_k=top_k)
         query_vec = embeddings[0]
         vec_str = f"[{','.join(str(v) for v in query_vec)}]"
 
         async with self._pool.acquire() as conn:
-            if not await column_is_vector(conn, "guideline_chunks", "embedding"):
-                return await self.retrieve_fallback(query, top_k=top_k)
             rows = await conn.fetch(
                 """
                 SELECT content, 1 - (embedding <=> $1::vector) AS similarity
@@ -42,19 +46,19 @@ class GuidelineRagService:
                 """,
                 vec_str, top_k,
             )
-        return [r["content"] for r in rows]
+        if rows:
+            return [r["content"] for r in rows]
+        return await self.retrieve_fallback(query, top_k=top_k)
 
     async def retrieve_fallback(self, query: str, *, top_k: int = 5) -> list[str]:
         """Return guidelines by full-text search when no embeddings exist."""
-        words = query.split()[:5]
-        pattern = " | ".join(words)
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(
                 """
                 SELECT content FROM guideline_chunks
-                WHERE to_tsvector('simple', content) @@ to_tsquery('simple', $1)
+                WHERE to_tsvector('simple', content) @@ plainto_tsquery('simple', $1)
                 LIMIT $2
                 """,
-                pattern, top_k,
+                query, top_k,
             )
         return [r["content"] for r in rows]

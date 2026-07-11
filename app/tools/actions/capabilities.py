@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Mapping
 from typing import cast
 
@@ -199,25 +200,53 @@ async def generate_artifact(
 ) -> ProductActionResult:
     provider = get_provider()
     instruction = payload.instruction or f"Generate a {payload.artifactType} artifact."
+    workspace = _workspace(base_workspace)
+    jd_id = workspace.get("jd_id")
+    experience_ids = workspace.get("experience_ids")
+    jd_awaitable = (
+        services.jd.get_jd(user_id, jd_id)
+        if isinstance(jd_id, str)
+        else asyncio.sleep(0, result=None)
+    )
+    jd, experience_context, profile, preferences = await asyncio.gather(
+        jd_awaitable,
+        _load_experience_context(
+            services,
+            user_id,
+            [str(item) for item in experience_ids] if isinstance(experience_ids, list) else None,
+        ),
+        services.user.get_profile(user_id),
+        services.preference.get_active_preferences(user_id),
+    )
+    experiences, resolved_experience_ids = experience_context
+
+    context_parts = [f"Task: {instruction}"]
+    if jd is not None:
+        context_parts.append(f"Job description ({jd.title}):\n{jd.raw_text[:3000]}")
+    if experiences:
+        context_parts.append("Grounded experience context:\n" + "\n\n".join(experiences))
+    if preferences:
+        context_parts.append(
+            "User preferences:\n" + "\n".join(f"- {item.rule}" for item in preferences[:8])
+        )
+    language = "Chinese (Simplified)" if "zh" in profile.preferred_language else "English"
     content = await provider.chat(
         [
             {
                 "role": "system",
                 "content": (
                     "You create polished career artifacts in Markdown. "
-                    "Keep claims grounded in the available user context and avoid inventing specifics."
+                    "Keep claims grounded in the available user context and avoid inventing specifics. "
+                    f"Write in {language}."
                 ),
             },
-            {"role": "user", "content": instruction},
+            {"role": "user", "content": "\n\n".join(context_parts)},
         ],
         temperature=0.5,
         max_tokens=1600,
     )
     content_str = content if isinstance(content, str) else ""
     title = payload.title or _artifact_title(payload.artifactType)
-    workspace = _workspace(base_workspace)
-    jd_id = workspace.get("jd_id")
-    experience_ids = workspace.get("experience_ids")
     artifact = await services.artifact.create_artifact(
         user_id,
         {
@@ -225,9 +254,7 @@ async def generate_artifact(
             "title": title,
             "content": content_str.strip(),
             "source_jd_id": jd_id if isinstance(jd_id, str) else None,
-            "source_experience_ids": (
-                [str(item) for item in experience_ids] if isinstance(experience_ids, list) else []
-            ),
+            "source_experience_ids": resolved_experience_ids,
         },
     )
     workspace["artifact_id"] = artifact.id
@@ -289,6 +316,12 @@ async def generate_resume_from_jd(
     provider = get_provider()
     requirements = "\n".join(f"- {req.text}" for req in jd.requirements[:12])
     instruction = payload.instruction or "Generate a complete tailored resume in Markdown."
+    experiences, _ = await _load_experience_context(services, user_id)
+    experience_context = (
+        "\n\nExperience evidence:\n" + "\n\n".join(experiences)
+        if experiences
+        else ""
+    )
     content = await provider.chat(
         [
             {
@@ -305,6 +338,7 @@ async def generate_resume_from_jd(
                     f"JD title: {jd.title}\nCompany: {jd.company or ''}\n"
                     f"Target role: {jd.target_role or ''}\n\n"
                     f"JD text:\n{jd.raw_text[:3000]}\n\nRequirements:\n{requirements}"
+                    f"{experience_context}"
                 ),
             },
         ],
@@ -333,6 +367,30 @@ async def generate_resume_from_jd(
         workspace=workspace,
         data=data,
     )
+
+
+async def _load_experience_context(
+    services: ServiceContainer,
+    user_id: str,
+    experience_ids: list[str] | None = None,
+    *,
+    limit: int = 6,
+) -> tuple[list[str], list[str]]:
+    if experience_ids is None:
+        listed, _ = await services.experience.list_experiences(user_id, limit=limit)
+        experience_ids = [experience.id for experience in listed]
+    else:
+        experience_ids = experience_ids[:limit]
+    experiences = await asyncio.gather(
+        *(services.experience.get_experience(user_id, experience_id) for experience_id in experience_ids)
+    )
+    context = []
+    for experience in experiences:
+        content = experience.current_revision.content if experience.current_revision else ""
+        context.append(
+            f"- {experience.title} at {experience.organization or 'N/A'}\n{content[:1200]}"
+        )
+    return context, experience_ids
 
 
 def _artifact_title(artifact_type: str) -> str:

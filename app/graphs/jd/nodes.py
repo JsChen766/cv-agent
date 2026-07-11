@@ -205,7 +205,8 @@ async def jd_confirm_node(state: JdState) -> dict[str, Any]:
 async def jd_persist_node(state: JdState, config: RunnableConfig | None = None) -> dict[str, Any]:
     """Persist JD if confirmed; update assistant_message and workspace."""
     confirmed = state.get("jd_confirmed", False)
-    candidate: dict[str, Any] = state.get("jd_candidate") or {}  # type: ignore[assignment]
+    raw_candidate = state.get("jd_candidate")
+    candidate: dict[str, Any] = dict(raw_candidate) if isinstance(raw_candidate, dict) else {}
     extracted = state.get("extracted_params", {})
     existing = state.get("pending_sse_events", [])
 

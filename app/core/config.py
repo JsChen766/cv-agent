@@ -25,6 +25,8 @@ class Settings(BaseSettings):
     # Embeddings
     embedding_provider: Literal["local", "openai"] = "local"
     embedding_model: str = "BAAI/bge-small-zh-v1.5"
+    embedding_api_key: str | None = None
+    embedding_base_url: str | None = None
     embedding_dimensions: int = 512
     embedding_local_files_only: bool = False
 

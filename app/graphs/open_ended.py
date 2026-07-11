@@ -76,8 +76,21 @@ async def open_ended_node(
             content = result.content or "Done."
             break
 
-        if result.content:
-            llm_messages.append({"role": "assistant", "content": result.content})
+        llm_messages.append(
+            {
+                "role": "assistant",
+                "content": result.content,
+                "tool_calls": [
+                    {
+                        "id": call.id,
+                        "name": call.name,
+                        "args": call.arguments,
+                        "type": "tool_call",
+                    }
+                    for call in result.tool_calls
+                ],
+            }
+        )
 
         for call in result.tool_calls:
             events.append(tool_started(call.name, call.arguments))
@@ -92,16 +105,11 @@ async def open_ended_node(
                 tool_result = await _confirm_and_execute_tool(confirmation, tool_context, events)
             except (KeyError, ToolExecutionError, ValueError) as exc:
                 events.append(tool_failed(call.name, str(exc)))
-                llm_messages.append(
-                    {
-                        "role": "user",
-                        "content": f"Tool {call.name} failed: {exc}. Continue without it.",
-                    }
-                )
+                llm_messages.append(_tool_failure_feedback(call.id, call.name, str(exc)))
                 continue
 
             events.append(tool_completed(call.name, tool_result))
-            llm_messages.append(_tool_result_feedback(call.name, tool_result))
+            llm_messages.append(_tool_result_feedback(call.id, call.name, tool_result))
     else:
         content = "I completed the available tool steps, but need more specific direction to continue."
 
@@ -152,20 +160,40 @@ async def _confirm_and_execute_tool(
     events.append({"event": "agent.interrupt", **payload})
 
     resume_value = interrupt(payload)
-    action = resume_value.get("action") if isinstance(resume_value, dict) else None
+    action = (
+        resume_value.get("action") or resume_value.get("decision")
+        if isinstance(resume_value, dict)
+        else None
+    )
     if action in ("preempted", "discard"):
         return ToolResult(status="failed", message="Action was cancelled.")
-    if action not in (None, "confirm", "accept"):
+    explicitly_confirmed = isinstance(resume_value, dict) and (
+        resume_value.get("confirmed") is True or action in ("confirm", "accept", "save")
+    )
+    if not explicitly_confirmed:
         return ToolResult(status="failed", message=f"Tool '{confirmation.tool.name}' was not confirmed.")
 
     return await execute_tool(confirmation.tool, confirmation.input_model, context)
 
 
-def _tool_result_feedback(tool_name: str, result: ToolResult) -> dict[str, str]:
+def _tool_result_feedback(
+    tool_call_id: str, tool_name: str, result: ToolResult
+) -> dict[str, Any]:
     result_json = json.dumps(result.model_dump(mode="json"), ensure_ascii=False)
     return {
-        "role": "user",
+        "role": "tool",
+        "tool_call_id": tool_call_id,
+        "name": tool_name,
         "content": f"Tool {tool_name} returned:\n{result_json[:4000]}",
+    }
+
+
+def _tool_failure_feedback(tool_call_id: str, tool_name: str, error: str) -> dict[str, Any]:
+    return {
+        "role": "tool",
+        "tool_call_id": tool_call_id,
+        "name": tool_name,
+        "content": f"Tool {tool_name} failed: {error}. Continue without it.",
     }
 
 

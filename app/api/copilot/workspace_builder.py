@@ -8,15 +8,17 @@ clean ActiveWorkspace dict to attach to the graph state.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+
 import asyncpg
 
-from app.core.errors import ForbiddenError, NotFoundError
+from app.core.errors import ForbiddenError, NotFoundError, ValidationError
 from app.memory.thread_state import ActiveWorkspace
 
 
 async def build_workspace(
     user_id: str,
-    hints: dict[str, object],
+    hints: Mapping[str, object],
     pool: asyncpg.Pool,
 ) -> ActiveWorkspace:
     """
@@ -59,6 +61,9 @@ async def _validate_owned(
     pool: asyncpg.Pool, table: str, record_id: str, user_id: str, label: str
 ) -> str:
     """Check record exists and belongs to user_id. Returns record_id."""
+    allowed_tables = {"jd_records", "resumes", "artifacts", "experiences"}
+    if table not in allowed_tables:
+        raise ValidationError(f"Unsupported workspace resource: {table}")
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
             f"SELECT user_id FROM {table} WHERE id = $1",  # noqa: S608

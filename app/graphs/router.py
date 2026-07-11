@@ -15,26 +15,37 @@ from app.core.events import AgentRouteCompletedEvent
 from app.graphs.state import MainState
 from app.providers.factory import get_provider
 
+ArtifactRouteType = Literal[
+    "cover_letter",
+    "self_intro",
+    "match_report",
+    "interview_prep",
+    "linkedin_summary",
+    "other",
+]
+
 
 class RouterOutput(BaseModel):
     target_subgraph: Literal[
         "experience_import", "jd", "resume_generation", "artifact", "open_ended", "clarify"
     ]
     intent_description: str
-    artifact_type: str | None = None
+    artifact_type: ArtifactRouteType | None = None
     context_hints: list[str] = Field(default_factory=list)
     extracted_params: dict[str, JsonValue] = Field(default_factory=dict)
-    confidence: float = 0.8
+    confidence: float = Field(default=0.8, ge=0.0, le=1.0)
 
 
 _ROUTER_SYSTEM = """You are a routing agent for a resume assistant application.
 
-Analyse the user's LATEST message (ignore what prior turns were doing) and determine which subgraph should handle it.
-The user can freely switch topics at any time — do NOT carry over the previous intent.
+Analyse the user's LATEST message and determine which subgraph should handle it.
+The latest message is authoritative because the user can switch topics at any time. Use prior turns
+only to resolve references or elliptical follow-ups such as "make that English"; never let prior intent
+override an explicit new request.
 
 Routing options:
 - "experience_import": User wants to add/import work experiences, paste resume content, or upload a file with experiences.
-- "jd": User wants to save, manage, or discuss a job description.
+- "jd": User wants to add, save, or import a job description into their JD library.
 - "resume_generation": User wants to generate, improve, or modify their resume.
 - "artifact": User wants to create a cover letter, self-introduction, LinkedIn summary, match report, interview prep, or any other document artifact.
 - "open_ended": General questions, career advice, follow-up questions, or anything that doesn't clearly fit the above.
@@ -45,6 +56,10 @@ Rules:
 - workspace context (jd_id, resume_id) is just reference — it does NOT force a routing decision.
 - Use "clarify" when confidence < 0.55 and the message doesn't fit any clear category.
 - Use "open_ended" for confidence 0.55–0.70 fuzzy matches.
+- Questions about existing records (for example "list my JDs" or "what experience do I have?")
+  belong to "open_ended", whose agent can call read tools. The "jd" subgraph is an ingestion flow.
+- Do not route a bare instruction such as "save a JD" to an ingestion subgraph unless the current
+  message actually contains the JD content; use "clarify" to ask for it.
 
 Also extract:
 - intent_description: a clear 1-sentence description of what the user wants (used as generation prompt)
@@ -153,6 +168,7 @@ async def router_node(state: MainState) -> dict[str, object]:
         RouterOutput,
         temperature=0.1,
     )
+    routing = _normalize_llm_routing(routing)
 
     # Emit routing event
     llm_route_event: AgentRouteCompletedEvent = {
@@ -183,6 +199,18 @@ def route_decision(state: MainState) -> str:
     target = state.get("target_subgraph") or "open_ended"
     valid = {"experience_import", "jd", "resume_generation", "artifact", "open_ended", "clarify"}
     return target if target in valid else "open_ended"
+
+
+def _normalize_llm_routing(routing: RouterOutput) -> RouterOutput:
+    """Make confidence thresholds deterministic instead of prompt-only advice."""
+    if routing.confidence < 0.55 and routing.target_subgraph != "clarify":
+        return routing.model_copy(update={"target_subgraph": "clarify"})
+    if (
+        routing.confidence < 0.70
+        and routing.target_subgraph not in {"clarify", "open_ended"}
+    ):
+        return routing.model_copy(update={"target_subgraph": "open_ended"})
+    return routing
 
 
 def _heuristic_route(
@@ -243,6 +271,12 @@ def _heuristic_route(
         and any(term in lower for term in jd_terms)
         and not any(term in lower for term in not_jd_terms)
     ):
+        if not _has_substantive_payload(lower, (*save_terms, *jd_terms)):
+            return RouterOutput(
+                target_subgraph="clarify",
+                intent_description="Ask the user to provide the job description they want to save.",
+                confidence=0.95,
+            )
         return RouterOutput(
             target_subgraph="jd",
             intent_description="Save the pasted job description and extract requirements.",
@@ -260,6 +294,12 @@ def _heuristic_route(
         and any(term in lower for term in experience_terms)
         and not any(term in lower for term in not_experience_terms)
     ):
+        if not _has_substantive_payload(lower, (*save_terms, *experience_terms)):
+            return RouterOutput(
+                target_subgraph="clarify",
+                intent_description="Ask the user to provide the experience content they want to save.",
+                confidence=0.95,
+            )
         return RouterOutput(
             target_subgraph="experience_import",
             intent_description="Save the user's pasted experience content into the experience library.",
@@ -272,7 +312,7 @@ def _heuristic_route(
             confidence=0.95,
         )
 
-    artifact_map = {
+    artifact_map: dict[str, ArtifactRouteType] = {
         "自我介绍": "self_intro",
         "self intro": "self_intro",
         "self-intro": "self_intro",
@@ -306,6 +346,14 @@ def _heuristic_route(
         )
 
     return None
+
+
+def _has_substantive_payload(text: str, instruction_terms: tuple[str, ...]) -> bool:
+    payload = text
+    for term in sorted(instruction_terms, key=len, reverse=True):
+        payload = payload.replace(term, " ")
+    payload = "".join(character for character in payload if character.isalnum())
+    return len(payload) >= 8
 
 
 def _uploaded_file_import_route(

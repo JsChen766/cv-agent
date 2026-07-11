@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 
@@ -22,30 +23,43 @@ from app.api.routes.users import router as users_router
 from app.core.config import settings
 from app.core.errors import AppError
 
+logger = logging.getLogger(__name__)
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # Startup
-    import logging
-
     from app.infra.db.checkpointer import close_checkpointer, create_checkpointer
     from app.infra.db.connection import close_pool, create_pool
     from app.infra.files.parser import warm_file_parsers
 
+    if settings.environment == "production":
+        if (
+            len(settings.secret_key) < 32
+            or settings.secret_key.startswith("change-me-in-production")
+        ):
+            raise RuntimeError("SECRET_KEY must be configured for production")
+        if "*" in settings.cors_origins:
+            raise RuntimeError("Wildcard CORS origins are not allowed with credentials")
+
     try:
         await create_pool()
     except Exception as e:
-        logging.warning(f"DB pool init failed (running without DB): {e}")
+        if settings.environment == "production":
+            raise RuntimeError("Database pool is required in production") from e
+        logger.warning("DB pool init failed (running without DB): %s", e)
     try:
         await create_checkpointer()
     except Exception as e:
         if settings.environment == "production":
             raise RuntimeError("Persistent LangGraph checkpointer is required in production") from e
-        logging.warning(f"LangGraph checkpointer init failed (interrupt resume may be unavailable): {e}")
+        logger.warning(
+            "LangGraph checkpointer init failed (interrupt resume may be unavailable): %s", e
+        )
     try:
         warm_file_parsers()
     except Exception as e:
-        logging.warning(f"File parser warm-up failed (parsing may be unavailable): {e}")
+        logger.warning("File parser warm-up failed (parsing may be unavailable): %s", e)
     yield
     # Shutdown
     await close_checkpointer()

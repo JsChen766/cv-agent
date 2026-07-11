@@ -137,6 +137,8 @@ curl http://localhost:8000/v1/health
 | `LLM_BASE_URL` | 非官方接口时填写 | 非官方接口时填写 | ❌ |
 | `EMBEDDING_PROVIDER` | `local` 或 `openai` | `local` 或 `openai` | ❌ |
 | `EMBEDDING_MODEL` | 嵌入模型 | 嵌入模型 | ❌ |
+| `EMBEDDING_API_KEY` | 独立 embedding 服务的 Key | 同左 | ❌ |
+| `EMBEDDING_BASE_URL` | 独立 embedding 服务地址 | 同左 | ❌ |
 | `EMBEDDING_DIMENSIONS` | 嵌入维度 | 嵌入维度 | ❌ |
 | `EMBEDDING_LOCAL_FILES_ONLY` | 本地模型可设 `true` | 按镜像内模型情况设置 | ❌ |
 | `ENVIRONMENT` | `development` | `production` | ❌ |

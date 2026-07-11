@@ -5,6 +5,7 @@ Flow: parse_node → review_node → interrupt (user confirms/edits) → save_no
 """
 
 import uuid
+from datetime import date
 from typing import Any
 
 from langchain_core.runnables import RunnableConfig
@@ -24,7 +25,7 @@ async def parse_import_node(state: MainState) -> dict[str, Any]:
     candidate experiences.  The LLM extracts a list of structured experience
     objects that the user will review before saving.
     """
-    from pydantic import BaseModel
+    from pydantic import BaseModel, field_validator
 
     provider = get_provider()
 
@@ -45,6 +46,11 @@ async def parse_import_node(state: MainState) -> dict[str, Any]:
         end_date: str | None = None
         content: str
         category: str = "work"
+
+        @field_validator("start_date", "end_date")
+        @classmethod
+        def validate_date(cls, value: str | None) -> str | None:
+            return _validate_optional_date(value)
 
     class CandidateList(BaseModel):
         candidates: list[ExperienceCandidate]
@@ -76,6 +82,11 @@ async def parse_import_node(state: MainState) -> dict[str, Any]:
     }
     return {
         "import_candidates": candidates,
+        "assistant_message": (
+            None
+            if candidates
+            else "未从输入中识别到可保存的经历，请补充职位、组织和具体工作内容。"
+        ),
         "pending_sse_events": [*existing, thinking_event],
     }
 
@@ -118,11 +129,29 @@ async def review_import_node(state: MainState) -> dict[str, Any]:
     # {"confirmed_candidates": [...]} back into the state.
     resume_value = interrupt(interrupt_payload)
 
-    # User discarded or a new chat message preempted this interrupt.
-    if isinstance(resume_value, dict) and resume_value.get("action") in ("preempted", "discard"):
-        return {**new_state, "import_candidates": [], "interrupt_payload": None, "assistant_message": "已取消导入。"}
+    action = (
+        resume_value.get("action") or resume_value.get("decision")
+        if isinstance(resume_value, dict)
+        else None
+    )
+    rejected = not isinstance(resume_value, dict) or (
+        resume_value.get("confirmed") is False
+        or action in ("preempted", "discard")
+    )
+    explicitly_confirmed = isinstance(resume_value, dict) and (
+        resume_value.get("confirmed") is True
+        or action in ("confirm", "accept", "save")
+        or isinstance(resume_value.get("confirmed_candidates"), list)
+    )
+    if rejected or not explicitly_confirmed:
+        return {
+            **new_state,
+            "import_candidates": [],
+            "interrupt_payload": None,
+            "assistant_message": "已取消导入。",
+        }
 
-    confirmed = resume_value.get("confirmed_candidates", candidates) if isinstance(resume_value, dict) else candidates
+    confirmed = resume_value.get("confirmed_candidates", candidates)
     return {**new_state, "import_candidates": confirmed, "interrupt_payload": None}
 
 
@@ -139,6 +168,12 @@ async def save_import_node(
     candidates = state.get("import_candidates", [])
     user_id = state.get("user_id", "")
 
+    if not candidates:
+        # Preserve the review node's cancellation/no-content response.
+        return {}
+
+    normalized_candidates = [_normalize_candidate(candidate) for candidate in candidates]
+
     saved_ids: list[str] = []
 
     try:
@@ -146,7 +181,7 @@ async def save_import_node(
         if services is None:
             raise RuntimeError("Tool services unavailable")
 
-        for candidate in candidates:
+        for candidate in normalized_candidates:
             category_value = candidate.get("category", "work")
             category: ExperienceCategory = (
                 category_value
@@ -195,3 +230,35 @@ async def save_import_node(
         "workspace": workspace,
         "pending_sse_events": [*existing, completed_event],
     }
+
+
+def import_parse_route(state: MainState) -> str:
+    return "review" if state.get("import_candidates") else "end"
+
+
+def import_review_route(state: MainState) -> str:
+    return "save" if state.get("import_candidates") else "end"
+
+
+def _normalize_candidate(candidate: dict[str, Any]) -> dict[str, Any]:
+    normalized = dict(candidate)
+    normalized["start_date"] = _validate_optional_date(
+        str(candidate["start_date"]) if candidate.get("start_date") is not None else None
+    )
+    normalized["end_date"] = _validate_optional_date(
+        str(candidate["end_date"]) if candidate.get("end_date") is not None else None
+    )
+    return normalized
+
+
+def _validate_optional_date(value: str | None) -> str | None:
+    if value is None:
+        return None
+    normalized = value.strip()
+    if not normalized:
+        return None
+    if normalized.lower() == "present":
+        return "present"
+    candidate = f"{normalized}-01" if len(normalized) == 7 else normalized
+    date.fromisoformat(candidate)
+    return normalized

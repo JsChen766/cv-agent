@@ -631,11 +631,12 @@ async def resume_thread(
         turn_id=body.turnId,
         interrupt_id=body.interruptId,
     )
+    pending_interrupt_id = cast("str", pending.interrupt_id)
     claimed = await _claim_interrupt_operation(
         _pool,
         thread_id=thread_id,
         turn_id=body.turnId,
-        interrupt_id=pending.interrupt_id,
+        interrupt_id=pending_interrupt_id,
         action="resume",
     )
     if claimed is not None:
@@ -700,7 +701,7 @@ async def resume_thread(
         _pool,
         thread_id=thread_id,
         turn_id=body.turnId,
-        interrupt_id=pending.interrupt_id,
+        interrupt_id=pending_interrupt_id,
         action="resume",
         response=response,
     )
@@ -767,11 +768,12 @@ async def discard_thread(
         turn_id=body.turnId,
         interrupt_id=body.interruptId,
     )
+    pending_interrupt_id = cast("str", pending.interrupt_id)
     claimed = await _claim_interrupt_operation(
         _pool,
         thread_id=thread_id,
         turn_id=body.turnId,
-        interrupt_id=pending.interrupt_id,
+        interrupt_id=pending_interrupt_id,
         action="discard",
     )
     if claimed is not None:
@@ -815,7 +817,7 @@ async def discard_thread(
         _pool,
         thread_id=thread_id,
         turn_id=body.turnId,
-        interrupt_id=pending.interrupt_id,
+        interrupt_id=pending_interrupt_id,
         action="discard",
         response=response,
     )

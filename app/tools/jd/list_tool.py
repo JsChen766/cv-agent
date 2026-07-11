@@ -23,7 +23,12 @@ class ListJdsTool:
 
     async def execute(self, input: BaseModel, context: ToolContext) -> ToolResult:
         typed_input = ListJdsInput.model_validate(input)
-        items, _ = await context.services.jd.list_jds(context.user_id, limit=typed_input.limit)
+        items, _ = await context.services.jd.list_jds(
+            context.user_id,
+            limit=typed_input.limit,
+            q=typed_input.q,
+            company=typed_input.company,
+        )
         return ToolResult(
             status="success",
             data={

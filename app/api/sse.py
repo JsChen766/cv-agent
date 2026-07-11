@@ -22,7 +22,7 @@ from app.graphs.activity import (
     activity_from_tool_event,
 )
 from app.graphs.state import MainState
-from app.memory.thread_state import ActiveWorkspace
+from app.memory.thread_state import ActiveWorkspace, MessageDict
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +54,7 @@ async def stream_graph_events(
     turn_id = initial_state.get("current_turn_id")
     activity_sequence = 0
     final_state: dict[str, Any] = dict(initial_state)
+    flushed_pending_event_count = 0
 
     def commit_activity(event: dict[str, Any] | None) -> dict[str, Any] | None:
         nonlocal activity_sequence
@@ -87,8 +88,21 @@ async def stream_graph_events(
                 output = data.get("output", {})
                 if isinstance(output, dict):
                     final_state.update(output)
-                    sse_events = output.get("pending_sse_events", [])
-                    for sse_evt in sse_events:
+                    raw_sse_events = output.get("pending_sse_events")
+                    sse_events = raw_sse_events if isinstance(raw_sse_events, list) else []
+                    # Nodes retain the existing queue and append their own events. LangGraph
+                    # exposes that cumulative queue at multiple nested on_chain_end events;
+                    # emit only the newly appended suffix so clients never receive duplicates.
+                    if "pending_sse_events" in output:
+                        new_sse_events = (
+                            sse_events[flushed_pending_event_count:]
+                            if len(sse_events) >= flushed_pending_event_count
+                            else sse_events
+                        )
+                        flushed_pending_event_count = len(sse_events)
+                    else:
+                        new_sse_events = []
+                    for sse_evt in new_sse_events:
                         activity = activity_from_tool_event(
                             sse_evt,
                             thread_id=thread_id,
@@ -171,7 +185,7 @@ def _build_initial_state(
     return {
         "thread_id": thread_id,
         "user_id": user_id,
-        "messages": messages,  # type: ignore[typeddict-item]
+        "messages": cast("list[MessageDict]", messages),
         "workspace": cast("ActiveWorkspace", dict(workspace or {})),
         "pending_sse_events": [],
         "current_turn_id": turn_id,

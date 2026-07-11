@@ -1,20 +1,14 @@
-"""
-Context Assembly.
+"""Context assembly for generation subgraphs.
 
-Runs in parallel to gather all context needed for generation:
-1. JD text (from active workspace or extracted_params)
-2. Relevant experiences via Evidence RAG
-3. Guideline instructions via Guideline RAG
-4. User preferences from PreferenceBank
-5. User profile
-
-Then trims to token budget and returns an AssembledContext.
+Domain services provide owned user data; RAG services provide guideline and
+evidence retrieval. The resulting context is trimmed before it enters graph
+state so every downstream prompt observes the configured budget.
 """
 
 from __future__ import annotations
 
 import asyncio
-import json
+import logging
 from typing import TYPE_CHECKING
 
 import asyncpg
@@ -23,7 +17,11 @@ from app.core.config import settings
 from app.memory.thread_state import ThreadState
 
 if TYPE_CHECKING:
+    from app.domain.jd.models import JdRecord
     from app.rag.evidence.models import EvidencePack
+    from app.tools.base import ServiceContainer
+
+logger = logging.getLogger(__name__)
 
 
 class AssembledContext:
@@ -44,33 +42,38 @@ class AssembledContext:
         self.evidence_pack = evidence_pack
 
     def to_prompt_block(self) -> str:
-        """Render all context into a structured prompt section."""
-        parts = []
+        parts: list[str] = []
 
         if self.jd_text:
-            parts.append(f"## Job Description\n{self.jd_text[:2000]}")
+            parts.append(f"## Job Description\n{self.jd_text}")
 
         if self.user_profile:
-            p = self.user_profile
-            summary = f"**{p.get('full_name', 'User')}** — {p.get('current_title', '')} | {p.get('career_stage', '')}"
+            profile = self.user_profile
+            summary = (
+                f"**{profile.get('full_name', 'User')}** — "
+                f"{profile.get('current_title', '')} | {profile.get('career_stage', '')}"
+            )
             parts.append(f"## User Profile\n{summary}")
 
         if self.experiences:
-            exp_texts: list[str] = []
-            for e in self.experiences[:5]:  # cap at 5
-                exp_texts.append(
-                    f"**{e.get('title')}** at {e.get('organization', 'N/A')}\n{str(e.get('content', ''))[:500]}"
+            exp_texts = [
+                (
+                    f"**{experience.get('title')}** at "
+                    f"{experience.get('organization', 'N/A')}\n"
+                    f"{experience.get('content', '')}"
                 )
+                for experience in self.experiences
+            ]
             parts.append("## Relevant Experiences\n" + "\n\n---\n".join(exp_texts))
 
         if self.guideline_instructions:
-            rules = "\n".join(f"- {g}" for g in self.guideline_instructions[:10])
+            rules = "\n".join(f"- {rule}" for rule in self.guideline_instructions)
             parts.append(f"## Writing Guidelines\n{rules}")
 
         if self.preferences:
             pref_rules = "\n".join(
-                f"- [{p.get('category')}] {p.get('rule')}"
-                for p in self.preferences[:10]
+                f"- [{preference.get('category')}] {preference.get('rule')}"
+                for preference in self.preferences
             )
             parts.append(f"## User Preferences\n{pref_rules}")
 
@@ -81,154 +84,197 @@ async def assemble_context(
     state: ThreadState,
     pool: asyncpg.Pool,
     *,
+    services: ServiceContainer | None = None,
     token_budget: int | None = None,
 ) -> AssembledContext:
-    """Parallel-fetch all context, trim to budget, return AssembledContext."""
-    _ = token_budget or settings.context_token_budget
+    """Fetch owned context in parallel and trim it to the requested budget."""
+    budget = settings.context_token_budget if token_budget is None else max(0, token_budget)
     user_id = state.get("user_id", "")
     workspace = state.get("workspace", {})
-    hints = state.get("context_hints", [])
     extracted = state.get("extracted_params", {})
+    jd_id_value = workspace.get("jd_id") or extracted.get("jd_id")
+    jd_id = jd_id_value if isinstance(jd_id_value, str) and jd_id_value else None
 
-    jd_id = workspace.get("jd_id") or extracted.get("jd_id")
-    # Run all retrievals in parallel
-    jd_task = _fetch_jd(jd_id, pool) if jd_id else asyncio.sleep(0, result=None)
-    profile_task = _fetch_profile(user_id, pool)
-    prefs_task = _fetch_preferences(user_id, pool)
-    exp_task = _fetch_experiences(jd_id, user_id, hints, pool)
-    guideline_task = _fetch_guidelines(state, hints)
+    if services is None:
+        logger.warning("Context assembly skipped owned data because domain services are unavailable")
+        guidelines = await _fetch_guidelines(state, pool)
+        return _trim_context(
+            AssembledContext(None, [], guidelines, [], None, None),
+            budget,
+        )
 
-    jd_text, profile, preferences, experiences, guidelines = await asyncio.gather(
-        jd_task, profile_task, prefs_task, exp_task, guideline_task
+    jd_task = asyncio.create_task(_fetch_jd(services, user_id, jd_id))
+    profile_task = asyncio.create_task(_fetch_profile(services, user_id))
+    preferences_task = asyncio.create_task(_fetch_preferences(services, user_id))
+    experience_task = asyncio.create_task(
+        _fetch_experience_context(services, pool, user_id, jd_task)
     )
 
-    # Build evidence pack if we have JD + experiences
-    evidence_pack = None
-    if jd_id and experiences:
-        try:
-            from app.domain.jd.models import JdRequirement
-            from app.rag.evidence.service import EvidenceRagService
-            # Fetch JD requirements
-            async with pool.acquire() as conn:
-                row = await conn.fetchrow("SELECT requirements FROM jd_records WHERE id=$1", jd_id)
-            if row:
-                raw_reqs = json.loads(row["requirements"]) if isinstance(row["requirements"], str) else row["requirements"]
-                reqs = [JdRequirement(**r) for r in (raw_reqs or [])]
-                if reqs:
-                    rag = EvidenceRagService(pool)
-                    from app.rag.evidence.models import ExperienceWithClaims
-                    exp_with_claims = [
-                        ExperienceWithClaims(
-                            experience_id=str(e.get("id", "")),
-                            title=str(e.get("title", "")),
-                            organization=(
-                                str(e["organization"]) if e.get("organization") is not None else None
-                            ),
-                            content=str(e.get("content", "")),
-                        )
-                        for e in experiences
-                    ]
-                    evidence_pack = await rag.build_evidence_pack(reqs, exp_with_claims)
-        except Exception:
-            pass  # evidence pack is optional
-
-    return AssembledContext(
-        jd_text=jd_text,
+    guideline_task = asyncio.create_task(_fetch_guidelines(state, pool))
+    jd, profile, preferences, experience_context, guidelines = await asyncio.gather(
+        jd_task,
+        profile_task,
+        preferences_task,
+        experience_task,
+        guideline_task,
+    )
+    experiences, evidence_pack = experience_context
+    context = AssembledContext(
+        jd_text=jd.raw_text if jd is not None else None,
         experiences=experiences,
         guideline_instructions=guidelines,
         preferences=preferences,
         user_profile=profile,
         evidence_pack=evidence_pack,
     )
+    return _trim_context(context, budget)
 
 
-async def _fetch_jd(jd_id: str, pool: asyncpg.Pool) -> str | None:
-    async with pool.acquire() as conn:
-        row = await conn.fetchrow("SELECT raw_text FROM jd_records WHERE id=$1", jd_id)
-    return row["raw_text"] if row else None
-
-
-async def _fetch_profile(user_id: str, pool: asyncpg.Pool) -> dict[str, object] | None:
-    async with pool.acquire() as conn:
-        row = await conn.fetchrow("SELECT * FROM user_profiles WHERE user_id=$1", user_id)
-    if not row:
+async def _fetch_jd(
+    services: ServiceContainer, user_id: str, jd_id: str | None
+) -> JdRecord | None:
+    if jd_id is None:
         return None
-    return {
-        "full_name": row["full_name"],
-        "current_title": row["current_title"],
-        "career_stage": row["career_stage"],
-        "preferred_language": row["preferred_language"],
-        "years_of_experience": row["years_of_experience"],
-    }
+    # JdService performs the ownership check. Never trust workspace IDs directly.
+    return await services.jd.get_jd(user_id, jd_id)
 
 
-async def _fetch_preferences(user_id: str, pool: asyncpg.Pool) -> list[dict[str, object]]:
-    async with pool.acquire() as conn:
-        rows = await conn.fetch(
-            "SELECT rule, category, priority FROM preferences WHERE user_id=$1 AND active=TRUE ORDER BY priority DESC LIMIT 15",
-            user_id,
-        )
-    return [{"rule": r["rule"], "category": r["category"], "priority": r["priority"]} for r in rows]
+async def _fetch_profile(
+    services: ServiceContainer, user_id: str
+) -> dict[str, object] | None:
+    profile = await services.user.get_profile(user_id)
+    return profile.model_dump(mode="json", exclude_none=True)
 
 
-async def _fetch_experiences(
-    jd_id: str | None,
-    user_id: str,
-    hints: list[str],
-    pool: asyncpg.Pool,
+async def _fetch_preferences(
+    services: ServiceContainer, user_id: str
 ) -> list[dict[str, object]]:
-    if jd_id:
-        # Semantic retrieval via JD embedding
-        async with pool.acquire() as conn:
-            jd_row = await conn.fetchrow("SELECT raw_text FROM jd_records WHERE id=$1", jd_id)
-        if jd_row:
-            try:
-                from app.providers.factory import get_embedding_provider
-                embed = get_embedding_provider()
-                embeddings = await embed.embed([jd_row["raw_text"][:1000]])
-                vec_str = f"[{','.join(str(v) for v in embeddings[0])}]"
-                async with pool.acquire() as conn:
-                    rows = await conn.fetch(
-                        """
-                        SELECT e.id, e.title, e.organization, er.content
-                        FROM experiences e
-                        JOIN experience_revisions er ON er.id = e.current_revision_id
-                        WHERE e.user_id=$1 AND e.status='active' AND e.embedding IS NOT NULL
-                        ORDER BY e.embedding <=> $2::vector
-                        LIMIT 8
-                        """,
-                        user_id, vec_str,
-                    )
-                return [dict(r) for r in rows]
-            except Exception:
-                pass  # fallback below
+    preferences = await services.preference.get_active_preferences(user_id)
+    return [
+        {
+            "rule": preference.rule,
+            "category": preference.category,
+            "priority": preference.priority,
+        }
+        for preference in preferences[:15]
+    ]
 
-    # Fallback: return recent active experiences
-    async with pool.acquire() as conn:
-        rows = await conn.fetch(
-            """
-            SELECT e.id, e.title, e.organization, er.content
-            FROM experiences e
-            JOIN experience_revisions er ON er.id = e.current_revision_id
-            WHERE e.user_id=$1 AND e.status='active'
-            ORDER BY e.updated_at DESC
-            LIMIT 5
-            """,
-            user_id,
+
+async def _fetch_experience_context(
+    services: ServiceContainer,
+    pool: asyncpg.Pool,
+    user_id: str,
+    jd_task: asyncio.Task[JdRecord | None],
+) -> tuple[list[dict[str, object]], EvidencePack | None]:
+    from app.rag.evidence.service import EvidenceRagService
+
+    jd = await jd_task
+    rag = EvidenceRagService(pool)
+    if jd is not None and jd.requirements:
+        retrieved = await rag.retrieve_for_jd(jd.requirements, user_id, top_k=8)
+        evidence_pack = await rag.build_evidence_pack(jd.requirements, retrieved)
+    else:
+        retrieved = await rag.retrieve_recent(user_id, top_k=5)
+        evidence_pack = None
+
+    experiences: list[dict[str, object]] = []
+    for experience in retrieved:
+        experiences.append(
+            {
+            "id": experience.experience_id,
+            "title": experience.title,
+            "organization": experience.organization,
+            "content": experience.content,
+            "claims": [claim.model_dump(mode="json") for claim in experience.claims],
+            "relevance_score": experience.relevance_score,
+            }
         )
-    return [dict(r) for r in rows]
+    return experiences, evidence_pack
 
 
-async def _fetch_guidelines(state: ThreadState, hints: list[str]) -> list[str]:
+async def _fetch_guidelines(state: ThreadState, pool: asyncpg.Pool) -> list[str]:
     intent = state.get("intent_description", "")
     if not intent:
         return []
+    hints = state.get("context_hints", [])
+    query = " | ".join([intent, *hints]) if hints else intent
     try:
-        from app.providers.factory import get_embedding_provider
-        embed = get_embedding_provider()
-        embeddings = await embed.embed([intent])
-        _ = embeddings  # obtained but guideline DB may not be populated
-        # Full retrieval requires DB — return empty if no DB
+        from app.rag.guideline.service import GuidelineRagService
+
+        return await GuidelineRagService(pool).retrieve(query, top_k=5)
+    except Exception as exc:
+        # Guidelines are optional; preserve generation while making degradation observable.
+        logger.warning("Guideline retrieval failed: %s", exc)
         return []
-    except Exception:
-        return []
+
+
+def _trim_context(context: AssembledContext, token_budget: int) -> AssembledContext:
+    """Apply a deterministic character approximation (~4 chars/token)."""
+    char_budget = token_budget * 4
+    if char_budget <= 0:
+        context.jd_text = None
+        context.experiences = []
+        context.guideline_instructions = []
+        context.preferences = []
+        context.user_profile = None
+        context.evidence_pack = None
+        return context
+
+    jd_quota = int(char_budget * 0.30)
+    experience_quota = int(char_budget * 0.50)
+    guideline_quota = int(char_budget * 0.10)
+    preference_quota = char_budget - jd_quota - experience_quota - guideline_quota
+
+    if context.jd_text:
+        context.jd_text = context.jd_text[:jd_quota]
+
+    context.experiences = _trim_dict_items(
+        context.experiences,
+        content_key="content",
+        quota=experience_quota,
+        limit=8,
+    )
+    context.guideline_instructions = _trim_strings(
+        context.guideline_instructions, guideline_quota, limit=10
+    )
+    context.preferences = _trim_dict_items(
+        context.preferences,
+        content_key="rule",
+        quota=preference_quota,
+        limit=10,
+    )
+    return context
+
+
+def _trim_strings(values: list[str], quota: int, *, limit: int) -> list[str]:
+    result: list[str] = []
+    remaining = quota
+    for value in values[:limit]:
+        if remaining <= 0:
+            break
+        clipped = value[:remaining]
+        if clipped:
+            result.append(clipped)
+            remaining -= len(clipped)
+    return result
+
+
+def _trim_dict_items(
+    values: list[dict[str, object]],
+    *,
+    content_key: str,
+    quota: int,
+    limit: int,
+) -> list[dict[str, object]]:
+    result: list[dict[str, object]] = []
+    remaining = quota
+    for value in values[:limit]:
+        if remaining <= 0:
+            break
+        item = dict(value)
+        content = str(item.get(content_key, ""))
+        clipped = content[:remaining]
+        item[content_key] = clipped
+        remaining -= len(clipped)
+        result.append(item)
+    return result

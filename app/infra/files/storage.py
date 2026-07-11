@@ -18,9 +18,18 @@ class LocalFileStorage:
         self._base.mkdir(parents=True, exist_ok=True)
 
     async def save(self, content: bytes, filename: str, user_id: str) -> str:
-        user_dir = self._base / user_id
+        safe_user_id = Path(user_id.replace("\\", "/")).name
+        if safe_user_id in {"", ".", ".."}:
+            raise ValueError("Invalid storage user id")
+        user_dir = self._base / safe_user_id
         user_dir.mkdir(parents=True, exist_ok=True)
-        dest = user_dir / filename
+        safe_filename = Path(filename.replace("\\", "/")).name
+        if safe_filename in {"", ".", ".."}:
+            raise ValueError("Invalid storage filename")
+        resolved_user_dir = user_dir.resolve()
+        dest = (resolved_user_dir / safe_filename).resolve()
+        if not dest.is_relative_to(resolved_user_dir):
+            raise ValueError("Storage path escapes user directory")
         dest.write_bytes(content)
         return str(dest)
 

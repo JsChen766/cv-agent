@@ -64,6 +64,33 @@ class InterruptGraph:
         }
 
 
+class CumulativeEventGraph:
+    async def astream_events(
+        self,
+        initial_state: MainState,
+        *,
+        config: RunnableConfig,
+        version: str,
+    ) -> AsyncIterator[dict[str, Any]]:
+        first = {"event": "agent.route.completed", "target": "open_ended"}
+        second = {"event": "agent.message.completed", "content": "Done"}
+        yield {
+            "event": "on_chain_end",
+            "name": "router",
+            "data": {"output": {"pending_sse_events": [first]}},
+        }
+        yield {
+            "event": "on_chain_end",
+            "name": "open_ended",
+            "data": {
+                "output": {
+                    "pending_sse_events": [first, second],
+                    "assistant_message": "Done",
+                }
+            },
+        }
+
+
 async def test_stream_graph_events_projects_activity_events() -> None:
     initial_state: MainState = {
         "thread_id": "thread-1",
@@ -110,6 +137,25 @@ async def test_stream_graph_events_surfaces_interrupt_payload() -> None:
     assert interrupt["interrupt_type"] == "experience_import"
     assert interrupt["data"]["candidates"] == [{"title": "Platform migration"}]
     assert not any(payload["event"] == "agent.completed" for payload in payloads)
+
+
+async def test_stream_graph_events_emits_cumulative_queue_items_once() -> None:
+    initial_state: MainState = {
+        "thread_id": "thread-1",
+        "current_turn_id": "turn-1",
+        "messages": [],
+        "workspace": {},
+        "pending_sse_events": [],
+    }
+
+    chunks = [
+        chunk
+        async for chunk in stream_graph_events(CumulativeEventGraph(), initial_state, config={})
+    ]
+    payloads = [_payload(chunk) for chunk in chunks]
+
+    assert sum(payload["event"] == "agent.route.completed" for payload in payloads) == 1
+    assert sum(payload["event"] == "agent.message.completed" for payload in payloads) == 1
 
 
 def _payload(chunk: str) -> dict[str, Any]:

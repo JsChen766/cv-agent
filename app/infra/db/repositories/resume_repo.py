@@ -38,13 +38,16 @@ class PostgresResumeRepository:
         values: builtins.list[object] = [user_id]
         idx = 2
         if cursor:
-            conditions.append(f"id > ${idx}")
+            conditions.append(
+                f"(updated_at, id) < (SELECT updated_at, id FROM resumes "
+                f"WHERE id = ${idx} AND user_id = $1)"
+            )
             values.append(cursor)
             idx += 1
         values.append(limit + 1)
         sql = f"""
             SELECT * FROM resumes WHERE {' AND '.join(conditions)}
-            ORDER BY updated_at DESC, id LIMIT ${idx}
+            ORDER BY updated_at DESC, id DESC LIMIT ${idx}
         """
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(sql, *values)

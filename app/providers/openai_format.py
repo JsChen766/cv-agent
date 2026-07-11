@@ -9,17 +9,17 @@ Set LLM_BASE_URL to point at a non-OpenAI endpoint.
 from __future__ import annotations
 
 import json
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Sequence
 from typing import Any, cast
 
 from langchain_core.messages import BaseMessage
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
+from pydantic import SecretStr
 
 from app.core.config import settings
 from app.core.errors import ExternalServiceError
-from app.providers.base import ChatResult, ToolCall
-from app.tools.base import Tool
-from app.tools.schema import to_openai_tool
+from app.providers.base import ChatResult, ToolCall, ToolDefinition
+from app.providers.tool_schema import to_openai_tool
 
 
 class OpenAIFormatProvider:
@@ -29,6 +29,8 @@ class OpenAIFormatProvider:
         api_key: str | None = None,
         base_url: str | None = None,
         embedding_model: str | None = None,
+        embedding_api_key: str | None = None,
+        embedding_base_url: str | None = None,
     ) -> None:
         self._model = model or settings.llm_model
         self._api_key = api_key or settings.llm_api_key
@@ -36,17 +38,22 @@ class OpenAIFormatProvider:
 
         self._llm = ChatOpenAI(
             model=self._model,
-            api_key=self._api_key,  # type: ignore[arg-type]
+            api_key=SecretStr(self._api_key) if self._api_key else None,
             base_url=self._base_url,
             streaming=False,
             timeout=60,
             max_retries=3,
         )
+        resolved_embedding_api_key = (
+            embedding_api_key or settings.embedding_api_key or self._api_key
+        )
         self._embed = OpenAIEmbeddings(
             model=embedding_model or settings.embedding_model,
-            api_key=self._api_key,  # type: ignore[arg-type]
-            base_url=self._base_url,
-            request_timeout=60,
+            api_key=(
+                SecretStr(resolved_embedding_api_key) if resolved_embedding_api_key else None
+            ),
+            base_url=embedding_base_url or settings.embedding_base_url or self._base_url,
+            timeout=60,
             max_retries=3,
         )
 
@@ -72,15 +79,18 @@ class OpenAIFormatProvider:
                 lc_msgs.append(AIMessage(content=content))
 
         llm = cast(Any, self._llm.bind(temperature=temperature))
-        if max_tokens:
+        if max_tokens is not None:
             llm = llm.bind(max_tokens=max_tokens)
 
         try:
             if stream:
                 async def _stream() -> AsyncIterator[str]:
-                    async for chunk in llm.astream(lc_msgs):
-                        if chunk.content:
-                            yield str(chunk.content)
+                    try:
+                        async for chunk in llm.astream(lc_msgs):
+                            if chunk.content:
+                                yield str(chunk.content)
+                    except Exception as exc:
+                        raise ExternalServiceError(f"LLM streaming call failed: {exc}") from exc
                 return _stream()
             else:
                 result = await llm.ainvoke(lc_msgs)
@@ -105,7 +115,7 @@ class OpenAIFormatProvider:
             else:
                 lc_msgs.append(HumanMessage(content=content))
 
-        structured_llm = self._llm.with_structured_output(schema)
+        structured_llm = self._llm.bind(temperature=temperature).with_structured_output(schema)
         try:
             return await structured_llm.ainvoke(lc_msgs)
         except Exception as e:
@@ -178,14 +188,14 @@ class OpenAIFormatProvider:
     async def chat_with_tools(
         self,
         messages: list[dict[str, Any]],
-        tools: list[Tool],
+        tools: Sequence[ToolDefinition],
         *,
         tool_choice: str | None = "auto",
         temperature: float = 0.2,
         max_tokens: int | None = None,
     ) -> ChatResult:
         llm = cast(Any, self._llm.bind(temperature=temperature))
-        if max_tokens:
+        if max_tokens is not None:
             llm = llm.bind(max_tokens=max_tokens)
         if tools:
             llm = llm.bind_tools(
@@ -210,7 +220,9 @@ def _to_lc_messages(messages: list[dict[str, Any]]) -> list[BaseMessage]:
         if role == "system":
             lc_msgs.append(SystemMessage(content=content))
         elif role == "assistant":
-            lc_msgs.append(AIMessage(content=content))
+            raw_tool_calls = message.get("tool_calls")
+            tool_calls = raw_tool_calls if isinstance(raw_tool_calls, list) else []
+            lc_msgs.append(AIMessage(content=content, tool_calls=tool_calls))
         elif role == "tool":
             lc_msgs.append(
                 ToolMessage(

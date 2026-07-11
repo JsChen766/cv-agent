@@ -13,6 +13,8 @@ class JdRepository(Protocol):
         *,
         limit: int = 20,
         cursor: str | None = None,
+        q: str | None = None,
+        company: str | None = None,
     ) -> tuple[builtins.list[JdRecord], str | None]: ...
 
     async def get(self, user_id: str, jd_id: str) -> JdRecord | None: ...

@@ -7,9 +7,11 @@ Flow:
 """
 
 import uuid
+from collections.abc import Mapping
+from typing import cast
 
 from langchain_core.runnables import RunnableConfig
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, JsonValue
 
 from app.core.config import settings
 from app.core.events import (
@@ -38,7 +40,11 @@ async def context_assembly_node(
         pool = pool_from_config(config)
         if pool is None:
             return {}
-        ctx = await assemble_context(state, pool)
+        ctx = await assemble_context(
+            state,
+            pool,
+            services=services_from_config(config),
+        )
         return {
             "jd_text": ctx.jd_text,
             "relevant_experiences": ctx.experiences,
@@ -127,6 +133,7 @@ async def draft_generation_node(state: ResumeGenerationState) -> dict[str, objec
     prefs = state.get("user_preferences") or []
     plan = state.get("matching_plan") or {}
     profile = state.get("user_profile") or {}
+    evidence_pack = state.get("evidence_pack") or {}
     revision_instruction = state.get("revision_instruction")
 
     # Build generation prompt
@@ -149,6 +156,26 @@ async def draft_generation_node(state: ResumeGenerationState) -> dict[str, objec
     if prefs:
         pref_rules = "\n".join(f"- {p.get('rule')}" for p in prefs[:8])
         prompt_parts.append(f"Writing preferences:\n{pref_rules}")
+    evidence_matches = evidence_pack.get("matches", [])
+    if isinstance(evidence_matches, list) and evidence_matches:
+        evidence_lines: list[str] = []
+        for match in evidence_matches[:12]:
+            if not isinstance(match, dict):
+                continue
+            claims = match.get("matched_claims", [])
+            claim_texts = [
+                str(claim.get("text"))
+                for claim in claims
+                if isinstance(claim, dict) and claim.get("text")
+            ] if isinstance(claims, list) else []
+            evidence_lines.append(
+                f"- {match.get('requirement_text', '')}: {'; '.join(claim_texts)}"
+            )
+        if evidence_lines:
+            prompt_parts.append(
+                "Verified evidence mapping (use only these claims for matching assertions):\n"
+                + "\n".join(evidence_lines)
+            )
     if revision_instruction:
         prompt_parts.append(f"Revision instruction: {revision_instruction}")
 
@@ -175,7 +202,9 @@ async def draft_generation_node(state: ResumeGenerationState) -> dict[str, objec
                     "Generate a complete, tailored resume in Markdown format. "
                     "Include: Summary, Experience, Skills, Education sections. "
                     "Make every bullet point specific, quantified where possible, "
-                    "and directly relevant to the job requirements."
+                    "and directly relevant to the job requirements. Never invent metrics, "
+                    "employers, dates, technologies, or achievements that are absent from "
+                    "the supplied experience evidence."
                 ),
             },
             {"role": "user", "content": "\n\n".join(prompt_parts)},
@@ -198,6 +227,20 @@ async def draft_generation_node(state: ResumeGenerationState) -> dict[str, objec
     }
 
     variant_id = f"variant-{uuid.uuid4()}"
+    evidence_summary = _evidence_summary(evidence_pack)
+    coverage = evidence_pack.get("coverage_ratio")
+    coverage_score = float(coverage) if isinstance(coverage, (int, float)) else 0.0
+    risk_summary = (
+        [
+            {
+                "type": "missing_evidence",
+                "text": "Some JD requirements do not have supporting experience evidence.",
+                "severity": "medium",
+            }
+        ]
+        if evidence_pack and coverage_score < 0.5
+        else []
+    )
     variant = {
         "id": variant_id,
         "title": "AI Generated Variant",
@@ -206,21 +249,48 @@ async def draft_generation_node(state: ResumeGenerationState) -> dict[str, objec
             "overall": 0.0,
             "relevance": 0.0,
             "clarity": 0.0,
-            "evidence_strength": 0.0,
+            "evidence_strength": coverage_score,
             "quantified_impact": 0.0,
         },
-        "evidence_summary": [],
-        "risk_summary": [],
+        "evidence_summary": evidence_summary,
+        "risk_summary": risk_summary,
         "missing_info": [],
     }
-
     existing_events = state.get("pending_sse_events", [])
     return {
         "variants": [variant],
         "current_diff": [{"op": "insert", "text": content_str}],
-        "review_iteration": 0,
         "pending_sse_events": [*existing_events, diff_started, diff_delta, diff_completed],
     }
+
+
+def _evidence_summary(evidence_pack: dict[str, object]) -> list[dict[str, object]]:
+    raw_matches = evidence_pack.get("matches", [])
+    if not isinstance(raw_matches, list):
+        return []
+    summary: list[dict[str, object]] = []
+    for raw_match in raw_matches:
+        if not isinstance(raw_match, dict):
+            continue
+        raw_claims = raw_match.get("matched_claims", [])
+        claims = (
+            [
+                str(claim.get("text"))
+                for claim in raw_claims
+                if isinstance(claim, dict) and claim.get("text")
+            ]
+            if isinstance(raw_claims, list)
+            else []
+        )
+        summary.append(
+            {
+                "requirement_id": str(raw_match.get("requirement_id", "")),
+                "requirement_text": str(raw_match.get("requirement_text", "")),
+                "supporting_claims": claims,
+                "match_score": float(raw_match.get("match_score", 0.0)),
+            }
+        )
+    return summary
 
 
 # ── 4. Self Review ────────────────────────────────────────────────────────────
@@ -319,6 +389,10 @@ async def persist_resume_draft_node(
         )
         resume_id = resume.id
         workspace["resume_id"] = resume.id
+    else:
+        # Workspace IDs originate at the client boundary. Re-check ownership at
+        # the write boundary so no variant can be attached to another user.
+        await services.resume.get_resume(state.get("user_id", ""), resume_id)
 
     saved_variants: list[dict[str, object]] = []
     for variant in state.get("variants", []):
@@ -399,6 +473,8 @@ async def output_node(
             "interrupt_payload": None,
             "assistant_message": "Resume variant discarded.",
             "workspace": workspace,
+            "resume_user_action": "complete",
+            "revision_instruction": None,
         }
 
     action = None
@@ -413,20 +489,37 @@ async def output_node(
         }
         if selected_variant_id not in valid_variant_ids:
             raise ValueError("Selected resume variant does not belong to this review")
+        assert selected_variant_id is not None
         if services is None:
             raise RuntimeError("Resume service unavailable while accepting variant")
         accepted = await action_capabilities.accept_variant(
             services,
             state.get("user_id", ""),
             VariantInput(variantId=selected_variant_id),
-            base_workspace=workspace,
+            base_workspace=cast("Mapping[str, JsonValue]", workspace),
         )
         workspace.update(accepted.workspace)
+
+    user_revision_instruction = None
+    if action == "revise" and isinstance(resume_value, dict):
+        raw_instruction = (
+            resume_value.get("revision_instruction")
+            or resume_value.get("instruction")
+            or resume_value.get("feedback")
+            or resume_value.get("message")
+        )
+        if isinstance(raw_instruction, str) and raw_instruction.strip():
+            user_revision_instruction = raw_instruction.strip()
 
     return {
         "assistant_message": _resume_confirmation_message(resume_value),
         "interrupt_payload": None,
         "workspace": workspace,
+        "resume_user_action": (
+            "revise" if action == "revise" and user_revision_instruction else "complete"
+        ),
+        "revision_instruction": user_revision_instruction,
+        "review_iteration": 0 if user_revision_instruction else state.get("review_iteration", 0),
         "pending_sse_events": [*existing_events, interrupt_event],
     }
 
@@ -457,3 +550,7 @@ def review_route(state: ResumeGenerationState) -> str:
     ):
         return "revision"
     return "output"
+
+
+def output_route(state: ResumeGenerationState) -> str:
+    return "revision" if state.get("resume_user_action") == "revise" else "end"

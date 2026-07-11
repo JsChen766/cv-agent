@@ -1,5 +1,7 @@
 """Artifact Generation subgraph nodes."""
 
+import logging
+
 from langchain_core.runnables import RunnableConfig
 
 from app.core.events import ArtifactCompletedEvent, ArtifactDeltaEvent, ArtifactStartedEvent
@@ -7,6 +9,8 @@ from app.graphs.artifact.registry import get_config
 from app.graphs.runtime import pool_from_config, services_from_config, thread_id_from_config
 from app.graphs.state import MainState
 from app.providers.factory import get_provider
+
+logger = logging.getLogger(__name__)
 
 # Artifact types that render in the canvas panel.
 # Empty by default — all current types go straight into thread messages.
@@ -59,12 +63,17 @@ async def artifact_context_assembly_node(
         pool = pool_from_config(config)
         if pool is None:
             return {}
-        ctx = await assemble_context(state, pool)
+        ctx = await assemble_context(
+            state,
+            pool,
+            services=services_from_config(config),
+        )
         return {
             "assembled_jd_text": ctx.jd_text,
             "assembled_experiences": ctx.experiences,
             "assembled_preferences": ctx.preferences,
             "assembled_user_profile": ctx.user_profile,
+            "assembled_guideline_instructions": ctx.guideline_instructions,
         }
     except RuntimeError:
         return {}
@@ -87,6 +96,7 @@ async def artifact_draft_node(
     experiences = state.get("assembled_experiences") or []
     profile = state.get("assembled_user_profile") or {}
     prefs = state.get("assembled_preferences") or []
+    guidelines = state.get("assembled_guideline_instructions") or []
 
     # Build context
     context_parts = []
@@ -109,6 +119,8 @@ async def artifact_draft_node(
         context_parts.append("Experiences:\n" + "\n".join(exp_texts))
     if prefs:
         context_parts.append("Preferences:\n" + "\n".join(f"- {p.get('rule')}" for p in prefs[:5]))
+    if guidelines:
+        context_parts.append("Writing guidelines:\n" + "\n".join(f"- {g}" for g in guidelines[:5]))
 
     type_prompt = _ARTIFACT_PROMPTS.get(artifact_type, "Generate the requested document.")
     lang_instruction = "Write in Chinese (Simplified)." if "zh" in lang else "Write in English."
@@ -148,8 +160,8 @@ async def artifact_draft_node(
             },
         )
         real_artifact_id = artifact.id
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.warning("Artifact archive persistence failed: %s", exc)
     workspace = dict(state.get("workspace", {}))
     if not real_artifact_id.startswith("artifact-temp-"):
         workspace["artifact_id"] = real_artifact_id

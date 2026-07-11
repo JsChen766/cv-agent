@@ -22,6 +22,7 @@ from app.infra.db.repositories.jd_repo import PostgresJdRepository
 from app.infra.db.repositories.preference_repo import PostgresPreferenceRepository
 from app.infra.db.repositories.resume_repo import PostgresResumeRepository
 from app.infra.db.repositories.user_repo import PostgresUserRepository
+from app.rag.evidence.indexer import EvidenceExperienceIndexer
 from app.tools.base import ServiceContainer
 
 # ── Pool ──────────────────────────────────────────────────────────────────────
@@ -45,7 +46,10 @@ def _require_pool(pool: asyncpg.Pool | None) -> asyncpg.Pool:
 def build_service_container(pool: asyncpg.Pool | None) -> ServiceContainer:
     checked_pool = _require_pool(pool)
     return ServiceContainer(
-        experience=ExperienceService(PostgresExperienceRepository(checked_pool)),
+        experience=ExperienceService(
+            PostgresExperienceRepository(checked_pool),
+            EvidenceExperienceIndexer(checked_pool),
+        ),
         jd=JdService(PostgresJdRepository(checked_pool)),
         resume=ResumeService(PostgresResumeRepository(checked_pool)),
         artifact=ArtifactService(PostgresArtifactRepository(checked_pool)),
@@ -59,7 +63,11 @@ async def get_user_service(pool: asyncpg.Pool | None = Depends(pool_dep)) -> Use
 
 
 async def get_experience_service(pool: asyncpg.Pool | None = Depends(pool_dep)) -> ExperienceService:
-    return ExperienceService(PostgresExperienceRepository(_require_pool(pool)))
+    checked_pool = _require_pool(pool)
+    return ExperienceService(
+        PostgresExperienceRepository(checked_pool),
+        EvidenceExperienceIndexer(checked_pool),
+    )
 
 
 async def get_jd_service(pool: asyncpg.Pool | None = Depends(pool_dep)) -> JdService:

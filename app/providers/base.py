@@ -1,11 +1,9 @@
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
-from typing import Any, Protocol
+from collections.abc import AsyncIterator, Sequence
+from typing import Any, Literal, Protocol
 
 from pydantic import BaseModel, Field
-
-from app.tools.base import Tool
 
 
 class Message(dict[str, str]):
@@ -36,6 +34,16 @@ class ChatResult(BaseModel):
     raw: Any | None = None
 
 
+class ToolDefinition(Protocol):
+    """Provider-facing tool shape, kept independent from the tools layer."""
+
+    name: str
+    description: str
+    input_schema: type[BaseModel]
+    requires_confirmation: bool
+    risk_level: Literal["low", "medium", "high"]
+
+
 class LLMProvider(Protocol):
     async def chat(
         self,
@@ -58,7 +66,7 @@ class LLMProvider(Protocol):
     async def chat_with_tools(
         self,
         messages: list[dict[str, Any]],
-        tools: list[Tool],
+        tools: Sequence[ToolDefinition],
         *,
         tool_choice: str | None = "auto",
         temperature: float = 0.2,

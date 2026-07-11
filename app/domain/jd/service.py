@@ -16,8 +16,16 @@ class JdService:
         *,
         limit: int = 20,
         cursor: str | None = None,
+        q: str | None = None,
+        company: str | None = None,
     ) -> tuple[list[JdRecord], str | None]:
-        return await self._repo.list(user_id, limit=limit, cursor=cursor)
+        return await self._repo.list(
+            user_id,
+            limit=limit,
+            cursor=cursor,
+            q=q,
+            company=company,
+        )
 
     async def get_jd(self, user_id: str, jd_id: str) -> JdRecord:
         jd = await self._repo.get(user_id, jd_id)

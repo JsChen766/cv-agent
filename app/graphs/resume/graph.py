@@ -9,6 +9,7 @@ from app.graphs.resume.nodes import (
     cot_planning_node,
     draft_generation_node,
     output_node,
+    output_route,
     persist_resume_draft_node,
     review_route,
     revision_node,
@@ -37,6 +38,10 @@ def build_resume_subgraph() -> StateGraph[ResumeGenerationState]:
     )
     builder.add_edge("revision", "draft_generation")  # re-generate after revision
     builder.add_edge("persist_draft", "output")
-    builder.add_edge("output", END)
+    builder.add_conditional_edges(
+        "output",
+        output_route,
+        {"revision": "draft_generation", "end": END},
+    )
 
     return builder
