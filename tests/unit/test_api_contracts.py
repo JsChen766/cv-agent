@@ -1,3 +1,5 @@
+from datetime import datetime
+
 import pytest
 from pydantic import JsonValue, ValidationError
 
@@ -11,6 +13,8 @@ from app.api.routes.copilot import (
     RewriteExperiencePayload,
     VariantPayload,
 )
+from app.api.routes.product.jd import _serialize
+from app.domain.jd.models import JdRecord
 
 
 def test_action_payload_parses_supported_generate_artifact_action() -> None:
@@ -72,3 +76,33 @@ def test_action_payload_rejects_extra_fields() -> None:
             type="generate_artifact",
             payload={"artifactType": "self_intro", "unexpected": "nope"},
         )
+
+
+def test_jd_serialize_includes_source_thread_id() -> None:
+    jd = JdRecord(
+        id="jd-1",
+        user_id="user-1",
+        title="Backend Engineer",
+        raw_text="Build APIs",
+        requirements=[],
+        source_thread_id="thread-abc",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+    )
+    data = _serialize(jd)
+    assert data["sourceThreadId"] == "thread-abc"
+
+
+def test_jd_serialize_source_thread_id_none_when_absent() -> None:
+    jd = JdRecord(
+        id="jd-2",
+        user_id="user-1",
+        title="Frontend Engineer",
+        raw_text="Build UIs",
+        requirements=[],
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+    )
+    data = _serialize(jd)
+    assert "sourceThreadId" in data
+    assert data["sourceThreadId"] is None

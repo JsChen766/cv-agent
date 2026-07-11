@@ -13,6 +13,7 @@ class Artifact(BaseModel):
     type: ArtifactType
     title: str
     content: str  # markdown
+    thread_id: str | None = None
     source_jd_id: str | None = None
     source_experience_ids: list[str] = Field(default_factory=list)
     word_count: int = 0

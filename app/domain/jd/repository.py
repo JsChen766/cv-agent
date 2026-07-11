@@ -27,6 +27,7 @@ class JdRepository(Protocol):
         company: str | None = None,
         target_role: str | None = None,
         requirements: builtins.list[JdRequirement] | None = None,
+        source_thread_id: str | None = None,
     ) -> JdRecord: ...
 
     async def update_requirements(

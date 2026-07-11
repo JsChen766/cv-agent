@@ -106,6 +106,7 @@ def _serialize(jd: JdRecord) -> dict[str, object]:
             }
             for r in jd.requirements
         ],
+        "sourceThreadId": jd.source_thread_id,
         "createdAt": jd.created_at.isoformat(),
         "updatedAt": jd.updated_at.isoformat(),
     }

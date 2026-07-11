@@ -402,6 +402,18 @@ def _upload_original_name_from_client_state(cs: ClientState) -> str | None:
     return None
 
 
+async def _drain_pending_interrupt(graph: object, config: "RunnableConfig") -> None:
+    """If the graph is suspended at an interrupt, drain it so the next turn starts fresh."""
+    from langgraph.types import Command
+
+    try:
+        snapshot = await graph.aget_state(config)  # type: ignore[union-attr]
+        if snapshot and getattr(snapshot, "next", None):
+            await graph.ainvoke(Command(resume={"action": "preempted"}), config=config)  # type: ignore[union-attr]
+    except Exception as exc:
+        logger.warning("Failed to drain pending interrupt: %s", exc)
+
+
 async def _build_chat_initial_state(
     *,
     thread_id: str,
@@ -412,7 +424,28 @@ async def _build_chat_initial_state(
     pool: asyncpg.Pool | None,
 ) -> MainState:
     workspace = _workspace_from_client_state(client_state)
-    initial_state = _build_initial_state(thread_id, user_id, message, workspace, turn_id)
+
+    # Load recent conversation history from DB so the router has context.
+    historical: list[dict[str, object]] = []
+    if pool:
+        try:
+            async with pool.acquire() as conn:
+                rows = await conn.fetch(
+                    "SELECT role, content FROM thread_messages "
+                    "WHERE thread_id = $1 ORDER BY created_at ASC",
+                    thread_id,
+                )
+            historical = [
+                {"role": r["role"], "content": r["content"], "turn_id": None}
+                for r in rows[-20:]
+            ]
+        except Exception as exc:
+            logger.warning("Failed to load thread history: %s", exc)
+
+    current_msg: dict[str, object] = {"role": "user", "content": message, "turn_id": turn_id}
+    messages = [*historical, current_msg]
+
+    initial_state = _build_initial_state(thread_id, user_id, messages, workspace, turn_id)
     upload_params = await _upload_extracted_params(client_state, user_id, pool)
     if upload_params:
         initial_state["extracted_params"] = upload_params
@@ -663,6 +696,7 @@ async def chat(
 
     try:
         graph = get_graph(_get_checkpointer_or_none())
+        await _drain_pending_interrupt(graph, config)
         final_state = await graph.ainvoke(initial_state, config=config)
     except Exception as exc:
         logger.exception("Graph error: %s", exc)
@@ -728,6 +762,7 @@ async def chat_stream(
     config: RunnableConfig = {"configurable": configurable}
 
     graph = get_graph(_get_checkpointer_or_none())
+    await _drain_pending_interrupt(graph, config)
 
     await _persist_message(
         _pool,
@@ -861,7 +896,13 @@ async def _run_generate_resume_from_jd_action(
     workspace["resume_id"] = resume.id
 
     instruction = f"Generate a tailored resume for JD '{jd.title}'."
-    initial_state = _build_initial_state(thread_id, user_id, instruction, workspace, turn_id)
+    initial_state = _build_initial_state(
+        thread_id,
+        user_id,
+        [{"role": "user", "content": instruction, "turn_id": turn_id}],
+        workspace,
+        turn_id,
+    )
     initial_state["target_subgraph"] = "resume_generation"
     initial_state["intent_description"] = instruction
 

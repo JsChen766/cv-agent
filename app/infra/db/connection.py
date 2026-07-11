@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from collections.abc import AsyncGenerator
 
 import asyncpg
@@ -16,6 +17,15 @@ from app.core.config import settings
 _pool: asyncpg.Pool | None = None
 
 
+async def _init_connection(conn: asyncpg.Connection) -> None:  # type: ignore[type-arg]
+    await conn.set_type_codec(
+        "jsonb",
+        encoder=json.dumps,
+        decoder=json.loads,
+        schema="pg_catalog",
+    )
+
+
 async def create_pool() -> asyncpg.Pool:
     global _pool
     _pool = await asyncpg.create_pool(
@@ -23,6 +33,7 @@ async def create_pool() -> asyncpg.Pool:
         min_size=2,
         max_size=10,
         command_timeout=30,
+        init=_init_connection,
     )
     return _pool
 

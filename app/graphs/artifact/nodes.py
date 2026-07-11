@@ -4,9 +4,14 @@ from langchain_core.runnables import RunnableConfig
 
 from app.core.events import ArtifactCompletedEvent, ArtifactDeltaEvent, ArtifactStartedEvent
 from app.graphs.artifact.registry import get_config
-from app.graphs.runtime import pool_from_config, services_from_config
+from app.graphs.runtime import pool_from_config, services_from_config, thread_id_from_config
 from app.graphs.state import MainState
 from app.providers.factory import get_provider
+
+# Artifact types that render in the canvas panel.
+# Empty by default — all current types go straight into thread messages.
+# Add a type string here to restore canvas behaviour for that type.
+_CANVAS_ARTIFACT_TYPES: set[str] = set()
 
 _ARTIFACT_PROMPTS = {
     "cover_letter": (
@@ -91,11 +96,16 @@ async def artifact_draft_node(
         context_parts.append(f"Job Description:\n{jd_text[:2000]}")
     if profile:
         lang = profile.get("preferred_language", "zh-CN")
-        context_parts.append(f"User: {profile.get('current_title', '')} | {profile.get('career_stage', '')}")
+        context_parts.append(
+            f"User: {profile.get('current_title', '')} | {profile.get('career_stage', '')}"
+        )
     else:
         lang = "zh-CN"
     if experiences:
-        exp_texts = [f"- {e.get('title')} at {e.get('organization', 'N/A')}: {e.get('content', '')[:300]}" for e in experiences[:4]]
+        exp_texts = [
+            f"- {e.get('title')} at {e.get('organization', 'N/A')}: {e.get('content', '')[:300]}"
+            for e in experiences[:4]
+        ]
         context_parts.append("Experiences:\n" + "\n".join(exp_texts))
     if prefs:
         context_parts.append("Preferences:\n" + "\n".join(f"- {p.get('rule')}" for p in prefs[:5]))
@@ -103,13 +113,7 @@ async def artifact_draft_node(
     type_prompt = _ARTIFACT_PROMPTS.get(artifact_type, "Generate the requested document.")
     lang_instruction = "Write in Chinese (Simplified)." if "zh" in lang else "Write in English."
 
-    # Emit started event
     title = _artifact_title(artifact_type, intent)
-    started_event: ArtifactStartedEvent = {
-        "event": "artifact.started",
-        "artifact_type": artifact_type,
-        "title": title,
-    }
 
     content = await provider.chat(
         [
@@ -125,11 +129,9 @@ async def artifact_draft_node(
     content_str = str(content)
     word_count = len(content_str.split())
 
-    # Emit delta + completed
-    delta_event: ArtifactDeltaEvent = {"event": "artifact.delta", "content": content_str}
-
-    # Save artifact to DB
+    # Save artifact to DB (archive copy regardless of render path)
     services = services_from_config(config)
+    real_artifact_id = f"artifact-temp-{artifact_type}"
     try:
         if services is None:
             raise RuntimeError("Tool services unavailable")
@@ -140,32 +142,50 @@ async def artifact_draft_node(
                 "type": artifact_type,
                 "title": title,
                 "content": content_str,
+                "thread_id": thread_id_from_config(config),
                 "source_jd_id": state.get("workspace", {}).get("jd_id"),
                 "source_experience_ids": [e.get("id") for e in experiences],
             },
         )
         real_artifact_id = artifact.id
     except Exception:
-        real_artifact_id = f"artifact-temp-{artifact_type}"
+        pass
     workspace = dict(state.get("workspace", {}))
     if not real_artifact_id.startswith("artifact-temp-"):
         workspace["artifact_id"] = real_artifact_id
 
-    completed_event: ArtifactCompletedEvent = {
-        "event": "artifact.completed",
-        "artifact_id": real_artifact_id,
-        "title": title,
-        "word_count": word_count,
-    }
-
     existing_events = state.get("pending_sse_events", [])
 
+    if artifact_type in _CANVAS_ARTIFACT_TYPES:
+        # Canvas path: emit SSE events so the panel renders the content.
+        started_event: ArtifactStartedEvent = {
+            "event": "artifact.started",
+            "artifact_type": artifact_type,
+            "title": title,
+        }
+        delta_event: ArtifactDeltaEvent = {"event": "artifact.delta", "content": content_str}
+        completed_event: ArtifactCompletedEvent = {
+            "event": "artifact.completed",
+            "artifact_id": real_artifact_id,
+            "title": title,
+            "word_count": word_count,
+        }
+        return {
+            "artifact_type": artifact_type,
+            "artifact_content": content_str,
+            "assistant_message": f"I've created your {artifact_type.replace('_', ' ')}. You can view and edit it in the artifact panel.",
+            "workspace": workspace,
+            "pending_sse_events": [*existing_events, started_event, delta_event, completed_event],
+        }
+
+    # Default path: full Markdown goes directly into thread_messages via assistant_message.
+    # No artifact.* SSE events — the chat bubble IS the content.
     return {
         "artifact_type": artifact_type,
         "artifact_content": content_str,
-        "assistant_message": f"I've created your {artifact_type.replace('_', ' ')}. You can view and edit it in the artifact panel.",
+        "assistant_message": content_str,
         "workspace": workspace,
-        "pending_sse_events": [*existing_events, started_event, delta_event, completed_event],
+        "pending_sse_events": existing_events,
     }
 
 

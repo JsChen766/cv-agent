@@ -169,3 +169,78 @@ async def test_router_routes_self_intro_artifact_without_llm() -> None:
 
     assert result["target_subgraph"] == "artifact"
     assert result["artifact_type"] == "self_intro"
+
+
+# ---------------------------------------------------------------------------
+# Multi-turn routing regression: same thread, different intents
+# Verifies that a stale extracted_params from a prior upload turn does NOT
+# hijack routing in subsequent turns (the _build_initial_state fix clears
+# extracted_params to {} at the start of every turn).
+# ---------------------------------------------------------------------------
+
+
+async def test_multi_turn_upload_then_jd_then_resume_generation() -> None:
+    """Turn 1: file upload → experience_import (extracted_params populated).
+    Turn 2: JD pasted, extracted_params cleared to {} → jd.
+    Turn 3: resume generation request, extracted_params cleared to {} → resume_generation.
+    """
+    # --- Turn 1: file attached, extracted_params has upload data ---
+    turn1 = await router_node(
+        {
+            "messages": [
+                {"role": "user", "content": "帮我导入这份简历", "turn_id": "t1"}
+            ],
+            "workspace": {"file_id": "file-abc"},
+            "extracted_params": {
+                "raw_text": "Work: Senior Engineer at Acme Corp 2020-2024",
+                "source": "uploaded_file",
+                "file_id": "file-abc",
+            },
+            "pending_sse_events": [],
+        }
+    )
+    assert turn1["target_subgraph"] == "experience_import", (
+        f"Turn 1 should route to experience_import, got {turn1['target_subgraph']}"
+    )
+
+    # --- Turn 2: no file this turn; _build_initial_state sets extracted_params={} ---
+    # Simulates what happens after the fix: checkpointer stale value is overwritten.
+    turn2 = await router_node(
+        {
+            "messages": [
+                {
+                    "role": "user",
+                    "content": "这是我要投的 JD：高级后端工程师，要求 Python FastAPI PostgreSQL。帮我保存这个 JD。",
+                    "turn_id": "t2",
+                }
+            ],
+            "workspace": {},
+            # extracted_params cleared to {} by _build_initial_state (the fix)
+            "extracted_params": {},
+            "pending_sse_events": [],
+        }
+    )
+    assert turn2["target_subgraph"] == "jd", (
+        f"Turn 2 should route to jd, got {turn2['target_subgraph']}. "
+        "Likely cause: stale extracted_params['source']=='uploaded_file' not cleared."
+    )
+
+    # --- Turn 3: resume generation request ---
+    turn3 = await router_node(
+        {
+            "messages": [
+                {
+                    "role": "user",
+                    "content": "根据这个 JD 帮我生成一版简历",
+                    "turn_id": "t3",
+                }
+            ],
+            "workspace": {},
+            # extracted_params cleared to {} by _build_initial_state (the fix)
+            "extracted_params": {},
+            "pending_sse_events": [],
+        }
+    )
+    assert turn3["target_subgraph"] == "resume_generation", (
+        f"Turn 3 should route to resume_generation, got {turn3['target_subgraph']}"
+    )

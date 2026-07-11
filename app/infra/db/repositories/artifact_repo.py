@@ -50,20 +50,29 @@ class PostgresArtifactRepository:
             )
         return self._to_artifact(row) if row else None
 
+    async def get_latest_by_thread(self, thread_id: str) -> Artifact | None:
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT * FROM artifacts WHERE thread_id = $1 ORDER BY created_at DESC LIMIT 1",
+                thread_id,
+            )
+        return self._to_artifact(row) if row else None
+
     async def create(self, artifact_id: str, user_id: str, data: dict[str, object]) -> Artifact:
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(
                 """
                 INSERT INTO artifacts
-                    (id, user_id, type, title, content, source_jd_id,
+                    (id, user_id, type, title, content, thread_id, source_jd_id,
                      source_experience_ids, word_count)
-                VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb,$8)
+                VALUES ($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9)
                 RETURNING *
                 """,
                 artifact_id, user_id,
                 data.get("type", "other"),
                 data.get("title", ""),
                 data.get("content", ""),
+                data.get("thread_id"),
                 data.get("source_jd_id"),
                 json.dumps(data.get("source_experience_ids", [])),
                 data.get("word_count", 0),
@@ -111,6 +120,7 @@ class PostgresArtifactRepository:
             type=row["type"],
             title=row["title"],
             content=row["content"],
+            thread_id=row["thread_id"] if "thread_id" in row.keys() else None,
             source_jd_id=row["source_jd_id"],
             source_experience_ids=parse_jsonb(row["source_experience_ids"]) or [],
             word_count=row["word_count"],

@@ -116,19 +116,97 @@ async def get_thread(
     try:
         from app.infra.db.connection import get_pool as _get_pool
         _pool = _get_pool()
-        thread = await _require_thread(_pool, thread_id, user_id)
+        raw_thread = await _require_thread(_pool, thread_id, user_id)
 
         async with _pool.acquire() as conn:
-            messages = await conn.fetch(
-                "SELECT * FROM thread_messages WHERE thread_id = $1 ORDER BY created_at ASC",
+            msg_rows = await conn.fetch(
+                "SELECT id, role, content, metadata, created_at FROM thread_messages "
+                "WHERE thread_id = $1 ORDER BY created_at ASC",
                 thread_id,
             )
-        msg_list = [dict(m) for m in messages]
-    except RuntimeError:
-        thread = {"id": thread_id, "title": "Conversation", "status": "active"}
-        msg_list = []
+            # Recover workspace: latest artifact, latest JD linked to this thread,
+            # latest resume linked to this thread.
+            artifact_row = await conn.fetchrow(
+                "SELECT id, type, title FROM artifacts WHERE thread_id = $1 ORDER BY created_at DESC LIMIT 1",
+                thread_id,
+            )
+            jd_row = await conn.fetchrow(
+                "SELECT id FROM jd_records WHERE source_thread_id = $1 ORDER BY created_at DESC LIMIT 1",
+                thread_id,
+            )
 
-    return ok({"thread": thread, "messages": msg_list, "workspace": {}}, request)
+    except RuntimeError:
+        raw_thread = {"id": thread_id, "title": "Conversation", "status": "active"}
+        msg_rows = []
+        artifact_row = None
+        jd_row = None
+
+    # Normalise thread fields to camelCase for frontend.
+    created_at = raw_thread.get("created_at")
+    updated_at = raw_thread.get("updated_at")
+    thread_out = {
+        "id": raw_thread.get("id"),
+        "title": raw_thread.get("title"),
+        "status": raw_thread.get("status"),
+        "createdAt": created_at.isoformat() if isinstance(created_at, datetime) else str(created_at or ""),
+        "updatedAt": updated_at.isoformat() if isinstance(updated_at, datetime) else str(updated_at or ""),
+    }
+
+    # Normalise messages.
+    messages_out = []
+    for row in msg_rows:
+        msg_created = row["created_at"]
+        meta = row["metadata"]
+        if isinstance(meta, str):
+            import json as _json
+            try:
+                meta = _json.loads(meta)
+            except Exception:
+                meta = {}
+        turn_id = meta.get("turn_id") if isinstance(meta, dict) else None
+        messages_out.append({
+            "id": row["id"],
+            "role": row["role"],
+            "content": row["content"],
+            "metadata": meta,
+            "turnId": turn_id,
+            "createdAt": msg_created.isoformat() if isinstance(msg_created, datetime) else str(msg_created or ""),
+        })
+
+    # Build workspace from DB relationships.
+    workspace: dict[str, object] = {}
+    if artifact_row:
+        workspace["artifact_id"] = artifact_row["id"]
+        workspace["artifact_type"] = artifact_row["type"]
+        workspace["artifact_title"] = artifact_row["title"]
+    if jd_row:
+        workspace["jd_id"] = jd_row["id"]
+
+    # Try to recover pending interrupt from the graph checkpointer.
+    interrupt_payload = None
+    checkpointer = _get_checkpointer_or_none()
+    if checkpointer is not None:
+        from app.graphs.main import get_graph
+        graph = get_graph(checkpointer)
+        cfg: RunnableConfig = {"configurable": {"thread_id": thread_id}}
+        try:
+            snapshot = await graph.aget_state(cfg)
+            if snapshot and getattr(snapshot, "next", None):
+                raw_interrupt = getattr(snapshot, "values", {}).get("interrupt_payload")
+                if isinstance(raw_interrupt, dict):
+                    interrupt_payload = cast("dict[str, object]", raw_interrupt)
+        except Exception:
+            pass
+
+    return ok(
+        {
+            "thread": thread_out,
+            "messages": messages_out,
+            "workspace": workspace,
+            "interrupt": interrupt_payload,
+        },
+        request,
+    )
 
 
 @router.patch("/{thread_id}")
@@ -305,6 +383,27 @@ async def discard_thread(
             )
         except Exception as exc:
             logger.warning("Discard signal recording failed: %s", exc)
+
+    # Drain the pending interrupt in the graph so the next turn starts fresh.
+    checkpointer = _get_checkpointer_or_none()
+    if checkpointer is not None:
+        from langgraph.types import Command
+
+        from app.graphs.main import get_graph
+
+        graph = get_graph(checkpointer)
+        configurable: dict[str, object] = {"thread_id": thread_id}
+        if _pool:
+            from app.api.deps import build_service_container
+            configurable["pool"] = _pool
+            configurable["services"] = build_service_container(_pool)
+        cfg: RunnableConfig = {"configurable": configurable}
+        try:
+            snapshot = await graph.aget_state(cfg)
+            if snapshot and getattr(snapshot, "next", None):
+                await graph.ainvoke(Command(resume={"action": "discard"}), config=cfg)
+        except Exception as exc:
+            logger.warning("Discard interrupt drain failed: %s", exc)
 
     return ok(
         {

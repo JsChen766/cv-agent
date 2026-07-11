@@ -14,6 +14,7 @@ from typing import Any, Literal, TypedDict
 
 # ── Payload sub-types ─────────────────────────────────────────────────────────
 
+
 class DiffOperation(TypedDict):
     op: Literal["insert", "delete", "equal"]
     text: str
@@ -28,6 +29,7 @@ class ScoreBreakdown(TypedDict):
 
 
 # ── Agent lifecycle events ────────────────────────────────────────────────────
+
 
 class AgentTurnStartedEvent(TypedDict):
     event: Literal["agent.turn.started"]
@@ -61,6 +63,7 @@ class AgentNodeCompletedEvent(TypedDict):
 
 
 # ── Tool events ───────────────────────────────────────────────────────────────
+
 
 class AgentToolStartedEvent(TypedDict):
     event: Literal["agent.tool.started"]
@@ -107,6 +110,7 @@ class AgentActivityUpdatedEvent(TypedDict, total=False):
 
 # ── Content diff events (resume canvas) ──────────────────────────────────────
 
+
 class ContentDiffStartedEvent(TypedDict):
     event: Literal["content.diff.started"]
     resume_id: str
@@ -126,6 +130,7 @@ class ContentDiffCompletedEvent(TypedDict):
 
 
 # ── Artifact events ───────────────────────────────────────────────────────────
+
 
 class ArtifactStartedEvent(TypedDict):
     event: Literal["artifact.started"]
@@ -147,6 +152,7 @@ class ArtifactCompletedEvent(TypedDict):
 
 # ── Message streaming ─────────────────────────────────────────────────────────
 
+
 class AgentMessageDeltaEvent(TypedDict):
     event: Literal["agent.message.delta"]
     content: str  # text chunk
@@ -158,6 +164,7 @@ class AgentMessageCompletedEvent(TypedDict):
 
 
 # ── Interrupt / completion / failure ─────────────────────────────────────────
+
 
 class InterruptActionOption(TypedDict):
     id: str
@@ -171,14 +178,18 @@ class InterruptVariantInfo(TypedDict):
     score: ScoreBreakdown
 
 
-class AgentInterruptEvent(TypedDict):
+class _AgentInterruptBase(TypedDict):
     event: Literal["agent.interrupt"]
     interrupt_id: str
-    type: Literal["resume_review", "experience_import", "confirm_action"]
+    type: Literal["resume_review", "experience_import", "confirm_action", "jd_save"]
     message: str
-    variants: list[InterruptVariantInfo]   # for resume_review
-    candidates: list[dict[str, Any]]       # for experience_import
     action_options: list[InterruptActionOption]
+
+
+class AgentInterruptEvent(_AgentInterruptBase, total=False):
+    variants: list[InterruptVariantInfo]  # for resume_review
+    candidates: list[dict[str, Any]]  # for experience_import
+    candidate: dict[str, Any]  # for jd_save
 
 
 class AgentCompletedEvent(TypedDict):
@@ -223,6 +234,7 @@ SSEEvent = (
 
 
 # ── Serialisation ─────────────────────────────────────────────────────────────
+
 
 def format_sse(event: dict[str, Any]) -> str:
     """Serialise an event dict to the SSE wire format.

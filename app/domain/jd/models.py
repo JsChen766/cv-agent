@@ -30,5 +30,6 @@ class JdRecord(BaseModel):
     target_role: str | None = None
     raw_text: str
     requirements: list[JdRequirement] = Field(default_factory=list)
+    source_thread_id: str | None = None
     created_at: datetime
     updated_at: datetime

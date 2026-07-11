@@ -117,8 +117,12 @@ async def review_import_node(state: MainState) -> dict[str, Any]:
     # This suspends graph execution; resumption passes a dict with
     # {"confirmed_candidates": [...]} back into the state.
     resume_value = interrupt(interrupt_payload)
-    confirmed = resume_value.get("confirmed_candidates", candidates) if isinstance(resume_value, dict) else candidates
 
+    # User discarded or a new chat message preempted this interrupt.
+    if isinstance(resume_value, dict) and resume_value.get("action") in ("preempted", "discard"):
+        return {**new_state, "import_candidates": [], "interrupt_payload": None, "assistant_message": "已取消导入。"}
+
+    confirmed = resume_value.get("confirmed_candidates", candidates) if isinstance(resume_value, dict) else candidates
     return {**new_state, "import_candidates": confirmed, "interrupt_payload": None}
 
 

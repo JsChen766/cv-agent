@@ -157,27 +157,44 @@ async def stream_graph_events(
 def _build_initial_state(
     thread_id: str,
     user_id: str,
-    message: str,
+    messages: list[dict[str, object]],
     workspace: Mapping[str, object] | None,
     turn_id: str,
 ) -> MainState:
-    """Build the initial state dict for a new turn."""
+    """Build the initial state dict for a new turn.
+
+    `messages` should be the full conversation list for this turn (historical
+    messages from the DB plus the current user message).  All turn-scoped
+    routing and generation fields are explicitly reset so a fresh turn is never
+    short-circuited by stale checkpoint state.
+    """
     return {
         "thread_id": thread_id,
         "user_id": user_id,
-        "messages": [{"role": "user", "content": message, "turn_id": turn_id}],
+        "messages": messages,  # type: ignore[typeddict-item]
         "workspace": cast("ActiveWorkspace", dict(workspace or {})),
         "pending_sse_events": [],
         "current_turn_id": turn_id,
         "turn_count": 0,
-        # Explicitly clear routing/interrupt fields so a fresh turn is not
-        # short-circuited by a stale preset from the previous turn's
-        # checkpointer state (e.g. a prior open_ended run leaving
-        # target_subgraph="open_ended" pinned).
+        # ── Reset all turn-scoped fields ──────────────────────────────────
         "target_subgraph": None,
         "intent_description": None,
         "assistant_message": None,
         "interrupt_payload": None,
+        "extracted_params": {},
+        "context_hints": [],
+        "router_confidence": 0.0,
+        "artifact_type": None,
+        "resume_variants": [],
+        "import_candidates": [],
+        "current_diff": None,
+        "review_result": None,
+        "review_iteration": 0,
+        "assembled_jd_text": None,
+        "assembled_experiences": [],
+        "assembled_guideline_instructions": [],
+        "assembled_preferences": [],
+        "assembled_user_profile": None,
     }
 
 

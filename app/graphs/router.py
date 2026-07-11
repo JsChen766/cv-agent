@@ -18,7 +18,7 @@ from app.providers.factory import get_provider
 
 class RouterOutput(BaseModel):
     target_subgraph: Literal[
-        "experience_import", "jd", "resume_generation", "artifact", "open_ended"
+        "experience_import", "jd", "resume_generation", "artifact", "open_ended", "clarify"
     ]
     intent_description: str
     artifact_type: str | None = None
@@ -29,13 +29,22 @@ class RouterOutput(BaseModel):
 
 _ROUTER_SYSTEM = """You are a routing agent for a resume assistant application.
 
-Analyse the user's message and determine which subgraph should handle it:
+Analyse the user's LATEST message (ignore what prior turns were doing) and determine which subgraph should handle it.
+The user can freely switch topics at any time — do NOT carry over the previous intent.
 
+Routing options:
 - "experience_import": User wants to add/import work experiences, paste resume content, or upload a file with experiences.
 - "jd": User wants to save, manage, or discuss a job description.
 - "resume_generation": User wants to generate, improve, or modify their resume.
 - "artifact": User wants to create a cover letter, self-introduction, LinkedIn summary, match report, interview prep, or any other document artifact.
-- "open_ended": General questions, career advice, follow-up questions, or anything that doesn't fit the above.
+- "open_ended": General questions, career advice, follow-up questions, or anything that doesn't clearly fit the above.
+- "clarify": The user's intent is ambiguous — you cannot confidently determine what they want. Use this to ask for clarification.
+
+Rules:
+- Always route based on the CURRENT message, not what previous turns did.
+- workspace context (jd_id, resume_id) is just reference — it does NOT force a routing decision.
+- Use "clarify" when confidence < 0.55 and the message doesn't fit any clear category.
+- Use "open_ended" for confidence 0.55–0.70 fuzzy matches.
 
 Also extract:
 - intent_description: a clear 1-sentence description of what the user wants (used as generation prompt)
@@ -43,8 +52,6 @@ Also extract:
 - context_hints: list of context elements needed (e.g. ["active_jd", "experiences", "profile"])
 - extracted_params: any structured params extracted (e.g. {"jd_id": "...", "target_role": "..."})
 - confidence: your confidence in this routing decision (0.0-1.0)
-
-If confidence < 0.6, use "open_ended".
 """
 
 
@@ -173,7 +180,9 @@ async def router_node(state: MainState) -> dict[str, object]:
 
 def route_decision(state: MainState) -> str:
     """Conditional edge: returns the target subgraph name."""
-    return state.get("target_subgraph") or "open_ended"
+    target = state.get("target_subgraph") or "open_ended"
+    valid = {"experience_import", "jd", "resume_generation", "artifact", "open_ended", "clarify"}
+    return target if target in valid else "open_ended"
 
 
 def _heuristic_route(

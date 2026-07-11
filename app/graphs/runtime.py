@@ -14,3 +14,9 @@ def services_from_config(config: RunnableConfig | None) -> ServiceContainer | No
 def pool_from_config(config: RunnableConfig | None) -> object | None:
     configurable = (config or {}).get("configurable", {})
     return configurable.get("pool")
+
+
+def thread_id_from_config(config: RunnableConfig | None) -> str | None:
+    configurable = (config or {}).get("configurable", {})
+    value = configurable.get("thread_id")
+    return str(value) if value else None

@@ -361,6 +361,10 @@ async def output_node(
     # LangGraph interrupt — suspends execution here
     resume_value = interrupt(payload)
 
+    # User discarded or a new chat message preempted this interrupt.
+    if isinstance(resume_value, dict) and resume_value.get("action") in ("preempted", "discard"):
+        return {"interrupt_payload": None, "assistant_message": ""}
+
     return {
         "assistant_message": _resume_confirmation_message(resume_value),
         "interrupt_payload": None,

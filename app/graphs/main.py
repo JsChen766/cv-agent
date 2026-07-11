@@ -9,6 +9,7 @@ from typing import Any
 from langgraph.graph import END, START, StateGraph
 
 from app.graphs.artifact.graph import build_artifact_subgraph
+from app.graphs.clarify import clarify_node
 from app.graphs.experience.graph import build_experience_import_subgraph
 from app.graphs.jd.graph import build_jd_subgraph
 from app.graphs.open_ended import open_ended_node
@@ -30,6 +31,7 @@ def build_main_graph(checkpointer: Any | None = None) -> Any:
     # ── Nodes ──────────────────────────────────────────────────────────────────
     builder.add_node("router", router_node)
     builder.add_node("open_ended", open_ended_node)
+    builder.add_node("clarify", clarify_node)
     builder.add_node("jd", jd_subgraph)
     builder.add_node("resume_generation", resume_subgraph)
     builder.add_node("artifact", artifact_subgraph)
@@ -46,6 +48,7 @@ def build_main_graph(checkpointer: Any | None = None) -> Any:
             "resume_generation": "resume_generation",
             "artifact": "artifact",
             "open_ended": "open_ended",
+            "clarify": "clarify",
         },
     )
     builder.add_edge("experience_import", END)
@@ -53,6 +56,7 @@ def build_main_graph(checkpointer: Any | None = None) -> Any:
     builder.add_edge("resume_generation", END)
     builder.add_edge("artifact", END)
     builder.add_edge("open_ended", END)
+    builder.add_edge("clarify", END)
 
     # ── Compile ────────────────────────────────────────────────────────────────
     if checkpointer is not None:

@@ -153,6 +153,8 @@ async def _confirm_and_execute_tool(
 
     resume_value = interrupt(payload)
     action = resume_value.get("action") if isinstance(resume_value, dict) else None
+    if action in ("preempted", "discard"):
+        return ToolResult(status="failed", message="Action was cancelled.")
     if action not in (None, "confirm", "accept"):
         return ToolResult(status="failed", message=f"Tool '{confirmation.tool.name}' was not confirmed.")
 

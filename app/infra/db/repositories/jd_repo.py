@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import builtins
+import contextlib
 import json
 from hashlib import sha1
 from typing import cast
@@ -32,7 +33,7 @@ class PostgresJdRepository:
         values.append(limit + 1)
         sql = f"""
             SELECT * FROM jd_records
-            WHERE {' AND '.join(conditions)}
+            WHERE {" AND ".join(conditions)}
             ORDER BY created_at DESC, id
             LIMIT ${idx}
         """
@@ -59,16 +60,24 @@ class PostgresJdRepository:
         company: str | None = None,
         target_role: str | None = None,
         requirements: builtins.list[JdRequirement] | None = None,
+        source_thread_id: str | None = None,
     ) -> JdRecord:
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(
                 """
-                INSERT INTO jd_records (id, user_id, title, company, target_role, raw_text, requirements)
-                VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb)
+                INSERT INTO jd_records
+                    (id, user_id, title, company, target_role, raw_text, requirements, source_thread_id)
+                VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb,$8)
                 RETURNING *
                 """,
-                jd_id, user_id, title, company, target_role, raw_text,
+                jd_id,
+                user_id,
+                title,
+                company,
+                target_role,
+                raw_text,
                 json.dumps([r.model_dump(mode="json") for r in (requirements or [])]),
+                source_thread_id,
             )
         if row is None:
             raise RuntimeError("Failed to create JD")
@@ -85,7 +94,8 @@ class PostgresJdRepository:
                 WHERE id=$2
                 RETURNING *
                 """,
-                json.dumps([r.model_dump(mode="json") for r in requirements]), jd_id,
+                json.dumps([r.model_dump(mode="json") for r in requirements]),
+                jd_id,
             )
         if row is None:
             raise RuntimeError(f"Failed to update JD requirements: {jd_id}")
@@ -93,14 +103,15 @@ class PostgresJdRepository:
 
     async def delete(self, user_id: str, jd_id: str) -> None:
         async with self._pool.acquire() as conn:
-            await conn.execute(
-                "DELETE FROM jd_records WHERE id=$1 AND user_id=$2", jd_id, user_id
-            )
+            await conn.execute("DELETE FROM jd_records WHERE id=$1 AND user_id=$2", jd_id, user_id)
 
     @staticmethod
     def _to_jd(row: asyncpg.Record) -> JdRecord:
         raw_reqs = parse_jsonb(row["requirements"]) or []
         requirements = [_to_requirement(r, idx) for idx, r in enumerate(raw_reqs)]
+        source_thread_id: str | None = None
+        with contextlib.suppress(KeyError, IndexError):
+            source_thread_id = row["source_thread_id"]
         return JdRecord(
             id=row["id"],
             user_id=row["user_id"],
@@ -109,6 +120,7 @@ class PostgresJdRepository:
             target_role=row["target_role"],
             raw_text=row["raw_text"],
             requirements=requirements,
+            source_thread_id=source_thread_id,
             created_at=row["created_at"],
             updated_at=row["updated_at"],
         )

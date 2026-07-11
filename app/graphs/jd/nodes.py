@@ -1,6 +1,12 @@
 """JD subgraph nodes."""
 
+from __future__ import annotations
+
+import uuid
+from typing import Any
+
 from langchain_core.runnables import RunnableConfig
+from langgraph.types import interrupt
 
 from app.domain.jd.models import JdRequirementDraft, JdRequirementImportance
 from app.graphs.runtime import services_from_config
@@ -8,15 +14,13 @@ from app.graphs.state import MainState
 from app.providers.factory import get_provider
 
 
-async def save_jd_node(state: MainState) -> dict[str, object]:
-    """Extract JD info from user message and save it."""
+async def extract_jd_node(state: MainState) -> dict[str, Any]:
+    """Extract title/company/target_role from user message. Does NOT persist."""
     from pydantic import BaseModel
-
 
     messages = state.get("messages", [])
     extracted = state.get("extracted_params", {})
 
-    # If JD data already extracted by router, use it directly
     raw_text_value = extracted.get("raw_text") or extracted.get("jd_text")
     raw_text = raw_text_value if isinstance(raw_text_value, str) else None
     title_value = extracted.get("title") or extracted.get("jd_title")
@@ -27,16 +31,16 @@ async def save_jd_node(state: MainState) -> dict[str, object]:
     target_role = target_role_value if isinstance(target_role_value, str) else None
 
     if not raw_text:
-        # Extract from latest user message
         user_msgs = [m for m in messages if m["role"] == "user"]
         if user_msgs:
             raw_text = user_msgs[-1]["content"]
             title = title or "Job Description"
 
     if not raw_text:
-        return {"assistant_message": "I couldn't find a JD to save. Please paste the job description."}
+        return {
+            "assistant_message": "I couldn't find a JD to save. Please paste the job description."
+        }
 
-    # Use LLM to extract structured JD info
     provider = get_provider()
 
     class JdInfo(BaseModel):
@@ -46,7 +50,10 @@ async def save_jd_node(state: MainState) -> dict[str, object]:
 
     jd_info = await provider.chat_structured(
         [
-            {"role": "system", "content": "Extract the job title, company name, and target role from this job description. If not present, return None."},
+            {
+                "role": "system",
+                "content": "Extract the job title, company name, and target role from this job description. If not present, return None.",
+            },
             {"role": "user", "content": raw_text[:3000]},
         ],
         JdInfo,
@@ -66,8 +73,8 @@ async def save_jd_node(state: MainState) -> dict[str, object]:
 
 async def parse_requirements_node(
     state: MainState, config: RunnableConfig | None = None
-) -> dict[str, object]:
-    """Parse JD requirements from raw text."""
+) -> dict[str, Any]:
+    """Parse JD requirements from raw text. Stores in extracted_params; does NOT persist."""
     from pydantic import BaseModel
 
     extracted = state.get("extracted_params", {})
@@ -105,51 +112,163 @@ async def parse_requirements_node(
 
     reqs: list[dict[str, str]] = []
     if result:
-        import uuid
         reqs = [
-            {"id": str(uuid.uuid4()), "text": r.text, "category": r.category, "importance": r.importance}
+            {
+                "id": str(uuid.uuid4()),
+                "text": r.text,
+                "category": r.category,
+                "importance": r.importance,
+            }
             for r in result.requirements
         ]
 
-    services = services_from_config(config)
-    if services is None:
-        return {
-            "extracted_params": {**extracted, "requirements": reqs},
-        }
+    return {
+        "extracted_params": {**extracted, "requirements": reqs},
+    }
+
+
+async def jd_confirm_node(state: MainState) -> dict[str, Any]:
+    """Interrupt to ask the user whether to save the extracted JD."""
+    from app.core.events import AgentInterruptEvent
+
+    extracted = state.get("extracted_params", {})
 
     title_value = extracted.get("title")
     company_value = extracted.get("company")
     target_role_value = extracted.get("target_role")
+    raw_text_value = extracted.get("raw_text", "")
+    reqs_value = extracted.get("requirements", [])
+
+    candidate: dict[str, Any] = {
+        "title": title_value if isinstance(title_value, str) else "Job Description",
+        "company": company_value if isinstance(company_value, str) else None,
+        "target_role": target_role_value if isinstance(target_role_value, str) else None,
+        "raw_text": raw_text_value if isinstance(raw_text_value, str) else "",
+        "requirements": reqs_value if isinstance(reqs_value, list) else [],
+    }
+
+    interrupt_payload: AgentInterruptEvent = {
+        "event": "agent.interrupt",
+        "interrupt_id": str(uuid.uuid4()),
+        "type": "jd_save",
+        "message": "检测到一条 JD，是否加入匹配记录？",
+        "candidate": candidate,
+        "action_options": [
+            {"id": "confirm", "label": "加入", "description": "保存到 JD 匹配记录"},
+            {"id": "discard", "label": "忽略", "description": "不保存"},
+        ],
+    }
+
+    existing = state.get("pending_sse_events", [])
+    new_state: dict[str, Any] = {
+        "interrupt_payload": interrupt_payload,
+        "pending_sse_events": [*existing, dict(interrupt_payload)],
+    }
+
+    resume_value = interrupt(interrupt_payload)
+
+    # User discarded or a new chat message preempted this interrupt.
+    if isinstance(resume_value, dict) and resume_value.get("action") in ("preempted", "discard"):
+        return {**new_state, "interrupt_payload": None, "_jd_confirmed": False, "_jd_candidate": candidate}
+
+    confirmed = False
+    merged_candidate = candidate
+    if isinstance(resume_value, dict):
+        confirmed = bool(resume_value.get("confirmed", False))
+        if "candidate" in resume_value and isinstance(resume_value["candidate"], dict):
+            merged_candidate = {**candidate, **resume_value["candidate"]}
+
+    return {
+        **new_state,
+        "interrupt_payload": None,
+        "_jd_confirmed": confirmed,
+        "_jd_candidate": merged_candidate,
+    }
+
+
+async def jd_persist_node(state: MainState, config: RunnableConfig | None = None) -> dict[str, Any]:
+    """Persist JD if confirmed; update assistant_message and workspace."""
+    confirmed = state.get("_jd_confirmed", False)
+    candidate: dict[str, Any] = state.get("_jd_candidate") or {}  # type: ignore[assignment]
+    extracted = state.get("extracted_params", {})
+    existing = state.get("pending_sse_events", [])
+
+    if not confirmed:
+        completed_event = {
+            "event": "agent.completed",
+            "message": "已忽略该 JD。",
+            "data": {},
+        }
+        return {
+            "assistant_message": "已忽略该 JD。",
+            "pending_sse_events": [*existing, completed_event],
+            "_jd_confirmed": None,
+            "_jd_candidate": None,
+        }
+
+    services = services_from_config(config)
+    if services is None:
+        completed_event = {
+            "event": "agent.completed",
+            "message": "JD 服务不可用，无法保存。",
+            "data": {},
+        }
+        return {
+            "assistant_message": "JD 服务不可用，无法保存。",
+            "pending_sse_events": [*existing, completed_event],
+            "_jd_confirmed": None,
+            "_jd_candidate": None,
+        }
+
+    reqs_raw = candidate.get("requirements") or []
+    reqs: list[JdRequirementDraft] = []
+    if isinstance(reqs_raw, list):
+        reqs = [
+            JdRequirementDraft(
+                id=r.get("id") if isinstance(r, dict) else None,
+                text=str(r.get("text", "")) if isinstance(r, dict) else str(r),
+                category=str(r.get("category", "skill")) if isinstance(r, dict) else "skill",
+                importance=_normalize_importance(
+                    str(r.get("importance", "medium")) if isinstance(r, dict) else "medium"
+                ),
+            )
+            for r in reqs_raw
+            if r
+        ]
+
+    title = str(candidate.get("title") or "Job Description")
+    thread_id_value = state.get("thread_id")
+    source_thread_id = thread_id_value if isinstance(thread_id_value, str) else None
+
     jd = await services.jd.create_jd(
         state.get("user_id", ""),
-        title=title_value if isinstance(title_value, str) and title_value else "Job Description",
-        raw_text=raw_text,
-        company=company_value if isinstance(company_value, str) else None,
-        target_role=target_role_value if isinstance(target_role_value, str) else None,
-        requirements=[
-            JdRequirementDraft(
-                id=req["id"],
-                text=req["text"],
-                category=req["category"],
-                importance=_normalize_importance(req["importance"]),
-            )
-            for req in reqs
-        ],
+        title=title,
+        raw_text=str(candidate.get("raw_text") or ""),
+        company=str(candidate["company"]) if candidate.get("company") else None,
+        target_role=str(candidate["target_role"]) if candidate.get("target_role") else None,
+        requirements=reqs,
+        source_thread_id=source_thread_id,
     )
+
     workspace = dict(state.get("workspace", {}))
     workspace["jd_id"] = jd.id
-    existing = state.get("pending_sse_events", [])
+
     completed_event = {
         "event": "agent.completed",
-        "message": f"Saved JD '{jd.title}' with {len(jd.requirements)} requirement(s).",
+        "message": f"已加入 JD 匹配记录：{jd.title}",
         "data": {"jd_id": jd.id, "requirements_count": len(jd.requirements)},
     }
 
     return {
-        "assistant_message": f"Saved JD '{jd.title}' with {len(jd.requirements)} requirement(s).",
+        "assistant_message": f"已加入 JD 匹配记录：{jd.title}",
         "workspace": workspace,
-        "extracted_params": {**extracted, "requirements": [r.model_dump() for r in jd.requirements]},
+        "extracted_params": {
+            **extracted,
+            "requirements": [r.model_dump() for r in jd.requirements],
+        },
         "pending_sse_events": [*existing, completed_event],
+        "_jd_confirmed": None,
+        "_jd_candidate": None,
     }
 
 

@@ -10,7 +10,7 @@ from pydantic import BaseModel
 
 from app.domain.jd.models import JdRecord, JdRequirement
 from app.domain.resume.models import Resume, ResumeVariant, ResumeVariantCreate
-from app.graphs.jd.nodes import parse_requirements_node
+from app.graphs.jd.nodes import jd_persist_node, parse_requirements_node
 from app.graphs.resume.nodes import output_node
 from app.graphs.resume.state import ResumeGenerationState
 from app.tools.base import ServiceContainer
@@ -51,6 +51,7 @@ class _FakeJdService:
         company: str | None = None,
         target_role: str | None = None,
         requirements: list[Any] | None = None,
+        source_thread_id: str | None = None,
     ) -> JdRecord:
         now = datetime.now(UTC)
         record = JdRecord(
@@ -66,6 +67,7 @@ class _FakeJdService:
                 )
                 for req in (requirements or [])
             ],
+            source_thread_id=source_thread_id,
             created_at=now,
             updated_at=now,
         )
@@ -76,11 +78,13 @@ class _FakeJdService:
 async def test_jd_graph_persists_saved_jd_and_returns_workspace(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """parse_requirements_node extracts requirements; jd_persist_node writes to DB when confirmed."""
     service = _FakeJdService()
     services = ServiceContainer.model_construct(jd=service)
     monkeypatch.setattr("app.graphs.jd.nodes.get_provider", lambda: _FakeJdProvider())
 
-    result = await parse_requirements_node(
+    # Step 1: parse_requirements_node only extracts, does NOT persist
+    parse_result = await parse_requirements_node(
         {
             "user_id": "user-1",
             "workspace": {},
@@ -94,12 +98,34 @@ async def test_jd_graph_persists_saved_jd_and_returns_workspace(
         },
         {"configurable": {"services": services}},
     )
+    assert service.created is None, "parse_requirements_node must NOT persist"
+    extracted = cast("dict[str, list[dict[str, str]]]", parse_result["extracted_params"])
+    assert extracted["requirements"][0]["text"] == "Python backend development"
+
+    # Step 2: jd_persist_node writes to DB when confirmed
+    persist_result = await jd_persist_node(
+        {
+            "user_id": "user-1",
+            "thread_id": "thread-test",
+            "_jd_confirmed": True,
+            "_jd_candidate": {
+                "title": "高级后端工程师",
+                "company": "Acme",
+                "target_role": "Backend Engineer",
+                "raw_text": "高级后端工程师，要求 Python、FastAPI、PostgreSQL。",
+                "requirements": extracted["requirements"],
+            },
+            "extracted_params": extracted,
+            "workspace": {},
+            "pending_sse_events": [],
+        },
+        {"configurable": {"services": services}},
+    )
 
     assert service.created is not None
-    assert result["workspace"] == {"jd_id": "jd-1"}
-    assert result["assistant_message"] == "Saved JD '高级后端工程师' with 1 requirement(s)."
-    extracted = cast("dict[str, list[dict[str, str]]]", result["extracted_params"])
-    assert extracted["requirements"][0]["text"] == "Python backend development"
+    assert persist_result["workspace"] == {"jd_id": "jd-1"}
+    assert "已加入 JD 匹配记录" in persist_result["assistant_message"]
+    assert service.created.source_thread_id == "thread-test"
 
 
 class _FakeResumeService:
@@ -164,7 +190,17 @@ async def test_resume_output_creates_resume_for_natural_language_flow(
     assert result["workspace"] == {"jd_id": "jd-1", "resume_id": "resume-1"}
     pending_events = cast("list[dict[str, Any]]", result["pending_sse_events"])
     assert pending_events[0]["variants"] == [
-        {"id": "variant-1", "title": "Draft", "score": {"overall": 0.0, "relevance": 0.0, "clarity": 0.0, "evidence_strength": 0.0, "quantified_impact": 0.0}}
+        {
+            "id": "variant-1",
+            "title": "Draft",
+            "score": {
+                "overall": 0.0,
+                "relevance": 0.0,
+                "clarity": 0.0,
+                "evidence_strength": 0.0,
+                "quantified_impact": 0.0,
+            },
+        }
     ]
 
 
@@ -189,9 +225,7 @@ async def test_resume_subgraph_interrupt_persisted_via_checkpointer() -> None:
 
     result = await graph.ainvoke(state, config=config)
 
-    assert "__interrupt__" in result, (
-        "Graph should have interrupted, but __interrupt__ is missing"
-    )
+    assert "__interrupt__" in result, "Graph should have interrupted, but __interrupt__ is missing"
 
     state_after = await graph.aget_state(config)
     assert state_after.next, "Graph state should have a pending interrupt after suspension"

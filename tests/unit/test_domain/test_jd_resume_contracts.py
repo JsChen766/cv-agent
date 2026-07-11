@@ -7,6 +7,35 @@ from app.domain.resume.models import ResumeItem, ResumeItemPatch
 from app.domain.resume.service import ResumeService
 
 
+async def test_create_jd_passes_source_thread_id_to_repository() -> None:
+    repo = MagicMock()
+
+    async def create_jd_row(*args: object, **kwargs: object) -> JdRecord:
+        assert kwargs.get("source_thread_id") == "thread-xyz"
+        return JdRecord(
+            id="jd-2",
+            user_id="user-1",
+            title="ML Engineer",
+            raw_text="Train models",
+            requirements=[],
+            source_thread_id="thread-xyz",
+            created_at=datetime.now(),
+            updated_at=datetime.now(),
+        )
+
+    repo.create = AsyncMock(side_effect=create_jd_row)
+    service = JdService(repo)
+
+    result = await service.create_jd(
+        "user-1",
+        title="ML Engineer",
+        raw_text="Train models",
+        source_thread_id="thread-xyz",
+    )
+
+    assert result.source_thread_id == "thread-xyz"
+
+
 async def test_create_jd_generates_requirement_id_when_missing() -> None:
     repo = MagicMock()
     repo.create = AsyncMock()

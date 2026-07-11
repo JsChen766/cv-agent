@@ -34,6 +34,7 @@ class JdService:
         company: str | None = None,
         target_role: str | None = None,
         requirements: list[JdRequirementDraft] | None = None,
+        source_thread_id: str | None = None,
     ) -> JdRecord:
         jd_id = generate_id(JD_PREFIX)
         return await self._repo.create(
@@ -44,6 +45,7 @@ class JdService:
             company=company,
             target_role=target_role,
             requirements=self._normalize_requirements(requirements or []),
+            source_thread_id=source_thread_id,
         )
 
     async def update_requirements(
