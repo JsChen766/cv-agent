@@ -13,6 +13,8 @@ from app.api.routes.copilot import (
     RewriteExperiencePayload,
     VariantPayload,
     _resume_canvas_metadata,
+    _resume_generation_thread_title,
+    _resume_generation_user_message,
 )
 from app.api.routes.product.jd import _serialize
 from app.api.routes.threads import _hydrate_resume_canvas_resume_id
@@ -105,6 +107,23 @@ def test_resume_canvas_metadata_keeps_renderable_snapshot_and_variant_reference(
 
 def test_resume_canvas_metadata_ignores_non_resume_interrupts() -> None:
     assert _resume_canvas_metadata({"type": "experience_import"}, {}) is None
+
+
+def test_resume_generation_user_message_contains_full_jd_and_instruction() -> None:
+    message = _resume_generation_user_message("  Build APIs and own platform reliability.  ")
+
+    assert "Build APIs and own platform reliability." in message
+    assert message.endswith("请根据以上 JD 生成一份针对性简历。")
+
+
+def test_resume_generation_thread_title_prefers_company_and_role() -> None:
+    title = _resume_generation_thread_title(
+        company="Example Corp",
+        target_role="Platform Engineer",
+        jd_title="Fallback title",
+    )
+
+    assert title == "生成简历｜Example Corp · Platform Engineer"
 
 
 def test_resume_canvas_metadata_recovers_resume_id_from_persisted_variant() -> None:

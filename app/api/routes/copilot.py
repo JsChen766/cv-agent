@@ -368,6 +368,40 @@ async def _persist_message(
         return None
 
 
+def _resume_generation_user_message(raw_text: str) -> str:
+    """Build the durable user turn shown when a JD starts a resume conversation."""
+    return f"这是目标岗位的 JD：\n\n{raw_text.strip()}\n\n请根据以上 JD 生成一份针对性简历。"
+
+
+def _resume_generation_thread_title(
+    *,
+    company: str | None,
+    target_role: str | None,
+    jd_title: str,
+) -> str:
+    subject = " · ".join(part.strip() for part in (company, target_role) if part and part.strip())
+    if not subject:
+        subject = jd_title.strip() or "目标岗位"
+    return f"生成简历｜{subject}"[:80]
+
+
+async def _set_thread_title(
+    pool: asyncpg.Pool,
+    *,
+    thread_id: str,
+    title: str,
+) -> None:
+    try:
+        async with pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE threads SET title = $1, updated_at = NOW() WHERE id = $2",
+                title,
+                thread_id,
+            )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Failed to update title for thread %s: %s", thread_id, exc)
+
+
 def _resume_canvas_metadata(
     interrupt: Mapping[str, object] | None,
     workspace: Mapping[str, object] | None,
@@ -1164,8 +1198,9 @@ async def _run_generate_resume_from_jd_action(
 ) -> JSONResponse:
     from app.graphs.main import get_graph
 
+    action_pool = _require_action_pool(pool)
     thread_id, turn_id, workspace, services, graph_config = await _prepare_action_context(
-        body, user_id, pool
+        body, user_id, action_pool
     )
     jd = await services.jd.get_jd(user_id, payload.jdId)
     if body.clientState.activeResumeId:
@@ -1181,7 +1216,26 @@ async def _run_generate_resume_from_jd_action(
     workspace["jd_id"] = jd.id
     workspace["resume_id"] = resume.id
 
-    instruction = f"Generate a tailored resume for JD '{jd.title}'."
+    instruction = _resume_generation_user_message(jd.raw_text)
+    if body.threadId is None:
+        await _set_thread_title(
+            action_pool,
+            thread_id=thread_id,
+            title=_resume_generation_thread_title(
+                company=jd.company,
+                target_role=jd.target_role,
+                jd_title=jd.title,
+            ),
+        )
+        await _persist_message(
+            action_pool,
+            thread_id=thread_id,
+            role="user",
+            content=instruction,
+            turn_id=turn_id,
+            metadata={"source": "jd_match_detail", "jd_id": jd.id},
+        )
+
     initial_state = _build_initial_state(
         thread_id,
         user_id,
@@ -1211,13 +1265,23 @@ async def _run_generate_resume_from_jd_action(
         "I've generated a resume variant for review.",
     )
     canvas_message_id = await _persist_resume_canvas_message(
-        _require_action_pool(pool),
+        action_pool,
         thread_id=thread_id,
         turn_id=turn_id,
         workspace=workspace,
         interrupt=interrupt_payload,
         content=assistant_message,
     )
+    assistant_message_id = canvas_message_id
+    if assistant_message_id is None:
+        assistant_message_id = await _persist_message(
+            action_pool,
+            thread_id=thread_id,
+            role="assistant",
+            content=assistant_message,
+            turn_id=turn_id,
+            metadata={"interrupt": bool(interrupt_payload)},
+        )
     if canvas_message_id and interrupt_payload is not None:
         interrupt_payload["canvas_message_id"] = canvas_message_id
     return ok(
@@ -1227,7 +1291,7 @@ async def _run_generate_resume_from_jd_action(
             assistant_message,
             workspace,
             interrupt_payload,
-            canvas_message_id,
+            assistant_message_id,
         ),
         request,
     )
