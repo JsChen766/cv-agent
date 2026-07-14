@@ -203,11 +203,22 @@ async def draft_generation_node(state: ResumeGenerationState) -> dict[str, objec
             plan_lines.append("Coverage plan (guideline; final bullet mapping is yours to decide):\n" + "\n".join(coverage_lines))
         prompt_parts.append("\n".join(plan_lines))
     if experiences:
+        sorted_experiences = _sort_experiences_by_recency(experiences)
         prompt_parts.append(
-            "Source experiences (THE ONLY GROUND TRUTH — every date, organization, role, "
-            "metric, and technology in your output must come from this block; do not invent "
-            "or substitute):\n" + _format_experiences_for_prompt(experiences)
+            "Source experiences — sorted by recency (most recent first). "
+            "THE ONLY GROUND TRUTH: every date, organization, role, metric, and technology in "
+            "your output must come from this block; do not invent or substitute:\n"
+            + _format_experiences_for_prompt(sorted_experiences)
         )
+        match_tiers = _rank_experiences_by_jd_match(sorted_experiences, plan)
+        if match_tiers:
+            prompt_parts.append(
+                "JD-match ranking (higher tier = stronger JD match; use to allocate bullet counts):\n"
+                + "\n".join(
+                    f"- {exp_id}: tier={tier} (target_bullets={target})"
+                    for exp_id, tier, target in match_tiers
+                )
+            )
     if prefs:
         pref_rules = "\n".join(f"- {p.get('rule')}" for p in prefs[:8])
         prompt_parts.append(f"Writing preferences:\n{pref_rules}")
@@ -362,14 +373,136 @@ Emit sections in this order, skipping any with zero relevant data:
 
 1. `summary` — one item; `raw_text` is a 3–5 sentence paragraph derived only from source facts.
 2. `education` — one item per source `category="education"`. Include the degree in `title`, school in `organization`, dates, and put courses / GPA / honours in `raw_text` (a compact block); leave `bullets` empty.
-3. `experience` — one item per source `category="work"`. Populate `title`/`organization`/`role`/dates from source. Emit 3–6 `bullets`, each specific and quantified where the source supports it. Leave `raw_text` null.
+3. `experience` — one item per source `category="work"`. Populate `title`/`organization`/`role`/dates from source. Leave `raw_text` null.
 4. `project` — one item per source `category="project"`. Same bullet rules as experience.
 5. `skills` — one item with `raw_text` grouping skills by area (e.g. "编程语言：..."). Only include technologies actually appearing in source content or the JD. Leave `bullets` empty.
+
+## Experience & project selection rules (HARD)
+
+R1. **Coverage floor**: if the source contains at least one `category=work` experience, the `experience` section MUST contain ≥ 1 item. Same rule for `category=project` and the `project` section. Never omit a category that has source data.
+R2. **Recency-first**: source experiences are already sorted most-recent-first. Within each category, prefer items from the top of that category unless the JD-match ranking flags an older item as a stronger fit. Do NOT drop the most recent work item.
+R3. **Bullet count by JD match**: use the JD-match ranking block to decide how many bullets each item gets.
+    - tier=1 (top JD match): 5–6 bullets
+    - tier=2: 4–5 bullets
+    - tier=3 or unranked: 2–3 bullets
+    Each bullet must remain specific and quantified where the source supports it. Do NOT pad with generic filler to reach a count — if the source cannot support N bullets faithfully, emit fewer and stay honest.
 
 ## Language
 
 Match the source language for names and quantities; write connectives in the requested output language.
 """
+
+
+def _check_experience_composition(
+    structured: object,
+    experiences: list[dict[str, object]],
+) -> str | None:
+    """Deterministic gate: if the source has work/project experiences but the produced
+    resume dropped that whole section, return a revision instruction. Otherwise None.
+    """
+    if not isinstance(structured, dict) or not experiences:
+        return None
+
+    has_work_source = any(
+        isinstance(e, dict) and e.get("category") == "work" for e in experiences
+    )
+    has_project_source = any(
+        isinstance(e, dict) and e.get("category") == "project" for e in experiences
+    )
+    if not (has_work_source or has_project_source):
+        return None
+
+    def _section_has_items(section_type: str) -> bool:
+        for section in structured.get("sections") or []:
+            if not isinstance(section, dict) or section.get("type") != section_type:
+                continue
+            for item in section.get("items") or []:
+                if isinstance(item, dict) and (item.get("title") or item.get("bullets")):
+                    return True
+        return False
+
+    gaps: list[str] = []
+    if has_work_source and not _section_has_items("experience"):
+        gaps.append(
+            "the source contains work/internship experience(s) but the draft has no "
+            "`experience` section item — include at least the most recent one with 2+ bullets"
+        )
+    if has_project_source and not _section_has_items("project"):
+        gaps.append(
+            "the source contains project experience(s) but the draft has no `project` "
+            "section item — include at least the most recent one with 2+ bullets"
+        )
+    if not gaps:
+        return None
+    return "Fix experience composition: " + "; ".join(gaps) + "."
+
+
+def _sort_experiences_by_recency(
+    experiences: list[dict[str, object]],
+) -> list[dict[str, object]]:
+    """Sort experiences most-recent-first by start_date (YYYY-MM). Stable for unknown dates.
+
+    "present"/None end dates without a start_date fall to the bottom so the LLM sees genuine
+    dated experiences first. Category is not used as a secondary key — the LLM groups by
+    section itself.
+    """
+    def sort_key(exp: dict[str, object]) -> tuple[int, str]:
+        start = exp.get("start_date")
+        if isinstance(start, str) and start.strip():
+            return (0, start.strip())
+        end = exp.get("end_date")
+        if isinstance(end, str) and end.strip() and end.strip().lower() != "present":
+            return (0, end.strip())
+        return (1, "")
+
+    return sorted(experiences, key=sort_key, reverse=True)
+
+
+def _rank_experiences_by_jd_match(
+    experiences: list[dict[str, object]],
+    plan: dict[str, object],
+) -> list[tuple[str, int, str]]:
+    """Assign each experience a JD-match tier (1=top / 2=mid / 3=other) and a target bullet count.
+
+    Uses `matching_plan.coverage_plan` — how many JD requirements planned to lean on the
+    experience — as the proxy for match strength. Ties broken by recency (input order is
+    already most-recent-first).
+
+    Returns list of (source_experience_id, tier, target_bullets_hint).
+    """
+    coverage_plan = plan.get("coverage_plan") if isinstance(plan, dict) else None
+    hit_counts: dict[str, int] = {}
+    if isinstance(coverage_plan, list):
+        for entry in coverage_plan:
+            if not isinstance(entry, dict):
+                continue
+            ids = entry.get("planned_source_experience_ids") or []
+            if not isinstance(ids, list):
+                continue
+            for raw_id in ids:
+                key = str(raw_id)
+                hit_counts[key] = hit_counts.get(key, 0) + 1
+
+    if not hit_counts:
+        return []
+
+    max_hits = max(hit_counts.values())
+    ranked: list[tuple[str, int, str]] = []
+    for exp in experiences:
+        exp_id = exp.get("id")
+        if not isinstance(exp_id, str):
+            continue
+        hits = hit_counts.get(exp_id, 0)
+        if hits == 0:
+            tier, target = 3, "2-3"
+        elif hits >= max_hits:
+            tier, target = 1, "5-6"
+        elif hits >= max(1, max_hits - 1):
+            tier, target = 2, "4-5"
+        else:
+            tier, target = 3, "2-3"
+        ranked.append((exp_id, tier, target))
+    return ranked
 
 
 def _format_experiences_for_prompt(experiences: list[dict[str, object]]) -> str:
@@ -668,6 +801,21 @@ async def self_review_node(state: ResumeGenerationState) -> dict[str, object]:
                 "score_estimate": 0.3,
             },
             "revision_instruction": instruction,
+        }
+
+    composition_gap = _check_experience_composition(
+        variants[0].get("structured") or state.get("resume_structure"),
+        state.get("relevant_experiences") or [],
+    )
+    if composition_gap:
+        return {
+            "review_result": {
+                "verdict": "needs_revision",
+                "revision_instruction": composition_gap,
+                "issues": [composition_gap],
+                "score_estimate": 0.3,
+            },
+            "revision_instruction": composition_gap,
         }
 
     content = variants[0].get("content", "")
