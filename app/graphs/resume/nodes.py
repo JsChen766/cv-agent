@@ -379,12 +379,14 @@ Emit sections in this order, skipping any with zero relevant data:
 
 ## Experience & project selection rules (HARD)
 
-R1. **Coverage floor**: if the source contains at least one `category=work` experience, the `experience` section MUST contain ≥ 1 item. Same rule for `category=project` and the `project` section. Never omit a category that has source data.
-R2. **Recency-first**: source experiences are already sorted most-recent-first. Within each category, prefer items from the top of that category unless the JD-match ranking flags an older item as a stronger fit. Do NOT drop the most recent work item.
-R3. **Bullet count by JD match**: use the JD-match ranking block to decide how many bullets each item gets.
+R1. **Education is exhaustive**: the `education` section MUST contain ONE item for EVERY source experience with `category=education`. Never omit an education entry — even if it looks less relevant to the JD. This is non-negotiable.
+R2. **Broad inclusion for work / project (页面缩减靠后续步骤,别在这里做)**: include EVERY `category=work` source as one `experience` item, and EVERY `category=project` source as one `project` item, unless the experience is truly, obviously unrelated to the target role (e.g. a completely different industry with zero transferable content). "Slightly related / tangential" counts as related — keep it. Err on the side of inclusion; downstream steps will trim to one page.
+    - Coverage floor: if the source has ≥1 work experience, `experience` section MUST have ≥1 item. Same for project.
+R3. **Recency-first, per section**: within EACH of the `experience` and `project` sections, order items strictly by end_date DESCENDING (most recent first). If end_date is missing use start_date. Never interleave categories; each item stays in its section. The `education` section follows the same rule.
+R4. **Bullet count by JD match**: use the JD-match ranking block to decide how many bullets each item gets.
     - tier=1 (top JD match): 5–6 bullets
     - tier=2: 4–5 bullets
-    - tier=3 or unranked: 2–3 bullets
+    - tier=3 or unranked (but included because "沾边"): 2–3 bullets
     Each bullet must remain specific and quantified where the source supports it. Do NOT pad with generic filler to reach a count — if the source cannot support N bullets faithfully, emit fewer and stay honest.
 
 ## Language
@@ -397,37 +399,68 @@ def _check_experience_composition(
     structured: object,
     experiences: list[dict[str, object]],
 ) -> str | None:
-    """Deterministic gate: if the source has work/project experiences but the produced
-    resume dropped that whole section, return a revision instruction. Otherwise None.
+    """Deterministic gate for the produced resume's section composition:
+
+    - Every source `category="education"` must appear as an item in the education section
+      (exhaustive — no education entry may be dropped).
+    - If source has ≥1 work experience, the `experience` section must have ≥1 item.
+    - If source has ≥1 project experience, the `project` section must have ≥1 item.
+
+    Returns a revision instruction string if any gap is found, otherwise None.
     """
     if not isinstance(structured, dict) or not experiences:
         return None
 
+    edu_sources = [
+        e for e in experiences if isinstance(e, dict) and e.get("category") == "education"
+    ]
     has_work_source = any(
         isinstance(e, dict) and e.get("category") == "work" for e in experiences
     )
     has_project_source = any(
         isinstance(e, dict) and e.get("category") == "project" for e in experiences
     )
-    if not (has_work_source or has_project_source):
+    if not (edu_sources or has_work_source or has_project_source):
         return None
 
-    def _section_has_items(section_type: str) -> bool:
+    def _section_items(section_type: str) -> list[dict[str, object]]:
+        out: list[dict[str, object]] = []
         for section in structured.get("sections") or []:
             if not isinstance(section, dict) or section.get("type") != section_type:
                 continue
             for item in section.get("items") or []:
-                if isinstance(item, dict) and (item.get("title") or item.get("bullets")):
-                    return True
-        return False
+                if isinstance(item, dict) and (
+                    item.get("title") or item.get("bullets") or item.get("raw_text")
+                ):
+                    out.append(item)
+        return out
 
     gaps: list[str] = []
-    if has_work_source and not _section_has_items("experience"):
+
+    edu_items = _section_items("education")
+    if edu_sources and len(edu_items) < len(edu_sources):
+        emitted_ids = {
+            str(it.get("source_experience_id"))
+            for it in edu_items
+            if it.get("source_experience_id")
+        }
+        missing = [
+            str(e.get("title") or e.get("id"))
+            for e in edu_sources
+            if str(e.get("id")) not in emitted_ids
+        ]
+        gaps.append(
+            f"the source contains {len(edu_sources)} education entries but the draft "
+            f"has only {len(edu_items)} in the education section — every education entry "
+            f"MUST be included. Missing: {', '.join(missing[:5])}"
+        )
+
+    if has_work_source and not _section_items("experience"):
         gaps.append(
             "the source contains work/internship experience(s) but the draft has no "
             "`experience` section item — include at least the most recent one with 2+ bullets"
         )
-    if has_project_source and not _section_has_items("project"):
+    if has_project_source and not _section_items("project"):
         gaps.append(
             "the source contains project experience(s) but the draft has no `project` "
             "section item — include at least the most recent one with 2+ bullets"
@@ -437,25 +470,34 @@ def _check_experience_composition(
     return "Fix experience composition: " + "; ".join(gaps) + "."
 
 
+def _item_recency_key(item: dict[str, object]) -> tuple[int, str]:
+    """Sort key for resume section items: end_date DESC with start_date fallback.
+
+    Returns (has_date_flag, date_str) so items without any date fall to the bottom
+    when sorted `reverse=True` (0 sorts above 1 → we return 1 for known-dated so
+    reverse=True bubbles them up; unknown → 0 sorts below).
+    """
+    end = item.get("end_date")
+    if isinstance(end, str) and end.strip() and end.strip().lower() != "present":
+        return (1, end.strip())
+    if isinstance(end, str) and end.strip().lower() == "present":
+        # "present" is the most recent possible — use a lexically-large sentinel
+        return (1, "9999-12")
+    start = item.get("start_date")
+    if isinstance(start, str) and start.strip():
+        return (1, start.strip())
+    return (0, "")
+
+
 def _sort_experiences_by_recency(
     experiences: list[dict[str, object]],
 ) -> list[dict[str, object]]:
-    """Sort experiences most-recent-first by start_date (YYYY-MM). Stable for unknown dates.
+    """Sort experiences most-recent-first (by end_date, fallback start_date).
 
-    "present"/None end dates without a start_date fall to the bottom so the LLM sees genuine
-    dated experiences first. Category is not used as a secondary key — the LLM groups by
-    section itself.
+    "present" end dates rank as the most recent. Undated experiences fall to the bottom.
+    Category is not used as a secondary key — the LLM groups by section itself.
     """
-    def sort_key(exp: dict[str, object]) -> tuple[int, str]:
-        start = exp.get("start_date")
-        if isinstance(start, str) and start.strip():
-            return (0, start.strip())
-        end = exp.get("end_date")
-        if isinstance(end, str) and end.strip() and end.strip().lower() != "present":
-            return (0, end.strip())
-        return (1, "")
-
-    return sorted(experiences, key=sort_key, reverse=True)
+    return sorted(experiences, key=_item_recency_key, reverse=True)
 
 
 def _rank_experiences_by_jd_match(
@@ -1147,7 +1189,12 @@ def _assign_structure_ids(
     llm: _LlmResumeStructure,
     fallback_contact: dict[str, object] | None = None,
 ) -> dict[str, object]:
-    """Attach stable UUIDs to sections / items / bullets and produce the final JSON."""
+    """Attach stable UUIDs to sections / items / bullets and produce the final JSON.
+
+    After ID assignment, sort items within `experience`/`project`/`education` sections
+    by end_date (fallback start_date) DESCENDING so the LLM's ordering cannot regress
+    the "most recent first" rule.
+    """
     default_headings = (
         _DEFAULT_HEADINGS_ZH if llm.language.lower().startswith("zh") else _DEFAULT_HEADINGS_EN
     )
@@ -1179,6 +1226,9 @@ def _assign_structure_ids(
                 "raw_text": item.raw_text,
             }
             cast("list[dict[str, object]]", section_dict["items"]).append(item_dict)
+        if section.type in ("experience", "project", "education"):
+            items_list = cast("list[dict[str, object]]", section_dict["items"])
+            items_list.sort(key=_item_recency_key, reverse=True)
         sections.append(section_dict)
 
     contact: dict[str, object] | None = None

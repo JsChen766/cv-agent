@@ -55,7 +55,8 @@ class EvidenceRagService:
             rows = await conn.fetch(
                 """
                 SELECT
-                    e.id, e.title, e.organization,
+                    e.id, e.title, e.organization, e.role, e.category,
+                    e.start_date, e.end_date, e.tags,
                     er.id AS revision_id, er.content, er.claims,
                     1 - (e.embedding <=> $1::vector) AS relevance_score
                 FROM experiences e
@@ -81,7 +82,8 @@ class EvidenceRagService:
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(
                 """
-                SELECT e.id, e.title, e.organization,
+                SELECT e.id, e.title, e.organization, e.role, e.category,
+                       e.start_date, e.end_date, e.tags,
                        er.id AS revision_id, er.content, er.claims,
                        0.0 AS relevance_score
                 FROM experiences e
@@ -97,6 +99,34 @@ class EvidenceRagService:
         await self._hydrate_missing_claims(experiences)
         return experiences
 
+    async def retrieve_by_category(
+        self, user_id: str, category: str
+    ) -> list[ExperienceWithClaims]:
+        """Fetch every active experience of a given category, no limit.
+
+        Used for guaranteed inclusion of categories (e.g. all education entries) that
+        must never be filtered out by JD similarity ranking.
+        """
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT e.id, e.title, e.organization, e.role, e.category,
+                       e.start_date, e.end_date, e.tags,
+                       er.id AS revision_id, er.content, er.claims,
+                       0.0 AS relevance_score
+                FROM experiences e
+                JOIN experience_revisions er ON er.id = e.current_revision_id
+                WHERE e.user_id=$1 AND e.status='active' AND e.category=$2
+                ORDER BY COALESCE(e.end_date, e.start_date) DESC NULLS LAST,
+                         e.updated_at DESC
+                """,
+                user_id,
+                category,
+            )
+        experiences = [self._to_experience(row) for row in rows]
+        await self._hydrate_missing_claims(experiences)
+        return experiences
+
     @staticmethod
     def _to_experience(row: asyncpg.Record) -> ExperienceWithClaims:
         raw_claims = row["claims"]
@@ -104,11 +134,27 @@ class EvidenceRagService:
         if isinstance(raw_claims, str):
             raw_claims = json.loads(raw_claims)
         claims = [Claim.model_validate(claim) for claim in (raw_claims or [])]
+        raw_tags = row["tags"] if "tags" in row.keys() else None
+        if isinstance(raw_tags, str):
+            raw_tags = json.loads(raw_tags)
+        tags = [str(t) for t in (raw_tags or []) if t]
+
+        def _iso(value: object) -> str | None:
+            if value is None:
+                return None
+            iso = getattr(value, "isoformat", None)
+            return iso() if callable(iso) else str(value)
+
         return ExperienceWithClaims(
             experience_id=row["id"],
             revision_id=row["revision_id"],
             title=row["title"],
             organization=row["organization"],
+            role=row["role"] if "role" in row.keys() else None,
+            category=row["category"] if "category" in row.keys() else "other",
+            start_date=_iso(row["start_date"]) if "start_date" in row.keys() else None,
+            end_date=_iso(row["end_date"]) if "end_date" in row.keys() else None,
+            tags=tags,
             content=row["content"],
             claims=claims,
             claims_indexed=claims_indexed,

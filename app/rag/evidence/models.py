@@ -14,6 +14,11 @@ class ExperienceWithClaims(BaseModel):
     revision_id: str | None = None
     title: str
     organization: str | None = None
+    role: str | None = None
+    category: str = "other"                # "work" | "project" | "education" | "volunteer" | "other"
+    start_date: str | None = None          # ISO "YYYY-MM-DD" (from DATE column)
+    end_date: str | None = None
+    tags: list[str] = Field(default_factory=list)
     content: str
     claims: list[Claim] = Field(default_factory=list)
     claims_indexed: bool = False

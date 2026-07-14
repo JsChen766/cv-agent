@@ -18,7 +18,7 @@ from app.memory.thread_state import ThreadState
 
 if TYPE_CHECKING:
     from app.domain.jd.models import JdRecord
-    from app.rag.evidence.models import EvidencePack
+    from app.rag.evidence.models import EvidencePack, ExperienceWithClaims
     from app.tools.base import ServiceContainer
 
 logger = logging.getLogger(__name__)
@@ -171,22 +171,40 @@ async def _fetch_experience_context(
     jd = await jd_task
     rag = EvidenceRagService(pool)
     if jd is not None and jd.requirements:
-        retrieved = await rag.retrieve_for_jd(jd.requirements, user_id, top_k=8)
-        evidence_pack = await rag.build_evidence_pack(jd.requirements, retrieved)
+        # Wide retrieval: pull 20 nearest work/project/other by JD similarity so we can
+        # keep every experience that is even tangentially related. Cheap page-length
+        # trimming happens in the resume generator, not here.
+        jd_retrieved = await rag.retrieve_for_jd(jd.requirements, user_id, top_k=20)
+        evidence_pack = await rag.build_evidence_pack(jd.requirements, jd_retrieved)
     else:
-        retrieved = await rag.retrieve_recent(user_id, top_k=5)
+        jd_retrieved = await rag.retrieve_recent(user_id, top_k=15)
         evidence_pack = None
 
+    # Education is not JD-filtered: every education entry must always be available to
+    # the resume generator, regardless of similarity ranking.
+    education = await rag.retrieve_by_category(user_id, "education")
+
+    merged: dict[str, ExperienceWithClaims] = {}
+    for experience in jd_retrieved:
+        merged[experience.experience_id] = experience
+    for experience in education:
+        merged.setdefault(experience.experience_id, experience)
+
     experiences: list[dict[str, object]] = []
-    for experience in retrieved:
+    for experience in merged.values():
         experiences.append(
             {
-            "id": experience.experience_id,
-            "title": experience.title,
-            "organization": experience.organization,
-            "content": experience.content,
-            "claims": [claim.model_dump(mode="json") for claim in experience.claims],
-            "relevance_score": experience.relevance_score,
+                "id": experience.experience_id,
+                "title": experience.title,
+                "organization": experience.organization,
+                "role": experience.role,
+                "category": experience.category,
+                "start_date": experience.start_date,
+                "end_date": experience.end_date,
+                "tags": experience.tags,
+                "content": experience.content,
+                "claims": [claim.model_dump(mode="json") for claim in experience.claims],
+                "relevance_score": experience.relevance_score,
             }
         )
     return experiences, evidence_pack
@@ -232,7 +250,7 @@ def _trim_context(context: AssembledContext, token_budget: int) -> AssembledCont
         context.experiences,
         content_key="content",
         quota=experience_quota,
-        limit=8,
+        limit=25,
     )
     context.guideline_instructions = _trim_strings(
         context.guideline_instructions, guideline_quota, limit=10
