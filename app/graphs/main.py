@@ -8,6 +8,7 @@ from typing import Any
 
 from langgraph.graph import END, START, StateGraph
 
+from app.graphs.application.graph import build_application_package_subgraph
 from app.graphs.artifact.graph import build_artifact_subgraph
 from app.graphs.clarify import clarify_node
 from app.graphs.experience.graph import build_experience_import_subgraph
@@ -25,6 +26,9 @@ def build_main_graph(checkpointer: Any | None = None) -> Any:
     # ── Subgraphs compiled with same checkpointer ──────────────────────────
     jd_subgraph = build_jd_subgraph().compile(checkpointer=checkpointer)
     resume_subgraph = build_resume_subgraph().compile(checkpointer=checkpointer)
+    application_package_subgraph = build_application_package_subgraph().compile(
+        checkpointer=checkpointer
+    )
     artifact_subgraph = build_artifact_subgraph().compile(checkpointer=checkpointer)
     experience_subgraph = build_experience_import_subgraph().compile(checkpointer=checkpointer)
 
@@ -34,6 +38,7 @@ def build_main_graph(checkpointer: Any | None = None) -> Any:
     builder.add_node("clarify", clarify_node)
     builder.add_node("jd", jd_subgraph)
     builder.add_node("resume_generation", resume_subgraph)
+    builder.add_node("application_package", application_package_subgraph)
     builder.add_node("artifact", artifact_subgraph)
     builder.add_node("experience_import", experience_subgraph)
 
@@ -46,6 +51,7 @@ def build_main_graph(checkpointer: Any | None = None) -> Any:
             "experience_import": "experience_import",
             "jd": "jd",
             "resume_generation": "resume_generation",
+            "application_package": "application_package",
             "artifact": "artifact",
             "open_ended": "open_ended",
             "clarify": "clarify",
@@ -54,6 +60,7 @@ def build_main_graph(checkpointer: Any | None = None) -> Any:
     builder.add_edge("experience_import", END)
     builder.add_edge("jd", END)
     builder.add_edge("resume_generation", END)
+    builder.add_edge("application_package", END)
     builder.add_edge("artifact", END)
     builder.add_edge("open_ended", END)
     builder.add_edge("clarify", END)

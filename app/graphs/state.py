@@ -44,6 +44,11 @@ class MainState(TypedDict, total=False):
     artifact_type: str | None
     artifact_content: str | None
 
+    # Application package specific
+    application_tasks: list[dict[str, Any]]
+    application_deliverables: list[dict[str, Any]]
+    unsupported_requirements: list[dict[str, Any]]
+
     # Experience import specific
     import_candidates: list[dict[str, Any]]
 

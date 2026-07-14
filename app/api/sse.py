@@ -209,6 +209,9 @@ def _build_initial_state(
         "assembled_guideline_instructions": [],
         "assembled_preferences": [],
         "assembled_user_profile": None,
+        "application_tasks": [],
+        "application_deliverables": [],
+        "unsupported_requirements": [],
     }
 
 

@@ -181,7 +181,13 @@ class InterruptVariantInfo(TypedDict):
 class _AgentInterruptBase(TypedDict):
     event: Literal["agent.interrupt"]
     interrupt_id: str
-    type: Literal["resume_review", "experience_import", "confirm_action", "jd_save"]
+    type: Literal[
+        "resume_review",
+        "application_package_review",
+        "experience_import",
+        "confirm_action",
+        "jd_save",
+    ]
     message: str
     action_options: list[InterruptActionOption]
 

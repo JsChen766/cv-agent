@@ -407,7 +407,10 @@ def _resume_canvas_metadata(
     workspace: Mapping[str, object] | None,
 ) -> dict[str, JsonValue] | None:
     """Build the durable, frontend-renderable representation of a resume canvas."""
-    if not isinstance(interrupt, Mapping) or interrupt.get("type") != "resume_review":
+    if not isinstance(interrupt, Mapping) or interrupt.get("type") not in {
+        "resume_review",
+        "application_package_review",
+    }:
         return None
     raw_variants = interrupt.get("variants")
     if not isinstance(raw_variants, list):
@@ -454,6 +457,15 @@ def _resume_canvas_metadata(
     }
     if isinstance(resume_id, str):
         presentation["resume_id"] = resume_id
+    if interrupt.get("type") == "application_package_review":
+        deliverables = interrupt.get("deliverables")
+        unsupported_requirements = interrupt.get("unsupported_requirements")
+        if isinstance(deliverables, list):
+            presentation["application_deliverables"] = cast("JsonValue", deliverables)
+        if isinstance(unsupported_requirements, list):
+            presentation["unsupported_requirements"] = cast(
+                "JsonValue", unsupported_requirements
+            )
     return presentation
 
 
@@ -1243,7 +1255,7 @@ async def _run_generate_resume_from_jd_action(
         workspace,
         turn_id,
     )
-    initial_state["target_subgraph"] = "resume_generation"
+    initial_state["target_subgraph"] = "application_package"
     initial_state["intent_description"] = instruction
 
     try:

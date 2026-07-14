@@ -54,6 +54,11 @@ _NODE_ACTIVITY: dict[str, ActivitySpec] = {
     "parse_requirements": ActivitySpec("jd_analyst", "岗位分析师", "正在拆解岗位要求", "已完成岗位要求拆解"),
     "parse_requirements_node": ActivitySpec("jd_analyst", "岗位分析师", "正在拆解岗位要求", "已完成岗位要求拆解"),
     "resume_generation": ActivitySpec("resume_writer", "简历写手", "正在生成针对岗位的简历", "已完成简历生成流程"),
+    "application_package": ActivitySpec("resume_writer", "应聘材料写手", "正在准备完整应聘材料", "已完成应聘材料生成"),
+    "package_plan": ActivitySpec("frontdesk", "前台", "正在拆解 JD 投递要求", "已完成投递要求拆解"),
+    "plan_application_package_node": ActivitySpec("frontdesk", "前台", "正在拆解 JD 投递要求", "已完成投递要求拆解"),
+    "package_artifacts": ActivitySpec("resume_writer", "应聘材料写手", "正在生成附加投递材料", "已完成附加投递材料"),
+    "generate_application_artifacts_node": ActivitySpec("resume_writer", "应聘材料写手", "正在生成附加投递材料", "已完成附加投递材料"),
     "context_assembly": ActivitySpec("resume_writer", "简历写手", "正在收集简历写作上下文", "已完成上下文收集"),
     "context_assembly_node": ActivitySpec("resume_writer", "简历写手", "正在收集简历写作上下文", "已完成上下文收集"),
     "cot_planning": ActivitySpec("resume_writer", "简历写手", "正在规划简历写作策略", "已完成简历写作策略"),
@@ -171,9 +176,9 @@ def activity_from_interrupt(
         or ""
     )
 
-    if interrupt_type == "resume_review":
+    if interrupt_type in {"resume_review", "application_package_review"}:
         role: AgentRole = "resume_reviewer"
-        action = "等待你确认或修改简历版本"
+        action = "等待你确认完整应聘材料" if interrupt_type == "application_package_review" else "等待你确认或修改简历版本"
     elif interrupt_type == "experience_import_review":
         role = "experience_orchestrator"
         action = "等待你确认要保存的经历"

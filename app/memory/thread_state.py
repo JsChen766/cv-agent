@@ -63,3 +63,8 @@ class ThreadState(TypedDict, total=False):
     # Turn tracking
     current_turn_id: str | None
     assistant_message: str | None
+
+    # Application package planning/output
+    application_tasks: list[dict[str, Any]]
+    application_deliverables: list[dict[str, Any]]
+    unsupported_requirements: list[dict[str, Any]]

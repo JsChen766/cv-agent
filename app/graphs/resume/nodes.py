@@ -8,7 +8,7 @@ Flow:
 
 import uuid
 from collections.abc import Mapping
-from typing import cast
+from typing import Literal, cast
 
 from langchain_core.runnables import RunnableConfig
 from pydantic import BaseModel, Field, JsonValue
@@ -36,17 +36,21 @@ async def context_assembly_node(
     """Gather all context needed for resume generation."""
     from app.memory.context_assembly import assemble_context
 
+    extracted = state.get("extracted_params", {})
+    raw_jd = extracted.get("raw_jd_text") or extracted.get("jd_text")
+    fallback_jd_text = raw_jd if isinstance(raw_jd, str) and raw_jd.strip() else None
+
     try:
         pool = pool_from_config(config)
         if pool is None:
-            return {}
+            return {"jd_text": fallback_jd_text} if fallback_jd_text else {}
         ctx = await assemble_context(
             state,
             pool,
             services=services_from_config(config),
         )
         return {
-            "jd_text": ctx.jd_text,
+            "jd_text": ctx.jd_text or fallback_jd_text,
             "relevant_experiences": ctx.experiences,
             "guideline_instructions": ctx.guideline_instructions,
             "user_preferences": ctx.preferences,
@@ -55,7 +59,7 @@ async def context_assembly_node(
         }
     except RuntimeError:
         # Pool not available (test mode)
-        return {}
+        return {"jd_text": fallback_jd_text} if fallback_jd_text else {}
 
 
 # ── 2. CoT Planning ───────────────────────────────────────────────────────────
@@ -428,11 +432,24 @@ async def output_node(
     workspace = dict(state.get("workspace", {}))
     interrupt_id = str(uuid.uuid4())
 
+    package_deliverables = state.get("application_deliverables", [])
+    unsupported_requirements = state.get("unsupported_requirements", [])
+    is_application_package = state.get("target_subgraph") == "application_package"
+    interrupt_type: Literal["application_package_review", "resume_review"] = (
+        "application_package_review" if is_application_package else "resume_review"
+    )
+    message = (
+        f"已生成 {len(package_deliverables)} 项附加投递材料和 "
+        f"{len(variants)} 份针对性简历，请检查后确认。"
+        if is_application_package
+        else f"I've generated {len(variants)} resume variant(s). Please review and choose one to accept, or provide feedback."
+    )
+
     interrupt_event: AgentInterruptEvent = {
         "event": "agent.interrupt",
         "interrupt_id": interrupt_id,
-        "type": "resume_review",
-        "message": f"I've generated {len(variants)} resume variant(s). Please review and choose one to accept, or provide feedback.",
+        "type": interrupt_type,
+        "message": message,
         "variants": [
             {
                 "id": v.get("id", ""),
@@ -457,12 +474,15 @@ async def output_node(
 
     payload = {
         "interrupt_id": interrupt_id,
-        "type": "resume_review",
+        "type": interrupt_type,
         "message": interrupt_event["message"],
         "variants": variants,
         "action_options": interrupt_event["action_options"],
         "workspace": workspace,
     }
+    if is_application_package:
+        payload["deliverables"] = package_deliverables
+        payload["unsupported_requirements"] = unsupported_requirements
 
     # LangGraph interrupt — suspends execution here
     resume_value = interrupt(payload)

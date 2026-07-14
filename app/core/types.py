@@ -61,6 +61,7 @@ RouterTarget = Literal[
     "experience_import",
     "jd",
     "resume_generation",
+    "application_package",
     "artifact",
     "open_ended",
 ]

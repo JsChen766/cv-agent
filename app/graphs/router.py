@@ -27,7 +27,13 @@ ArtifactRouteType = Literal[
 
 class RouterOutput(BaseModel):
     target_subgraph: Literal[
-        "experience_import", "jd", "resume_generation", "artifact", "open_ended", "clarify"
+        "experience_import",
+        "jd",
+        "resume_generation",
+        "application_package",
+        "artifact",
+        "open_ended",
+        "clarify",
     ]
     intent_description: str
     artifact_type: ArtifactRouteType | None = None
@@ -47,6 +53,8 @@ Routing options:
 - "experience_import": User wants to add/import work experiences, paste resume content, or upload a file with experiences.
 - "jd": User wants to add, save, or import a job description into their JD library.
 - "resume_generation": User wants to generate, improve, or modify their resume.
+- "application_package": User wants a resume from a JD plus every supported submission
+  material required by that JD, all in the same turn.
 - "artifact": User wants to create a cover letter, self-introduction, LinkedIn summary, match report, interview prep, or any other document artifact.
 - "open_ended": General questions, career advice, follow-up questions, or anything that doesn't clearly fit the above.
 - "clarify": The user's intent is ambiguous — you cannot confidently determine what they want. Use this to ask for clarification.
@@ -133,7 +141,11 @@ async def router_node(state: MainState) -> dict[str, object]:
             "pending_sse_events": [*existing_events, upload_route_event],
         }
 
-    heuristic = _heuristic_route(user_msg, existing_extracted)
+    heuristic = _heuristic_route(
+        user_msg,
+        existing_extracted,
+        has_active_jd=bool(workspace.get("jd_id")),
+    )
     if heuristic is not None:
         route_event: AgentRouteCompletedEvent = {
             "event": "agent.route.completed",
@@ -197,7 +209,15 @@ async def router_node(state: MainState) -> dict[str, object]:
 def route_decision(state: MainState) -> str:
     """Conditional edge: returns the target subgraph name."""
     target = state.get("target_subgraph") or "open_ended"
-    valid = {"experience_import", "jd", "resume_generation", "artifact", "open_ended", "clarify"}
+    valid = {
+        "experience_import",
+        "jd",
+        "resume_generation",
+        "application_package",
+        "artifact",
+        "open_ended",
+        "clarify",
+    }
     return target if target in valid else "open_ended"
 
 
@@ -216,6 +236,8 @@ def _normalize_llm_routing(routing: RouterOutput) -> RouterOutput:
 def _heuristic_route(
     user_msg: str,
     existing_extracted: dict[str, JsonValue] | None = None,
+    *,
+    has_active_jd: bool = False,
 ) -> RouterOutput | None:
     text = user_msg.strip()
     if not text:
@@ -312,6 +334,50 @@ def _heuristic_route(
             confidence=0.95,
         )
 
+    generation_terms = ("生成", "写", "优化", "修改", "改", "润色", "generate", "rewrite", "improve")
+    instruction_scope = lower[-240:] if len(lower) > 240 else lower
+    requests_resume = (
+        any(term in instruction_scope for term in resume_terms)
+        and any(term in instruction_scope for term in generation_terms)
+    )
+    looks_like_pasted_jd = len(text) >= 300 and any(term in lower for term in jd_terms)
+    has_application_package_hint = any(
+        term in lower
+        for term in (
+            "自我介绍",
+            "self intro",
+            "self-intro",
+            "求职信",
+            "cover letter",
+            "邮件主题",
+            "邮件正文",
+            "附件名",
+            "附件命名",
+            "投递要求",
+            "调研",
+            "research",
+        )
+    )
+
+    if requests_resume:
+        target: Literal["application_package", "resume_generation"] = (
+            "application_package"
+            if looks_like_pasted_jd or has_active_jd or has_application_package_hint
+            else "resume_generation"
+        )
+        params: dict[str, JsonValue] = {}
+        if target == "application_package" and not has_active_jd:
+            params["raw_jd_text"] = text
+        return RouterOutput(
+            target_subgraph=target,
+            intent_description="Generate a complete application package tailored to the JD."
+            if target == "application_package"
+            else "Generate or improve resume content.",
+            context_hints=["active_jd", "active_resume", "experiences"],
+            extracted_params=params,
+            confidence=0.95,
+        )
+
     artifact_map: dict[str, ArtifactRouteType] = {
         "自我介绍": "self_intro",
         "self intro": "self_intro",
@@ -334,16 +400,6 @@ def _heuristic_route(
                 extracted_params={},
                 confidence=0.9,
             )
-
-    generation_terms = ("生成", "写", "优化", "修改", "改", "润色", "generate", "rewrite", "improve")
-    if any(term in lower for term in resume_terms) and any(term in lower for term in generation_terms):
-        return RouterOutput(
-            target_subgraph="resume_generation",
-            intent_description="Generate or improve resume content.",
-            context_hints=["active_jd", "active_resume", "experiences"],
-            extracted_params={},
-            confidence=0.9,
-        )
 
     return None
 
