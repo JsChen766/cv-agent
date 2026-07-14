@@ -33,7 +33,7 @@ class Settings(BaseSettings):
     # RAG
     evidence_similarity_threshold: float = 0.65
     preference_dedup_threshold: float = 0.85
-    context_token_budget: int = 6000
+    context_token_budget: int = 16000
     max_self_review_iterations: int = 3
 
     # Files

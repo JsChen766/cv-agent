@@ -651,6 +651,38 @@ async def _reject_if_pending_interrupt(graph: object, config: RunnableConfig) ->
         )
 
 
+async def _merged_workspace(
+    cs: ClientState,
+    user_id: str,
+    thread_id: str,
+    pool: asyncpg.Pool | None,
+) -> JsonObject:
+    """Three-way workspace merge: persisted snapshot ← client_state ← (nothing yet).
+
+    Priority (highest wins):
+      1. client_state explicit ids (non-None values)
+      2. persisted workspace_snapshot from threads table
+    Keys absent from client_state are preserved from the snapshot ("never drop").
+    """
+    if pool is None:
+        return _workspace_from_client_state(cs)
+
+    from app.infra.db.repositories.thread_repo import PostgresThreadRepository
+
+    thread_repo = PostgresThreadRepository(pool)
+    try:
+        snapshot = await thread_repo.get_workspace_snapshot(thread_id)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Failed to load workspace snapshot for thread %s: %s", thread_id, exc)
+        snapshot = {}
+
+    client_ws = await _verified_workspace_from_client_state(cs, user_id, pool)
+    # Start from persisted snapshot, overlay with client's explicit values.
+    # _verified_workspace_from_client_state only sets keys for non-None client fields,
+    # so missing client fields never overwrite the snapshot.
+    return {**snapshot, **client_ws}
+
+
 async def _build_chat_initial_state(
     *,
     thread_id: str,
@@ -660,11 +692,7 @@ async def _build_chat_initial_state(
     turn_id: str,
     pool: asyncpg.Pool | None,
 ) -> MainState:
-    workspace = (
-        await _verified_workspace_from_client_state(client_state, user_id, pool)
-        if pool is not None
-        else _workspace_from_client_state(client_state)
-    )
+    workspace = await _merged_workspace(client_state, user_id, thread_id, pool)
 
     # Load recent conversation history plus the durable rolling summary.
     historical: list[dict[str, object]] = []
@@ -874,11 +902,14 @@ async def _prepare_action_context(
         checked_pool,
     )
     services = build_service_container(checked_pool)
+    from app.infra.db.repositories.thread_repo import PostgresThreadRepository
+
     config: RunnableConfig = {
         "configurable": {
             "thread_id": thread_id,
             "services": services,
             "pool": checked_pool,
+            "thread_repo": PostgresThreadRepository(checked_pool),
         }
     }
     return thread_id, turn_id, workspace, services, config
@@ -987,8 +1018,11 @@ async def chat(
     )
     configurable: dict[str, object] = {"thread_id": thread_id}
     if _pool:
+        from app.infra.db.repositories.thread_repo import PostgresThreadRepository
+
         configurable["services"] = build_service_container(_pool)
         configurable["pool"] = _pool
+        configurable["thread_repo"] = PostgresThreadRepository(_pool)
     config: RunnableConfig = {"configurable": configurable}
 
     await _persist_message(
@@ -1081,8 +1115,11 @@ async def chat_stream(
     )
     configurable: dict[str, object] = {"thread_id": thread_id}
     if _pool:
+        from app.infra.db.repositories.thread_repo import PostgresThreadRepository
+
         configurable["services"] = build_service_container(_pool)
         configurable["pool"] = _pool
+        configurable["thread_repo"] = PostgresThreadRepository(_pool)
     config: RunnableConfig = {"configurable": configurable}
 
     graph = get_graph(_get_checkpointer_or_none())

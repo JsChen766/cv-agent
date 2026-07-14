@@ -284,15 +284,35 @@ def _trim_dict_items(
     quota: int,
     limit: int,
 ) -> list[dict[str, object]]:
+    """Fair-share allocation of the char quota across items, preserving input order.
+
+    Award budget in ascending-length order: short items take only what they need
+    (well below their fair share), which frees headroom so longer items get more
+    than ``quota // N``. This replaces the old greedy "first N items eat the whole
+    quota, rest get scraps" behaviour that was mutilating context for wide-recall
+    retrievals.
+    """
+    selected = list(values[:limit])
+    if not selected or quota <= 0:
+        return [dict(v) for v in selected]
+
+    contents = [str(v.get(content_key, "")) for v in selected]
+    n = len(selected)
+    allocations = [0] * n
+
+    order = sorted(range(n), key=lambda i: len(contents[i]))
+    remaining_budget = quota
+    remaining_slots = n
+    for i in order:
+        share = remaining_budget // max(1, remaining_slots)
+        take = min(len(contents[i]), share)
+        allocations[i] = take
+        remaining_budget -= take
+        remaining_slots -= 1
+
     result: list[dict[str, object]] = []
-    remaining = quota
-    for value in values[:limit]:
-        if remaining <= 0:
-            break
-        item = dict(value)
-        content = str(item.get(content_key, ""))
-        clipped = content[:remaining]
-        item[content_key] = clipped
-        remaining -= len(clipped)
+    for i, v in enumerate(selected):
+        item = dict(v)
+        item[content_key] = contents[i][: allocations[i]]
         result.append(item)
     return result

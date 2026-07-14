@@ -64,6 +64,24 @@ class JdService:
             jd_id, self._normalize_requirements(requirements)
         )
 
+    async def create_or_update_from_raw_text(
+        self,
+        user_id: str,
+        raw_text: str,
+        *,
+        source_thread_id: str | None = None,
+    ) -> JdRecord:
+        """Create a JD record from raw pasted text (no dedup — always creates a new row)."""
+        jd_id = generate_id(JD_PREFIX)
+        title = raw_text[:60].strip().splitlines()[0] or "Pasted JD"
+        return await self._repo.create(
+            jd_id,
+            user_id,
+            title,
+            raw_text,
+            source_thread_id=source_thread_id,
+        )
+
     async def delete_jd(self, user_id: str, jd_id: str) -> None:
         await self.get_jd(user_id, jd_id)
         await self._repo.delete(user_id, jd_id)

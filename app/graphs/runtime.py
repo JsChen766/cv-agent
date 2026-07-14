@@ -20,3 +20,9 @@ def thread_id_from_config(config: RunnableConfig | None) -> str | None:
     configurable = (config or {}).get("configurable", {})
     value = configurable.get("thread_id")
     return str(value) if value else None
+
+
+def thread_repo_from_config(config: RunnableConfig | None) -> object | None:
+    """Return the pre-instantiated ThreadRepository from configurable, or None."""
+    configurable = (config or {}).get("configurable", {})
+    return configurable.get("thread_repo")

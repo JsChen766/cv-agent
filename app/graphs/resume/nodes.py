@@ -6,9 +6,12 @@ Flow:
   fact_check → self_review → [revision → draft_generation (max 3)] → interrupt_output
 """
 
+import logging
 import uuid
 from collections.abc import Mapping
 from typing import Literal, cast
+
+logger = logging.getLogger(__name__)
 
 from langchain_core.runnables import RunnableConfig
 from pydantic import BaseModel, Field, JsonValue
@@ -919,6 +922,8 @@ async def persist_resume_draft_node(
     state: ResumeGenerationState, config: RunnableConfig | None = None
 ) -> dict[str, object]:
     """Persist the resume and variants before entering the review interrupt."""
+    from app.graphs.runtime import thread_repo_from_config
+
     services = services_from_config(config)
     if services is None:
         return {}
@@ -928,6 +933,24 @@ async def persist_resume_draft_node(
     resume_id = resume_id_value if isinstance(resume_id_value, str) else None
     jd_id_value = workspace.get("jd_id")
     jd_id = jd_id_value if isinstance(jd_id_value, str) else None
+
+    # Promote raw_jd_text → jd_records when jd_id is missing so the JD survives future turns.
+    if jd_id is None:
+        extracted = state.get("extracted_params", {})
+        raw_jd = extracted.get("raw_jd_text") or extracted.get("jd_text")
+        if isinstance(raw_jd, str) and raw_jd.strip():
+            try:
+                thread_id_val = state.get("thread_id", "")
+                jd_record = await services.jd.create_or_update_from_raw_text(
+                    state.get("user_id", ""),
+                    raw_jd,
+                    source_thread_id=thread_id_val if isinstance(thread_id_val, str) else None,
+                )
+                jd_id = jd_record.id
+                workspace["jd_id"] = jd_id
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Failed to promote raw_jd_text to jd_records: %s", exc)
+
     if not resume_id:
         resume = await services.resume.create_resume(
             state.get("user_id", ""),
@@ -962,6 +985,21 @@ async def persist_resume_draft_node(
             ),
         )
         saved_variants.append(saved.model_dump(mode="json"))
+
+    # Persist workspace ids so future turns don't lose them even if client omits them.
+    snapshot_delta: dict[str, object] = {}
+    if resume_id:
+        snapshot_delta["resume_id"] = resume_id
+    if jd_id:
+        snapshot_delta["jd_id"] = jd_id
+    if snapshot_delta:
+        thread_repo = thread_repo_from_config(config)
+        thread_id_val = state.get("thread_id", "")
+        if thread_repo is not None and isinstance(thread_id_val, str) and thread_id_val:
+            try:
+                await thread_repo.update_workspace_snapshot(thread_id_val, snapshot_delta)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Failed to persist workspace snapshot: %s", exc)
 
     return {"workspace": workspace, "variants": saved_variants}
 
