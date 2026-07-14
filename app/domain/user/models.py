@@ -16,6 +16,14 @@ class User(BaseModel):
     updated_at: datetime
 
 
+class UserSession(BaseModel):
+    id: str
+    user_id: str
+    token_hash: str
+    expires_at: datetime
+    created_at: datetime
+
+
 class UserProfile(BaseModel):
     user_id: str
     full_name: str | None = None

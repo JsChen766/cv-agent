@@ -774,3 +774,188 @@ markdown 渲染层也会在文末附一行 `> ⚠️ Coverage gap — the follow
 138/138 通过。修改的 fixture:
 - `tests/unit/test_graphs/test_artifact.py`:两个用例改为 draft + persist 两步,验证 persist 后才产生 SSE 事件
 - `tests/unit/test_application_package_flow.py::test_package_artifacts_are_collected_and_failures_do_not_block`:mock 目标从 `artifact_draft_node` 换成 `generate_verified_artifact`
+
+---
+---
+
+# Part 6 — 多用户账户 / Session 管理接口(新增)
+
+补齐账户安全刚需 + session 管理三件套。**不改动 Agent 能力**,只增加接口和收紧现有 auth 流程。
+
+## 新增端点总览
+
+| Method | Path | 描述 |
+|---|---|---|
+| POST | `/auth/change-password` | 已登录用户改密码(需旧密码验证) |
+| POST | `/auth/logout-everywhere` | 撤销该用户所有 session |
+| GET | `/users/me/sessions` | 列出当前用户所有活跃 session |
+| DELETE | `/users/me/sessions/{session_id}` | 单独撤销某个 session |
+| DELETE | `/users/me` | 注销账户(需密码确认,级联删所有数据) |
+
+## 现有端点行为收紧
+
+| Path | 变化 |
+|---|---|
+| `POST /auth/register` | 新增密码强度校验(≥ 8 字符,至少 1 字母 1 数字);不通过返回 `422 validation_error` |
+| `POST /auth/login` | 登录成功现在会**在 `user_sessions` 表落一条记录**,cookie 里的 JWT 携带 `sid` claim 指向该记录 |
+| `POST /auth/logout` | 现在会**同时删除对应的 `user_sessions` 行**;向前兼容:即使 token 已失效也能清 cookie |
+| **所有其他端点** | 每次请求会用 JWT 里的 `sid` 校验 `user_sessions` 表——被撤销的 session 立即失效(不再需要等 JWT 自然过期) |
+
+## 关键行为语义
+
+### JWT + Session 双验证
+
+从本次起,鉴权变为**两段式**:
+1. JWT 签名与过期时间校验(如前)
+2. **JWT 的 `sid` claim 必须对应 `user_sessions` 表中一条未过期的 row**
+
+任何被 revoke 的 session 会立即让所有拿着该 token 的客户端进入 401 状态,无需等待 JWT 自然过期。
+
+**⚠️ 影响**:此前发放的 token(没有 `sid` claim,存量用户浏览器 cookie 里可能还留着)在下次请求时会因为**无 `sid` → 无法查表**继续可用(为兼容),但下次登录/注册后即会切到新流程。**建议在前端明确引导所有用户重新登录一次**,以确保所有会话都能被服务器主动管理。
+
+### 密码强度规则
+
+在 `register` / `change-password` / (未来的) `reset-password` 三处统一执行:
+- 至少 8 个字符
+- 至少一个字母
+- 至少一个数字
+
+不符合规则返回:
+```json
+{"success": false, "error": {"code": "validation_error",
+ "message": "Password must be at least 8 characters", "retryable": false}}
+```
+
+## 请求 / 响应细节
+
+### `POST /auth/change-password`
+
+Request body(⚠️ 字段名为 snake_case,与项目其他端点一致):
+```json
+{"current_password": "OldStr0ng", "new_password": "NewStr0nger"}
+```
+
+Response 200:
+```json
+{"success": true,
+ "data": {"message": "Password updated", "revoked_other_sessions": 1}}
+```
+
+行为:
+- 验证 `current_password` 与库中 hash 一致(否则 `401 unauthorized`)
+- 拒绝新旧密码相同(`401`)
+- 检查新密码强度(否则 `422`)
+- 更新密码 hash
+- **保留当前 session**,吊销该用户的所有其他 session — 前端在其他设备上会立即被踢下线
+
+### `POST /auth/logout-everywhere`
+
+无 body。Response 200:
+```json
+{"success": true,
+ "data": {"message": "All sessions revoked", "revoked": 2}}
+```
+
+- 吊销该用户所有 session(包括当前)
+- 清除当前 cookie
+- 常用于"我怀疑账号被盗"/改完密码强制全端下线
+
+### `GET /users/me/sessions`
+
+Response 200:
+```json
+{"success": true,
+ "data": [
+   {"id": "20798660-...",
+    "userId": "user-...",
+    "expiresAt": "2026-07-21T09:51:30+00:00",
+    "createdAt": "2026-07-14T09:51:30+00:00",
+    "isCurrent": false},
+   {"id": "4770c869-...",
+    "userId": "user-...",
+    "expiresAt": "2026-07-21T09:51:29+00:00",
+    "createdAt": "2026-07-14T09:51:29+00:00",
+    "isCurrent": true}
+ ]}
+```
+
+- 按 `createdAt DESC` 排序
+- `isCurrent: true` 标识当前 cookie 使用的 session
+- 只返回未过期的记录
+
+### `DELETE /users/me/sessions/{session_id}`
+
+Response 200:
+```json
+{"success": true, "data": {"revoked": true, "sessionId": "..."}}
+```
+
+- 只能撤销自己的 session,尝试撤销他人 session 返回 `validation_error`(表现为"未找到")
+- 如果撤销的是当前 session,响应会额外清除 cookie;response body 携带 `clearedCurrent: true`
+
+### `DELETE /users/me`
+
+Request body(需二次密码确认):
+```json
+{"password": "Str0ngPass"}
+```
+
+Response 200:
+```json
+{"success": true, "data": {"deleted": true}}
+```
+
+- 密码错误 → `401 unauthorized`("Password confirmation failed")
+- 成功 → 用户及**全部关联数据**级联删除(threads、resumes、artifacts、experiences、jds、uploads、preferences、sessions)
+- 响应清除 cookie
+- ⚠️ 不可撤销,前端务必二次确认弹窗
+
+## 前端适配 checklist
+
+### ✅ 必做
+
+- [ ] **登录/注册页新增密码强度提示**:至少 8 字符 + 1 字母 + 1 数字
+- [ ] **处理密码强度 422**:错误 code=`validation_error`,message 里给出具体原因("Password must contain at least one digit" 等),直接展示即可
+- [ ] **提示存量用户重新登录一次**(让服务器接管 session 管理),避免以后遇到"退出这个设备"点了没反应的情况
+
+### 🟡 建议做
+
+- [ ] **账户设置页新增 "修改密码"** 表单 → `POST /auth/change-password`
+- [ ] **账户设置页新增 "登录设备管理"** → `GET /users/me/sessions` 列出;每行提供 "撤销" 按钮 → `DELETE /users/me/sessions/{id}`
+- [ ] **"退出所有设备"** 按钮 → `POST /auth/logout-everywhere`(改完密码后建议 UI 主动提示)
+- [ ] **注销账户** 二次确认弹窗 → `DELETE /users/me`,body 里带用户输入的当前密码
+
+### 🚫 不需要改动
+
+- 已发出的登录 cookie 仍能通过 JWT 签名(存量 token 无 `sid` 时依然可用)
+- 其他所有 `/product/*`、`/copilot/*`、`/threads/*` 端点响应格式**没有任何变化**
+
+## 后端内部变更(供参考)
+
+- **`app/domain/user/models.py`**:新增 `UserSession` model
+- **`app/domain/user/repository.py`**:`UserRepository` protocol 添加 `update_password / delete / create_session / get_session / list_sessions / delete_session / delete_all_sessions_for_user / purge_expired_sessions`
+- **`app/infra/db/repositories/user_repo.py`**:实现上述方法,`user_sessions` 表首次被真正读写
+- **`app/domain/user/service.py`**:新增 `change_password / delete_user / create_session / list_sessions / delete_session / delete_all_sessions`
+- **`app/api/auth_utils.py`**:`create_access_token` 增加 `session_id` 参数并把 `sid` 写入 JWT;`decode_access_token` 返回 `(user_id, session_id)`;新增 `hash_token / token_expiry / validate_password_strength`
+- **`app/api/deps.py`**:新增 `_verify_session_or_die` 在每个鉴权请求路径校验 sid;新增 `get_current_session_id` 依赖
+- **`app/api/routes/auth.py`**:新增 change-password、logout-everywhere;register/login/logout 全部改为持久化 session;不启动强 session 校验的 logout 路径保持宽容
+- **`app/api/routes/users.py`**:新增 sessions 列表 / 撤销 / DELETE 账户
+
+## DB / 迁移
+
+**无新迁移**:`user_sessions` 表在 `0001_initial_schema` 早已存在但一直未被读写。本次改动只是启用它。
+
+## 单元测试 + 端到端冒烟
+
+- unit tests:138/138 通过(无既有测试涉及本次改动路径)
+- 冒烟结果:
+  - 弱密码注册 → 422 ✅
+  - 强密码注册 → 201 + cookie ✅
+  - list sessions → 显示 1 个 `isCurrent=true` ✅
+  - 同账号第二次登录 → 2 个 session ✅
+  - change-password 错密 → 401 ✅
+  - change-password 成功 → 撤销另一台设备 ✅
+  - 另一台 cookie 立即 401 ✅
+  - logout-everywhere → 当前 cookie 也失效 ✅
+  - DELETE /users/me 错密 → 401 ✅
+  - DELETE /users/me 成功 → 账户与全部级联数据删除 + cookie 401 ✅

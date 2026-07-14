@@ -100,6 +100,25 @@ def _extract_token(
     return None
 
 
+async def _verify_session_or_die(
+    user_id: str, session_id: str | None, pool: asyncpg.Pool | None
+) -> None:
+    """Reject the request unless the JWT's session id still exists and is live.
+
+    Tokens minted without a session id (e.g. dev auto-auth) bypass this check.
+    """
+    if session_id is None:
+        return
+    if pool is None:
+        # Without a live pool we can't verify the session was revoked; fail
+        # closed so a killed session can never sneak through a degraded infra path.
+        raise UnauthorizedError("Session store unavailable")
+    user_svc = UserService(PostgresUserRepository(pool))
+    session = await user_svc.get_session(session_id)
+    if session is None or session.user_id != user_id:
+        raise UnauthorizedError("Session revoked or expired")
+
+
 async def get_current_user(
     token: str | None = Depends(_extract_token),
     pool: asyncpg.Pool | None = Depends(pool_dep),
@@ -109,16 +128,35 @@ async def get_current_user(
         return await user_svc.get_by_id(settings.dev_user_id)
     if token is None:
         raise UnauthorizedError("No authentication token provided")
-    user_id = decode_access_token(token)
+    user_id, session_id = decode_access_token(token)
+    await _verify_session_or_die(user_id, session_id, pool)
     user_svc = UserService(PostgresUserRepository(_require_pool(pool)))
     return await user_svc.get_by_id(user_id)
 
 
 async def get_current_user_id(
     token: str | None = Depends(_extract_token),
+    pool: asyncpg.Pool | None = Depends(pool_dep),
 ) -> str:
     if token is None and settings.environment == "development" and settings.dev_auto_auth:
         return settings.dev_user_id
     if token is None:
         raise UnauthorizedError("No authentication token provided")
-    return decode_access_token(token)
+    user_id, session_id = decode_access_token(token)
+    await _verify_session_or_die(user_id, session_id, pool)
+    return user_id
+
+
+async def get_current_session_id(
+    token: str | None = Depends(_extract_token),
+) -> str | None:
+    """Return the JWT's `sid` claim (if any). Used by endpoints that need to
+    identify the caller's own session, e.g. change-password preserving the
+    current login while revoking siblings."""
+    if token is None:
+        return None
+    try:
+        _, session_id = decode_access_token(token)
+    except UnauthorizedError:
+        return None
+    return session_id
