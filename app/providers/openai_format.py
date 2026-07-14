@@ -105,6 +105,18 @@ class OpenAIFormatProvider:
         *,
         temperature: float = 0.2,
     ) -> Any:
+        """Structured output with a 3-tier compatibility ladder:
+
+        1. `method="json_mode"` — sends `response_format={"type":"json_object"}`.
+           Supported by OpenAI proper, DeepSeek, Qwen, Moonshot, etc. Client-side
+           schema validation via LangChain.
+        2. `method="json_schema"` — sends `response_format={"type":"json_schema", ...}`.
+           OpenAI's server-side enforcement path; vendors that don't support it
+           (e.g. DeepSeek returns "This response_format type is unavailable now")
+           get skipped by tier 1 first.
+        3. Prompt-based JSON — schema shipped as text in the system prompt, no
+           `response_format` at all. Works on any vendor. Client-side validated.
+        """
         from langchain_core.messages import HumanMessage, SystemMessage
 
         lc_msgs: list[BaseMessage] = []
@@ -115,20 +127,36 @@ class OpenAIFormatProvider:
             else:
                 lc_msgs.append(HumanMessage(content=content))
 
-        structured_llm = self._llm.bind(temperature=temperature).with_structured_output(schema)
+        bound = self._llm.bind(temperature=temperature)
+
+        # Tier 1: json_mode — works on DeepSeek + OpenAI + most compat vendors
         try:
-            return await structured_llm.ainvoke(lc_msgs)
-        except Exception as e:
-            try:
-                return await self._chat_structured_via_json_prompt(
-                    messages,
-                    schema,
-                    temperature=temperature,
-                )
-            except Exception as fallback_error:
-                raise ExternalServiceError(
-                    f"Structured LLM call failed: {e}; JSON fallback failed: {fallback_error}"
-                ) from fallback_error
+            return await bound.with_structured_output(
+                schema, method="json_mode"
+            ).ainvoke(lc_msgs)
+        except Exception as json_mode_error:
+            first_error: Exception = json_mode_error
+
+        # Tier 2: json_schema — OpenAI's stricter mode; DeepSeek 400s here
+        try:
+            return await bound.with_structured_output(
+                schema, method="json_schema"
+            ).ainvoke(lc_msgs)
+        except Exception:
+            pass
+
+        # Tier 3: prompt-based JSON — vendor-agnostic
+        try:
+            return await self._chat_structured_via_json_prompt(
+                messages,
+                schema,
+                temperature=temperature,
+            )
+        except Exception as fallback_error:
+            raise ExternalServiceError(
+                f"Structured LLM call failed: {first_error}; "
+                f"prompt fallback failed: {fallback_error}"
+            ) from fallback_error
 
     async def _chat_structured_via_json_prompt(
         self,
@@ -152,10 +180,11 @@ class OpenAIFormatProvider:
             },
             *messages,
         ]
+        # No max_tokens cap: a full resume JSON with multiple experiences easily
+        # exceeds 2k tokens; letting the vendor default apply avoids truncation.
         raw = await self.chat(
             fallback_messages,
             temperature=temperature,
-            max_tokens=2000,
         )
         json_text = self._extract_json_object(str(raw))
 
