@@ -193,7 +193,8 @@ class _AgentInterruptBase(TypedDict):
 
 
 class AgentInterruptEvent(_AgentInterruptBase, total=False):
-    variants: list[InterruptVariantInfo]  # for resume_review
+    variants: list[InterruptVariantInfo]  # deprecated for resume_review; always []
+    resume: dict[str, Any] | None  # for resume_review / application_package_review — single draft
     candidates: list[dict[str, Any]]  # for experience_import
     candidate: dict[str, Any]  # for jd_save
 

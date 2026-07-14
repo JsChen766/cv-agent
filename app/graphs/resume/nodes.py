@@ -3,7 +3,7 @@ Resume Generation subgraph nodes.
 
 Flow:
   context_assembly → cot_planning → draft_generation →
-  self_review → [revision → self_review (max 3)] → interrupt_output
+  fact_check → self_review → [revision → draft_generation (max 3)] → interrupt_output
 """
 
 import uuid
@@ -65,19 +65,33 @@ async def context_assembly_node(
 # ── 2. CoT Planning ───────────────────────────────────────────────────────────
 
 
+class CoveragePlanItem(BaseModel):
+    requirement_id: str
+    requirement_text: str
+    planned_source_experience_ids: list[str] = Field(default_factory=list)
+
+
 class MatchingPlan(BaseModel):
     strategy: str
     key_experiences_to_highlight: list[str]
     skills_to_emphasize: list[str]
     tone: str = "professional"
     structure_suggestions: list[str] = Field(default_factory=list)
+    coverage_plan: list[CoveragePlanItem] = Field(default_factory=list)
 
 
 async def cot_planning_node(state: ResumeGenerationState) -> dict[str, object]:
-    """Chain-of-thought planning before generation."""
+    """Chain-of-thought planning before generation.
+
+    Produces a per-requirement `coverage_plan` mapping each JD requirement to the
+    source experiences that should support it. The plan is a hint to the LLM in
+    draft_generation — the LLM still owns final bullet-to-requirement decisions,
+    which coverage_check verifies afterwards.
+    """
     provider = get_provider()
 
     jd_text = state.get("jd_text") or state.get("assembled_jd_text", "")
+    jd_requirements = state.get("jd_requirements") or []
     experiences = state.get("relevant_experiences") or state.get("assembled_experiences", [])
     prefs = state.get("user_preferences") or state.get("assembled_preferences", [])
     profile = state.get("user_profile") or state.get("assembled_user_profile")
@@ -86,13 +100,24 @@ async def cot_planning_node(state: ResumeGenerationState) -> dict[str, object]:
     context_parts = [f"Intent: {intent}"]
     if jd_text:
         context_parts.append(f"JD Summary:\n{jd_text[:1500]}")
+    if jd_requirements:
+        req_lines = [
+            f"- id={r.get('id') or f'req-{i+1}'}: {r.get('text', '')}"
+            for i, r in enumerate(jd_requirements)
+            if isinstance(r, dict)
+        ]
+        context_parts.append(
+            "JD requirements (map coverage_plan entries to these ids verbatim):\n"
+            + "\n".join(req_lines)
+        )
     if profile:
         context_parts.append(
             f"User: {profile.get('current_title', '')} | {profile.get('career_stage', '')}"
         )
     if experiences:
         exp_list = "\n".join(
-            f"- {e.get('title')} at {e.get('organization', 'N/A')}" for e in experiences[:6]
+            f"- id={e.get('id', 'N/A')}: {e.get('title')} at {e.get('organization', 'N/A')}"
+            for e in experiences[:12]
         )
         context_parts.append(f"Available Experiences:\n{exp_list}")
     if prefs:
@@ -104,12 +129,18 @@ async def cot_planning_node(state: ResumeGenerationState) -> dict[str, object]:
             {
                 "role": "system",
                 "content": (
-                    "You are a senior resume strategist. Based on the job requirements and "
-                    "available experiences, create a strategic plan for resume generation.\n"
+                    "You are a senior resume strategist. Based on the JD requirements and "
+                    "the candidate's source experiences, produce a strategic plan for resume generation.\n"
                     "Think step by step about:\n"
-                    "1. Which experiences best match the JD requirements\n"
-                    "2. What skills to emphasize\n"
-                    "3. The overall tone and structure"
+                    "1. Which experiences best support each JD requirement.\n"
+                    "2. What skills to emphasize.\n"
+                    "3. The overall tone and structure.\n\n"
+                    "You MUST populate `coverage_plan`: one entry per JD requirement. For each "
+                    "entry, set `requirement_id` and `requirement_text` VERBATIM from the input, "
+                    "and list `planned_source_experience_ids` — the ids of source experiences "
+                    "whose content should back that requirement in the final resume. If no "
+                    "experience truly supports a requirement, return an empty list for that "
+                    "requirement (do NOT invent). Do not include ids that were not shown to you."
                 ),
             },
             {"role": "user", "content": "\n\n".join(context_parts)},
@@ -128,35 +159,55 @@ async def cot_planning_node(state: ResumeGenerationState) -> dict[str, object]:
 
 
 async def draft_generation_node(state: ResumeGenerationState) -> dict[str, object]:
-    """Generate resume variant(s) and emit diff events."""
+    """Generate a structured resume, then derive markdown for display."""
     provider = get_provider()
 
     intent = state.get("intent_description", "Generate a tailored resume")
     jd_text = state.get("jd_text") or ""
+    jd_requirements = state.get("jd_requirements") or []
     experiences = state.get("relevant_experiences") or []
     prefs = state.get("user_preferences") or []
     plan = state.get("matching_plan") or {}
     profile = state.get("user_profile") or {}
     evidence_pack = state.get("evidence_pack") or {}
     revision_instruction = state.get("revision_instruction")
+    fact_mismatches = state.get("fact_mismatches") or []
 
     # Build generation prompt
     prompt_parts = [f"Task: {intent}"]
     if jd_text:
-        prompt_parts.append(f"Job Description:\n{jd_text[:2000]}")
-    if plan:
+        prompt_parts.append(f"Job Description:\n{jd_text}")
+    if jd_requirements:
+        req_lines = [
+            f"- id={r.get('id') or f'req-{i+1}'}: {r.get('text', '')}"
+            for i, r in enumerate(jd_requirements)
+            if isinstance(r, dict)
+        ]
         prompt_parts.append(
-            f"Strategy: {plan.get('strategy', '')}\n"
-            f"Key experiences to highlight: {', '.join(plan.get('key_experiences_to_highlight', []))}\n"
-            f"Skills to emphasize: {', '.join(plan.get('skills_to_emphasize', []))}"
+            "JD requirements — every bullet's `matched_jd_requirement_ids` MUST reference these ids verbatim (or be empty for bullets that don't map to any requirement):\n"
+            + "\n".join(req_lines)
         )
+    if plan:
+        plan_lines = [
+            f"Strategy: {plan.get('strategy', '')}",
+            f"Key experiences to highlight: {', '.join(plan.get('key_experiences_to_highlight', []))}",
+            f"Skills to emphasize: {', '.join(plan.get('skills_to_emphasize', []))}",
+        ]
+        coverage_plan = plan.get("coverage_plan") or []
+        if coverage_plan:
+            coverage_lines = [
+                f"  - {c.get('requirement_id')}: use experience ids {c.get('planned_source_experience_ids') or 'NONE'}"
+                for c in coverage_plan
+                if isinstance(c, dict)
+            ]
+            plan_lines.append("Coverage plan (guideline; final bullet mapping is yours to decide):\n" + "\n".join(coverage_lines))
+        prompt_parts.append("\n".join(plan_lines))
     if experiences:
-        exp_texts = []
-        for e in experiences[:5]:
-            exp_texts.append(
-                f"**{e.get('title')}** at {e.get('organization', '')}\n{e.get('content', '')[:600]}"
-            )
-        prompt_parts.append("Experiences to use:\n" + "\n\n".join(exp_texts))
+        prompt_parts.append(
+            "Source experiences (THE ONLY GROUND TRUTH — every date, organization, role, "
+            "metric, and technology in your output must come from this block; do not invent "
+            "or substitute):\n" + _format_experiences_for_prompt(experiences)
+        )
     if prefs:
         pref_rules = "\n".join(f"- {p.get('rule')}" for p in prefs[:8])
         prompt_parts.append(f"Writing preferences:\n{pref_rules}")
@@ -180,15 +231,20 @@ async def draft_generation_node(state: ResumeGenerationState) -> dict[str, objec
                 "Verified evidence mapping (use only these claims for matching assertions):\n"
                 + "\n".join(evidence_lines)
             )
+    if fact_mismatches:
+        prompt_parts.append(
+            "Previous draft had the following factual errors — you MUST correct every one of them in this revision:\n"
+            + "\n".join("- " + _format_mismatch_issue(m) for m in fact_mismatches if isinstance(m, dict))
+        )
     if revision_instruction:
-        prompt_parts.append(f"Revision instruction: {revision_instruction}")
+        prompt_parts.append(f"Additional revision instruction: {revision_instruction}")
 
     preferred_lang = profile.get("preferred_language", "zh-CN")
     lang_instruction = (
         "Respond in Chinese (Simplified)." if "zh" in preferred_lang else "Respond in English."
     )
+    profile_contact = _extract_contact_from_profile(profile)
 
-    # Emit diff started event
     resume_id = state.get("workspace", {}).get("resume_id") or "new"
     diff_started: ContentDiffStartedEvent = {
         "event": "content.diff.started",
@@ -196,29 +252,17 @@ async def draft_generation_node(state: ResumeGenerationState) -> dict[str, objec
         "section": "all",
     }
 
-    # Generate content (non-streaming for now; streaming wired in Phase 12)
-    content = await provider.chat(
+    llm_structure: _LlmResumeStructure = await provider.chat_structured(
         [
-            {
-                "role": "system",
-                "content": (
-                    f"You are an expert resume writer. {lang_instruction}\n"
-                    "Generate a complete, tailored resume in Markdown format. "
-                    "Include: Summary, Experience, Skills, Education sections. "
-                    "Make every bullet point specific, quantified where possible, "
-                    "and directly relevant to the job requirements. Never invent metrics, "
-                    "employers, dates, technologies, or achievements that are absent from "
-                    "the supplied experience evidence."
-                ),
-            },
+            {"role": "system", "content": _DRAFT_SYSTEM_PROMPT.format(lang=lang_instruction)},
             {"role": "user", "content": "\n\n".join(prompt_parts)},
         ],
-        temperature=0.6,
-        max_tokens=3000,
+        _LlmResumeStructure,
+        temperature=0.2,
     )
-    content_str = str(content)
+    structured = _assign_structure_ids(llm_structure, fallback_contact=profile_contact)
+    content_str = _render_structured_to_markdown(structured)
 
-    # Emit diff delta event (simplified: treat entire content as insertion)
     diff_delta: ContentDiffDeltaEvent = {
         "event": "content.diff.delta",
         "operations": [{"op": "insert", "text": content_str}],
@@ -230,7 +274,7 @@ async def draft_generation_node(state: ResumeGenerationState) -> dict[str, objec
         "total_deletions": 0,
     }
 
-    variant_id = f"variant-{uuid.uuid4()}"
+    variant_id = f"resume-draft-{uuid.uuid4()}"
     evidence_summary = _evidence_summary(evidence_pack)
     coverage = evidence_pack.get("coverage_ratio")
     coverage_score = float(coverage) if isinstance(coverage, (int, float)) else 0.0
@@ -247,8 +291,9 @@ async def draft_generation_node(state: ResumeGenerationState) -> dict[str, objec
     )
     variant = {
         "id": variant_id,
-        "title": "AI Generated Variant",
+        "title": _derive_resume_title(state, structured),
         "content": content_str,
+        "structured": structured,
         "score": {
             "overall": 0.0,
             "relevance": 0.0,
@@ -263,9 +308,110 @@ async def draft_generation_node(state: ResumeGenerationState) -> dict[str, objec
     existing_events = state.get("pending_sse_events", [])
     return {
         "variants": [variant],
+        "resume_structure": structured,
         "current_diff": [{"op": "insert", "text": content_str}],
         "pending_sse_events": [*existing_events, diff_started, diff_delta, diff_completed],
     }
+
+
+_DRAFT_SYSTEM_PROMPT = """You are an expert resume writer. {lang}
+
+You MUST return a single JSON object matching the response schema — no prose outside the JSON. The JSON has the shape:
+
+{{
+  "language": "zh-CN" | "en-US" | ...,
+  "contact": {{"name": ..., "email": ..., "phone": ..., "location": ...}} | null,
+  "sections": [
+    {{
+      "type": "summary" | "education" | "experience" | "project" | "skills" | "other",
+      "heading": "...",           // display heading in the output language
+      "items": [
+        {{
+          "title": "...",                 // job title / project name / degree — null for summary/skills
+          "organization": "..." | null,
+          "role": "..." | null,
+          "start_date": "YYYY-MM" | null,
+          "end_date": "YYYY-MM" | "present" | null,
+          "source_experience_id": "..." | null,   // MUST match the source_experience_id label from Source experiences
+          "bullets": [
+            {{
+              "text": "...",
+              "matched_jd_requirement_ids": ["req-1", ...]   // ids from the JD requirements block; [] if the bullet doesn't directly support a listed requirement
+            }}
+          ],
+          "raw_text": "..." | null        // use for summary paragraph / skills lines; null when bullets are used
+        }}
+      ]
+    }}
+  ]
+}}
+
+## Absolute rules (grounding)
+
+1. Every DATE you write MUST appear verbatim in the Source experiences block. Do NOT re-format historic dates. Do NOT convert "2026-04" to "2023-04" or extend an end_date. If a source date is missing, use null — do NOT guess.
+2. Every ORGANIZATION name, ROLE, TECHNOLOGY name, and QUANTITATIVE claim (numbers, percentages, counts) MUST come verbatim from the source. Preserve original casing/punctuation for names (e.g. "WEEX国际交易所有限公司", "Apache Spark").
+3. If a source experience has organization=null, do NOT invent one — set the JSON field to null.
+4. Do not upgrade descriptions ("熟悉" → "精通", "参与" → "主导") beyond what the source states.
+5. Do not merge or split source experiences: one item per source experience within its section.
+6. For each experience/project item, set `source_experience_id` to the exact id shown in the Source experiences block. Never invent an id.
+7. For each bullet, set `matched_jd_requirement_ids` to the list of JD requirement ids that bullet directly supports. Only use ids shown in the JD requirements block. Empty array is allowed and expected for bullets that describe context, ownership, or achievements not tied to any listed requirement. Do NOT tag every bullet with every requirement — be specific.
+
+## Section order and content
+
+Emit sections in this order, skipping any with zero relevant data:
+
+1. `summary` — one item; `raw_text` is a 3–5 sentence paragraph derived only from source facts.
+2. `education` — one item per source `category="education"`. Include the degree in `title`, school in `organization`, dates, and put courses / GPA / honours in `raw_text` (a compact block); leave `bullets` empty.
+3. `experience` — one item per source `category="work"`. Populate `title`/`organization`/`role`/dates from source. Emit 3–6 `bullets`, each specific and quantified where the source supports it. Leave `raw_text` null.
+4. `project` — one item per source `category="project"`. Same bullet rules as experience.
+5. `skills` — one item with `raw_text` grouping skills by area (e.g. "编程语言：..."). Only include technologies actually appearing in source content or the JD. Leave `bullets` empty.
+
+## Language
+
+Match the source language for names and quantities; write connectives in the requested output language.
+"""
+
+
+def _format_experiences_for_prompt(experiences: list[dict[str, object]]) -> str:
+    """Emit each experience as a labeled block so the LLM cannot conflate fields."""
+    blocks: list[str] = []
+    for idx, exp in enumerate(experiences, start=1):
+        exp_id = exp.get("id") or "(no id)"
+        title = exp.get("title") or "(no title)"
+        organization = exp.get("organization")
+        role = exp.get("role")
+        category = exp.get("category") or "other"
+        start_date = exp.get("start_date")
+        end_date = exp.get("end_date")
+        content = exp.get("content") or ""
+        tags = exp.get("tags") or []
+
+        header = f"[Experience #{idx} — category={category} — source_experience_id={exp_id}]"
+        lines = [
+            header,
+            f"  title: {title}",
+            f"  organization: {organization if organization else '(none — do NOT invent one)'}",
+            f"  role: {role if role else '(none)'}",
+            f"  start_date: {start_date if start_date else '(unknown — omit if writing a date range)'}",
+            f"  end_date: {end_date if end_date else '(unknown — omit if writing a date range)'}",
+        ]
+        if tags:
+            lines.append(f"  tags: {', '.join(str(t) for t in tags)}")
+        lines.append(f"  content:\n{_indent(str(content), 4)}")
+        blocks.append("\n".join(lines))
+    return "\n\n".join(blocks)
+
+
+def _indent(text: str, spaces: int) -> str:
+    pad = " " * spaces
+    return "\n".join(pad + line for line in text.splitlines())
+
+
+def _format_mismatch_issue(m: dict[str, object]) -> str:
+    src = m.get("source_value")
+    src_part = "source has no such fact" if src is None else f'source says "{src}"'
+    exp = m.get("experience_title") or ""
+    return f'{m.get("field")}: drafted "{m.get("drafted_value")}" but {src_part} ({exp})'
 
 
 def _evidence_summary(evidence_pack: dict[str, object]) -> list[dict[str, object]]:
@@ -297,6 +443,191 @@ def _evidence_summary(evidence_pack: dict[str, object]) -> list[dict[str, object
     return summary
 
 
+# ── 3.5. Fact Check ───────────────────────────────────────────────────────────
+
+
+class _FactMismatch(BaseModel):
+    field: Literal["date", "organization", "role", "metric", "technology", "title", "other"]
+    drafted_value: str
+    source_value: str | None = None  # None when the draft claim has no source at all
+    experience_title: str = ""       # which source experience it should have come from
+    detail: str | None = None        # short explanation
+
+
+class _FactCheckResult(BaseModel):
+    mismatches: list[_FactMismatch] = Field(default_factory=list)
+
+
+async def fact_check_node(state: ResumeGenerationState) -> dict[str, object]:
+    """Verify every date / organization / role / metric / technology in the draft
+    can be sourced verbatim from `relevant_experiences`. Uses the structured draft
+    (if available) for precise per-field comparison, falling back to markdown."""
+    import json as _json
+
+    variants = state.get("variants", [])
+    if not variants:
+        return {"fact_mismatches": []}
+
+    structured = variants[0].get("structured") or state.get("resume_structure")
+    draft_content = variants[0].get("content", "")
+
+    experiences = state.get("relevant_experiences") or []
+    if not experiences:
+        return {"fact_mismatches": []}
+
+    if isinstance(structured, dict) and structured.get("sections"):
+        draft_block = (
+            "DRAFT (structured JSON):\n"
+            + _json.dumps(structured, ensure_ascii=False, indent=2)
+        )
+    elif isinstance(draft_content, str) and draft_content.strip():
+        draft_block = "DRAFT (markdown):\n" + draft_content
+    else:
+        return {"fact_mismatches": []}
+
+    provider = get_provider()
+    result: _FactCheckResult = await provider.chat_structured(
+        [
+            {
+                "role": "system",
+                "content": (
+                    "You are a strict fact-checker. Compare a resume DRAFT against the "
+                    "SOURCE experiences. Flag every case where the DRAFT contains a specific "
+                    "date, organization name, role, quantitative claim (number/percentage/count), "
+                    "or technology name that does NOT appear verbatim in the SOURCE for the "
+                    "same experience. Normalise date formats (2024.04 == 2024-04 == 2024年4月). "
+                    "When the DRAFT is structured JSON, use `source_experience_id` on each item "
+                    "to look up the correct source experience for comparison — do not compare an "
+                    "item against a different experience. "
+                    "Do NOT flag: rewording, restructuring, translation of connectives, or "
+                    "well-known synonyms. DO flag: any date year/month/day change, any org name "
+                    "substitution, any role substitution, any number that isn't in source, any "
+                    "tech name not in source. Return an empty list if the draft is clean."
+                ),
+            },
+            {
+                "role": "user",
+                "content": (
+                    "SOURCE experiences:\n"
+                    + _format_experiences_for_prompt(experiences)
+                    + "\n\n"
+                    + draft_block
+                ),
+            },
+        ],
+        _FactCheckResult,
+        temperature=0.0,
+    )
+
+    mismatches = [m.model_dump() for m in result.mismatches] if result else []
+    return {"fact_mismatches": mismatches}
+
+
+# ── 3.6. Coverage Check ───────────────────────────────────────────────────────
+
+
+async def coverage_check_node(state: ResumeGenerationState) -> dict[str, object]:
+    """Deterministically verify every JD requirement is cited by ≥1 bullet.
+
+    Reads `matched_jd_requirement_ids` off each bullet in the structured draft,
+    counts coverage per requirement, and:
+      - populates `coverage_report` (per-requirement bullet count + supporting item titles)
+      - lists `uncovered_jd_requirement_ids` for downstream review / FE surfacing
+      - annotates the variant's `risk_summary` with a `coverage_gap` entry when
+        one or more requirements has zero supporting bullets.
+    """
+    jd_requirements = state.get("jd_requirements") or []
+    if not jd_requirements:
+        return {"coverage_report": None, "uncovered_jd_requirement_ids": []}
+
+    variants = state.get("variants") or []
+    if not variants:
+        return {"coverage_report": None, "uncovered_jd_requirement_ids": []}
+
+    structured = variants[0].get("structured") or state.get("resume_structure")
+    if not isinstance(structured, dict):
+        return {"coverage_report": None, "uncovered_jd_requirement_ids": []}
+
+    valid_req_ids: dict[str, str] = {}
+    for idx, req in enumerate(jd_requirements):
+        if not isinstance(req, dict):
+            continue
+        req_id = req.get("id") or f"req-{idx + 1}"
+        valid_req_ids[str(req_id)] = str(req.get("text") or "")
+
+    # Aggregate coverage from bullets
+    per_req: dict[str, dict[str, object]] = {
+        rid: {"requirement_id": rid, "requirement_text": text, "bullet_count": 0,
+              "supporting_items": []}
+        for rid, text in valid_req_ids.items()
+    }
+
+    sections = structured.get("sections") or []
+    for section in sections:
+        if not isinstance(section, dict):
+            continue
+        for item in section.get("items") or []:
+            if not isinstance(item, dict):
+                continue
+            item_title = item.get("title") or ""
+            for bullet in item.get("bullets") or []:
+                if not isinstance(bullet, dict):
+                    continue
+                matched = bullet.get("matched_jd_requirement_ids") or []
+                if not isinstance(matched, list):
+                    continue
+                for raw_rid in matched:
+                    rid = str(raw_rid)
+                    entry = per_req.get(rid)
+                    if entry is None:
+                        continue
+                    entry["bullet_count"] = int(entry.get("bullet_count") or 0) + 1
+                    supporting = cast("list[str]", entry["supporting_items"])
+                    if item_title and item_title not in supporting:
+                        supporting.append(item_title)
+
+    coverage_report = {
+        "requirements": list(per_req.values()),
+        "covered_count": sum(
+            1 for e in per_req.values() if int(e.get("bullet_count") or 0) > 0
+        ),
+        "total_count": len(per_req),
+    }
+    uncovered_ids = [
+        rid for rid, e in per_req.items() if int(e.get("bullet_count") or 0) == 0
+    ]
+
+    updated_variants: list[dict[str, object]] = []
+    for i, v in enumerate(variants):
+        variant = dict(v)
+        if i == 0:
+            variant["coverage_report"] = coverage_report
+            if uncovered_ids:
+                existing_risks = list(variant.get("risk_summary") or [])
+                existing_risks.append(
+                    {
+                        "type": "coverage_gap",
+                        "text": (
+                            f"{len(uncovered_ids)}/{len(per_req)} JD requirement(s) "
+                            f"lack a supporting bullet: "
+                            + ", ".join(
+                                f"{rid} ({per_req[rid]['requirement_text']})" for rid in uncovered_ids[:5]
+                            )
+                            + (" …" if len(uncovered_ids) > 5 else "")
+                        ),
+                        "severity": "medium",
+                    }
+                )
+                variant["risk_summary"] = existing_risks
+        updated_variants.append(variant)
+
+    return {
+        "coverage_report": coverage_report,
+        "uncovered_jd_requirement_ids": uncovered_ids,
+        "variants": updated_variants,
+    }
+
+
 # ── 4. Self Review ────────────────────────────────────────────────────────────
 
 
@@ -308,7 +639,11 @@ class ReviewResult(BaseModel):
 
 
 async def self_review_node(state: ResumeGenerationState) -> dict[str, object]:
-    """Review generated variants for quality. Max 3 iterations."""
+    """Review generated variants for quality. Max 3 iterations.
+
+    Fact mismatches from `fact_check_node` are always a hard-fail — they force a
+    revision regardless of the qualitative review verdict.
+    """
     iteration = state.get("review_iteration", 0)
     if iteration >= settings.max_self_review_iterations:
         return {"review_result": {"verdict": "pass", "issues": [], "score_estimate": 0.7}}
@@ -316,6 +651,24 @@ async def self_review_node(state: ResumeGenerationState) -> dict[str, object]:
     variants = state.get("variants", [])
     if not variants:
         return {"review_result": {"verdict": "pass", "issues": []}}
+
+    mismatches = state.get("fact_mismatches") or []
+    if mismatches:
+        issues = [_format_mismatch_issue(m) for m in mismatches if isinstance(m, dict)]
+        instruction = (
+            "Fix every factual mismatch listed. Use only facts (dates, organizations, "
+            "roles, metrics, technologies) that appear verbatim in the source experiences. "
+            "Do not invent alternatives."
+        )
+        return {
+            "review_result": {
+                "verdict": "needs_revision",
+                "revision_instruction": instruction,
+                "issues": issues,
+                "score_estimate": 0.3,
+            },
+            "revision_instruction": instruction,
+        }
 
     content = variants[0].get("content", "")
     jd_text = state.get("jd_text") or ""
@@ -402,6 +755,7 @@ async def persist_resume_draft_node(
     for variant in state.get("variants", []):
         title = variant.get("title")
         content = variant.get("content")
+        structured = variant.get("structured")
         saved = await services.resume.save_variant(
             resume_id,
             ResumeVariantCreate.model_validate(
@@ -409,6 +763,7 @@ async def persist_resume_draft_node(
                     "jd_id": jd_id,
                     "title": title if isinstance(title, str) and title else "AI Generated Variant",
                     "content": content if isinstance(content, str) else "",
+                    "structured": structured if isinstance(structured, dict) else None,
                     "score": variant.get("score", {}),
                     "evidence_summary": variant.get("evidence_summary", []),
                     "risk_summary": variant.get("risk_summary", []),
@@ -438,11 +793,11 @@ async def output_node(
     interrupt_type: Literal["application_package_review", "resume_review"] = (
         "application_package_review" if is_application_package else "resume_review"
     )
+    resume_object = variants[0] if variants else None
     message = (
-        f"已生成 {len(package_deliverables)} 项附加投递材料和 "
-        f"{len(variants)} 份针对性简历，请检查后确认。"
+        f"已生成 {len(package_deliverables)} 项附加投递材料和一份针对性简历，请检查后确认。"
         if is_application_package
-        else f"I've generated {len(variants)} resume variant(s). Please review and choose one to accept, or provide feedback."
+        else "简历已生成，请审阅后确认或提出修改意见。"
     )
 
     interrupt_event: AgentInterruptEvent = {
@@ -450,20 +805,14 @@ async def output_node(
         "interrupt_id": interrupt_id,
         "type": interrupt_type,
         "message": message,
-        "variants": [
-            {
-                "id": v.get("id", ""),
-                "title": v.get("title", ""),
-                "score": v.get("score", {}),
-            }
-            for v in variants
-        ],
+        "variants": [],  # deprecated; kept as empty array for backwards-compat
+        "resume": resume_object,
         "candidates": [],
         "action_options": [
             {
                 "id": "accept",
                 "label": "Accept",
-                "description": "Accept the variant and save to resume",
+                "description": "Accept the resume and save",
             },
             {"id": "revise", "label": "Revise", "description": "Request changes"},
             {"id": "discard", "label": "Discard", "description": "Discard and start over"},
@@ -476,7 +825,8 @@ async def output_node(
         "interrupt_id": interrupt_id,
         "type": interrupt_type,
         "message": interrupt_event["message"],
-        "variants": variants,
+        "resume": resume_object,
+        "variants": [],  # deprecated
         "action_options": interrupt_event["action_options"],
         "workspace": workspace,
     }
@@ -498,24 +848,18 @@ async def output_node(
         }
 
     action = None
-    selected_variant_id = None
     if isinstance(resume_value, dict):
         action = resume_value.get("action") or resume_value.get("decision")
-        selected = resume_value.get("selected_variant_id") or resume_value.get("variant_id")
-        selected_variant_id = selected if isinstance(selected, str) else None
     if action in {"accept", "confirm"}:
-        valid_variant_ids = {
-            variant.get("id") for variant in variants if isinstance(variant.get("id"), str)
-        }
-        if selected_variant_id not in valid_variant_ids:
-            raise ValueError("Selected resume variant does not belong to this review")
-        assert selected_variant_id is not None
+        variant_id = variants[0].get("id") if variants else None
+        if not isinstance(variant_id, str):
+            raise ValueError("No resume draft available to accept")
         if services is None:
             raise RuntimeError("Resume service unavailable while accepting variant")
         accepted = await action_capabilities.accept_variant(
             services,
             state.get("user_id", ""),
-            VariantInput(variantId=selected_variant_id),
+            VariantInput(variantId=variant_id),
             base_workspace=cast("Mapping[str, JsonValue]", workspace),
         )
         workspace.update(accepted.workspace)
@@ -574,3 +918,211 @@ def review_route(state: ResumeGenerationState) -> str:
 
 def output_route(state: ResumeGenerationState) -> str:
     return "revision" if state.get("resume_user_action") == "revise" else "end"
+
+
+# ── Structured schema and rendering ───────────────────────────────────────────
+
+
+_SectionType = Literal["summary", "education", "experience", "project", "skills", "other"]
+
+
+class _LlmBullet(BaseModel):
+    text: str
+    matched_jd_requirement_ids: list[str] = Field(default_factory=list)
+
+
+class _LlmSectionItem(BaseModel):
+    title: str | None = None
+    organization: str | None = None
+    role: str | None = None
+    start_date: str | None = None
+    end_date: str | None = None
+    source_experience_id: str | None = None
+    bullets: list[_LlmBullet] = Field(default_factory=list)
+    raw_text: str | None = None
+
+
+class _LlmSection(BaseModel):
+    type: _SectionType
+    heading: str | None = None
+    items: list[_LlmSectionItem] = Field(default_factory=list)
+
+
+class _LlmContact(BaseModel):
+    name: str | None = None
+    email: str | None = None
+    phone: str | None = None
+    location: str | None = None
+
+
+class _LlmResumeStructure(BaseModel):
+    language: str = "zh-CN"
+    contact: _LlmContact | None = None
+    sections: list[_LlmSection] = Field(default_factory=list)
+
+
+_DEFAULT_HEADINGS_ZH: dict[str, str] = {
+    "summary": "个人总结",
+    "education": "教育背景",
+    "experience": "实习/工作经历",
+    "project": "项目经历",
+    "skills": "专业技能",
+    "other": "其他",
+}
+
+_DEFAULT_HEADINGS_EN: dict[str, str] = {
+    "summary": "Summary",
+    "education": "Education",
+    "experience": "Experience",
+    "project": "Projects",
+    "skills": "Skills",
+    "other": "Other",
+}
+
+
+def _extract_contact_from_profile(profile: dict[str, object]) -> dict[str, object] | None:
+    """Best-effort pull of name/email/phone/location from user profile."""
+    if not profile:
+        return None
+    contact = {
+        "name": profile.get("full_name") or profile.get("name"),
+        "email": profile.get("email"),
+        "phone": profile.get("phone"),
+        "location": profile.get("location") or profile.get("city") or profile.get("country"),
+    }
+    if any(v for v in contact.values()):
+        return {k: (str(v) if v is not None else None) for k, v in contact.items()}
+    return None
+
+
+def _assign_structure_ids(
+    llm: _LlmResumeStructure,
+    fallback_contact: dict[str, object] | None = None,
+) -> dict[str, object]:
+    """Attach stable UUIDs to sections / items / bullets and produce the final JSON."""
+    default_headings = (
+        _DEFAULT_HEADINGS_ZH if llm.language.lower().startswith("zh") else _DEFAULT_HEADINGS_EN
+    )
+    sections: list[dict[str, object]] = []
+    for section in llm.sections:
+        section_dict: dict[str, object] = {
+            "id": f"sec-{uuid.uuid4()}",
+            "type": section.type,
+            "heading": section.heading or default_headings.get(section.type, ""),
+            "items": [],
+        }
+        for item in section.items:
+            item_dict: dict[str, object] = {
+                "id": f"item-{uuid.uuid4()}",
+                "title": item.title,
+                "organization": item.organization,
+                "role": item.role,
+                "start_date": item.start_date,
+                "end_date": item.end_date,
+                "source_experience_id": item.source_experience_id,
+                "bullets": [
+                    {
+                        "id": f"bul-{uuid.uuid4()}",
+                        "text": b.text,
+                        "matched_jd_requirement_ids": list(b.matched_jd_requirement_ids),
+                    }
+                    for b in item.bullets
+                ],
+                "raw_text": item.raw_text,
+            }
+            cast("list[dict[str, object]]", section_dict["items"]).append(item_dict)
+        sections.append(section_dict)
+
+    contact: dict[str, object] | None = None
+    if llm.contact is not None:
+        contact = llm.contact.model_dump()
+    elif fallback_contact is not None:
+        contact = fallback_contact
+
+    return {
+        "language": llm.language,
+        "contact": contact,
+        "sections": sections,
+    }
+
+
+def _render_structured_to_markdown(structured: dict[str, object]) -> str:
+    """Deterministic markdown from structured; single source of truth is structured."""
+    lines: list[str] = []
+    contact = structured.get("contact")
+    if isinstance(contact, dict):
+        header_bits = [
+            str(contact.get(k)) for k in ("name", "email", "phone", "location") if contact.get(k)
+        ]
+        if header_bits:
+            lines.append(" · ".join(header_bits))
+            lines.append("")
+
+    sections = structured.get("sections") or []
+    if not isinstance(sections, list):
+        return "\n".join(lines).strip()
+
+    for section in sections:
+        if not isinstance(section, dict):
+            continue
+        heading = section.get("heading") or ""
+        lines.append(f"## {heading}".rstrip())
+        lines.append("")
+        items = section.get("items") or []
+        section_type = section.get("type")
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            header_parts: list[str] = []
+            title = item.get("title")
+            organization = item.get("organization")
+            role = item.get("role")
+            if title:
+                header_parts.append(f"**{title}**")
+            if organization:
+                header_parts.append(str(organization))
+            if role:
+                header_parts.append(str(role))
+            date_range = _format_date_range(item.get("start_date"), item.get("end_date"))
+            if header_parts or date_range:
+                header_line = " · ".join(header_parts)
+                if date_range:
+                    header_line = f"{header_line}    _{date_range}_" if header_line else f"_{date_range}_"
+                lines.append(header_line)
+            raw_text = item.get("raw_text")
+            if isinstance(raw_text, str) and raw_text.strip():
+                lines.append(raw_text.strip())
+            bullets = item.get("bullets") or []
+            for bullet in bullets:
+                if isinstance(bullet, dict) and bullet.get("text"):
+                    lines.append(f"- {bullet['text']}")
+            if section_type in ("experience", "project", "education", "other"):
+                lines.append("")
+        if not lines or lines[-1] != "":
+            lines.append("")
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def _format_date_range(start: object, end: object) -> str:
+    s = str(start).strip() if isinstance(start, str) and start.strip() else ""
+    e = str(end).strip() if isinstance(end, str) and end.strip() else ""
+    if not s and not e:
+        return ""
+    if s and e:
+        return f"{s} – {e}"
+    return s or e
+
+
+def _derive_resume_title(
+    state: ResumeGenerationState, structured: dict[str, object]
+) -> str:
+    """Best-effort human title for the resume draft."""
+    intent = state.get("intent_description") or ""
+    if intent:
+        trimmed = intent.strip()
+        if trimmed:
+            return trimmed[:80]
+    contact = structured.get("contact")
+    if isinstance(contact, dict) and contact.get("name"):
+        return f"{contact['name']} 的简历"
+    return "AI Generated Resume"

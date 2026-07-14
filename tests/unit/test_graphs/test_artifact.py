@@ -6,17 +6,33 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 
-async def test_artifact_draft_node_default_no_canvas_events(monkeypatch) -> None:
-    """Non-canvas artifact types must set assistant_message to full content and emit no artifact.* SSE events."""
-    from app.graphs.artifact.nodes import artifact_draft_node
+class _StructuredProvider:
+    """Mock provider that satisfies both chat_structured (Layer B) and chat (legacy)."""
 
-    fake_content = "# Cover Letter\n\nDear Hiring Manager..."
+    async def chat_structured(self, messages, schema, **kwargs):
+        # Return a minimal cover_letter structure that validates against the schema.
+        return schema.model_validate(
+            {
+                "recipient": "Dear Hiring Manager",
+                "opening": "I am writing to apply.",
+                "body_paragraphs": [
+                    {"text": "I bring relevant experience.", "source_experience_ids": [], "matched_jd_requirement_ids": []}
+                ],
+                "closing": "Looking forward to your response.",
+                "signature": None,
+            }
+        )
 
-    class FakeProvider:
-        async def chat(self, messages, **kwargs):
-            return fake_content
+    async def chat(self, messages, **kwargs):
+        return "# Cover Letter\n\nDear Hiring Manager..."
 
-    monkeypatch.setattr("app.graphs.artifact.nodes.get_provider", lambda: FakeProvider())
+
+async def test_artifact_default_no_canvas_events(monkeypatch) -> None:
+    """Non-canvas artifact types persist to DB and set assistant_message to full content,
+    without emitting any artifact.* SSE events (chat bubble IS the content)."""
+    from app.graphs.artifact.nodes import artifact_draft_node, artifact_persist_node
+
+    monkeypatch.setattr("app.graphs.artifact.nodes.get_provider", lambda: _StructuredProvider())
 
     artifact = MagicMock()
     artifact.id = "art-1"
@@ -37,37 +53,34 @@ async def test_artifact_draft_node_default_no_canvas_events(monkeypatch) -> None
         "pending_sse_events": [],
     }
 
-    result = await artifact_draft_node(state, config)
+    draft = await artifact_draft_node(state, config)
+    state.update(draft)
+    persisted = await artifact_persist_node(state, config)
 
-    # Full Markdown should be the assistant message
-    assert result["assistant_message"] == fake_content
+    # Full derived Markdown should be the assistant message
+    assert isinstance(persisted["assistant_message"], str) and persisted["assistant_message"].strip()
+    assert persisted["assistant_message"] == state["artifact_content"]
 
-    # No artifact.* events should be emitted
+    # No artifact.* events should be emitted for the default chat path
     artifact_events = [
         e
-        for e in result.get("pending_sse_events", [])
+        for e in persisted.get("pending_sse_events", [])
         if str(e.get("event", "")).startswith("artifact.")
     ]
     assert artifact_events == [], f"Expected no artifact events, got: {artifact_events}"
 
 
-async def test_artifact_draft_node_canvas_type_emits_events(monkeypatch) -> None:
-    """Types in _CANVAS_ARTIFACT_TYPES must still emit artifact.* events."""
+async def test_artifact_canvas_type_emits_events(monkeypatch) -> None:
+    """Types in _CANVAS_ARTIFACT_TYPES must still emit artifact.* events from persist."""
     import app.graphs.artifact.nodes as nodes_module
 
     original = nodes_module._CANVAS_ARTIFACT_TYPES
     nodes_module._CANVAS_ARTIFACT_TYPES = {"cover_letter"}
 
     try:
-        from app.graphs.artifact.nodes import artifact_draft_node
+        from app.graphs.artifact.nodes import artifact_draft_node, artifact_persist_node
 
-        fake_content = "# Cover Letter\n\nDear Hiring Manager..."
-
-        class FakeProvider:
-            async def chat(self, messages, **kwargs):
-                return fake_content
-
-        monkeypatch.setattr("app.graphs.artifact.nodes.get_provider", lambda: FakeProvider())
+        monkeypatch.setattr("app.graphs.artifact.nodes.get_provider", lambda: _StructuredProvider())
 
         artifact = MagicMock()
         artifact.id = "art-1"
@@ -87,13 +100,15 @@ async def test_artifact_draft_node_canvas_type_emits_events(monkeypatch) -> None
             "pending_sse_events": [],
         }
 
-        result = await artifact_draft_node(state, config)
+        draft = await artifact_draft_node(state, config)
+        state.update(draft)
+        persisted = await artifact_persist_node(state, config)
 
-        artifact_events = [e["event"] for e in result.get("pending_sse_events", []) if "event" in e]
+        artifact_events = [e["event"] for e in persisted.get("pending_sse_events", []) if "event" in e]
         assert "artifact.started" in artifact_events
         assert "artifact.delta" in artifact_events
         assert "artifact.completed" in artifact_events
         # assistant_message should be the short placeholder, not the full content
-        assert result["assistant_message"] != fake_content
+        assert persisted["assistant_message"] != state["artifact_content"]
     finally:
         nodes_module._CANVAS_ARTIFACT_TYPES = original

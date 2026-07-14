@@ -10,7 +10,9 @@ from app.graphs.application.state import ApplicationPackageState
 from app.graphs.resume.nodes import (
     context_assembly_node,
     cot_planning_node,
+    coverage_check_node,
     draft_generation_node,
+    fact_check_node,
     output_node,
     output_route,
     persist_resume_draft_node,
@@ -27,6 +29,8 @@ def build_application_package_subgraph() -> StateGraph[ApplicationPackageState]:
     builder.add_node("package_artifacts", generate_application_artifacts_node)
     builder.add_node("cot_planning", cot_planning_node)
     builder.add_node("draft_generation", draft_generation_node)
+    builder.add_node("fact_check", fact_check_node)
+    builder.add_node("coverage_check", coverage_check_node)
     builder.add_node("self_review", self_review_node)
     builder.add_node("revision", revision_node)
     builder.add_node("persist_draft", persist_resume_draft_node)
@@ -37,7 +41,9 @@ def build_application_package_subgraph() -> StateGraph[ApplicationPackageState]:
     builder.add_edge("package_plan", "package_artifacts")
     builder.add_edge("package_artifacts", "cot_planning")
     builder.add_edge("cot_planning", "draft_generation")
-    builder.add_edge("draft_generation", "self_review")
+    builder.add_edge("draft_generation", "fact_check")
+    builder.add_edge("fact_check", "coverage_check")
+    builder.add_edge("coverage_check", "self_review")
     builder.add_conditional_edges(
         "self_review", review_route, {"revision": "revision", "output": "persist_draft"}
     )

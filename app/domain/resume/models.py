@@ -35,7 +35,8 @@ class ResumeVariant(BaseModel):
     resume_id: str
     jd_id: str | None = None
     title: str
-    content: str  # full markdown resume text
+    content: str  # markdown, derived from `structured`
+    structured: dict | None = None  # ResumeStructure JSON (canvas source of truth)
     score: ScoreBreakdown = Field(default_factory=ScoreBreakdown)
     evidence_summary: list[EvidenceItem] = Field(default_factory=list)
     risk_summary: list[RiskItem] = Field(default_factory=list)
@@ -103,6 +104,7 @@ class ResumeVariantCreate(BaseModel):
     jd_id: str | None = None
     title: str = "Variant"
     content: str = ""
+    structured: dict | None = None
     score: ScoreBreakdown = Field(default_factory=ScoreBreakdown)
     evidence_summary: list[EvidenceItem] = Field(default_factory=list)
     risk_summary: list[RiskItem] = Field(default_factory=list)

@@ -98,17 +98,21 @@ async def test_resume_context_uses_pasted_jd_without_saved_jd() -> None:
 async def test_package_artifacts_are_collected_and_failures_do_not_block(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    async def fake_artifact_node(state: dict[str, Any], config=None) -> dict[str, object]:
+    async def fake_verified(state: dict[str, Any], config=None) -> dict[str, object]:
         if state["artifact_type"] == "other":
             raise RuntimeError("unsupported generator")
+        # Simulate the full verified pipeline output: returns a completed
+        # state dict with content + structured + workspace populated.
         return {
+            "artifact_type": state["artifact_type"],
             "artifact_content": "我是候选人，具备ETF运营和数据分析经验。",
+            "artifact_structured": {"sentences": [{"id": "sent-1", "text": "…"}]},
             "workspace": {"artifact_id": "artifact-1"},
         }
 
     monkeypatch.setattr(
-        "app.graphs.application.nodes.artifact_draft_node",
-        fake_artifact_node,
+        "app.graphs.application.nodes.generate_verified_artifact",
+        fake_verified,
     )
     result = await generate_application_artifacts_node(
         {
@@ -173,7 +177,9 @@ async def test_resume_output_combines_package_deliverables(
 
     assert captured["type"] == "application_package_review"
     assert captured["deliverables"][0]["artifact_type"] == "self_intro"
-    assert captured["variants"][0]["content"] == "# Resume"
+    # Layer 2: single-resume contract — `resume` (object) replaces `variants` (array)
+    assert captured["variants"] == []
+    assert captured["resume"]["content"] == "# Resume"
     assert captured["unsupported_requirements"][0]["title"] == "外部研究"
 
 

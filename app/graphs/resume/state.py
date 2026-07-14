@@ -30,3 +30,7 @@ class ResumeGenerationState(MainState, total=False):
     # Self-review loop
     revision_instruction: str | None
     resume_user_action: str | None
+    fact_mismatches: list[dict[str, Any]]
+    resume_structure: dict[str, Any] | None
+    coverage_report: dict[str, Any] | None
+    uncovered_jd_requirement_ids: list[str]

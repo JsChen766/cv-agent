@@ -4,8 +4,26 @@ from app.graphs.resume.nodes import draft_generation_node, output_node, output_r
 
 
 class _DraftProvider:
-    async def chat(self, messages, **kwargs):
-        return "# Resume\n\nGrounded content"
+    async def chat_structured(self, messages, schema, **kwargs):
+        # Minimal structured resume: one summary section with a raw_text paragraph
+        return schema.model_validate(
+            {
+                "language": "zh-CN",
+                "contact": None,
+                "sections": [
+                    {
+                        "type": "summary",
+                        "heading": "个人总结",
+                        "items": [
+                            {
+                                "raw_text": "Grounded content summary.",
+                                "bullets": [],
+                            }
+                        ],
+                    }
+                ],
+            }
+        )
 
 
 async def test_draft_regeneration_preserves_review_iteration(monkeypatch) -> None:
@@ -38,6 +56,9 @@ async def test_draft_regeneration_preserves_review_iteration(monkeypatch) -> Non
     assert variant["evidence_summary"][0]["supporting_claims"] == [
         "Built a Python service handling 1M requests/day"
     ]
+    # Layer 2: structured is the primary product; markdown is derived
+    assert variant["structured"]["sections"][0]["type"] == "summary"
+    assert "Grounded content summary" in variant["content"]
 
 
 def test_review_route_stops_at_configured_iteration(monkeypatch) -> None:

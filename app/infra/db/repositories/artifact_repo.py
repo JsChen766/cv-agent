@@ -67,8 +67,8 @@ class PostgresArtifactRepository:
                 """
                 INSERT INTO artifacts
                     (id, user_id, type, title, content, thread_id, source_jd_id,
-                     source_experience_ids, word_count)
-                VALUES ($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9)
+                     source_experience_ids, word_count, structured)
+                VALUES ($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9,$10::jsonb)
                 RETURNING *
                 """,
                 artifact_id, user_id,
@@ -79,6 +79,7 @@ class PostgresArtifactRepository:
                 data.get("source_jd_id"),
                 json.dumps(data.get("source_experience_ids", [])),
                 data.get("word_count", 0),
+                json.dumps(data["structured"]) if data.get("structured") is not None else None,
             )
         if row is None:
             raise ExternalServiceError("Failed to create artifact")
@@ -117,12 +118,16 @@ class PostgresArtifactRepository:
 
     @staticmethod
     def _to_artifact(row: asyncpg.Record) -> Artifact:
+        structured_raw = (
+            parse_jsonb(row["structured"]) if "structured" in row.keys() else None
+        )
         return Artifact(
             id=row["id"],
             user_id=row["user_id"],
             type=row["type"],
             title=row["title"],
             content=row["content"],
+            structured=structured_raw if isinstance(structured_raw, dict) else None,
             thread_id=row.get("thread_id"),
             source_jd_id=row["source_jd_id"],
             source_experience_ids=parse_jsonb(row["source_experience_ids"]) or [],

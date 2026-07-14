@@ -412,18 +412,18 @@ def _resume_canvas_metadata(
         "application_package_review",
     }:
         return None
+    # Prefer the new single-resume field (Layer 2). Fall back to legacy variants
+    # array only if `resume` is absent — supports mid-migration payloads.
+    raw_resume = interrupt.get("resume")
     raw_variants = interrupt.get("variants")
-    if not isinstance(raw_variants, list):
-        return None
 
     variants: list[dict[str, JsonValue]] = []
-    for raw_variant in raw_variants:
-        if not isinstance(raw_variant, Mapping):
-            continue
+
+    def _absorb(raw_variant: Mapping[str, object]) -> None:
         variant_id = raw_variant.get("id")
         content = raw_variant.get("content")
         if not isinstance(variant_id, str) or not isinstance(content, str):
-            continue
+            return
         variant: dict[str, JsonValue] = {"id": variant_id, "content": content}
         title = raw_variant.get("title")
         if isinstance(title, str):
@@ -431,20 +431,38 @@ def _resume_canvas_metadata(
         score = raw_variant.get("score")
         if isinstance(score, dict):
             variant["score"] = cast("JsonValue", score)
+        structured = raw_variant.get("structured")
+        if isinstance(structured, dict):
+            variant["structured"] = cast("JsonValue", structured)
         variants.append(variant)
+
+    if isinstance(raw_resume, Mapping):
+        _absorb(raw_resume)
+    elif isinstance(raw_variants, list):
+        for raw_variant in raw_variants:
+            if isinstance(raw_variant, Mapping):
+                _absorb(raw_variant)
 
     if not variants:
         return None
+
+    lookup_sources: list[Mapping[str, object]] = []
+    if isinstance(raw_resume, Mapping):
+        lookup_sources.append(raw_resume)
+    if isinstance(raw_variants, list):
+        lookup_sources.extend(
+            raw_variant for raw_variant in raw_variants if isinstance(raw_variant, Mapping)
+        )
+
     resume_id = workspace.get("resume_id") if isinstance(workspace, Mapping) else None
     if not isinstance(resume_id, str):
-        variant_resume_ids = {
-            raw_variant.get("resume_id") or raw_variant.get("resumeId")
-            for raw_variant in raw_variants
-            if isinstance(raw_variant, Mapping)
-            and isinstance(raw_variant.get("resume_id") or raw_variant.get("resumeId"), str)
+        candidate_ids = {
+            src.get("resume_id") or src.get("resumeId")
+            for src in lookup_sources
+            if isinstance(src.get("resume_id") or src.get("resumeId"), str)
         }
-        if len(variant_resume_ids) == 1:
-            resume_id = next(iter(variant_resume_ids))
+        if len(candidate_ids) == 1:
+            resume_id = next(iter(candidate_ids))
     selected_variant = variants[0]
     presentation: dict[str, JsonValue] = {
         "type": "resume_canvas",
@@ -455,6 +473,8 @@ def _resume_canvas_metadata(
         "content_snapshot": selected_variant["content"],
         "status": "reviewing",
     }
+    if "structured" in selected_variant:
+        presentation["structured_snapshot"] = selected_variant["structured"]
     if isinstance(resume_id, str):
         presentation["resume_id"] = resume_id
     if interrupt.get("type") == "application_package_review":

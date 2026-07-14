@@ -43,6 +43,10 @@ class MainState(TypedDict, total=False):
     # Artifact generation specific
     artifact_type: str | None
     artifact_content: str | None
+    artifact_structured: dict[str, Any] | None
+    artifact_fact_mismatches: list[dict[str, Any]]
+    artifact_review_iteration: int
+    artifact_revision_instruction: str | None
 
     # Application package specific
     application_tasks: list[dict[str, Any]]

@@ -232,15 +232,16 @@ class PostgresResumeRepository:
             row = await conn.fetchrow(
                 """
                 INSERT INTO resume_variants
-                    (id, resume_id, jd_id, title, content, score,
+                    (id, resume_id, jd_id, title, content, structured, score,
                      evidence_summary, risk_summary, missing_info)
-                VALUES ($1,$2,$3,$4,$5,$6::jsonb,$7::jsonb,$8::jsonb,$9::jsonb)
+                VALUES ($1,$2,$3,$4,$5,$6::jsonb,$7::jsonb,$8::jsonb,$9::jsonb,$10::jsonb)
                 RETURNING *
                 """,
                 variant_id, resume_id,
                 data.jd_id,
                 data.title,
                 data.content,
+                json.dumps(data.structured) if data.structured is not None else None,
                 json.dumps(data.score.model_dump(mode="json")),
                 json.dumps([e.model_dump(mode="json") for e in data.evidence_summary]),
                 json.dumps([r.model_dump(mode="json") for r in data.risk_summary]),
@@ -333,12 +334,14 @@ class PostgresResumeRepository:
     @staticmethod
     def _to_variant(row: asyncpg.Record) -> ResumeVariant:
         raw_score = parse_jsonb(row["score"]) or {}
+        structured_raw = parse_jsonb(row["structured"]) if "structured" in row.keys() else None
         return ResumeVariant(
             id=row["id"],
             resume_id=row["resume_id"],
             jd_id=row["jd_id"],
             title=row["title"],
             content=row["content"],
+            structured=structured_raw if isinstance(structured_raw, dict) else None,
             score=ScoreBreakdown(**raw_score) if raw_score else ScoreBreakdown(),
             evidence_summary=[EvidenceItem(**e) for e in (parse_jsonb(row["evidence_summary"]) or [])],
             risk_summary=[RiskItem(**r) for r in (parse_jsonb(row["risk_summary"]) or [])],

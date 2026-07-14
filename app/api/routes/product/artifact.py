@@ -89,6 +89,7 @@ def _serialize(a: Artifact) -> dict[str, object]:
         "type": a.type,
         "title": a.title,
         "content": a.content,
+        "structured": a.structured,
         "wordCount": a.word_count,
         "sourceJdId": a.source_jd_id,
         "sourceExperienceIds": a.source_experience_ids,

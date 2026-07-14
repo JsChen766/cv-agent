@@ -6,7 +6,7 @@ from langchain_core.runnables import RunnableConfig
 from pydantic import BaseModel, Field
 
 from app.graphs.application.state import ApplicationPackageState
-from app.graphs.artifact.nodes import artifact_draft_node
+from app.graphs.artifact.nodes import generate_verified_artifact
 from app.graphs.state import MainState
 from app.providers.factory import get_provider
 
@@ -310,14 +310,25 @@ async def generate_application_artifacts_node(
                 "assembled_user_profile": state.get("user_profile"),
                 "assembled_guideline_instructions": state.get("guideline_instructions", []),
                 "pending_sse_events": [],
+                # Reset per-task review state so each artifact runs its own
+                # fact_check / self_review / revision loop cleanly.
+                "artifact_fact_mismatches": [],
+                "artifact_review_iteration": 0,
+                "artifact_revision_instruction": None,
+                "artifact_structured": None,
+                "artifact_content": None,
             }
         )
         try:
-            result = await artifact_draft_node(cast("MainState", task_state), config)
+            # Run the full verified pipeline: draft → fact_check → coverage_check
+            # → self_review → [revision loop] → persist. Same guards a stand-alone
+            # artifact_generation subgraph invocation would apply.
+            result = await generate_verified_artifact(cast("MainState", task_state), config)
             result_workspace = result.get("workspace")
             if isinstance(result_workspace, dict):
                 workspace.update(result_workspace)
             content = str(result.get("artifact_content") or "")
+            structured = result.get("artifact_structured")
             deliverables.append(
                 {
                     "kind": "artifact",
@@ -325,6 +336,7 @@ async def generate_application_artifacts_node(
                     "artifact_id": workspace.get("artifact_id"),
                     "title": str(task.get("title") or "投递材料"),
                     "content": content,
+                    "structured": structured if isinstance(structured, dict) else None,
                     "requirement_text": str(task.get("requirement_text") or ""),
                     "order": int(task.get("order", len(deliverables) + 1)),
                     "status": "completed",
