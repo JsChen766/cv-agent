@@ -41,6 +41,7 @@ class ExperienceRepository(Protocol):
         *,
         organization: str | None = None,
         role: str | None = None,
+        location: str | None = None,
         start_date: date | None = None,
         end_date: date | None = None,
         tags: builtins.list[str] | None = None,

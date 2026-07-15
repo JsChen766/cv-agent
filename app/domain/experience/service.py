@@ -86,6 +86,7 @@ class ExperienceService:
         content: str,
         organization: str | None = None,
         role: str | None = None,
+        location: str | None = None,
         start_date: date | str | None = None,
         end_date: date | str | None = None,
         tags: list[str] | None = None,
@@ -100,6 +101,7 @@ class ExperienceService:
             title,
             organization=organization,
             role=role,
+            location=location,
             start_date=_parse_optional_date(start_date),
             end_date=_parse_optional_date(end_date),
             tags=tags,
@@ -188,6 +190,7 @@ class ExperienceService:
                 content=c.content,
                 organization=c.organization,
                 role=c.role,
+                location=c.location,
             )
             for c in candidates_data
         ]
@@ -214,6 +217,7 @@ class ExperienceService:
                 content=c.content,
                 organization=c.organization,
                 role=c.role,
+                location=c.location,
             )
             for c in candidates_data
         ]
@@ -237,6 +241,7 @@ class ExperienceService:
             content=candidate.content,
             organization=candidate.organization,
             role=candidate.role,
+            location=candidate.location,
             source="file_import",
         )
         await self._repo.update_candidate_status(candidate_id, "accepted")

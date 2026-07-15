@@ -43,6 +43,7 @@ async def parse_import_node(state: MainState) -> dict[str, Any]:
         title: str
         organization: str | None = None
         role: str | None = None
+        location: str | None = None
         start_date: str | None = None
         end_date: str | None = None
         content: str
@@ -190,6 +191,7 @@ async def save_import_node(
                     str(candidate["organization"]) if candidate.get("organization") is not None else None
                 ),
                 role=str(candidate["role"]) if candidate.get("role") is not None else None,
+                location=str(candidate["location"]) if candidate.get("location") is not None else None,
                 start_date=(
                     str(candidate["start_date"]) if candidate.get("start_date") is not None else None
                 ),
@@ -264,6 +266,7 @@ Return a JSON object {"candidates": [...]} where each candidate has these fields
 - title (string, required): the identifying label of this experience — the job title, the project name, or the degree name. Never repeat the organization here.
 - organization (string OR null): the company, school, or institution the experience belongs to. Return null if the source does not clearly attribute one. NEVER guess or infer an organization from context (e.g. do not assume a project belongs to the school just because the person is a student).
 - role (string OR null): the position, title, or role the person held within the organization (e.g. "研究助理", "项目负责人", "AI算法工程师", "核心开发者"). If the source lists a modifier such as "研究助理（核心开发者）", combine them naturally (e.g. "研究助理 / 核心开发者"). `role` and `organization` must NOT overlap textually — if the source writes "南昌大学-研究助理", split it so organization="南昌大学" and role="研究助理". If title already fully captures the role, return null.
+- location (string OR null): the city, region, country, or remote/work location explicitly shown for this experience. Read it from the same header/metadata block as the organization and dates. Return null only when the source does not clearly provide one. Never use the person's name or a placeholder as the location.
 - start_date (string "YYYY-MM" OR null)
 - end_date (string "YYYY-MM" OR "present" OR null). Use "present" for 现在 / 至今 / present / now.
 - content (string, required): the detailed description. Preserve each bullet point on its own line, each prefixed with "- ". Preserve numbers, percentages, technology names, and named entities VERBATIM. Do not summarise, translate, or reorder.
@@ -287,7 +290,7 @@ def _postprocess_candidate(candidate: dict[str, Any]) -> dict[str, Any]:
 
     cleaned: dict[str, Any] = dict(candidate)
 
-    for key in ("title", "organization", "role", "content"):
+    for key in ("title", "organization", "role", "location", "content"):
         value = cleaned.get(key)
         if isinstance(value, str):
             stripped = value.strip()

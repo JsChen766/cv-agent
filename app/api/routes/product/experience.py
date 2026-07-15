@@ -31,6 +31,7 @@ class CreateExperienceBody(StrictRequestModel):
     content: str = Field(min_length=1)
     organization: str | None = None
     role: str | None = None
+    location: str | None = None
     start_date: str | None = None
     end_date: str | None = None
     tags: list[str] = Field(default_factory=list)
@@ -40,6 +41,7 @@ class UpdateExperienceBody(StrictRequestModel):
     title: str | None = None
     organization: str | None = None
     role: str | None = None
+    location: str | None = None
     category: ExperienceCategory | None = None
     start_date: str | None = None
     end_date: str | None = None
@@ -50,6 +52,7 @@ class UpdateExperienceBody(StrictRequestModel):
             title=self.title,
             organization=self.organization,
             role=self.role,
+            location=self.location,
             category=self.category,
             start_date=self.start_date,
             end_date=self.end_date,
@@ -68,6 +71,7 @@ class ImportCandidateBody(StrictRequestModel):
     content: str = Field(min_length=1)
     organization: str | None = None
     role: str | None = None
+    location: str | None = None
 
     def to_domain(self) -> ImportCandidateDraft:
         return ImportCandidateDraft(
@@ -76,6 +80,7 @@ class ImportCandidateBody(StrictRequestModel):
             content=self.content,
             organization=self.organization,
             role=self.role,
+            location=self.location,
         )
 
 
@@ -126,6 +131,7 @@ async def create_experience(
         content=body.content,
         organization=body.organization,
         role=body.role,
+        location=body.location,
         start_date=body.start_date,
         end_date=body.end_date,
         tags=body.tags,
@@ -241,6 +247,7 @@ def _serialize_exp(exp: Experience) -> dict[str, object]:
         "title": exp.title,
         "organization": exp.organization,
         "role": exp.role,
+        "location": exp.location,
         "startDate": str(exp.start_date) if exp.start_date else None,
         "endDate": str(exp.end_date) if exp.end_date else None,
         "tags": exp.tags,
@@ -271,6 +278,7 @@ def _serialize_candidate(c: ImportCandidate) -> dict[str, object]:
         "title": c.title,
         "organization": c.organization,
         "role": c.role,
+        "location": c.location,
         "content": c.content,
         "status": c.status,
     }

@@ -110,6 +110,7 @@ class PostgresExperienceRepository:
         *,
         organization: str | None = None,
         role: str | None = None,
+        location: str | None = None,
         start_date: date | None = None,
         end_date: date | None = None,
         tags: builtins.list[str] | None = None,
@@ -118,13 +119,13 @@ class PostgresExperienceRepository:
             row = await conn.fetchrow(
                 """
                 INSERT INTO experiences
-                    (id, user_id, category, title, organization, role,
+                    (id, user_id, category, title, organization, role, location,
                      start_date, end_date, tags)
-                VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb)
+                VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb)
                 RETURNING *
                 """,
                 experience_id, user_id, category, title,
-                organization, role, start_date, end_date,
+                organization, role, location, start_date, end_date,
                 json.dumps(tags or []),
             )
         if row is None:
@@ -137,7 +138,7 @@ class PostgresExperienceRepository:
         self, user_id: str, experience_id: str, patch: ExperiencePatch
     ) -> Experience:
         allowed = {
-            "title", "organization", "role", "category",
+            "title", "organization", "role", "location", "category",
             "start_date", "end_date", "tags", "current_revision_id",
         }
         json_fields = {"tags"}
@@ -245,11 +246,11 @@ class PostgresExperienceRepository:
             rows = await conn.fetch(
                 """
                 INSERT INTO import_candidates
-                    (id, import_job_id, user_id, category, title, organization, role, content)
+                    (id, import_job_id, user_id, category, title, organization, role, location, content)
                 SELECT
                     d->>'id', d->>'import_job_id', d->>'user_id',
                     d->>'category', d->>'title', d->>'organization',
-                    d->>'role', d->>'content'
+                    d->>'role', d->>'location', d->>'content'
                 FROM jsonb_array_elements($1::jsonb) AS d
                 RETURNING *
                 """,
@@ -290,6 +291,7 @@ class PostgresExperienceRepository:
             title=row["title"],
             organization=row["organization"],
             role=row["role"],
+            location=row["location"],
             start_date=row["start_date"],
             end_date=row["end_date"],
             tags=parse_jsonb(row["tags"]) or [],
@@ -331,6 +333,7 @@ class PostgresExperienceRepository:
             title=row["title"],
             organization=row["organization"],
             role=row["role"],
+            location=row["location"],
             content=row["content"],
             status=row["status"],
             created_at=row["created_at"],

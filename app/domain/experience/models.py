@@ -28,6 +28,7 @@ class Experience(BaseModel):
     title: str
     organization: str | None = None
     role: str | None = None
+    location: str | None = None
     start_date: date | None = None
     end_date: date | None = None
     tags: list[str] = Field(default_factory=list)
@@ -54,6 +55,7 @@ class ExperiencePatch(BaseModel):
     title: str | None = None
     organization: str | None = None
     role: str | None = None
+    location: str | None = None
     category: ExperienceCategory | None = None
     start_date: date | str | None = None
     end_date: date | str | None = None
@@ -67,6 +69,7 @@ class ImportCandidateDraft(BaseModel):
     content: str
     organization: str | None = None
     role: str | None = None
+    location: str | None = None
 
 
 class ImportCandidateCreate(ImportCandidateDraft):
@@ -83,6 +86,7 @@ class ImportCandidate(BaseModel):
     title: str
     organization: str | None = None
     role: str | None = None
+    location: str | None = None
     content: str       # markdown
     status: ImportCandidateStatus = "pending"
     created_at: datetime
