@@ -17,7 +17,12 @@ class ListExperiencesInput(BaseModel):
 
 class ListExperiencesTool:
     name: str = "list_experiences"
-    description: str = "List the user's experience library, optionally filtered by category, tags, or search query"
+    description: str = (
+        "List the user's stored experiences (titles and categories only). "
+        "Call this FIRST when the user asks about their background, experiences, or work history. "
+        "Use the returned IDs to call get_experience for full content of specific items. "
+        "Supports filtering by category (work/project/education/other), tags, or keyword search (q)."
+    )
     input_schema: type[BaseModel] = ListExperiencesInput
     requires_confirmation: bool = False
     risk_level: Literal["low", "medium", "high"] = "low"

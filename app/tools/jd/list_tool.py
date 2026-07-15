@@ -16,7 +16,11 @@ class ListJdsInput(BaseModel):
 
 class ListJdsTool:
     name: str = "list_jds"
-    description: str = "List the user's saved job descriptions"
+    description: str = (
+        "List the user's saved job descriptions (IDs, titles, and companies only). "
+        "Call this FIRST when the user asks about their saved JDs or wants to reference "
+        "one by company/title. Use the returned IDs to call get_jd for full JD content."
+    )
     input_schema: type[BaseModel] = ListJdsInput
     requires_confirmation: bool = False
     risk_level: Literal["low", "medium", "high"] = "low"

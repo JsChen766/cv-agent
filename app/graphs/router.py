@@ -406,6 +406,32 @@ def _heuristic_route(
             confidence=0.95,
         )
 
+    experience_qa_terms = (
+        "根据我的经历",
+        "从我的经历",
+        "基于我的经历",
+        "我的背景",
+        "我的工作经历",
+        "我的项目经历",
+        "经历库",
+        "我有哪些经历",
+        "我的经历有哪些",
+        "analyse my experience",
+        "analyze my experience",
+        "based on my experience",
+        "from my experience library",
+    )
+    if any(term in lower for term in experience_qa_terms):
+        return RouterOutput(
+            target_subgraph="open_ended",
+            intent_description=(
+                "Answer a question or provide analysis based on user's "
+                "experience library. Use list_experiences and get_experience tools."
+            ),
+            context_hints=["experiences", "active_jd"],
+            confidence=0.92,
+        )
+
     artifact_map: dict[str, ArtifactRouteType] = {
         "自我介绍": "self_intro",
         "self intro": "self_intro",

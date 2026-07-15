@@ -14,7 +14,11 @@ class GetExperienceInput(BaseModel):
 
 class GetExperienceTool:
     name: str = "get_experience"
-    description: str = "Get full details of a specific experience including all revisions"
+    description: str = (
+        "Get the full content of one specific experience by its ID. "
+        "Always call list_experiences first to get the ID, then call this for the complete text. "
+        "Returns the full description text needed for analysis or resume writing."
+    )
     input_schema: type[BaseModel] = GetExperienceInput
     requires_confirmation: bool = False
     risk_level: Literal["low", "medium", "high"] = "low"
