@@ -12,6 +12,8 @@ from app.domain.resume.models import (
     ResumeVariantCreate,
     ResumeVariantPatch,
 )
+from app.domain.resume.patch import apply_patch_operations
+from app.domain.resume.render import render_structured_to_markdown
 from app.domain.resume.repository import ResumeRepository
 
 
@@ -135,3 +137,29 @@ class ResumeService:
 
     async def list_variants(self, resume_id: str) -> list[ResumeVariant]:
         return await self._repo.list_variants(resume_id)
+
+    async def patch_variant(
+        self,
+        user_id: str,
+        variant_id: str,
+        operations: list[dict],
+    ) -> ResumeVariant:
+        """Apply deterministic patch ops to a variant's structured data.
+
+        Ownership is verified via the variant's resume. A new variant row is
+        created (with parent_variant_id pointing to the source), so the version
+        chain is preserved. The whole batch is atomic — any bad op raises
+        ValueError before any DB write occurs.
+        """
+        variant = await self.get_variant(variant_id)
+        await self.get_resume(user_id, variant.resume_id)
+        if not variant.structured:
+            raise NotFoundError(f"Variant has no structured data: {variant_id}")
+        new_structured = apply_patch_operations(variant.structured, operations)
+        new_content = render_structured_to_markdown(new_structured)
+        return await self._repo.patch_variant_structured(
+            variant_id=variant_id,
+            structured=new_structured,
+            content=new_content,
+            parent_variant_id=variant_id,
+        )

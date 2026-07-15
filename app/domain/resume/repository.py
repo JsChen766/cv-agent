@@ -65,3 +65,13 @@ class ResumeRepository(Protocol):
     ) -> ResumeVariant: ...
 
     async def list_variants(self, resume_id: str) -> builtins.list[ResumeVariant]: ...
+
+    async def patch_variant_structured(
+        self,
+        variant_id: str,
+        structured: dict,
+        content: str,
+        parent_variant_id: str,
+    ) -> ResumeVariant:
+        """Create a new variant row derived from variant_id with updated structured+content."""
+        ...

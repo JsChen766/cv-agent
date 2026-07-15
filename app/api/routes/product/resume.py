@@ -7,6 +7,7 @@ from pydantic import Field
 from app.api.deps import get_current_user_id, get_resume_service
 from app.api.response import ok, ok_list
 from app.api.schemas import StrictRequestModel
+from app.core.errors import ValidationError
 from app.domain.resume.models import (
     Resume,
     ResumeItem,
@@ -79,6 +80,10 @@ class UpdateItemBody(StrictRequestModel):
 
 class ReorderBody(StrictRequestModel):
     ordered_ids: list[str] = Field(min_length=1)
+
+
+class PatchStructuredBody(StrictRequestModel):
+    operations: list[dict] = Field(min_length=1)
 
 
 @router.get("/product/resumes")
@@ -176,6 +181,31 @@ async def reorder_items(
     return ok([_serialize_item(i) for i in items], request)
 
 
+@router.patch("/product/resumes/{resume_id}/variants/{variant_id}/structured")
+async def patch_variant_structured(
+    resume_id: str,
+    variant_id: str,
+    body: PatchStructuredBody,
+    request: Request,
+    user_id: str = Depends(get_current_user_id),
+    svc: ResumeService = Depends(get_resume_service),
+) -> JSONResponse:
+    try:
+        variant = await svc.patch_variant(user_id, variant_id, body.operations)
+    except ValueError as exc:
+        raise ValidationError(str(exc)) from exc
+    return ok(
+        {
+            "variantId": variant.id,
+            "structured": variant.structured,
+            "content": variant.content,
+            "version": variant.version,
+            "parentVariantId": variant.parent_variant_id,
+        },
+        request,
+    )
+
+
 # ── Serialisers ───────────────────────────────────────────────────────────────
 
 def _serialize(r: Resume) -> dict[str, object]:
@@ -217,6 +247,8 @@ def _serialize_variant(v: ResumeVariant) -> dict[str, object]:
         "id": v.id,
         "title": v.title,
         "content": v.content,
+        "parentVariantId": v.parent_variant_id,
+        "version": v.version,
         "score": {
             "overall": v.score.overall,
             "relevance": v.score.relevance,

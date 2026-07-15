@@ -233,8 +233,8 @@ class PostgresResumeRepository:
                 """
                 INSERT INTO resume_variants
                     (id, resume_id, jd_id, title, content, structured, score,
-                     evidence_summary, risk_summary, missing_info)
-                VALUES ($1,$2,$3,$4,$5,$6::jsonb,$7::jsonb,$8::jsonb,$9::jsonb,$10::jsonb)
+                     evidence_summary, risk_summary, missing_info, parent_variant_id)
+                VALUES ($1,$2,$3,$4,$5,$6::jsonb,$7::jsonb,$8::jsonb,$9::jsonb,$10::jsonb,$11)
                 RETURNING *
                 """,
                 variant_id, resume_id,
@@ -246,6 +246,7 @@ class PostgresResumeRepository:
                 json.dumps([e.model_dump(mode="json") for e in data.evidence_summary]),
                 json.dumps([r.model_dump(mode="json") for r in data.risk_summary]),
                 json.dumps(data.missing_info),
+                data.parent_variant_id,
             )
         if row is None:
             raise RuntimeError("Failed to create resume variant")
@@ -299,6 +300,60 @@ class PostgresResumeRepository:
             )
         return [self._to_variant(r) for r in rows]
 
+    async def patch_variant_structured(
+        self,
+        variant_id: str,
+        structured: dict,
+        content: str,
+        parent_variant_id: str,
+    ) -> ResumeVariant:
+        """Insert a new variant row derived from an existing one."""
+        import uuid as _uuid
+        from app.core.types import VARIANT_PREFIX
+        new_id = f"{VARIANT_PREFIX}{_uuid.uuid4()}"
+        async with self._pool.acquire() as conn:
+            # Derive resume_id and title from source variant
+            source_row = await conn.fetchrow(
+                "SELECT resume_id, title, jd_id FROM resume_variants WHERE id=$1",
+                parent_variant_id,
+            )
+            if source_row is None:
+                raise ValueError(f"Source variant not found: {parent_variant_id}")
+            # Count existing versions in this chain to assign a version number
+            version_count = await conn.fetchval(
+                """
+                WITH RECURSIVE chain AS (
+                    SELECT id FROM resume_variants WHERE id = $1
+                    UNION ALL
+                    SELECT rv.id FROM resume_variants rv
+                    JOIN chain c ON rv.parent_variant_id = c.id
+                )
+                SELECT COUNT(*) FROM chain
+                """,
+                parent_variant_id,
+            )
+            new_version = int(version_count or 1) + 1
+            row = await conn.fetchrow(
+                """
+                INSERT INTO resume_variants
+                    (id, resume_id, jd_id, title, content, structured, score,
+                     evidence_summary, risk_summary, missing_info, parent_variant_id)
+                SELECT $1, resume_id, jd_id, title, $2, $3::jsonb, score,
+                       evidence_summary, risk_summary, missing_info, $4
+                FROM resume_variants WHERE id = $4
+                RETURNING *
+                """,
+                new_id,
+                content,
+                json.dumps(structured),
+                parent_variant_id,
+            )
+        if row is None:
+            raise RuntimeError("Failed to create patched variant")
+        variant = self._to_variant(row)
+        variant.version = new_version
+        return variant
+
     # ── Mappers ───────────────────────────────────────────────────────────────
 
     @staticmethod
@@ -335,6 +390,8 @@ class PostgresResumeRepository:
     def _to_variant(row: asyncpg.Record) -> ResumeVariant:
         raw_score = parse_jsonb(row["score"]) or {}
         structured_raw = parse_jsonb(row["structured"]) if "structured" in row.keys() else None
+        keys = row.keys()
+        parent_variant_id = row["parent_variant_id"] if "parent_variant_id" in keys else None
         return ResumeVariant(
             id=row["id"],
             resume_id=row["resume_id"],
@@ -342,6 +399,7 @@ class PostgresResumeRepository:
             title=row["title"],
             content=row["content"],
             structured=structured_raw if isinstance(structured_raw, dict) else None,
+            parent_variant_id=parent_variant_id,
             score=ScoreBreakdown(**raw_score) if raw_score else ScoreBreakdown(),
             evidence_summary=[EvidenceItem(**e) for e in (parse_jsonb(row["evidence_summary"]) or [])],
             risk_summary=[RiskItem(**r) for r in (parse_jsonb(row["risk_summary"]) or [])],

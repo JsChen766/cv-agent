@@ -37,6 +37,8 @@ class ResumeVariant(BaseModel):
     title: str
     content: str  # markdown, derived from `structured`
     structured: dict | None = None  # ResumeStructure JSON (canvas source of truth)
+    parent_variant_id: str | None = None  # version chain: points to the variant this was derived from
+    version: int = 1  # auto-incremented within the chain (populated by repo from DB sequence count)
     score: ScoreBreakdown = Field(default_factory=ScoreBreakdown)
     evidence_summary: list[EvidenceItem] = Field(default_factory=list)
     risk_summary: list[RiskItem] = Field(default_factory=list)
@@ -105,6 +107,7 @@ class ResumeVariantCreate(BaseModel):
     title: str = "Variant"
     content: str = ""
     structured: dict | None = None
+    parent_variant_id: str | None = None
     score: ScoreBreakdown = Field(default_factory=ScoreBreakdown)
     evidence_summary: list[EvidenceItem] = Field(default_factory=list)
     risk_summary: list[RiskItem] = Field(default_factory=list)
