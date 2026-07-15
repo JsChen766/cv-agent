@@ -34,3 +34,6 @@ class ResumeGenerationState(MainState, total=False):
     resume_structure: dict[str, Any] | None
     coverage_report: dict[str, Any] | None
     uncovered_jd_requirement_ids: list[str]
+
+    # Phase 3: Tier 3 edit — previous structured for id reuse in _assign_structure_ids
+    previous_structured: dict[str, Any] | None

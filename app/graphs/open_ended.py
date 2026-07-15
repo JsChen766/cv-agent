@@ -12,6 +12,7 @@ import uuid
 from typing import Any
 
 from langchain_core.runnables import RunnableConfig
+from langgraph.config import get_stream_writer
 
 from app.core.events import AgentMessageCompletedEvent
 from app.graphs.runtime import services_from_config
@@ -56,10 +57,15 @@ async def open_ended_node(
     llm_messages = _build_messages(state, workspace_context=workspace_context)
     existing_events = state.get("pending_sse_events", [])
     events: list[dict[str, Any]] = list(existing_events)
+    writer = get_stream_writer()
 
     if services is None:
-        response = await provider.chat(llm_messages, temperature=0.7, max_tokens=1500)
-        content = str(response)
+        # No tool context — stream tokens directly
+        stream_iter = await provider.chat(llm_messages, stream=True, temperature=0.7, max_tokens=1500)
+        content = ""
+        async for token in stream_iter:
+            writer({"event": "agent.message.delta", "content": token})
+            content += token
         events.append(dict(_message_completed(content)))
         return {"assistant_message": content, "pending_sse_events": events}
 
@@ -80,7 +86,11 @@ async def open_ended_node(
         )
 
         if not result.tool_calls:
+            # Final text response — simulate streaming so the frontend shows
+            # a typing animation.  Real token streaming would require a
+            # streaming-capable chat_with_tools; this is a pragmatic fallback.
             content = result.content or "Done."
+            _emit_fake_stream(writer, content)
             break
 
         llm_messages.append(
@@ -119,9 +129,16 @@ async def open_ended_node(
             llm_messages.append(_tool_result_feedback(call.id, call.name, tool_result))
     else:
         content = "I completed the available tool steps, but need more specific direction to continue."
+        _emit_fake_stream(writer, content)
 
     events.append(dict(_message_completed(content)))
     return {"assistant_message": content, "pending_sse_events": events}
+
+
+def _emit_fake_stream(writer: Any, content: str, chunk_size: int = 6) -> None:
+    """Emit content as agent.message.delta chunks so the frontend shows a typing effect."""
+    for i in range(0, len(content), chunk_size):
+        writer({"event": "agent.message.delta", "content": content[i : i + chunk_size]})
 
 
 def _build_messages(

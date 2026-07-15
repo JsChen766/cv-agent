@@ -79,6 +79,8 @@ class ClientState(StrictRequestModel):
     resumeUpload: ResumeUploadState | None = None
     intentSource: str | None = None
     sourceComponent: str | None = None
+    editingScope: str | None = None
+    requireReviewBeforeApply: bool | None = None
 
 
 class ChatRequest(StrictRequestModel):
@@ -717,6 +719,11 @@ async def _build_chat_initial_state(
     if upload_params:
         initial_state["extracted_params"] = upload_params
         initial_state["context_hints"] = ["uploaded_resume", "profile"]
+    editing_scope = client_state.editingScope
+    if editing_scope:
+        initial_state["editing_scope"] = editing_scope
+    if client_state.requireReviewBeforeApply:
+        initial_state["require_review_before_apply"] = True
     return initial_state
 
 
@@ -1023,6 +1030,9 @@ async def chat(
         configurable["services"] = build_service_container(_pool)
         configurable["pool"] = _pool
         configurable["thread_repo"] = PostgresThreadRepository(_pool)
+    _cp = _get_checkpointer_or_none()
+    if _cp is not None:
+        configurable["checkpointer"] = _cp
     config: RunnableConfig = {"configurable": configurable}
 
     await _persist_message(
@@ -1120,6 +1130,9 @@ async def chat_stream(
         configurable["services"] = build_service_container(_pool)
         configurable["pool"] = _pool
         configurable["thread_repo"] = PostgresThreadRepository(_pool)
+    _cp2 = _get_checkpointer_or_none()
+    if _cp2 is not None:
+        configurable["checkpointer"] = _cp2
     config: RunnableConfig = {"configurable": configurable}
 
     graph = get_graph(_get_checkpointer_or_none())

@@ -61,3 +61,9 @@ class MainState(TypedDict, total=False):
     interrupt_payload: dict[str, Any] | None
     current_turn_id: str | None
     assistant_message: str | None
+
+    # Resume conversational edit (Phase 3)
+    edit_instruction: str | None
+    editing_scope: str | None
+    require_review_before_apply: bool | None
+    edit_diff: dict[str, Any] | None

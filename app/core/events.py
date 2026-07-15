@@ -111,22 +111,27 @@ class AgentActivityUpdatedEvent(TypedDict, total=False):
 # ── Content diff events (resume canvas) ──────────────────────────────────────
 
 
-class ContentDiffStartedEvent(TypedDict):
+class ContentDiffStartedEvent(TypedDict, total=False):
     event: Literal["content.diff.started"]
     resume_id: str
-    section: str
+    section: str          # legacy; optional
+    variant_id: str       # Phase 3: new variant id
 
 
-class ContentDiffDeltaEvent(TypedDict):
+class ContentDiffDeltaEvent(TypedDict, total=False):
     event: Literal["content.diff.delta"]
     operations: list[DiffOperation]
+    structured: dict[str, Any]   # Phase 3: full new structured
+    diff: dict[str, Any]         # Phase 3: changed/added/removed id sets
 
 
-class ContentDiffCompletedEvent(TypedDict):
+class ContentDiffCompletedEvent(TypedDict, total=False):
     event: Literal["content.diff.completed"]
     resume_id: str
     total_insertions: int
-    total_deletions: int
+    total_deletions: int  # legacy; optional
+    variant_id: str       # Phase 3: new variant id
+    diff: dict[str, Any]  # Phase 3: changed/added/removed id sets
 
 
 # ── Artifact events ───────────────────────────────────────────────────────────
@@ -187,6 +192,7 @@ class _AgentInterruptBase(TypedDict):
         "experience_import",
         "confirm_action",
         "jd_save",
+        "resume_edit_review",
     ]
     message: str
     action_options: list[InterruptActionOption]
@@ -197,6 +203,7 @@ class AgentInterruptEvent(_AgentInterruptBase, total=False):
     resume: dict[str, Any] | None  # for resume_review / application_package_review — single draft
     candidates: list[dict[str, Any]]  # for experience_import
     candidate: dict[str, Any]  # for jd_save
+    diff: dict[str, Any] | None  # for resume_edit_review — changed id sets
 
 
 class AgentCompletedEvent(TypedDict):

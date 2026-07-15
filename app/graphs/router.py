@@ -34,6 +34,7 @@ class RouterOutput(BaseModel):
         "artifact",
         "open_ended",
         "clarify",
+        "edit_resume",
     ]
     intent_description: str
     artifact_type: ArtifactRouteType | None = None
@@ -58,6 +59,7 @@ Routing options:
 - "artifact": User wants to create a cover letter, self-introduction, LinkedIn summary, match report, interview prep, or any other document artifact.
 - "open_ended": General questions, career advice, follow-up questions, or anything that doesn't clearly fit the above.
 - "clarify": The user's intent is ambiguous — you cannot confidently determine what they want. Use this to ask for clarification.
+- "edit_resume": User wants to make a local or global edit to an EXISTING resume. Trigger conditions: workspace has resume_id AND the user message contains edit intent (改/换/删/加/侧重/缩短/精简/更正式/更详细, etc.). Only route to edit_resume when workspace has resume_id; otherwise route to resume_generation.
 
 Rules:
 - Always route based on the CURRENT message, not what previous turns did.
@@ -83,6 +85,9 @@ Important routing guidance:
   wants to CREATE or OVERWRITE resume content, not just discuss it.
 - "根据我的经历分析" → open_ended (tool-calling agent will handle)
 - "帮我生成一份简历" → resume_generation or application_package
+- workspace.resume_id 非空 + 编辑词汇 → "edit_resume" (higher priority than resume_generation)
+- "把简历改得更精简" with resume_id → edit_resume
+- "帮我生成一份简历" without resume_id → resume_generation (not edit_resume)
 """
 
 
@@ -105,6 +110,9 @@ async def router_node(state: MainState) -> dict[str, object]:
             "context_hints": state.get("context_hints", []),
             "extracted_params": state.get("extracted_params", {}),
             "router_confidence": 1.0,
+            "edit_instruction": (
+                preset_intent if preset_target == "edit_resume" else None
+            ),
             "pending_sse_events": [*existing_events, preset_route_event],
         }
 
@@ -153,6 +161,7 @@ async def router_node(state: MainState) -> dict[str, object]:
         user_msg,
         existing_extracted,
         has_active_jd=bool(workspace.get("jd_id")),
+        has_active_resume=bool(workspace.get("resume_id")),
     )
     if heuristic is not None:
         route_event: AgentRouteCompletedEvent = {
@@ -169,6 +178,11 @@ async def router_node(state: MainState) -> dict[str, object]:
             "context_hints": heuristic.context_hints,
             "extracted_params": heuristic.extracted_params,
             "router_confidence": heuristic.confidence,
+            "edit_instruction": (
+                heuristic.intent_description
+                if heuristic.target_subgraph == "edit_resume"
+                else None
+            ),
             "pending_sse_events": [*existing_events, route_event],
         }
 
@@ -227,6 +241,11 @@ async def router_node(state: MainState) -> dict[str, object]:
         "context_hints": routing.context_hints,
         "extracted_params": llm_extracted,
         "router_confidence": routing.confidence,
+        "edit_instruction": (
+            routing.intent_description
+            if routing.target_subgraph == "edit_resume"
+            else None
+        ),
         "pending_sse_events": [*existing_events, llm_route_event],
     }
 
@@ -242,6 +261,7 @@ def route_decision(state: MainState) -> str:
         "artifact",
         "open_ended",
         "clarify",
+        "edit_resume",
     }
     return target if target in valid else "open_ended"
 
@@ -263,6 +283,7 @@ def _heuristic_route(
     existing_extracted: dict[str, JsonValue] | None = None,
     *,
     has_active_jd: bool = False,
+    has_active_resume: bool = False,
 ) -> RouterOutput | None:
     text = user_msg.strip()
     if not text:
@@ -383,6 +404,26 @@ def _heuristic_route(
             "research",
         )
     )
+
+    # Edit intent takes priority when there's an active resume in workspace.
+    edit_terms = (
+        "改一下", "修改", "改成", "改得", "改为", "更改",
+        "换成", "替换", "删掉", "删除", "去掉",
+        "加一条", "再加", "新增一条", "补充",
+        "侧重", "强调", "突出",
+        "缩短", "精简", "压缩", "砍到",
+        "更正式", "更详细", "更简洁", "更专业",
+        "整体语气", "全部改",
+    )
+    has_edit_intent = any(term in lower for term in edit_terms)
+    if has_edit_intent and has_active_resume:
+        return RouterOutput(
+            target_subgraph="edit_resume",
+            intent_description=text,
+            context_hints=["active_resume"],
+            extracted_params={},
+            confidence=0.92,
+        )
 
     if requests_resume:
         target: Literal["application_package", "resume_generation"] = (

@@ -275,7 +275,8 @@ async def draft_generation_node(state: ResumeGenerationState) -> dict[str, objec
         _LlmResumeStructure,
         temperature=0.2,
     )
-    structured = _assign_structure_ids(llm_structure, fallback_contact=profile_contact)
+    previous_structured = state.get("previous_structured")
+    structured = _assign_structure_ids(llm_structure, fallback_contact=profile_contact, previous_structured=previous_structured)
     content_str = _render_structured_to_markdown(structured)
 
     diff_delta: ContentDiffDeltaEvent = {
@@ -1227,16 +1228,31 @@ def _extract_contact_from_profile(profile: dict[str, object]) -> dict[str, objec
 def _assign_structure_ids(
     llm: _LlmResumeStructure,
     fallback_contact: dict[str, object] | None = None,
+    previous_structured: dict[str, object] | None = None,
 ) -> dict[str, object]:
     """Attach stable UUIDs to sections / items / bullets and produce the final JSON.
 
-    After ID assignment, sort items within `experience`/`project`/`education` sections
-    by end_date (fallback start_date) DESCENDING so the LLM's ordering cannot regress
-    the "most recent first" rule.
+    When `previous_structured` is provided (Tier 3 edit), items with matching
+    `source_experience_id` reuse their previous ids; bullets are matched by
+    text similarity (>0.6) to preserve ids across revisions.
     """
     default_headings = (
         _DEFAULT_HEADINGS_ZH if llm.language.lower().startswith("zh") else _DEFAULT_HEADINGS_EN
     )
+
+    # Build id reuse table from previous_structured
+    prev_item_by_src: dict[str, dict[str, object]] = {}
+    if previous_structured:
+        for prev_sec in previous_structured.get("sections") or []:
+            if not isinstance(prev_sec, dict):
+                continue
+            for prev_item in prev_sec.get("items") or []:
+                if not isinstance(prev_item, dict):
+                    continue
+                src_id = prev_item.get("source_experience_id")
+                if src_id and isinstance(src_id, str):
+                    prev_item_by_src[src_id] = prev_item
+
     sections: list[dict[str, object]] = []
     for section in llm.sections:
         section_dict: dict[str, object] = {
@@ -1246,22 +1262,39 @@ def _assign_structure_ids(
             "items": [],
         }
         for item in section.items:
+            prev_item = (
+                prev_item_by_src.get(item.source_experience_id)
+                if item.source_experience_id
+                else None
+            )
+            item_id = prev_item["id"] if prev_item else f"item-{uuid.uuid4()}"
+
+            prev_bullets: list[dict[str, object]] = (
+                prev_item.get("bullets", []) if prev_item else []
+            )
+            bullets_out: list[dict[str, object]] = []
+            for bi, b in enumerate(item.bullets):
+                if bi < len(prev_bullets) and _text_similarity(
+                    b.text, str(prev_bullets[bi].get("text", ""))
+                ) > 0.6:
+                    bul_id = prev_bullets[bi]["id"]
+                else:
+                    bul_id = f"bul-{uuid.uuid4()}"
+                bullets_out.append({
+                    "id": bul_id,
+                    "text": b.text,
+                    "matched_jd_requirement_ids": list(b.matched_jd_requirement_ids),
+                })
+
             item_dict: dict[str, object] = {
-                "id": f"item-{uuid.uuid4()}",
+                "id": item_id,
                 "title": item.title,
                 "organization": item.organization,
                 "role": item.role,
                 "start_date": item.start_date,
                 "end_date": item.end_date,
                 "source_experience_id": item.source_experience_id,
-                "bullets": [
-                    {
-                        "id": f"bul-{uuid.uuid4()}",
-                        "text": b.text,
-                        "matched_jd_requirement_ids": list(b.matched_jd_requirement_ids),
-                    }
-                    for b in item.bullets
-                ],
+                "bullets": bullets_out,
                 "raw_text": item.raw_text,
             }
             cast("list[dict[str, object]]", section_dict["items"]).append(item_dict)
@@ -1281,6 +1314,13 @@ def _assign_structure_ids(
         "contact": contact,
         "sections": sections,
     }
+
+
+def _text_similarity(a: str, b: str) -> float:
+    if not a or not b:
+        return 0.0
+    set_a, set_b = set(a), set(b)
+    return len(set_a & set_b) / max(len(set_a), len(set_b))
 
 
 def _render_structured_to_markdown(structured: dict[str, object]) -> str:

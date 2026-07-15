@@ -14,6 +14,7 @@ from app.graphs.clarify import clarify_node
 from app.graphs.experience.graph import build_experience_import_subgraph
 from app.graphs.jd.graph import build_jd_subgraph
 from app.graphs.open_ended import open_ended_node
+from app.graphs.resume.edit.graph import build_resume_edit_subgraph
 from app.graphs.resume.graph import build_resume_subgraph
 from app.graphs.router import route_decision, router_node
 from app.graphs.state import MainState
@@ -23,7 +24,7 @@ def build_main_graph(checkpointer: Any | None = None) -> Any:
     """Build and compile the main graph with all subgraphs."""
     builder: StateGraph[MainState] = StateGraph(MainState)
 
-    # ── Subgraphs compiled with same checkpointer ──────────────────────────
+    # Subgraphs compiled with same checkpointer ──────────────────────────
     jd_subgraph = build_jd_subgraph().compile(checkpointer=checkpointer)
     resume_subgraph = build_resume_subgraph().compile(checkpointer=checkpointer)
     application_package_subgraph = build_application_package_subgraph().compile(
@@ -31,8 +32,9 @@ def build_main_graph(checkpointer: Any | None = None) -> Any:
     )
     artifact_subgraph = build_artifact_subgraph().compile(checkpointer=checkpointer)
     experience_subgraph = build_experience_import_subgraph().compile(checkpointer=checkpointer)
+    resume_edit_subgraph = build_resume_edit_subgraph().compile(checkpointer=checkpointer)
 
-    # ── Nodes ──────────────────────────────────────────────────────────────────
+    # Nodes ──────────────────────────────────────────────────────────────────
     builder.add_node("router", router_node)
     builder.add_node("open_ended", open_ended_node)
     builder.add_node("clarify", clarify_node)
@@ -41,8 +43,9 @@ def build_main_graph(checkpointer: Any | None = None) -> Any:
     builder.add_node("application_package", application_package_subgraph)
     builder.add_node("artifact", artifact_subgraph)
     builder.add_node("experience_import", experience_subgraph)
+    builder.add_node("edit_resume", resume_edit_subgraph)
 
-    # ── Edges ──────────────────────────────────────────────────────────────────
+    # Edges ──────────────────────────────────────────────────────────────────
     builder.add_edge(START, "router")
     builder.add_conditional_edges(
         "router",
@@ -55,6 +58,7 @@ def build_main_graph(checkpointer: Any | None = None) -> Any:
             "artifact": "artifact",
             "open_ended": "open_ended",
             "clarify": "clarify",
+            "edit_resume": "edit_resume",
         },
     )
     builder.add_edge("experience_import", END)
@@ -64,6 +68,7 @@ def build_main_graph(checkpointer: Any | None = None) -> Any:
     builder.add_edge("artifact", END)
     builder.add_edge("open_ended", END)
     builder.add_edge("clarify", END)
+    builder.add_edge("edit_resume", END)
 
     # ── Compile ────────────────────────────────────────────────────────────────
     if checkpointer is not None:

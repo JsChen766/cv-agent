@@ -65,10 +65,21 @@ async def stream_graph_events(
         return event
 
     try:
-        async for event in graph.astream_events(initial_state, config=config, version="v2"):
+        async for event in graph.astream_events(initial_state, config=config, version="v2", stream_mode=["custom"]):
             event_type = event.get("event", "")
             event_name = event.get("name", "")
             data = event.get("data", {})
+
+            # Custom events pushed by nodes via get_stream_writer() arrive as
+            # on_chain_stream with chunk = ('custom', {...}).  Forward them
+            # directly to the client as SSE.
+            if event_type == "on_chain_stream":
+                chunk = data.get("chunk")
+                if isinstance(chunk, tuple) and len(chunk) == 2 and chunk[0] == "custom":
+                    custom_data = chunk[1]
+                    if isinstance(custom_data, dict) and "event" in custom_data:
+                        yield format_sse(custom_data)
+                continue
 
             if event_type == "on_chain_start":
                 activity = activity_from_node_event(

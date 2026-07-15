@@ -875,3 +875,221 @@ def _artifact_title(artifact_type: str, intent: str) -> str:
         "linkedin_summary": "LinkedIn Summary",
     }
     return titles.get(artifact_type, intent[:50] or "Document")
+
+
+# ── Tool-assisted artifact generation (new primary path) ──────────────────────
+
+_ARTIFACT_GEN_PROMPTS: dict[str, str] = {
+    "self_intro": """你是一名专业的求职顾问，任务是为用户撰写一份高质量的中文个人自我介绍（150-400字）。
+
+执行步骤：
+1. 调用 list_experiences 获取用户所有经历概览
+2. 调用 get_experience 获取最具代表性的2-4条经历的完整内容（优先选工作经历和有量化成果的项目）
+3. 根据真实经历撰写自我介绍
+
+自我介绍结构：教育背景 → 核心工作/项目经历（具体数据和成就）→ 技能亮点 → 求职方向
+
+严格禁止虚构任何数字、技术名称、公司名称、时间。所有内容必须来自工具返回的真实经历。
+直接输出正文，不加标题行，不加"以下是..."等前缀。""",
+
+    "cover_letter": """你是一名专业求职顾问，任务是为用户撰写一份针对目标职位的求职信。
+
+执行步骤：
+1. 调用 list_experiences 获取用户经历概览
+2. 调用 get_experience 获取2-3条最相关经历的完整内容
+3. 参考对话中的JD信息（如有），撰写求职信
+
+结构：称呼 → 申请意向 → 核心经历匹配段（2-3段，每段聚焦一个经历）→ 结尾表达意向
+
+严格禁止虚构。所有内容基于真实经历。""",
+
+    "linkedin_summary": """你是一名职场顾问，任务是为用户撰写 LinkedIn About 区域的英文简介（150-300字）。
+
+执行步骤：
+1. 调用 list_experiences 获取用户所有经历
+2. 调用 get_experience 获取2-3条核心经历的完整内容
+3. 撰写英文LinkedIn简介
+
+要求：自然段落，不用bullet points，展示价值主张和专业成就。严格禁止虚构。""",
+
+    "match_report": """你是一名职位匹配分析师，任务是分析用户经历与目标职位的匹配程度。
+
+执行步骤：
+1. 调用 list_experiences 获取用户所有经历
+2. 调用 get_experience 获取最相关经历的完整内容（至少3条）
+3. 结合对话中的JD要求，逐项分析匹配度
+
+输出格式：
+**总体匹配度：X/10**
+
+逐条分析：
+- [要求1]：✅强匹配 / ⚠️部分匹配 / ❌缺失 — 依据说明
+...
+
+**提升建议：**
+- ...
+
+所有判断基于真实经历数据。""",
+
+    "interview_prep": """你是一名面试教练，任务是为用户生成面试题目和STAR格式答案。
+
+执行步骤：
+1. 调用 list_experiences 获取用户所有经历
+2. 调用 get_experience 获取2-4条核心经历的完整内容
+3. 结合对话中的JD信息（如有），生成5-8道面试题目，每题附STAR答案
+
+STAR答案中所有事实（时间、数字、技术、公司）必须来自真实经历，不可虚构。""",
+}
+
+_ARTIFACT_GEN_PROMPTS["other"] = (
+    "你是一名求职顾问。调用 list_experiences 获取用户经历，根据用户需求生成所需材料。"
+    "严格要求：所有内容基于真实经历，不可虚构。"
+)
+
+
+def _build_artifact_gen_system_prompt(artifact_type: str, workspace: dict[str, Any]) -> str:
+    base = _ARTIFACT_GEN_PROMPTS.get(artifact_type, _ARTIFACT_GEN_PROMPTS["other"])
+    jd_id = workspace.get("jd_id")
+    if jd_id:
+        base += f"\n\n当前工作区有 active JD（ID: {jd_id}），生成内容时请充分考虑该JD要求。"
+    return base
+
+
+async def artifact_generate_node(
+    state: MainState, config: RunnableConfig = None  # type: ignore[assignment]
+) -> dict[str, object]:
+    """Generate an artifact via tool-assisted LLM.
+
+    The LLM explicitly fetches user experiences via tools, then produces
+    free-form markdown. No structured JSON schemas — eliminates hallucination
+    from prompt-injection-only approaches.
+    """
+    from app.graphs.tracing import tool_completed, tool_failed, tool_started
+    from app.tools.base import ToolContext
+    from app.tools.executor import ToolExecutionError, execute_tool_by_name
+    from app.tools.registry import get_all
+
+    provider = get_provider()
+    services = services_from_config(config)
+
+    artifact_type = str(
+        state.get("artifact_type")
+        or (state.get("extracted_params") or {}).get("artifact_type")
+        or "other"
+    )
+    intent = str(state.get("intent_description") or "")
+    workspace = dict(state.get("workspace") or {})
+    user_id = str(state.get("user_id") or "")
+    existing_events = list(state.get("pending_sse_events") or [])
+    events: list[dict[str, Any]] = list(existing_events)
+
+    messages = state.get("messages") or []
+    system_prompt = _build_artifact_gen_system_prompt(artifact_type, workspace)
+    llm_messages: list[dict[str, Any]] = [{"role": "system", "content": system_prompt}]
+    llm_messages.extend(
+        {"role": m["role"], "content": m["content"]}
+        for m in (messages[-10:] if len(messages) > 10 else messages)
+        if m["role"] in ("user", "assistant")
+    )
+
+    content = ""
+    source_experience_ids: list[str] = []
+
+    if services is None:
+        response = await provider.chat(llm_messages, temperature=0.3, max_tokens=2000)
+        content = str(response)
+    else:
+        tool_context = ToolContext(
+            user_id=user_id,
+            thread_id=str(state.get("thread_id") or ""),
+            services=services,
+        )
+        read_tool_names = {"list_experiences", "get_experience", "list_jds", "list_resumes"}
+        read_tools = [t for t in get_all() if t.name in read_tool_names]
+
+        for _ in range(8):
+            result = await provider.chat_with_tools(
+                llm_messages,
+                read_tools,
+                temperature=0.3,
+                max_tokens=2000,
+            )
+
+            if not result.tool_calls:
+                content = result.content or ""
+                break
+
+            llm_messages.append({
+                "role": "assistant",
+                "content": result.content or "",
+                "tool_calls": [
+                    {"id": c.id, "name": c.name, "args": c.arguments, "type": "tool_call"}
+                    for c in result.tool_calls
+                ],
+            })
+
+            for call in result.tool_calls:
+                events.append(tool_started(call.name, call.arguments))
+                try:
+                    tool_result = await execute_tool_by_name(
+                        call.name,
+                        call.arguments,
+                        tool_context,
+                        require_confirmation=False,
+                    )
+                except (KeyError, ToolExecutionError, ValueError) as exc:
+                    events.append(tool_failed(call.name, str(exc)))
+                    llm_messages.append({
+                        "role": "tool",
+                        "tool_call_id": call.id,
+                        "name": call.name,
+                        "content": f"Tool {call.name} failed: {exc}. Continue without it.",
+                    })
+                    continue
+
+                if call.name == "get_experience":
+                    exp_data = tool_result.data or {}
+                    if isinstance(exp_data, dict) and exp_data.get("id"):
+                        source_experience_ids.append(str(exp_data["id"]))
+
+                events.append(tool_completed(call.name, tool_result))
+                import json as _json2
+                llm_messages.append({
+                    "role": "tool",
+                    "tool_call_id": call.id,
+                    "name": call.name,
+                    "content": f"Tool {call.name} returned:\n{_json2.dumps(tool_result.model_dump(mode='json'), ensure_ascii=False)[:4000]}",
+                })
+        else:
+            content = "已完成信息收集，但需要更多指引。请告诉我如何继续。"
+
+    # Persist artifact directly (no confirmation interrupt)
+    artifact_id: str | None = None
+    title = _artifact_title(artifact_type, intent)
+    if services and content.strip():
+        try:
+            artifact = await services.artifact.create_artifact(
+                user_id,
+                {
+                    "type": artifact_type,
+                    "title": title,
+                    "content": content,
+                    "source_experience_ids": source_experience_ids,
+                    "source_jd_id": workspace.get("jd_id"),
+                    "thread_id": thread_id_from_config(config),
+                },
+            )
+            artifact_id = artifact.id
+        except Exception as exc:
+            logger.warning("Artifact persistence failed: %s", exc)
+
+    if artifact_id:
+        workspace["artifact_id"] = artifact_id
+
+    events.append({"event": "agent.message.completed", "content": content})
+
+    return {
+        "assistant_message": content,
+        "pending_sse_events": events,
+        "workspace": workspace,
+    }
