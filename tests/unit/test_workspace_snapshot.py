@@ -258,3 +258,56 @@ async def test_thread_repo_update_workspace_snapshot_executes_merge_sql() -> Non
     # delta is passed as a plain dict (not json.dumps) — codec handles serialization
     delta_arg = mock_conn.execute.call_args.args[1]
     assert delta_arg == {"resume_id": "resume-1"}
+
+
+# ── Router raw_jd_text extraction tests ──────────────────────────────────────
+
+
+def test_heuristic_route_extracts_raw_jd_text_for_short_jd_resume_generation() -> None:
+    """Short JD (<300 chars) routed to resume_generation must still set raw_jd_text.
+
+    Regression for: short JDs never got their raw_jd_text captured, so jd_id
+    was never promoted to jd_records and never written to the workspace snapshot.
+    """
+    from app.graphs.router import _heuristic_route
+
+    short_jd_msg = (
+        "请帮我生成简历。以下是JD: "
+        "Python后端工程师，要求3年以上经验，熟悉FastAPI/Django，"
+        "掌握PostgreSQL/Redis，有微服务经验优先。"
+    )
+    assert len(short_jd_msg) >= 80  # ensure fixture is in the right range
+
+    result = _heuristic_route(short_jd_msg, {}, has_active_jd=False)
+
+    assert result is not None
+    assert "raw_jd_text" in result.extracted_params
+    assert result.extracted_params["raw_jd_text"] == short_jd_msg
+
+
+def test_heuristic_route_does_not_extract_raw_jd_text_when_jd_already_active() -> None:
+    """When jd_id is in workspace, skip raw_jd_text extraction."""
+    from app.graphs.router import _heuristic_route
+
+    short_jd_msg = (
+        "根据以下岗位帮我生成简历: Python后端3年+，FastAPI，PostgreSQL，微服务经验。"
+    )
+
+    result = _heuristic_route(short_jd_msg, {}, has_active_jd=True)
+
+    assert result is not None
+    assert "raw_jd_text" not in result.extracted_params
+
+
+def test_heuristic_route_does_not_extract_raw_jd_text_for_very_short_messages() -> None:
+    """Very short messages (<80 chars) without real JD content skip extraction."""
+    from app.graphs.router import _heuristic_route
+
+    short_msg = "帮我优化一下职位描述那部分简历"
+    assert len(short_msg) < 80
+
+    result = _heuristic_route(short_msg, {}, has_active_jd=False)
+
+    # Either no match or matched but without raw_jd_text
+    if result is not None and result.target_subgraph in {"resume_generation", "application_package"}:
+        assert "raw_jd_text" not in result.extracted_params

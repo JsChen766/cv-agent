@@ -182,6 +182,27 @@ async def router_node(state: MainState) -> dict[str, object]:
     )
     routing = _normalize_llm_routing(routing)
 
+    # Inject raw_jd_text into extracted_params for resume targets when the user
+    # message appears to contain inline JD content but the LLM didn't extract it.
+    # This mirrors the heuristic-path logic so jd_id always gets persisted to snapshot.
+    llm_extracted = _merge_existing_raw_text(
+        routing.target_subgraph,
+        routing.extracted_params,
+        existing_extracted,
+    )
+    if (
+        routing.target_subgraph in {"application_package", "resume_generation"}
+        and not workspace.get("jd_id")
+        and "raw_jd_text" not in llm_extracted
+        and len(user_msg) >= 80
+    ):
+        jd_terms_llm = (
+            "jd", "职位描述", "岗位描述", "岗位", "招聘要求",
+            "职位要求", "职位", "岗位要求", "job description",
+        )
+        if any(term in user_msg.lower() for term in jd_terms_llm):
+            llm_extracted = {**llm_extracted, "raw_jd_text": user_msg}
+
     # Emit routing event
     llm_route_event: AgentRouteCompletedEvent = {
         "event": "agent.route.completed",
@@ -196,11 +217,7 @@ async def router_node(state: MainState) -> dict[str, object]:
         "intent_description": routing.intent_description,
         "artifact_type": routing.artifact_type,
         "context_hints": routing.context_hints,
-        "extracted_params": _merge_existing_raw_text(
-            routing.target_subgraph,
-            routing.extracted_params,
-            existing_extracted,
-        ),
+        "extracted_params": llm_extracted,
         "router_confidence": routing.confidence,
         "pending_sse_events": [*existing_events, llm_route_event],
     }
@@ -366,7 +383,10 @@ def _heuristic_route(
             else "resume_generation"
         )
         params: dict[str, JsonValue] = {}
-        if target == "application_package" and not has_active_jd:
+        # Capture inline JD text for persist_resume_draft_node to promote to jd_records.
+        # Applies to both targets — short JDs (<300 chars) route to resume_generation but
+        # still need raw_jd_text so jd_id gets persisted to the snapshot.
+        if not has_active_jd and any(term in lower for term in jd_terms) and len(text) >= 80:
             params["raw_jd_text"] = text
         return RouterOutput(
             target_subgraph=target,

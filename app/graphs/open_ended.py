@@ -6,6 +6,7 @@ node is the only free-form tool-calling agent; domain-specific subgraphs remain
 responsible for structured business flows.
 """
 
+import asyncio
 import json
 import uuid
 from typing import Any
@@ -15,6 +16,7 @@ from langchain_core.runnables import RunnableConfig
 from app.core.events import AgentMessageCompletedEvent
 from app.graphs.runtime import services_from_config
 from app.graphs.state import MainState
+from app.tools.base import ServiceContainer
 from app.graphs.tracing import tool_completed, tool_failed, tool_started
 from app.providers.factory import get_provider
 from app.tools.base import ToolContext, ToolResult
@@ -26,15 +28,19 @@ from app.tools.executor import (
 )
 from app.tools.registry import get_all
 
-_SYSTEM_PROMPT = """You are a professional resume assistant. You help users:
-- Write and improve their resumes
-- Craft cover letters and self-introductions
-- Analyse job descriptions and match their experience
-- Give career advice and interview preparation tips
+_SYSTEM_PROMPT = """你是一个专业的求职助手。你能帮助用户：
+- 基于用户的经历库回答问题、做分析
+- 撰写和优化简历、求职信、自我介绍
+- 解读 JD 要求，分析匹配度
+- 提供职业建议和面试准备
 
-You have access to tools to read and manage the user's experiences, JDs, resumes, and artifacts.
-Use tools when they are needed to answer accurately. For write/delete actions, ask for confirmation.
-Respond in the same language the user uses. Be concise, specific, and professional.
+**使用工具的原则**：
+- 当用户问"我有哪些经历"、"帮我分析我的背景"、"根据我的经历..."时，必须先调用 list_experiences，再按需调用 get_experience 读取详情。
+- 当用户问"我保存了哪些JD"时，调用 list_jds。
+- 对于需要写入的操作（保存经历、删除等），先向用户确认。
+- 如果工作区信息显示"无数据"，主动告知用户并引导他们先导入数据。
+
+**回复风格**：用用户使用的语言回复。简洁、直接、专业，避免无意义的套话。有具体数据时直接展示，不要说"我帮你查一下"然后不查。
 """
 
 _MAX_TOOL_ITERATIONS = 5
@@ -45,11 +51,12 @@ async def open_ended_node(
 ) -> dict[str, object]:
     """Handle open-ended queries with optional tool access."""
     provider = get_provider()
-    llm_messages = _build_messages(state)
+    services = services_from_config(config)
+    workspace_context = await _load_workspace_context(state, services=services)
+    llm_messages = _build_messages(state, workspace_context=workspace_context)
     existing_events = state.get("pending_sse_events", [])
     events: list[dict[str, Any]] = list(existing_events)
 
-    services = services_from_config(config)
     if services is None:
         response = await provider.chat(llm_messages, temperature=0.7, max_tokens=1500)
         content = str(response)
@@ -117,12 +124,19 @@ async def open_ended_node(
     return {"assistant_message": content, "pending_sse_events": events}
 
 
-def _build_messages(state: MainState) -> list[dict[str, Any]]:
+def _build_messages(
+    state: MainState,
+    workspace_context: str = "",
+) -> list[dict[str, Any]]:
     messages = state.get("messages", [])
     intent = state.get("intent_description", "")
     rolling_summary = state.get("rolling_summary")
 
-    llm_messages: list[dict[str, Any]] = [{"role": "system", "content": _SYSTEM_PROMPT}]
+    system_content = _SYSTEM_PROMPT
+    if workspace_context:
+        system_content = _SYSTEM_PROMPT + "\n" + workspace_context
+
+    llm_messages: list[dict[str, Any]] = [{"role": "system", "content": system_content}]
     if intent:
         llm_messages.append({"role": "system", "content": f"Current intent: {intent}"})
     if rolling_summary:
@@ -134,6 +148,95 @@ def _build_messages(state: MainState) -> list[dict[str, Any]]:
         if m["role"] in ("user", "assistant")
     )
     return llm_messages
+
+
+async def _load_workspace_context(
+    state: MainState,
+    *,
+    services: ServiceContainer | None,
+) -> str:
+    """加载轻量级 workspace 上下文，注入到 system prompt。
+
+    只查询元数据（titles/counts），不做 RAG 或 embedding 检索。
+    三个 DB 查询并行发起，失败时静默降级，不中断对话。
+    """
+    workspace = state.get("workspace", {}) or {}
+    user_id = str(state.get("user_id", ""))
+
+    if not services or not user_id:
+        return ""
+
+    jd_id = workspace.get("jd_id") if isinstance(workspace, dict) else None
+    resume_id = workspace.get("resume_id") if isinstance(workspace, dict) else None
+
+    async def _get_experiences() -> tuple[list[Any], Any]:
+        try:
+            return await services.experience.list_experiences(user_id, limit=50)
+        except Exception:  # noqa: BLE001
+            return [], None
+
+    async def _get_jd() -> Any:
+        try:
+            if isinstance(jd_id, str) and jd_id:
+                return await services.jd.get_jd(user_id, jd_id)
+        except Exception:  # noqa: BLE001
+            pass
+        return None
+
+    async def _get_profile() -> Any:
+        try:
+            return await services.user.get_profile(user_id)
+        except Exception:  # noqa: BLE001
+            return None
+
+    (items, _), jd, profile = await asyncio.gather(
+        _get_experiences(), _get_jd(), _get_profile()
+    )
+
+    parts: list[str] = []
+
+    # 经历库
+    if items:
+        by_cat: dict[str, list[str]] = {}
+        for exp in items:
+            cat = str(getattr(exp, "category", None) or "其他")
+            by_cat.setdefault(cat, []).append(str(getattr(exp, "title", None) or ""))
+        lines = [f"  - [{cat}] " + "、".join(titles) for cat, titles in by_cat.items()]
+        truncation_note = "，如需查找更多请用 list_experiences 的 q 参数搜索" if len(items) == 50 else ""
+        parts.append(f"用户经历库（共 {len(items)} 条{truncation_note}）：\n" + "\n".join(lines))
+    else:
+        parts.append("用户经历库：暂无数据（用户可能尚未导入经历）")
+
+    # Active JD
+    if jd is not None:
+        raw_text = getattr(jd, "raw_text", "") or ""
+        preview = raw_text[:200].strip() + ("..." if len(raw_text) > 200 else "")
+        parts.append(
+            f"当前 active JD（ID: {jd_id}）：\n  标题: {getattr(jd, 'title', '') or ''}\n  内容预览: {preview}"
+        )
+    else:
+        parts.append("当前 active JD：无")
+
+    # Active 简历
+    if isinstance(resume_id, str) and resume_id:
+        parts.append(f"当前 active 简历 ID：{resume_id}（可用 list_resumes 工具查看）")
+
+    # 用户信息
+    if profile:
+        name = getattr(profile, "full_name", None) or ""
+        title = getattr(profile, "current_title", None) or ""
+        if name or title:
+            parts.append(f"用户信息：{name}，{title}".rstrip("，").rstrip())
+
+    if not parts:
+        return ""
+
+    return (
+        "\n\n=== 用户工作区 ===\n"
+        + "\n\n".join(parts)
+        + "\n\n当你需要查看经历详情时，先调用 list_experiences 获取列表，再调用 get_experience 获取某条经历的完整内容。"
+        + "\n=== 工作区信息结束 ==="
+    )
 
 
 async def _confirm_and_execute_tool(
