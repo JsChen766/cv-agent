@@ -75,6 +75,14 @@ Also extract:
 - context_hints: list of context elements needed (e.g. ["active_jd", "experiences", "profile"])
 - extracted_params: any structured params extracted (e.g. {"jd_id": "...", "target_role": "..."})
 - confidence: your confidence in this routing decision (0.0-1.0)
+
+Important routing guidance:
+- "open_ended" has full tool access: it CAN list/read experiences, JDs, and resumes.
+  Route there for Q&A, analysis, and exploration tasks even if they involve user data.
+- Only route to "resume_generation" or "application_package" when the user explicitly
+  wants to CREATE or OVERWRITE resume content, not just discuss it.
+- "根据我的经历分析" → open_ended (tool-calling agent will handle)
+- "帮我生成一份简历" → resume_generation or application_package
 """
 
 
