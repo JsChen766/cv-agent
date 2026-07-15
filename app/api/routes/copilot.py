@@ -680,7 +680,7 @@ async def _merged_workspace(
     # Start from persisted snapshot, overlay with client's explicit values.
     # _verified_workspace_from_client_state only sets keys for non-None client fields,
     # so missing client fields never overwrite the snapshot.
-    return {**snapshot, **client_ws}
+    return cast("JsonObject", {**snapshot, **client_ws})
 
 
 async def _build_chat_initial_state(
@@ -1135,79 +1135,111 @@ async def chat_stream(
 
     async def _stream_with_persistence() -> AsyncGenerator[str, None]:
         assistant_saved = False
-        async for chunk in stream_graph_events(graph, initial_state, config):
-            try:
-                # Chunk format: "event: <name>\ndata: <json>\n\n"
-                data_line = None
-                for line in chunk.splitlines():
-                    if line.startswith("data:"):
-                        data_line = line[len("data:") :].strip()
-                        break
-                if not data_line:
-                    yield chunk
-                    continue
-                payload = json.loads(data_line)
-                evt = payload.get("event")
-                if not assistant_saved and evt == "agent.completed":
-                    response = payload.get("response")
-                    response = response if isinstance(response, dict) else {}
-                    assistant_message = response.get("assistantMessage")
-                    assistant_message = (
-                        assistant_message if isinstance(assistant_message, dict) else {}
-                    )
-                    content = str(assistant_message.get("content") or "")
-                    interrupt = response.get("interrupt")
-                    workspace = response.get("workspace")
-                    canvas_message_id = await _persist_resume_canvas_message(
-                        _pool,
-                        thread_id=thread_id,
-                        turn_id=turn_id,
-                        workspace=workspace
-                        if isinstance(workspace, dict)
-                        else initial_state.get("workspace"),
-                        interrupt=interrupt if isinstance(interrupt, dict) else None,
-                        content=content or "简历草稿已生成，可在画布中查看和编辑。",
-                    )
-                    if canvas_message_id is None:
-                        canvas_message_id = await _persist_message(
+        last_completed_content: str = ""
+        try:
+            async for chunk in stream_graph_events(graph, initial_state, config):
+                try:
+                    # Chunk format: "event: <name>\ndata: <json>\n\n"
+                    data_line = None
+                    for line in chunk.splitlines():
+                        if line.startswith("data:"):
+                            data_line = line[len("data:") :].strip()
+                            break
+                    if not data_line:
+                        yield chunk
+                        continue
+                    payload = json.loads(data_line)
+                    evt = payload.get("event")
+                    if evt == "agent.message.completed":
+                        last_completed_content = str(payload.get("content") or "")
+                    if not assistant_saved and evt == "agent.completed":
+                        response = payload.get("response")
+                        response = response if isinstance(response, dict) else {}
+                        assistant_message = response.get("assistantMessage")
+                        assistant_message = (
+                            assistant_message if isinstance(assistant_message, dict) else {}
+                        )
+                        content = str(assistant_message.get("content") or "")
+                        interrupt = response.get("interrupt")
+                        workspace = response.get("workspace")
+                        canvas_message_id = await _persist_resume_canvas_message(
+                            _pool,
+                            thread_id=thread_id,
+                            turn_id=turn_id,
+                            workspace=workspace
+                            if isinstance(workspace, dict)
+                            else initial_state.get("workspace"),
+                            interrupt=interrupt if isinstance(interrupt, dict) else None,
+                            content=content or "简历草稿已生成，可在画布中查看和编辑。",
+                        )
+                        if canvas_message_id is None:
+                            canvas_message_id = await _persist_message(
+                                _pool,
+                                thread_id=thread_id,
+                                role="assistant",
+                                content=content,
+                                turn_id=turn_id,
+                                metadata={"interrupt": bool(interrupt)},
+                            )
+                        if canvas_message_id:
+                            assistant_message["id"] = canvas_message_id
+                            chunk = format_sse(payload)
+                        assistant_saved = True
+                    elif not assistant_saved and evt == "agent.interrupt":
+                        interrupt = payload.get("data")
+                        canvas_message_id = await _persist_resume_canvas_message(
+                            _pool,
+                            thread_id=thread_id,
+                            turn_id=turn_id,
+                            workspace=initial_state.get("workspace"),
+                            interrupt=interrupt if isinstance(interrupt, dict) else None,
+                        )
+                        if canvas_message_id and isinstance(interrupt, dict):
+                            interrupt["canvas_message_id"] = canvas_message_id
+                            chunk = format_sse(payload)
+                        assistant_saved = True
+                    elif not assistant_saved and evt == "agent.failed":
+                        err = payload.get("error") or {}
+                        await _persist_message(
                             _pool,
                             thread_id=thread_id,
                             role="assistant",
-                            content=content,
+                            content=str(err.get("message") or "Agent failed"),
                             turn_id=turn_id,
-                            metadata={"interrupt": bool(interrupt)},
+                            metadata={"error": True},
                         )
-                    if canvas_message_id:
-                        assistant_message["id"] = canvas_message_id
-                        chunk = format_sse(payload)
-                    assistant_saved = True
-                elif not assistant_saved and evt == "agent.interrupt":
-                    interrupt = payload.get("data")
-                    canvas_message_id = await _persist_resume_canvas_message(
-                        _pool,
-                        thread_id=thread_id,
-                        turn_id=turn_id,
-                        workspace=initial_state.get("workspace"),
-                        interrupt=interrupt if isinstance(interrupt, dict) else None,
-                    )
-                    if canvas_message_id and isinstance(interrupt, dict):
-                        interrupt["canvas_message_id"] = canvas_message_id
-                        chunk = format_sse(payload)
-                    assistant_saved = True
-                elif not assistant_saved and evt == "agent.failed":
-                    err = payload.get("error") or {}
+                        assistant_saved = True
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("SSE persistence hook failed: %s", exc)
+                yield chunk
+        except GeneratorExit:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "Stream ended with exception for thread %s: %s", thread_id, exc
+            )
+        finally:
+            if not assistant_saved and last_completed_content:
+                try:
                     await _persist_message(
                         _pool,
                         thread_id=thread_id,
                         role="assistant",
-                        content=str(err.get("message") or "Agent failed"),
+                        content=last_completed_content,
                         turn_id=turn_id,
-                        metadata={"error": True},
+                        metadata={"saved_in_finally": True},
                     )
-                    assistant_saved = True
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("SSE persistence hook failed: %s", exc)
-            yield chunk
+                    logger.info(
+                        "Saved assistant message in finally block for thread %s "
+                        "(stream ended early)",
+                        thread_id,
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning(
+                        "Finally-block message persistence failed for thread %s: %s",
+                        thread_id,
+                        exc,
+                    )
 
     return StreamingResponse(
         _stream_with_persistence(),
