@@ -5,18 +5,18 @@ from app.graphs.resume.nodes import draft_generation_node, output_node, output_r
 
 class _DraftProvider:
     async def chat_structured(self, messages, schema, **kwargs):
-        # Minimal structured resume: one summary section with a raw_text paragraph
+        # Minimal structured resume without the forbidden summary section.
         return schema.model_validate(
             {
                 "language": "zh-CN",
                 "contact": None,
                 "sections": [
                     {
-                        "type": "summary",
-                        "heading": "个人总结",
+                        "type": "skills",
+                        "heading": "技能",
                         "items": [
                             {
-                                "raw_text": "Grounded content summary.",
+                                "raw_text": "Python",
                                 "bullets": [],
                             }
                         ],
@@ -57,8 +57,9 @@ async def test_draft_regeneration_preserves_review_iteration(monkeypatch) -> Non
         "Built a Python service handling 1M requests/day"
     ]
     # Layer 2: structured is the primary product; markdown is derived
-    assert variant["structured"]["sections"][0]["type"] == "summary"
-    assert "Grounded content summary" in variant["content"]
+    assert variant["structured"]["sections"][0]["type"] == "skills"
+    assert "Python" in variant["content"]
+    assert variant["structured"]["layout_profile_version"] == "resume-template-v1"
 
 
 def test_review_route_stops_at_configured_iteration(monkeypatch) -> None:
@@ -68,7 +69,7 @@ def test_review_route_stops_at_configured_iteration(monkeypatch) -> None:
         "review_result": {"verdict": "needs_revision"},
     }
 
-    assert review_route(state) == "output"
+    assert review_route(state) == "quality_gate"
 
 
 async def test_resume_review_feedback_routes_back_to_generation(monkeypatch) -> None:

@@ -8,6 +8,7 @@ from app.domain.artifact.service import ArtifactService
 from app.domain.experience.service import ExperienceService
 from app.domain.jd.service import JdService
 from app.domain.preference.service import PreferenceService
+from app.domain.resume.layout_service import ResumeLayoutService
 from app.domain.resume.service import ResumeService
 from app.domain.user.service import UserService
 
@@ -23,6 +24,7 @@ class ServiceContainer(BaseModel):
     artifact: ArtifactService
     preference: PreferenceService
     user: UserService
+    resume_layout: ResumeLayoutService | None = None
 
 
 class ToolContext(BaseModel):

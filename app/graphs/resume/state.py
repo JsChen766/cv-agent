@@ -24,6 +24,19 @@ class ResumeGenerationState(MainState, total=False):
     matching_plan: dict[str, Any] | None
     generation_strategy: str | None
 
+    # Versioned layout contract and deterministic measurement
+    layout_constraint: dict[str, Any]
+    layout_profile_version: str
+    layout_profile_hash: str
+    layout_report: dict[str, Any] | None
+    layout_revision_iteration: int
+    layout_status: str | None
+    quality_status: str | None
+    quality_issues: list[dict[str, Any]]
+    coverage_before_layout: list[str]
+    generation_call_count: int
+    final_candidate_emitted: bool
+
     # Generation output
     variants: list[dict[str, Any]]
 

@@ -235,11 +235,13 @@ async def test_resume_draft_persists_before_output_interrupt(
     )
     assert result["workspace"] == {"jd_id": "jd-1", "resume_id": "resume-1"}
     pending_events = cast("list[dict[str, Any]]", result["pending_sse_events"])
-    # `variants` array is now deprecated (empty); the single draft is exposed via `resume`
-    assert pending_events[0]["variants"] == []
-    assert pending_events[0]["resume"] is not None
-    assert pending_events[0]["resume"]["id"] == "variant-1"
-    assert pending_events[0]["resume"]["title"] == "Draft"
+    # The final candidate is emitted once, then the review interrupt exposes it via `resume`.
+    assert pending_events[0]["event"] == "content.diff.started"
+    interrupt_event = pending_events[-1]
+    assert interrupt_event["variants"] == []
+    assert interrupt_event["resume"] is not None
+    assert interrupt_event["resume"]["id"] == "variant-1"
+    assert interrupt_event["resume"]["title"] == "Draft"
 
 
 async def test_resume_subgraph_interrupt_persisted_via_checkpointer() -> None:

@@ -35,6 +35,9 @@ class Settings(BaseSettings):
     preference_dedup_threshold: float = 0.85
     context_token_budget: int = 16000
     max_self_review_iterations: int = 3
+    max_layout_revision_iterations: int = 3
+    max_resume_generation_calls: int = 7
+    resume_layout_hard_gate_enabled: bool = False
 
     # Files
     file_parse_timeout_seconds: float = Field(default=60.0, gt=0)
