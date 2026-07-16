@@ -18,7 +18,15 @@ from pydantic import SecretStr
 
 from app.core.config import settings
 from app.core.errors import ExternalServiceError
-from app.providers.base import ChatResult, ToolCall, ToolDefinition
+from app.providers.base import (
+    ChatResult,
+    TokenCallback,
+    ToolCall,
+    ToolDefinition,
+    forward_visible_tokens,
+    text_from_content,
+    visible_token_chunks,
+)
 from app.providers.tool_schema import to_openai_tool
 
 
@@ -87,8 +95,9 @@ class OpenAIFormatProvider:
                 async def _stream() -> AsyncIterator[str]:
                     try:
                         async for chunk in llm.astream(lc_msgs):
-                            if chunk.content:
-                                yield str(chunk.content)
+                            text = text_from_content(getattr(chunk, "content", ""))
+                            async for part in visible_token_chunks(text):
+                                yield part
                     except Exception as exc:
                         raise ExternalServiceError(f"LLM streaming call failed: {exc}") from exc
                 return _stream()
@@ -119,8 +128,14 @@ class OpenAIFormatProvider:
         """
         from langchain_core.messages import HumanMessage, SystemMessage
 
+        # OpenAI-compatible JSON mode rejects requests whose prompt never
+        # mentions JSON, even when the structured-output wrapper supplies the
+        # response format. Make the contract explicit for every structured
+        # call so vendor-specific prompts cannot trigger a 400.
+        normalized_messages = _ensure_json_mode_prompt(messages)
+
         lc_msgs: list[BaseMessage] = []
-        for m in messages:
+        for m in normalized_messages:
             role, content = m["role"], m["content"]
             if role == "system":
                 lc_msgs.append(SystemMessage(content=content))
@@ -148,7 +163,7 @@ class OpenAIFormatProvider:
         # Tier 3: prompt-based JSON — vendor-agnostic
         try:
             return await self._chat_structured_via_json_prompt(
-                messages,
+                normalized_messages,
                 schema,
                 temperature=temperature,
             )
@@ -194,6 +209,7 @@ class OpenAIFormatProvider:
             return schema.model_validate(json.loads(json_text))
         return json.loads(json_text)
 
+
     @staticmethod
     def _extract_json_object(text: str) -> str:
         stripped = text.strip()
@@ -238,6 +254,41 @@ class OpenAIFormatProvider:
         except Exception as e:
             raise ExternalServiceError(f"LLM tool call failed: {e}") from e
 
+    async def chat_with_tools_stream(
+        self,
+        messages: list[dict[str, Any]],
+        tools: Sequence[ToolDefinition],
+        *,
+        on_token: TokenCallback | None = None,
+        tool_choice: str | None = "auto",
+        temperature: float = 0.2,
+        max_tokens: int | None = None,
+    ) -> ChatResult:
+        """Stream a tool-enabled response and preserve its final tool calls.
+
+        LangChain emits ``AIMessageChunk`` values for both text and partial tool
+        arguments. Adding the chunks back together lets LangChain reconstruct
+        the complete tool-call payload before it is parsed into ``ChatResult``.
+        """
+        llm = cast(Any, self._llm.bind(temperature=temperature))
+        if max_tokens is not None:
+            llm = llm.bind(max_tokens=max_tokens)
+        if tools:
+            llm = llm.bind_tools(
+                [to_openai_tool(tool) for tool in tools],
+                tool_choice=tool_choice,
+            )
+
+        try:
+            message = None
+            async for chunk in llm.astream(_to_lc_messages(messages)):
+                text = text_from_content(getattr(chunk, "content", ""))
+                await forward_visible_tokens(on_token, text)
+                message = chunk if message is None else message + chunk
+            return _chat_result_from_ai_message(message) if message is not None else ChatResult()
+        except Exception as e:
+            raise ExternalServiceError(f"LLM tool streaming call failed: {e}") from e
+
 
 def _to_lc_messages(messages: list[dict[str, Any]]) -> list[BaseMessage]:
     from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
@@ -277,4 +328,29 @@ def _chat_result_from_ai_message(message: Any) -> ChatResult:
             args = getattr(call, "args", {}) or {}
             call_id = str(getattr(call, "id", "") or f"tool-call-{index}")
         tool_calls.append(ToolCall(id=call_id, name=name, arguments=dict(args)))
-    return ChatResult(content=str(getattr(message, "content", "") or ""), tool_calls=tool_calls, raw=message)
+    return ChatResult(
+        content=text_from_content(getattr(message, "content", "")),
+        tool_calls=tool_calls,
+        raw=message,
+    )
+
+
+def _ensure_json_mode_prompt(messages: list[dict[str, str]]) -> list[dict[str, str]]:
+    """Return a copied message list that explicitly requests a JSON object."""
+    normalized = [dict(message) for message in messages]
+    if any("json" in str(message.get("content", "")).lower() for message in normalized):
+        return normalized
+
+    for message in normalized:
+        if message.get("role") == "system":
+            message["content"] = (
+                f"{message.get('content', '')}\n\n"
+                "Return the answer as a valid JSON object."
+            )
+            return normalized
+
+    normalized.insert(
+        0,
+        {"role": "system", "content": "Return the answer as a valid JSON object."},
+    )
+    return normalized

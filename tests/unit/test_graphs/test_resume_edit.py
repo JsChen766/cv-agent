@@ -498,3 +498,42 @@ async def test_locate_node_no_structured(monkeypatch) -> None:
     config = {"configurable": {}}
     result = await locate_node(state, config)
     assert result.get("edit_operations") == []
+
+
+async def test_apply_node_streams_canvas_events_during_graph_run(monkeypatch) -> None:
+    from app.graphs.resume.edit.nodes import apply_node
+
+    emitted_events: list[dict[str, Any]] = []
+    monkeypatch.setattr(
+        "app.graphs.runtime.services_from_config",
+        lambda _: _make_mock_services(),
+    )
+    monkeypatch.setattr(
+        "app.graphs.resume.edit.nodes.get_optional_stream_writer",
+        lambda: emitted_events.append,
+    )
+
+    state: dict[str, Any] = {
+        "workspace": {"resume_id": "res-123"},
+        "user_id": "user-1",
+        "edit_operations": [
+            {
+                "op": "replace_bullet",
+                "bullet_id": "bul-1",
+                "text": "new text",
+            }
+        ],
+        "require_review_before_apply": False,
+        "pending_sse_events": [],
+    }
+
+    result = await apply_node(state, {"configurable": {}})
+
+    streamed_types = [event.get("event") for event in emitted_events]
+    assert streamed_types[0] == "agent.thinking"
+    assert "content.diff.started" in streamed_types
+    assert "content.diff.delta" in streamed_types
+    assert "content.diff.completed" in streamed_types
+    assert [event.get("event") for event in result["pending_sse_events"]] == [
+        "agent.message.completed"
+    ]

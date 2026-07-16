@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Sequence
+import asyncio
+from collections.abc import AsyncIterator, Callable, Sequence
 from typing import Any, Literal, Protocol
 
 from pydantic import BaseModel, Field
@@ -32,6 +33,48 @@ class ChatResult(BaseModel):
     content: str = ""
     tool_calls: list[ToolCall] = Field(default_factory=list)
     raw: Any | None = None
+
+
+TokenCallback = Callable[[str], None]
+
+
+def text_from_content(content: Any) -> str:
+    """Extract user-visible text from a LangChain message or message chunk."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, dict):
+        text = content.get("text")
+        return text if isinstance(text, str) else ""
+    if isinstance(content, list):
+        return "".join(text_from_content(item) for item in content)
+    return ""
+
+
+async def visible_token_chunks(
+    text: str,
+    *,
+    max_chars: int = 18,
+    frame_delay: float = 0.022,
+) -> AsyncIterator[str]:
+    """Normalize providers that buffer a whole answer into one stream chunk."""
+    if not text:
+        return
+    size = max(1, max_chars)
+    parts = [text[start : start + size] for start in range(0, len(text), size)]
+    for index, part in enumerate(parts):
+        yield part
+        if index < len(parts) - 1:
+            await asyncio.sleep(frame_delay)
+
+
+async def forward_visible_tokens(
+    callback: TokenCallback | None,
+    text: str,
+) -> None:
+    if callback is None:
+        return
+    async for part in visible_token_chunks(text):
+        callback(part)
 
 
 class ToolDefinition(Protocol):
@@ -68,6 +111,17 @@ class LLMProvider(Protocol):
         messages: list[dict[str, Any]],
         tools: Sequence[ToolDefinition],
         *,
+        tool_choice: str | None = "auto",
+        temperature: float = 0.2,
+        max_tokens: int | None = None,
+    ) -> ChatResult: ...
+
+    async def chat_with_tools_stream(
+        self,
+        messages: list[dict[str, Any]],
+        tools: Sequence[ToolDefinition],
+        *,
+        on_token: TokenCallback | None = None,
         tool_choice: str | None = "auto",
         temperature: float = 0.2,
         max_tokens: int | None = None,

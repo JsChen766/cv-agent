@@ -9,6 +9,7 @@ from langgraph.types import interrupt
 from app.domain.jd.models import JdRequirementDraft, JdRequirementImportance
 from app.graphs.jd.state import JdState
 from app.graphs.runtime import services_from_config
+from app.graphs.streaming import emit_thinking, get_optional_stream_writer
 from app.providers.factory import get_provider
 
 
@@ -45,6 +46,10 @@ async def extract_jd_node(state: JdState) -> dict[str, Any]:
         title: str
         company: str | None = None
         target_role: str | None = None
+
+    writer = get_optional_stream_writer()
+    if writer is not None:
+        emit_thinking(writer, "正在识别职位名称、公司和目标岗位…")
 
     jd_info = await provider.chat_structured(
         [
@@ -91,6 +96,10 @@ async def parse_requirements_node(
     class RequirementList(BaseModel):
         requirements: list[Requirement]
 
+    writer = get_optional_stream_writer()
+    if writer is not None:
+        emit_thinking(writer, "正在提取并整理岗位要求…")
+
     result = await provider.chat_structured(
         [
             {
@@ -119,6 +128,8 @@ async def parse_requirements_node(
             }
             for r in result.requirements
         ]
+    if writer is not None:
+        emit_thinking(writer, f"已整理 {len(reqs)} 条岗位要求，准备确认…")
 
     return {
         "extracted_params": {**extracted, "requirements": reqs},

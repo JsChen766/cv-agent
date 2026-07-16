@@ -12,7 +12,15 @@ from langchain_core.messages import BaseMessage
 
 from app.core.config import settings
 from app.core.errors import ExternalServiceError
-from app.providers.base import ChatResult, ToolCall, ToolDefinition
+from app.providers.base import (
+    ChatResult,
+    TokenCallback,
+    ToolCall,
+    ToolDefinition,
+    forward_visible_tokens,
+    text_from_content,
+    visible_token_chunks,
+)
 from app.providers.tool_schema import to_anthropic_tool
 
 
@@ -57,15 +65,18 @@ class AnthropicFormatProvider:
 
         try:
             if stream:
+
                 async def _stream() -> AsyncIterator[str]:
                     try:
                         async for chunk in llm.astream(lc_msgs):
-                            if chunk.content:
-                                yield str(chunk.content)
+                            text = text_from_content(getattr(chunk, "content", ""))
+                            async for part in visible_token_chunks(text):
+                                yield part
                     except Exception as exc:
                         raise ExternalServiceError(
                             f"Anthropic streaming call failed: {exc}"
                         ) from exc
+
                 return _stream()
             else:
                 result = await llm.ainvoke(lc_msgs)
@@ -123,6 +134,36 @@ class AnthropicFormatProvider:
         except Exception as e:
             raise ExternalServiceError(f"Anthropic tool call failed: {e}") from e
 
+    async def chat_with_tools_stream(
+        self,
+        messages: list[dict[str, Any]],
+        tools: Sequence[ToolDefinition],
+        *,
+        on_token: TokenCallback | None = None,
+        tool_choice: str | None = "auto",
+        temperature: float = 0.2,
+        max_tokens: int | None = None,
+    ) -> ChatResult:
+        """Stream a tool-enabled response while rebuilding final tool calls."""
+        llm = cast(Any, self._llm.bind(temperature=temperature))
+        if max_tokens is not None:
+            llm = llm.bind(max_tokens=max_tokens)
+        if tools:
+            llm = llm.bind_tools(
+                [to_anthropic_tool(tool) for tool in tools],
+                tool_choice=tool_choice,
+            )
+
+        try:
+            message = None
+            async for chunk in llm.astream(_to_lc_messages(messages)):
+                text = text_from_content(getattr(chunk, "content", ""))
+                await forward_visible_tokens(on_token, text)
+                message = chunk if message is None else message + chunk
+            return _chat_result_from_ai_message(message) if message is not None else ChatResult()
+        except Exception as e:
+            raise ExternalServiceError(f"Anthropic tool streaming call failed: {e}") from e
+
 
 def _to_lc_messages(messages: list[dict[str, Any]]) -> list[BaseMessage]:
     from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
@@ -162,4 +203,8 @@ def _chat_result_from_ai_message(message: Any) -> ChatResult:
             args = getattr(call, "args", {}) or {}
             call_id = str(getattr(call, "id", "") or f"tool-call-{index}")
         tool_calls.append(ToolCall(id=call_id, name=name, arguments=dict(args)))
-    return ChatResult(content=str(getattr(message, "content", "") or ""), tool_calls=tool_calls, raw=message)
+    return ChatResult(
+        content=text_from_content(getattr(message, "content", "")),
+        tool_calls=tool_calls,
+        raw=message,
+    )

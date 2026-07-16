@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from langgraph.config import get_stream_writer
+
 from app.core.events import AgentMessageCompletedEvent
 from app.graphs.state import MainState
 from app.providers.factory import get_provider
@@ -30,8 +32,29 @@ async def clarify_node(state: MainState) -> dict[str, object]:
         if m["role"] in ("user", "assistant"):
             llm_messages.append({"role": m["role"], "content": m["content"]})
 
-    response = await provider.chat(llm_messages, temperature=0.7, max_tokens=200)
-    content = str(response)
+    writer = get_stream_writer()
+    writer({"event": "agent.thinking", "text": "正在确认你的具体需求…"})
+    response = await provider.chat(
+        llm_messages,
+        stream=True,
+        temperature=0.7,
+        max_tokens=200,
+    )
+    content_parts: list[str] = []
+
+    # `LLMProvider.chat` has a str | AsyncIterator[str] return contract. A
+    # streaming provider returns the iterator here; retain a defensive fallback
+    # for custom providers that return a complete string despite stream=True.
+    if isinstance(response, str):
+        if response:
+            writer({"event": "agent.message.delta", "content": response})
+        content_parts.append(response)
+    else:
+        async for token in response:
+            writer({"event": "agent.message.delta", "content": token})
+            content_parts.append(token)
+
+    content = "".join(content_parts)
 
     completed_event: AgentMessageCompletedEvent = {
         "event": "agent.message.completed",

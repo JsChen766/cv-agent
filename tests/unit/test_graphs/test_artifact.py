@@ -27,6 +27,48 @@ class _StructuredProvider:
         return "# Cover Letter\n\nDear Hiring Manager..."
 
 
+class _StreamingArtifactProvider:
+    async def chat(self, messages, **kwargs):
+        assert kwargs.get("stream") is True
+
+        async def tokens():
+            yield "first "
+            yield "second"
+
+        return tokens()
+
+
+async def test_artifact_generate_forwards_provider_tokens(monkeypatch) -> None:
+    from app.graphs.artifact.nodes import artifact_generate_node
+
+    emitted_events: list[dict[str, str]] = []
+    monkeypatch.setattr(
+        "app.graphs.artifact.nodes.get_provider",
+        lambda: _StreamingArtifactProvider(),
+    )
+    monkeypatch.setattr(
+        "app.graphs.artifact.nodes.get_stream_writer",
+        lambda: emitted_events.append,
+    )
+
+    result = await artifact_generate_node(
+        {
+            "artifact_type": "other",
+            "intent_description": "Write a summary",
+            "workspace": {},
+            "messages": [{"role": "user", "content": "Write it"}],
+            "pending_sse_events": [],
+        },
+        {"configurable": {}},
+    )
+
+    assert emitted_events == [
+        {"event": "agent.message.delta", "content": "first "},
+        {"event": "agent.message.delta", "content": "second"},
+    ]
+    assert result["assistant_message"] == "first second"
+
+
 async def test_artifact_default_no_canvas_events(monkeypatch) -> None:
     """Non-canvas artifact types persist to DB and set assistant_message to full content,
     without emitting any artifact.* SSE events (chat bubble IS the content)."""

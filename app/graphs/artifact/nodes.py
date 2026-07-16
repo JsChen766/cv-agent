@@ -18,6 +18,7 @@ import uuid
 from typing import Any, Literal, cast
 
 from langchain_core.runnables import RunnableConfig
+from langgraph.config import get_stream_writer
 from pydantic import BaseModel, Field
 
 from app.core.config import settings
@@ -25,6 +26,7 @@ from app.core.events import ArtifactCompletedEvent, ArtifactDeltaEvent, Artifact
 from app.graphs.artifact.registry import get_config
 from app.graphs.runtime import pool_from_config, services_from_config, thread_id_from_config
 from app.graphs.state import MainState
+from app.graphs.streaming import emit_message_deltas_progress
 from app.providers.factory import get_provider
 
 logger = logging.getLogger(__name__)
@@ -994,10 +996,30 @@ async def artifact_generate_node(
 
     content = ""
     source_experience_ids: list[str] = []
+    writer = get_stream_writer()
+    streamed_text = False
+
+    def emit_token(token: str) -> None:
+        nonlocal streamed_text
+        if token:
+            streamed_text = True
+            writer({"event": "agent.message.delta", "content": token})
 
     if services is None:
-        response = await provider.chat(llm_messages, temperature=0.3, max_tokens=2000)
-        content = str(response)
+        response = await provider.chat(
+            llm_messages,
+            stream=True,
+            temperature=0.3,
+            max_tokens=2000,
+        )
+        if isinstance(response, str):
+            content = response
+        else:
+            parts: list[str] = []
+            async for token in response:
+                emit_token(token)
+                parts.append(token)
+            content = "".join(parts)
     else:
         tool_context = ToolContext(
             user_id=user_id,
@@ -1008,12 +1030,22 @@ async def artifact_generate_node(
         read_tools = [t for t in get_all() if t.name in read_tool_names]
 
         for _ in range(8):
-            result = await provider.chat_with_tools(
-                llm_messages,
-                read_tools,
-                temperature=0.3,
-                max_tokens=2000,
-            )
+            stream_with_tools = getattr(provider, "chat_with_tools_stream", None)
+            if callable(stream_with_tools):
+                result = await stream_with_tools(
+                    llm_messages,
+                    read_tools,
+                    on_token=emit_token,
+                    temperature=0.3,
+                    max_tokens=2000,
+                )
+            else:
+                result = await provider.chat_with_tools(
+                    llm_messages,
+                    read_tools,
+                    temperature=0.3,
+                    max_tokens=2000,
+                )
 
             if not result.tool_calls:
                 content = result.content or ""
@@ -1062,6 +1094,9 @@ async def artifact_generate_node(
                 })
         else:
             content = "已完成信息收集，但需要更多指引。请告诉我如何继续。"
+
+    if content and not streamed_text:
+        await emit_message_deltas_progress(writer, content)
 
     # Persist artifact directly (no confirmation interrupt)
     artifact_id: str | None = None

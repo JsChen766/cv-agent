@@ -15,6 +15,7 @@ class FakeGraph:
         *,
         config: RunnableConfig,
         version: str,
+        stream_mode: list[str],
     ) -> AsyncIterator[dict[str, Any]]:
         yield {"event": "on_chain_start", "name": "router", "data": {}}
         yield {"event": "on_chain_end", "name": "router", "data": {"output": {}}}
@@ -40,6 +41,7 @@ class InterruptGraph:
         *,
         config: RunnableConfig,
         version: str,
+        stream_mode: list[str],
     ) -> AsyncIterator[dict[str, Any]]:
         yield {
             "event": "on_chain_end",
@@ -71,6 +73,7 @@ class CumulativeEventGraph:
         *,
         config: RunnableConfig,
         version: str,
+        stream_mode: list[str],
     ) -> AsyncIterator[dict[str, Any]]:
         first = {"event": "agent.route.completed", "target": "open_ended"}
         second = {"event": "agent.message.completed", "content": "Done"}
@@ -86,6 +89,55 @@ class CumulativeEventGraph:
                 "output": {
                     "pending_sse_events": [first, second],
                     "assistant_message": "Done",
+                }
+            },
+        }
+
+
+class CustomDeltaGraph:
+    """Graph double that emits two writer-backed token chunks."""
+
+    def __init__(self) -> None:
+        self.stream_modes: list[list[str]] = []
+
+    async def astream_events(
+        self,
+        initial_state: MainState,
+        *,
+        config: RunnableConfig,
+        version: str,
+        stream_mode: list[str],
+    ) -> AsyncIterator[dict[str, Any]]:
+        self.stream_modes.append(stream_mode)
+        yield {
+            "event": "on_chain_stream",
+            "name": "open_ended",
+            "data": {
+                "chunk": (
+                    "custom",
+                    {"event": "agent.message.delta", "content": "first "},
+                )
+            },
+        }
+        yield {
+            "event": "on_chain_stream",
+            "name": "open_ended",
+            "data": {
+                "chunk": (
+                    "custom",
+                    {"event": "agent.message.delta", "content": "second"},
+                )
+            },
+        }
+        yield {
+            "event": "on_chain_end",
+            "name": "open_ended",
+            "data": {
+                "output": {
+                    "assistant_message": "first second",
+                    "pending_sse_events": [
+                        {"event": "agent.message.completed", "content": "first second"}
+                    ],
                 }
             },
         }
@@ -156,6 +208,38 @@ async def test_stream_graph_events_emits_cumulative_queue_items_once() -> None:
 
     assert sum(payload["event"] == "agent.route.completed" for payload in payloads) == 1
     assert sum(payload["event"] == "agent.message.completed" for payload in payloads) == 1
+
+
+async def test_stream_graph_events_forwards_custom_delta_chunks_individually() -> None:
+    initial_state: MainState = {
+        "thread_id": "thread-1",
+        "current_turn_id": "turn-1",
+        "messages": [],
+        "workspace": {},
+        "pending_sse_events": [],
+    }
+    graph = CustomDeltaGraph()
+
+    chunks = [
+        chunk async for chunk in stream_graph_events(graph, initial_state, config={})
+    ]
+    payloads = [_payload(chunk) for chunk in chunks]
+    delta_chunks = [
+        chunk for chunk in chunks if _payload(chunk).get("event") == "agent.message.delta"
+    ]
+    delta_payloads = [_payload(chunk) for chunk in delta_chunks]
+
+    # `stream_mode=["custom"]` is required for events sent with
+    # get_stream_writer(). Keep each callback chunk as a separate SSE output so
+    # the client can render it as soon as it arrives.
+    assert graph.stream_modes == [["custom"]]
+    assert [payload["content"] for payload in delta_payloads] == ["first ", "second"]
+    assert len(delta_chunks) == 2
+    event_names = [payload["event"] for payload in payloads]
+    assert event_names.index("agent.message.completed") > event_names.index(
+        "agent.message.delta"
+    )
+    assert payloads[-1]["event"] == "agent.completed"
 
 
 def _payload(chunk: str) -> dict[str, Any]:

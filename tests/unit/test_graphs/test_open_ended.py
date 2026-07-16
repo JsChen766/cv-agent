@@ -26,6 +26,29 @@ class FakeProvider:
         return ChatResult(content="You have no saved resumes.")
 
 
+class StreamingFakeProvider:
+    """Provider double that delivers final-answer tokens through the callback."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+        self.message_snapshots = []
+
+    async def chat_with_tools_stream(self, messages, tools, *, on_token=None, **kwargs):
+        self.calls += 1
+        self.message_snapshots.append(deepcopy(messages))
+        if self.calls == 1:
+            return ChatResult(
+                tool_calls=[
+                    ToolCall(id="call-1", name="list_resumes", arguments={"limit": 1})
+                ]
+            )
+
+        assert on_token is not None
+        on_token("The answer ")
+        on_token("arrived in tokens.")
+        return ChatResult(content="The answer arrived in tokens.")
+
+
 async def test_open_ended_executes_low_risk_tool(monkeypatch):
     provider = FakeProvider()
     resume_service = type("ResumeService", (), {})()
@@ -46,6 +69,7 @@ async def test_open_ended_executes_low_risk_tool(monkeypatch):
     }
     config = {"configurable": {"thread_id": "thread-1", "services": services}}
     monkeypatch.setattr("app.graphs.open_ended.get_provider", lambda: provider)
+    monkeypatch.setattr("app.graphs.open_ended.get_stream_writer", lambda: lambda event: None)
 
     result = await open_ended_node(state, config)
 
@@ -56,6 +80,48 @@ async def test_open_ended_executes_low_risk_tool(monkeypatch):
     assert second_messages[-2]["tool_calls"][0]["id"] == "call-1"
     assert second_messages[-1]["role"] == "tool"
     assert second_messages[-1]["tool_call_id"] == "call-1"
+    assert [event["event"] for event in result["pending_sse_events"]] == [
+        "agent.tool.started",
+        "agent.tool.completed",
+        "agent.message.completed",
+    ]
+
+
+async def test_open_ended_forwards_tool_enabled_final_tokens_as_they_arrive(monkeypatch):
+    provider = StreamingFakeProvider()
+    emitted_events = []
+    resume_service = type("ResumeService", (), {})()
+    resume_service.list_resumes = AsyncMock(return_value=([], None))
+    services = ServiceContainer.model_construct(
+        experience=object(),
+        jd=object(),
+        resume=resume_service,
+        artifact=object(),
+        preference=object(),
+        user=object(),
+    )
+    state = {
+        "thread_id": "thread-1",
+        "user_id": "user-1",
+        "messages": [{"role": "user", "content": "List my resumes"}],
+        "pending_sse_events": [],
+    }
+    config = {"configurable": {"thread_id": "thread-1", "services": services}}
+    monkeypatch.setattr("app.graphs.open_ended.get_provider", lambda: provider)
+    monkeypatch.setattr("app.graphs.open_ended.get_stream_writer", lambda: emitted_events.append)
+
+    result = await open_ended_node(state, config)
+
+    # A tool-enabled turn must use the streaming provider path for its final
+    # response, preserving the exact token boundaries rather than slicing an
+    # already-complete message into synthetic chunks.
+    assert provider.calls == 2
+    assert emitted_events == [
+        {"event": "agent.thinking", "text": "正在组织回答…"},
+        {"event": "agent.message.delta", "content": "The answer "},
+        {"event": "agent.message.delta", "content": "arrived in tokens."},
+    ]
+    assert result["assistant_message"] == "The answer arrived in tokens."
     assert [event["event"] for event in result["pending_sse_events"]] == [
         "agent.tool.started",
         "agent.tool.completed",

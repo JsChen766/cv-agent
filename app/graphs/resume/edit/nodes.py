@@ -11,6 +11,12 @@ from typing import Any, Literal
 from langchain_core.runnables import RunnableConfig
 from pydantic import BaseModel, Field
 
+from app.graphs.streaming import (
+    emit_content_diff_progress,
+    emit_thinking,
+    get_optional_stream_writer,
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -279,6 +285,10 @@ async def edit_classify_node(
         f"当前简历结构摘要（含所有 id）：\n{structured_summary}"
     )
 
+    writer = get_optional_stream_writer()
+    if writer is not None:
+        emit_thinking(writer, "正在理解你的简历修改要求…")
+
     result: EditClassification = await provider.chat_structured(
         [{"role": "system", "content": _CLASSIFY_SYSTEM_PROMPT}, {"role": "user", "content": user_content}],
         EditClassification,
@@ -289,9 +299,12 @@ async def edit_classify_node(
         result = result.model_copy(update={"tier": 2, "target_id": None, "operation": None})
 
     # Tier 1: populate edit_operations so apply_node can proceed without locate_node
+    existing_operations = list(state.get("edit_operations") or [])
     edit_operations: list[dict[str, Any]] = []
     if result.tier == 1 and result.operation:
         edit_operations = [result.operation]
+    elif result.tier == 1 and existing_operations:
+        edit_operations = existing_operations
     elif result.tier == 1 and not result.operation:
         # classify said Tier 1 but gave no operation → downgrade to Tier 2
         result = result.model_copy(update={"tier": 2})
@@ -329,6 +342,10 @@ async def locate_node(
 
     instruction = str(state.get("edit_instruction") or state.get("intent_description") or "")
     full_structured_text = _full_structured_text(current_structured)
+
+    writer = get_optional_stream_writer()
+    if writer is not None:
+        emit_thinking(writer, "正在定位需要修改的简历内容…")
 
     result: EditLocation = await provider.chat_structured(
         [{"role": "system", "content": _LOCATE_SYSTEM_PROMPT}, {"role": "user", "content": f"用户编辑指令：{instruction}\n\n完整简历结构（含所有 id）：\n{full_structured_text}"}],
@@ -403,24 +420,20 @@ async def apply_node(
             "pending_sse_events": events,
         }
 
-    events.append({
-        "event": "content.diff.started",
-        "resume_id": resume_id,
-        "variant_id": new_variant.id,
-    })
-    events.append({
-        "event": "content.diff.delta",
-        "operations": [{"op": "insert", "text": new_variant.content}],
-        "structured": new_variant.structured,
-        "diff": diff,
-    })
-    events.append({
-        "event": "content.diff.completed",
-        "resume_id": resume_id,
-        "variant_id": new_variant.id,
-        "total_insertions": 1,
-        "diff": diff,
-    })
+    writer = get_optional_stream_writer()
+    buffered_events: list[dict[str, Any]] = []
+    event_writer = writer or buffered_events.append
+    emit_thinking(event_writer, "修改已完成，正在逐段更新简历…")
+    await emit_content_diff_progress(
+        event_writer,
+        new_variant.content,
+        resume_id=resume_id,
+        variant_id=new_variant.id,
+        structured=new_variant.structured,
+        diff=diff,
+        frame_delay=0.018 if writer is not None else 0,
+    )
+    events.extend(buffered_events)
 
     confirmation_msg = _edit_confirmation_message(diff)
     events.append({"event": "agent.message.completed", "content": confirmation_msg})

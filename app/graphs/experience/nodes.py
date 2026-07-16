@@ -14,6 +14,7 @@ from app.core.events import AgentInterruptEvent
 from app.core.types import ExperienceCategory
 from app.graphs.runtime import services_from_config
 from app.graphs.state import MainState
+from app.graphs.streaming import emit_thinking, get_optional_stream_writer
 from app.providers.factory import get_provider
 
 # ── Parse node ─────────────────────────────────────────────────────────────────
@@ -58,6 +59,10 @@ async def parse_import_node(state: MainState) -> dict[str, Any]:
     class CandidateList(BaseModel):
         candidates: list[ExperienceCandidate]
 
+    writer = get_optional_stream_writer()
+    if writer is not None:
+        emit_thinking(writer, "正在解析经历中的职位、组织、时间和成果…")
+
     result: CandidateList = await provider.chat_structured(
         [
             {"role": "system", "content": _EXTRACT_SYSTEM_PROMPT},
@@ -68,6 +73,8 @@ async def parse_import_node(state: MainState) -> dict[str, Any]:
     )
 
     candidates = [_postprocess_candidate(c.model_dump()) for c in result.candidates]
+    if writer is not None:
+        emit_thinking(writer, f"已识别 {len(candidates)} 条经历，准备进入审核…")
 
     existing = state.get("pending_sse_events", [])
     thinking_event = {

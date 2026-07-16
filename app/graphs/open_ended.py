@@ -17,10 +17,10 @@ from langgraph.config import get_stream_writer
 from app.core.events import AgentMessageCompletedEvent
 from app.graphs.runtime import services_from_config
 from app.graphs.state import MainState
-from app.tools.base import ServiceContainer
+from app.graphs.streaming import emit_thinking
 from app.graphs.tracing import tool_completed, tool_failed, tool_started
 from app.providers.factory import get_provider
-from app.tools.base import ToolContext, ToolResult
+from app.tools.base import ServiceContainer, ToolContext, ToolResult
 from app.tools.executor import (
     ToolConfirmationRequired,
     ToolExecutionError,
@@ -58,14 +58,20 @@ async def open_ended_node(
     existing_events = state.get("pending_sse_events", [])
     events: list[dict[str, Any]] = list(existing_events)
     writer = get_stream_writer()
+    emit_thinking(writer, "正在组织回答…")
 
     if services is None:
         # No tool context — stream tokens directly
         stream_iter = await provider.chat(llm_messages, stream=True, temperature=0.7, max_tokens=1500)
-        content = ""
-        async for token in stream_iter:
-            writer({"event": "agent.message.delta", "content": token})
-            content += token
+        if isinstance(stream_iter, str):
+            content = stream_iter
+            if content:
+                writer({"event": "agent.message.delta", "content": content})
+        else:
+            content = ""
+            async for token in stream_iter:
+                writer({"event": "agent.message.delta", "content": token})
+                content += token
         events.append(dict(_message_completed(content)))
         return {"assistant_message": content, "pending_sse_events": events}
 
@@ -77,20 +83,32 @@ async def open_ended_node(
 
     tools = get_all()
     content = ""
+    def emit_token(token: str) -> None:
+        if token:
+            writer({"event": "agent.message.delta", "content": token})
+
     for _ in range(_MAX_TOOL_ITERATIONS):
-        result = await provider.chat_with_tools(
-            llm_messages,
-            tools,
-            temperature=0.2,
-            max_tokens=1500,
-        )
+        stream_with_tools = getattr(provider, "chat_with_tools_stream", None)
+        if callable(stream_with_tools):
+            result = await stream_with_tools(
+                llm_messages,
+                tools,
+                on_token=emit_token,
+                temperature=0.2,
+                max_tokens=1500,
+            )
+        else:
+            # Keep custom/test providers working during the provider-interface
+            # rollout. Production providers implement the streaming method.
+            result = await provider.chat_with_tools(
+                llm_messages,
+                tools,
+                temperature=0.2,
+                max_tokens=1500,
+            )
 
         if not result.tool_calls:
-            # Final text response — simulate streaming so the frontend shows
-            # a typing animation.  Real token streaming would require a
-            # streaming-capable chat_with_tools; this is a pragmatic fallback.
             content = result.content or "Done."
-            _emit_fake_stream(writer, content)
             break
 
         llm_messages.append(
@@ -129,18 +147,9 @@ async def open_ended_node(
             llm_messages.append(_tool_result_feedback(call.id, call.name, tool_result))
     else:
         content = "I completed the available tool steps, but need more specific direction to continue."
-        _emit_fake_stream(writer, content)
 
     events.append(dict(_message_completed(content)))
     return {"assistant_message": content, "pending_sse_events": events}
-
-
-def _emit_fake_stream(writer: Any, content: str, chunk_size: int = 6) -> None:
-    """Emit content as agent.message.delta chunks so the frontend shows a typing effect."""
-    for i in range(0, len(content), chunk_size):
-        writer({"event": "agent.message.delta", "content": content[i : i + chunk_size]})
-
-
 def _build_messages(
     state: MainState,
     workspace_context: str = "",

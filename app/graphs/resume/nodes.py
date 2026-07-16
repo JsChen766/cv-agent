@@ -11,25 +11,25 @@ import uuid
 from collections.abc import Mapping
 from typing import Literal, cast
 
-logger = logging.getLogger(__name__)
-
 from langchain_core.runnables import RunnableConfig
 from pydantic import BaseModel, Field, JsonValue
 
 from app.core.config import settings
-from app.core.events import (
-    AgentInterruptEvent,
-    ContentDiffCompletedEvent,
-    ContentDiffDeltaEvent,
-    ContentDiffStartedEvent,
-)
+from app.core.events import AgentInterruptEvent
 from app.domain.resume.models import ResumeVariantCreate
 from app.domain.resume.render import render_structured_to_markdown
 from app.graphs.resume.state import ResumeGenerationState
 from app.graphs.runtime import pool_from_config, services_from_config
+from app.graphs.streaming import (
+    emit_content_diff_progress,
+    emit_thinking,
+    get_optional_stream_writer,
+)
 from app.providers.factory import get_provider
 from app.tools.actions import capabilities as action_capabilities
 from app.tools.actions.models import VariantInput
+
+logger = logging.getLogger(__name__)
 
 # ── 1. Context Assembly ───────────────────────────────────────────────────────
 
@@ -127,6 +127,10 @@ async def cot_planning_node(state: ResumeGenerationState) -> dict[str, object]:
     if prefs:
         pref_list = "\n".join(f"- {p.get('rule')}" for p in prefs[:5])
         context_parts.append(f"User Preferences:\n{pref_list}")
+
+    writer = get_optional_stream_writer()
+    if writer is not None:
+        emit_thinking(writer, "正在匹配岗位要求与经历证据…")
 
     plan: MatchingPlan = await provider.chat_structured(
         [
@@ -260,12 +264,11 @@ async def draft_generation_node(state: ResumeGenerationState) -> dict[str, objec
     )
     profile_contact = _extract_contact_from_profile(profile)
 
-    resume_id = state.get("workspace", {}).get("resume_id") or "new"
-    diff_started: ContentDiffStartedEvent = {
-        "event": "content.diff.started",
-        "resume_id": resume_id,
-        "section": "all",
-    }
+    resume_id = str(state.get("workspace", {}).get("resume_id") or "new")
+    existing_events = list(state.get("pending_sse_events", []))
+    buffered_events: list[dict[str, object]] = []
+    writer = get_optional_stream_writer() or buffered_events.append
+    emit_thinking(writer, "正在生成并组织简历内容…")
 
     llm_structure: _LlmResumeStructure = await provider.chat_structured(
         [
@@ -279,18 +282,15 @@ async def draft_generation_node(state: ResumeGenerationState) -> dict[str, objec
     structured = _assign_structure_ids(llm_structure, fallback_contact=profile_contact, previous_structured=previous_structured)
     content_str = _render_structured_to_markdown(structured)
 
-    diff_delta: ContentDiffDeltaEvent = {
-        "event": "content.diff.delta",
-        "operations": [{"op": "insert", "text": content_str}],
-    }
-    diff_completed: ContentDiffCompletedEvent = {
-        "event": "content.diff.completed",
-        "resume_id": resume_id,
-        "total_insertions": len(content_str.split()),
-        "total_deletions": 0,
-    }
-
     variant_id = f"resume-draft-{uuid.uuid4()}"
+    emit_thinking(writer, "简历结构已完成，正在逐段呈现…")
+    await emit_content_diff_progress(
+        writer,
+        content_str,
+        resume_id=resume_id,
+        variant_id=variant_id,
+        structured=structured,
+    )
     evidence_summary = _evidence_summary(evidence_pack)
     coverage = evidence_pack.get("coverage_ratio")
     coverage_score = float(coverage) if isinstance(coverage, (int, float)) else 0.0
@@ -321,12 +321,11 @@ async def draft_generation_node(state: ResumeGenerationState) -> dict[str, objec
         "risk_summary": risk_summary,
         "missing_info": [],
     }
-    existing_events = state.get("pending_sse_events", [])
     return {
         "variants": [variant],
         "resume_structure": structured,
         "current_diff": [{"op": "insert", "text": content_str}],
-        "pending_sse_events": [*existing_events, diff_started, diff_delta, diff_completed],
+        "pending_sse_events": [*existing_events, *buffered_events],
     }
 
 
@@ -666,6 +665,10 @@ async def fact_check_node(state: ResumeGenerationState) -> dict[str, object]:
         return {"fact_mismatches": []}
 
     provider = get_provider()
+    writer = get_optional_stream_writer()
+    if writer is not None:
+        emit_thinking(writer, "正在核对简历中的事实与数据…")
+
     result: _FactCheckResult = await provider.chat_structured(
         [
             {
@@ -869,6 +872,10 @@ async def self_review_node(state: ResumeGenerationState) -> dict[str, object]:
     jd_text = state.get("jd_text") or ""
 
     provider = get_provider()
+    writer = get_optional_stream_writer()
+    if writer is not None:
+        emit_thinking(writer, "正在检查简历质量和岗位匹配度…")
+
     result: ReviewResult = await provider.chat_structured(
         [
             {
