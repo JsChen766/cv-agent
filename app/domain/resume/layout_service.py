@@ -57,6 +57,7 @@ class ResumeLayoutService:
         bullet_id: str,
         item_id: str,
         section_type: str,
+        exception: str | None = None,
         language: str = "zh-CN",
     ) -> BulletFitReport:
         body_style = self._style_for_language(self.profile.body, language)
@@ -69,10 +70,12 @@ class ResumeLayoutService:
         lines = self._wrap_inline_text(text, available, body_style)
         widths = [self._inline_width(line, body_style) for line in lines] or [0.0]
         last_ratio = widths[-1] / available if available else 0.0
-        status: Literal["pass", "too_short", "awkward_wrap"]
+        status: Literal["pass", "too_short", "awkward_wrap", "unfixable_grounded_short"]
         recommendation: Literal["shorten", "expand_from_source", "rephrase", "remove", "none"]
         if last_ratio >= self.profile.bullet.gate_ratio:
             status, recommendation = "pass", "none"
+        elif exception == "unfixable_grounded_short" and len(lines) == 1:
+            status, recommendation = "unfixable_grounded_short", "none"
         elif len(lines) == 1:
             status, recommendation = "too_short", "expand_from_source"
         else:
@@ -101,12 +104,9 @@ class ResumeLayoutService:
         if isinstance(raw_tuning, dict):
             tuning = LayoutTuning.model_validate(raw_tuning)
             if tuning != LayoutTuning():
-                tuned_profile = self._profile_with_tuning(tuning)
                 untuned_structure = dict(structured)
                 untuned_structure.pop("layout_tuning", None)
-                return ResumeLayoutService(self.metrics, tuned_profile).measure_resume_layout(
-                    untuned_structure, constraint
-                )
+                return self.with_tuning(tuning).measure_resume_layout(untuned_structure, constraint)
         violations: list[LayoutViolation] = []
         for style_violation in find_terminal_period_violations(structured):
             if style_violation.field == "bullet":
@@ -235,6 +235,16 @@ class ResumeLayoutService:
                         bullet_id=fit.bullet_id,
                     )
                 )
+            elif fit.status == "unfixable_grounded_short":
+                violations.append(
+                    LayoutViolation(
+                        code="unfixable_grounded_short",
+                        message=f"Bullet {fit.bullet_id} is a grounded short-line exception.",
+                        severity="soft",
+                        item_id=fit.item_id,
+                        bullet_id=fit.bullet_id,
+                    )
+                )
 
         pages, forced = self._paginate(blocks)
         overflow = 0.0
@@ -297,7 +307,8 @@ class ResumeLayoutService:
             status=status,
         )
 
-    def _profile_with_tuning(self, tuning: LayoutTuning) -> ResumeLayoutProfile:
+    def with_tuning(self, tuning: LayoutTuning) -> ResumeLayoutService:
+        """Return a service whose text metrics match a structured layout tuning."""
         body = self.profile.body.model_copy(
             update={
                 "font_size_pt": self.profile.body.font_size_pt * tuning.body_font_scale,
@@ -320,7 +331,8 @@ class ResumeLayoutService:
         )
         # layout_tuning is versioned separately in the structured resume. Keep the
         # base profile hash so the browser can verify the shared CSS/font contract.
-        return self.profile.model_copy(update={"body": body, "spacing": spacing})
+        profile = self.profile.model_copy(update={"body": body, "spacing": spacing})
+        return ResumeLayoutService(self.metrics, profile)
 
     def _measure_header(self, raw_contact: object, language: str) -> _MeasuredBlock:
         if not isinstance(raw_contact, dict):
@@ -392,6 +404,11 @@ class ResumeLayoutService:
                 bullet_id=bullet_id,
                 item_id=item_id,
                 section_type=section_type,
+                exception=(
+                    str(raw_bullet.get("layout_exception"))
+                    if raw_bullet.get("layout_exception")
+                    else None
+                ),
                 language=language,
             )
             reports.append(report)

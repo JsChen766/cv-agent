@@ -6,7 +6,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-BulletFitStatus = Literal["pass", "too_short", "awkward_wrap"]
+BulletFitStatus = Literal["pass", "too_short", "awkward_wrap", "unfixable_grounded_short"]
 LayoutStatus = Literal["pass", "needs_revision", "needs_user_decision", "profile_mismatch"]
 
 

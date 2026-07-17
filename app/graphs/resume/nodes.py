@@ -582,6 +582,7 @@ You MUST return a single JSON object matching the response schema — no prose o
 8. For each bullet, set `source_fact_ids` to the distinct labeled source facts used to write it. Every id must belong to the same `source_experience_id`. Do not reuse the exact same fact combination merely to pad the page.
 9. Order bullet candidates within each item from highest to lowest value: direct JD evidence first, then quantified results, ownership/action/method, and finally supporting context. The backend may trim candidates from the tail.
 10. Narrative prose MUST NOT end with a Chinese or English full stop (`。`, `．`, `.`). Internal dots in decimals, versions, URLs, and email addresses are allowed.
+11. Draft every bullet for the fixed A4 text width: a single-line bullet must occupy at least 66.7% of its line; if a bullet wraps, its FINAL line must also occupy at least 66.7%. Prefer one information-dense line. As a rough drafting heuristic, Chinese bullets are usually about 36–52 full-width character equivalents and English bullets about 80–115 characters. If a grounded fact is shorter, combine it with a related fact from the same source item instead of emitting a fragment. If a bullet would leave a short second line, either shorten it back to one line or add source-supported detail so the second line reaches two thirds. These ranges are heuristics, never permission to invent facts or add filler. Do not emit `layout_exception` in the initial draft.
 
 ## Section order and content
 
@@ -692,13 +693,29 @@ async def layout_measure_node(
 def layout_route(state: ResumeGenerationState) -> str:
     report = state.get("layout_report") or {}
     status = report.get("status") or state.get("layout_status")
+    violations = report.get("violations") or []
+    hard_codes = {
+        str(violation.get("code"))
+        for violation in violations
+        if isinstance(violation, dict) and violation.get("severity", "hard") == "hard"
+    }
+    if (
+        status == "needs_revision"
+        and hard_codes
+        and hard_codes
+        <= {
+            "bullet_too_short",
+            "bullet_awkward_wrap",
+            "page_underfilled",
+        }
+    ):
+        return "fact_check"
     can_revise = (
         state.get("layout_revision_iteration", 0) < settings.max_layout_revision_iterations
         and state.get("generation_call_count", 0) < settings.max_resume_generation_calls
     )
     if status == "needs_revision" and can_revise:
         return "revision"
-    violations = report.get("violations") or []
     is_genuinely_underfilled = any(
         isinstance(violation, dict) and violation.get("code") == "page_underfilled"
         for violation in violations
@@ -712,11 +729,25 @@ def _layout_revision_objective(
     report: LayoutReport,
     constraint: LayoutConstraint,
 ) -> str:
+    failing_bullets = [
+        fit for fit in report.bullet_fits if fit.status in {"too_short", "awkward_wrap"}
+    ]
+    bullet_objective = ""
+    if failing_bullets:
+        too_short = sum(fit.status == "too_short" for fit in failing_bullets)
+        awkward = sum(fit.status == "awkward_wrap" for fit in failing_bullets)
+        bullet_objective = (
+            f" Fix {len(failing_bullets)} bullet-width violations ({too_short} single-line "
+            f"too short, {awkward} awkward multi-line wrap). Every revised bullet's final line "
+            f"must use at least {failing_bullets[0].gate_ratio:.1%} of the available text width. "
+            "Do not alter bullets that already pass unless merging a failing bullet into one of "
+            "them is necessary."
+        )
     underfilled = any(violation.code == "page_underfilled" for violation in report.violations)
     if not underfilled:
         return (
             "Resolve every hard violation in the report while preserving grounded content and "
-            "JD coverage."
+            "JD coverage." + bullet_objective
         )
 
     approximate_lines = max(
@@ -734,8 +765,26 @@ def _layout_revision_objective(
         f"{approximate_lines} body-text lines. Add at least that much useful, grounded detail in "
         "this revision by exhausting unused source facts and deepening existing bullets with "
         "source-supported context, scope, action, method, workflow, collaboration, constraint, "
-        f"deliverable, or result details. {overflow_policy}"
+        f"deliverable, or result details. {overflow_policy}" + bullet_objective
     )
+
+
+def _bullet_revision_targets(report: LayoutReport) -> str:
+    lines: list[str] = []
+    for fit in report.bullet_fits:
+        if fit.status not in {"too_short", "awkward_wrap"}:
+            continue
+        action = (
+            "expand from unused facts in the same source item, or merge with a related bullet"
+            if fit.status == "too_short"
+            else "rephrase or shorten so the final wrapped line reaches the threshold"
+        )
+        lines.append(
+            f"- bullet_id={fit.bullet_id}; item_id={fit.item_id}; status={fit.status}; "
+            f"lines={fit.line_count}; final_line={fit.last_line_ratio:.1%}; "
+            f"required>={fit.gate_ratio:.1%}; action={action}"
+        )
+    return "\n".join(lines) or "- No bullet-width violations"
 
 
 async def layout_revision_node(state: ResumeGenerationState) -> dict[str, object]:
@@ -761,23 +810,24 @@ async def layout_revision_node(state: ResumeGenerationState) -> dict[str, object
             {
                 "role": "system",
                 "content": (
-                    "You revise a structured resume only to fix the supplied deterministic layout "
-                    "violations. Preserve all grounded facts and existing JD coverage. Never invent "
-                    "facts, truncate text, use ellipses, or add a summary. For long/awkward bullets: "
-                    "remove repetition, merge synonymous phrasing, and preserve action, object, method, "
-                    "and grounded result. For short bullets: expand only from the source experience; "
-                    "otherwise merge it with a related bullet or remove a low-value duplicate. Every "
-                    "bullet must pass the final-line width gate; there are no short-line exceptions. "
-                    "Narrative prose must not end with a Chinese or English full stop. "
-                    "For one-page overflow, remove lowest-JD-value redundant bullets/items first, while "
-                    "keeping all education entries and at least one work and project item when sourced. "
-                    "For page_underfilled, increase printable-height usage to at least "
-                    f"{report.minimum_page_usage_ratio:.0%} by adding "
-                    "unused, distinct, high-value facts from the supplied source experiences, adding "
-                    "relevant sourced items, or expanding bullets with sourced scope, method, scenario, "
-                    "technology, or result details. Limited experience requires deeper treatment of "
-                    "the available facts, not a short minimalist draft. Never repeat facts or add "
-                    "generic filler."
+                    "You revise a structured resume only to fix the supplied deterministic "
+                    "layout violations. Preserve all grounded facts and existing JD coverage. "
+                    "Never invent facts, truncate text, use ellipses, or add a summary. For "
+                    "long/awkward bullets: remove repetition, merge synonymous phrasing, and "
+                    "preserve action, object, method, and grounded result. For short bullets: "
+                    "expand only from the source experience; otherwise merge it with a related "
+                    "bullet or remove a low-value duplicate. Only when a single-line bullet is "
+                    "a key grounded fact that cannot be expanded or merged, set "
+                    "layout_exception=unfixable_grounded_short. Never use this exception for a "
+                    "multi-line bullet. Treat 66.7% as the exact final-line threshold. "
+                    "Narrative prose must not end with a Chinese or English full stop. For "
+                    "one-page overflow, remove lowest-JD-value redundant bullets/items first, "
+                    "while keeping all education entries and at least one work and project item "
+                    "when sourced. For page_underfilled, increase printable-height usage to at "
+                    f"least {report.minimum_page_usage_ratio:.0%} by adding unused, distinct, "
+                    "high-value facts from the supplied source experiences, adding relevant "
+                    "sourced items, or expanding bullets with sourced scope, method, scenario, "
+                    "technology, or result details. Never repeat facts or add generic filler."
                 ),
             },
             {
@@ -785,13 +835,15 @@ async def layout_revision_node(state: ResumeGenerationState) -> dict[str, object
                 "content": (
                     "REVISION OBJECTIVE:\n"
                     + revision_objective
+                    + "\n\nACTIONABLE BULLET TARGETS:\n"
+                    + _bullet_revision_targets(report)
                     + "\n\nLAYOUT REPORT:\n"
                     + json.dumps(report.model_dump(), ensure_ascii=False, indent=2)
                     + "\n\nCURRENT STRUCTURE:\n"
                     + json.dumps(current, ensure_ascii=False, indent=2)
                     + "\n\nSOURCE EXPERIENCES (only ground truth):\n"
                     + _format_experiences_for_prompt(experiences)
-                    + "\n\nCONTENT BUDGET (add bullets first to the highest JD-match scores):\n"
+                    + "\n\nCONTENT BUDGET:\n"
                     + json.dumps(state.get("content_budget") or {}, ensure_ascii=False, indent=2)
                 ),
             },
@@ -1521,11 +1573,8 @@ async def quality_gate_node(state: ResumeGenerationState) -> dict[str, object]:
         state.get("layout_constraint") or LayoutConstraint().model_dump()
     )
     usage = report.pages[0].usage_ratio if report.pages else 0.0
-    if (
-        report.page_count != 1
-        or usage < constraint.minimum_page_usage_ratio
-        or usage > constraint.maximum_page_usage_ratio
-    ):
+    is_underfilled = usage < constraint.minimum_page_usage_ratio
+    if report.page_count != 1 or usage > constraint.maximum_page_usage_ratio:
         return {
             "quality_status": "failed",
             "quality_issues": [
@@ -1539,16 +1588,17 @@ async def quality_gate_node(state: ResumeGenerationState) -> dict[str, object]:
                 }
             ],
         }
+    if is_underfilled:
+        issues.append(
+            {
+                "code": "layout_usage_underfilled",
+                "message": (
+                    f"Resume uses {usage:.1%} of the first page; the preferred minimum is "
+                    f"{constraint.minimum_page_usage_ratio:.0%}."
+                ),
+            }
+        )
     hard_layout = [violation for violation in report.violations if violation.severity == "hard"]
-    non_waivable_layout_codes = {
-        "bullet_too_short",
-        "bullet_awkward_wrap",
-        "bullet_terminal_period",
-        "raw_text_terminal_period",
-    }
-    non_waivable_layout = [
-        violation for violation in hard_layout if violation.code in non_waivable_layout_codes
-    ]
     issues.extend(
         {"code": violation.code, "message": violation.message} for violation in hard_layout
     )
@@ -1574,9 +1624,12 @@ async def quality_gate_node(state: ResumeGenerationState) -> dict[str, object]:
         for issue in review.get("issues") or ["Self-review still requires revision."]:
             issues.append({"code": "self_review_unresolved", "message": str(issue)})
 
-    if report.status == "profile_mismatch" or review_failed or non_waivable_layout:
+    profile_mismatch_is_fatal = (
+        report.status == "profile_mismatch" and settings.resume_layout_hard_gate_enabled
+    )
+    if profile_mismatch_is_fatal or review_failed:
         quality_status = "failed"
-    elif hard_layout or coverage_regressions:
+    elif is_underfilled or hard_layout or coverage_regressions:
         quality_status = "needs_user_decision"
     elif not settings.resume_layout_hard_gate_enabled:
         issues.append(
@@ -2115,6 +2168,7 @@ class _LlmBullet(BaseModel):
     text: str
     matched_jd_requirement_ids: list[str] = Field(default_factory=list)
     source_fact_ids: list[str] = Field(default_factory=list)
+    layout_exception: Literal["unfixable_grounded_short"] | None = None
 
 
 class _LlmSectionItem(BaseModel):
@@ -2247,6 +2301,7 @@ def _assign_structure_ids(
                         "text": b.text,
                         "matched_jd_requirement_ids": list(b.matched_jd_requirement_ids),
                         "source_fact_ids": list(b.source_fact_ids),
+                        "layout_exception": b.layout_exception,
                     }
                 )
 

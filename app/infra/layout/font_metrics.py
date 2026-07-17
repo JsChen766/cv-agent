@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import hashlib
-import os
 from collections.abc import Mapping
 from functools import lru_cache
 from pathlib import Path
@@ -12,15 +11,11 @@ from PIL import ImageFont
 
 from app.domain.resume.layout_profile import TextStyle
 
-_FONT_PATH = Path(__file__).with_name("fonts") / "NotoSansCJKsc-Regular.otf"
-_WINDOWS_FONT_DIR = Path(os.environ.get("WINDIR", "C:/Windows")) / "Fonts"
-_DEFAULT_SYSTEM_FONT_PATHS = {
-    "SimSun": Path(
-        os.environ.get("CV_RESUME_CHINESE_FONT_PATH", _WINDOWS_FONT_DIR / "simsun.ttc")
-    ),
-    "Times New Roman": Path(
-        os.environ.get("CV_RESUME_ENGLISH_FONT_PATH", _WINDOWS_FONT_DIR / "times.ttf")
-    ),
+_FONT_DIR = Path(__file__).with_name("fonts")
+_FONT_PATH = _FONT_DIR / "NotoSansCJKsc-Regular.otf"
+_DEFAULT_FONT_PATHS = {
+    "SimSun": _FONT_DIR / "simsun.ttc",
+    "Times New Roman": _FONT_DIR / "times.ttf",
 }
 
 
@@ -32,16 +27,22 @@ class PillowFontMetrics:
     ) -> None:
         self.font_path = font_path
         self._font_checksum = hashlib.sha256(font_path.read_bytes()).hexdigest()
-        configured = dict(_DEFAULT_SYSTEM_FONT_PATHS)
+        configured = dict(_DEFAULT_FONT_PATHS)
         if font_paths is not None:
             configured.update(font_paths)
         self._font_paths = {
             "CV Noto Sans CJK SC": font_path,
-            **{
-                family: path if path.is_file() else font_path
-                for family, path in configured.items()
-            },
+            **configured,
         }
+        missing_fonts = [
+            f"{family}: {path}"
+            for family, path in self._font_paths.items()
+            if not path.is_file()
+        ]
+        if missing_fonts:
+            raise FileNotFoundError(
+                "Resume layout font assets are missing: " + ", ".join(missing_fonts)
+            )
         self._font_checksums = {
             family: hashlib.sha256(path.read_bytes()).hexdigest()
             for family, path in self._font_paths.items()
