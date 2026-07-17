@@ -13,7 +13,17 @@ LayoutStatus = Literal["pass", "needs_revision", "needs_user_decision", "profile
 class LayoutConstraint(BaseModel):
     max_pages: int | None = Field(default=1, ge=1)
     requested_pages: int | None = Field(default=None, ge=1)
-    minimum_page_usage_ratio: float = Field(default=0.90, ge=0.0, le=1.0)
+    minimum_page_usage_ratio: float = Field(default=0.80, ge=0.0, le=1.0)
+    target_page_usage_ratio: float = Field(default=0.88, ge=0.0, le=1.0)
+    maximum_page_usage_ratio: float = Field(default=0.95, ge=0.0, le=1.0)
+
+    def model_post_init(self, __context: object) -> None:
+        if not (
+            self.minimum_page_usage_ratio
+            <= self.target_page_usage_ratio
+            <= self.maximum_page_usage_ratio
+        ):
+            raise ValueError("Page usage ratios must satisfy minimum <= target <= maximum")
 
     @property
     def is_single_page(self) -> bool:
@@ -88,7 +98,9 @@ class LayoutReport(BaseModel):
     page_available_height_mm: float
     page_count: int
     overflow_mm: float
-    minimum_page_usage_ratio: float = 0.90
+    minimum_page_usage_ratio: float = 0.80
+    target_page_usage_ratio: float = 0.88
+    maximum_page_usage_ratio: float = 0.95
     underfill_mm: float = 0.0
     pages: list[PageReport] = Field(default_factory=list)
     sections: list[SectionLayoutReport] = Field(default_factory=list)
@@ -96,3 +108,13 @@ class LayoutReport(BaseModel):
     violations: list[LayoutViolation] = Field(default_factory=list)
     forced_break_block_ids: list[str] = Field(default_factory=list)
     status: LayoutStatus
+
+
+class LayoutTuning(BaseModel):
+    """Bounded visual expansion applied consistently by backend and browser preview."""
+
+    body_font_scale: float = Field(default=1.0, ge=1.0, le=1.08)
+    body_line_height: float = Field(default=1.18, ge=1.18, le=1.28)
+    section_gap_scale: float = Field(default=1.0, ge=1.0, le=1.5)
+    item_gap_scale: float = Field(default=1.0, ge=1.0, le=1.6)
+    bullet_gap_scale: float = Field(default=1.0, ge=1.0, le=1.5)

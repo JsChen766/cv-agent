@@ -586,7 +586,7 @@ async def resume_thread(
     """
     from langgraph.types import Command
 
-    from app.api.routes.copilot import _build_response
+    from app.api.routes.copilot import _build_response, _extract_interrupt_payload
     from app.graphs.main import get_graph
 
     _pool = None
@@ -649,9 +649,11 @@ async def resume_thread(
         raise ExternalServiceError("Graph resume failed") from exc
 
     assistant_msg = str(final_state.get("assistant_message") or "Done.")
-    raw_interrupt = final_state.get("interrupt_payload")
+    extracted_interrupt = _extract_interrupt_payload(final_state)
     interrupt_payload = (
-        cast("dict[str, JsonValue]", raw_interrupt) if isinstance(raw_interrupt, dict) else None
+        cast("dict[str, JsonValue]", extracted_interrupt)
+        if isinstance(extracted_interrupt, dict)
+        else None
     )
     workspace = (
         cast("dict[str, JsonValue]", final_state.get("workspace"))

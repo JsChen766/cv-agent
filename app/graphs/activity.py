@@ -38,42 +38,102 @@ _AGENT_LABELS: dict[AgentRole, str] = {
 
 _NODE_ACTIVITY: dict[str, ActivitySpec] = {
     "router": ActivitySpec("frontdesk", "前台", "正在理解你的请求并分配任务", "已完成任务分配"),
-    "router_node": ActivitySpec("frontdesk", "前台", "正在理解你的请求并分配任务", "已完成任务分配"),
+    "router_node": ActivitySpec(
+        "frontdesk", "前台", "正在理解你的请求并分配任务", "已完成任务分配"
+    ),
     "open_ended": ActivitySpec("frontdesk", "前台", "正在处理你的问题", "已完成回复整理"),
     "open_ended_node": ActivitySpec("frontdesk", "前台", "正在处理你的问题", "已完成回复整理"),
-    "experience_import": ActivitySpec("experience_orchestrator", "经历编排员", "正在整理经历信息", "已完成经历整理"),
-    "parse": ActivitySpec("experience_orchestrator", "经历编排员", "正在解析经历内容", "已完成经历解析"),
-    "parse_import_node": ActivitySpec("experience_orchestrator", "经历编排员", "正在解析经历内容", "已完成经历解析"),
-    "review": ActivitySpec("experience_orchestrator", "经历编排员", "正在准备经历确认", "已准备好经历确认"),
-    "review_import_node": ActivitySpec("experience_orchestrator", "经历编排员", "正在准备经历确认", "已准备好经历确认"),
-    "save": ActivitySpec("experience_orchestrator", "经历编排员", "正在保存确认后的经历", "已保存确认后的经历"),
-    "save_import_node": ActivitySpec("experience_orchestrator", "经历编排员", "正在保存确认后的经历", "已保存确认后的经历"),
+    "experience_import": ActivitySpec(
+        "experience_orchestrator", "经历编排员", "正在整理经历信息", "已完成经历整理"
+    ),
+    "parse": ActivitySpec(
+        "experience_orchestrator", "经历编排员", "正在解析经历内容", "已完成经历解析"
+    ),
+    "parse_import_node": ActivitySpec(
+        "experience_orchestrator", "经历编排员", "正在解析经历内容", "已完成经历解析"
+    ),
+    "review": ActivitySpec(
+        "experience_orchestrator", "经历编排员", "正在准备经历确认", "已准备好经历确认"
+    ),
+    "review_import_node": ActivitySpec(
+        "experience_orchestrator", "经历编排员", "正在准备经历确认", "已准备好经历确认"
+    ),
+    "save": ActivitySpec(
+        "experience_orchestrator", "经历编排员", "正在保存确认后的经历", "已保存确认后的经历"
+    ),
+    "save_import_node": ActivitySpec(
+        "experience_orchestrator", "经历编排员", "正在保存确认后的经历", "已保存确认后的经历"
+    ),
     "jd": ActivitySpec("jd_analyst", "岗位分析师", "正在分析岗位信息", "已完成岗位分析"),
-    "save_jd": ActivitySpec("jd_analyst", "岗位分析师", "正在提取岗位基础信息", "已完成岗位基础信息提取"),
-    "save_jd_node": ActivitySpec("jd_analyst", "岗位分析师", "正在提取岗位基础信息", "已完成岗位基础信息提取"),
-    "parse_requirements": ActivitySpec("jd_analyst", "岗位分析师", "正在拆解岗位要求", "已完成岗位要求拆解"),
-    "parse_requirements_node": ActivitySpec("jd_analyst", "岗位分析师", "正在拆解岗位要求", "已完成岗位要求拆解"),
-    "resume_generation": ActivitySpec("resume_writer", "简历写手", "正在生成针对岗位的简历", "已完成简历生成流程"),
-    "application_package": ActivitySpec("resume_writer", "应聘材料写手", "正在准备完整应聘材料", "已完成应聘材料生成"),
+    "save_jd": ActivitySpec(
+        "jd_analyst", "岗位分析师", "正在提取岗位基础信息", "已完成岗位基础信息提取"
+    ),
+    "save_jd_node": ActivitySpec(
+        "jd_analyst", "岗位分析师", "正在提取岗位基础信息", "已完成岗位基础信息提取"
+    ),
+    "parse_requirements": ActivitySpec(
+        "jd_analyst", "岗位分析师", "正在拆解岗位要求", "已完成岗位要求拆解"
+    ),
+    "parse_requirements_node": ActivitySpec(
+        "jd_analyst", "岗位分析师", "正在拆解岗位要求", "已完成岗位要求拆解"
+    ),
+    "resume_generation": ActivitySpec(
+        "resume_writer", "简历写手", "正在生成针对岗位的简历", "已完成简历生成流程"
+    ),
+    "application_package": ActivitySpec(
+        "resume_writer", "应聘材料写手", "正在准备完整应聘材料", "已完成应聘材料生成"
+    ),
     "package_plan": ActivitySpec("frontdesk", "前台", "正在拆解 JD 投递要求", "已完成投递要求拆解"),
-    "plan_application_package_node": ActivitySpec("frontdesk", "前台", "正在拆解 JD 投递要求", "已完成投递要求拆解"),
-    "package_artifacts": ActivitySpec("resume_writer", "应聘材料写手", "正在生成附加投递材料", "已完成附加投递材料"),
-    "generate_application_artifacts_node": ActivitySpec("resume_writer", "应聘材料写手", "正在生成附加投递材料", "已完成附加投递材料"),
-    "context_assembly": ActivitySpec("resume_writer", "简历写手", "正在收集简历写作上下文", "已完成上下文收集"),
-    "context_assembly_node": ActivitySpec("resume_writer", "简历写手", "正在收集简历写作上下文", "已完成上下文收集"),
-    "cot_planning": ActivitySpec("resume_writer", "简历写手", "正在规划简历写作策略", "已完成简历写作策略"),
-    "cot_planning_node": ActivitySpec("resume_writer", "简历写手", "正在规划简历写作策略", "已完成简历写作策略"),
-    "draft_generation": ActivitySpec("resume_writer", "简历写手", "正在生成内容草稿", "已完成内容草稿"),
-    "draft_generation_node": ActivitySpec("resume_writer", "简历写手", "正在生成内容草稿", "已完成内容草稿"),
+    "plan_application_package_node": ActivitySpec(
+        "frontdesk", "前台", "正在拆解 JD 投递要求", "已完成投递要求拆解"
+    ),
+    "package_artifacts": ActivitySpec(
+        "resume_writer", "应聘材料写手", "正在生成附加投递材料", "已完成附加投递材料"
+    ),
+    "generate_application_artifacts_node": ActivitySpec(
+        "resume_writer", "应聘材料写手", "正在生成附加投递材料", "已完成附加投递材料"
+    ),
+    "context_assembly": ActivitySpec(
+        "resume_writer", "简历写手", "正在收集简历写作上下文", "已完成上下文收集"
+    ),
+    "context_assembly_node": ActivitySpec(
+        "resume_writer", "简历写手", "正在收集简历写作上下文", "已完成上下文收集"
+    ),
+    "cot_planning": ActivitySpec(
+        "resume_writer", "简历写手", "正在规划简历写作策略", "已完成简历写作策略"
+    ),
+    "cot_planning_node": ActivitySpec(
+        "resume_writer", "简历写手", "正在规划简历写作策略", "已完成简历写作策略"
+    ),
+    "draft_generation": ActivitySpec(
+        "resume_writer", "简历写手", "正在生成内容草稿", "已完成内容草稿"
+    ),
+    "draft_generation_node": ActivitySpec(
+        "resume_writer", "简历写手", "正在生成内容草稿", "已完成内容草稿"
+    ),
     "artifact": ActivitySpec("resume_writer", "简历写手", "正在生成文档内容", "已完成文档生成"),
-    "artifact_context_assembly_node": ActivitySpec("resume_writer", "简历写手", "正在收集文档写作上下文", "已完成文档上下文收集"),
-    "artifact_draft_node": ActivitySpec("resume_writer", "简历写手", "正在生成文档内容", "已完成文档生成"),
-    "self_review": ActivitySpec("resume_reviewer", "简历质检员", "正在检查简历质量", "已完成简历质量检查"),
-    "self_review_node": ActivitySpec("resume_reviewer", "简历质检员", "正在检查简历质量", "已完成简历质量检查"),
-    "revision": ActivitySpec("resume_writer", "简历写手", "正在根据质检意见修改简历", "已完成简历修改"),
-    "revision_node": ActivitySpec("resume_writer", "简历写手", "正在根据质检意见修改简历", "已完成简历修改"),
+    "artifact_context_assembly_node": ActivitySpec(
+        "resume_writer", "简历写手", "正在收集文档写作上下文", "已完成文档上下文收集"
+    ),
+    "artifact_draft_node": ActivitySpec(
+        "resume_writer", "简历写手", "正在生成文档内容", "已完成文档生成"
+    ),
+    "self_review": ActivitySpec(
+        "resume_reviewer", "简历质检员", "正在检查简历质量", "已完成简历质量检查"
+    ),
+    "self_review_node": ActivitySpec(
+        "resume_reviewer", "简历质检员", "正在检查简历质量", "已完成简历质量检查"
+    ),
+    "revision": ActivitySpec(
+        "resume_writer", "简历写手", "正在根据质检意见修改简历", "已完成简历修改"
+    ),
+    "revision_node": ActivitySpec(
+        "resume_writer", "简历写手", "正在根据质检意见修改简历", "已完成简历修改"
+    ),
     "output": ActivitySpec("resume_reviewer", "简历质检员", "正在准备简历确认", "已准备好简历确认"),
-    "output_node": ActivitySpec("resume_reviewer", "简历质检员", "正在准备简历确认", "已准备好简历确认"),
+    "output_node": ActivitySpec(
+        "resume_reviewer", "简历质检员", "正在准备简历确认", "已准备好简历确认"
+    ),
 }
 
 # Resume quality-gate nodes are internal implementation details, but they still
@@ -82,20 +142,54 @@ _NODE_ACTIVITY: dict[str, ActivitySpec] = {
 # either form depending on the stream nesting level.
 _NODE_ACTIVITY.update(
     {
-        "layout_measure": ActivitySpec("resume_reviewer", "简历质检员", "正在检查 A4 版面", "已完成版面检查"),
-        "layout_measure_node": ActivitySpec("resume_reviewer", "简历质检员", "正在检查 A4 版面", "已完成版面检查"),
-        "layout_revision": ActivitySpec("resume_writer", "简历写手", "正在修订简历版面", "已完成版面修订"),
-        "layout_revision_node": ActivitySpec("resume_writer", "简历写手", "正在修订简历版面", "已完成版面修订"),
-        "fact_check": ActivitySpec("resume_reviewer", "简历质检员", "正在核对简历事实", "已完成事实核对"),
-        "fact_check_node": ActivitySpec("resume_reviewer", "简历质检员", "正在核对简历事实", "已完成事实核对"),
-        "coverage_check": ActivitySpec("resume_reviewer", "简历质检员", "正在检查 JD 要求覆盖", "已完成要求覆盖检查"),
-        "coverage_check_node": ActivitySpec("resume_reviewer", "简历质检员", "正在检查 JD 要求覆盖", "已完成要求覆盖检查"),
-        "quality_gate": ActivitySpec("resume_reviewer", "简历质检员", "正在执行最终质量门", "已完成最终质量门"),
-        "quality_gate_node": ActivitySpec("resume_reviewer", "简历质检员", "正在执行最终质量门", "已完成最终质量门"),
-        "persist_decision_candidate": ActivitySpec("resume_reviewer", "简历质检员", "正在保存待确认候选", "已保存待确认候选"),
-        "persist_decision_candidate_node": ActivitySpec("resume_reviewer", "简历质检员", "正在保存待确认候选", "已保存待确认候选"),
-        "output_for_decision": ActivitySpec("resume_reviewer", "简历质检员", "正在准备简历审核", "已准备好简历审核"),
-        "output_failure": ActivitySpec("resume_reviewer", "简历质检员", "正在处理质量检查失败", "已完成失败结果处理"),
+        "layout_measure": ActivitySpec(
+            "resume_reviewer", "简历质检员", "正在检查 A4 版面", "已完成版面检查"
+        ),
+        "layout_measure_node": ActivitySpec(
+            "resume_reviewer", "简历质检员", "正在检查 A4 版面", "已完成版面检查"
+        ),
+        "layout_revision": ActivitySpec(
+            "resume_writer", "简历写手", "正在修订简历版面", "已完成版面修订"
+        ),
+        "layout_revision_node": ActivitySpec(
+            "resume_writer", "简历写手", "正在修订简历版面", "已完成版面修订"
+        ),
+        "fact_check": ActivitySpec(
+            "resume_reviewer", "简历质检员", "正在核对简历事实", "已完成事实核对"
+        ),
+        "fact_check_node": ActivitySpec(
+            "resume_reviewer", "简历质检员", "正在核对简历事实", "已完成事实核对"
+        ),
+        "coverage_check": ActivitySpec(
+            "resume_reviewer", "简历质检员", "正在检查 JD 要求覆盖", "已完成要求覆盖检查"
+        ),
+        "coverage_check_node": ActivitySpec(
+            "resume_reviewer", "简历质检员", "正在检查 JD 要求覆盖", "已完成要求覆盖检查"
+        ),
+        "quality_gate": ActivitySpec(
+            "resume_reviewer", "简历质检员", "正在执行最终质量门", "已完成最终质量门"
+        ),
+        "quality_gate_node": ActivitySpec(
+            "resume_reviewer", "简历质检员", "正在执行最终质量门", "已完成最终质量门"
+        ),
+        "persist_decision_candidate": ActivitySpec(
+            "resume_reviewer", "简历质检员", "正在保存待确认候选", "已保存待确认候选"
+        ),
+        "persist_decision_candidate_node": ActivitySpec(
+            "resume_reviewer", "简历质检员", "正在保存待确认候选", "已保存待确认候选"
+        ),
+        "output_for_decision": ActivitySpec(
+            "resume_reviewer", "简历质检员", "正在准备简历审核", "已准备好简历审核"
+        ),
+        "output_failure": ActivitySpec(
+            "resume_reviewer", "简历质检员", "正在处理质量检查失败", "已完成失败结果处理"
+        ),
+        "content_gap": ActivitySpec(
+            "resume_writer", "简历写手", "正在计算还缺少多少经历内容", "已生成经历补充建议"
+        ),
+        "content_gap_node": ActivitySpec(
+            "resume_writer", "简历写手", "正在计算还缺少多少经历内容", "已生成经历补充建议"
+        ),
     }
 )
 
@@ -201,7 +295,14 @@ def activity_from_interrupt(
 
     if interrupt_type in {"resume_review", "application_package_review"}:
         role: AgentRole = "resume_reviewer"
-        action = "等待你确认完整应聘材料" if interrupt_type == "application_package_review" else "等待你确认或修改简历版本"
+        action = (
+            "等待你确认完整应聘材料"
+            if interrupt_type == "application_package_review"
+            else "等待你确认或修改简历版本"
+        )
+    elif interrupt_type == "resume_content_gap":
+        role = "resume_writer"
+        action = "等待你补充项目、工作细节或技能信息"
     elif interrupt_type == "experience_import_review":
         role = "experience_orchestrator"
         action = "等待你确认要保存的经历"

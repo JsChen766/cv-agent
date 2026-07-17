@@ -23,6 +23,7 @@ class ResumeGenerationState(MainState, total=False):
     # Planning
     matching_plan: dict[str, Any] | None
     generation_strategy: str | None
+    content_budget: dict[str, Any] | None
 
     # Versioned layout contract and deterministic measurement
     layout_constraint: dict[str, Any]
@@ -36,6 +37,8 @@ class ResumeGenerationState(MainState, total=False):
     coverage_before_layout: list[str]
     generation_call_count: int
     final_candidate_emitted: bool
+    maximum_candidate_usage_ratio: float
+    layout_fit_status: str | None
 
     # Generation output
     variants: list[dict[str, Any]]
@@ -45,6 +48,7 @@ class ResumeGenerationState(MainState, total=False):
     resume_user_action: str | None
     fact_mismatches: list[dict[str, Any]]
     resume_structure: dict[str, Any] | None
+    resume_candidate_pool: dict[str, Any] | None
     coverage_report: dict[str, Any] | None
     uncovered_jd_requirement_ids: list[str]
 

@@ -34,11 +34,14 @@ class Settings(BaseSettings):
     evidence_similarity_threshold: float = 0.65
     preference_dedup_threshold: float = 0.85
     context_token_budget: int = 16000
-    max_self_review_iterations: int = 3
-    max_layout_revision_iterations: int = 3
-    max_resume_generation_calls: int = 7
+    max_self_review_iterations: int = 1
+    max_layout_revision_iterations: int = 1
+    max_resume_generation_calls: int = 2
     resume_layout_hard_gate_enabled: bool = False
-    resume_min_page_usage_ratio: float = Field(default=0.90, ge=0.0, le=1.0)
+    resume_min_page_usage_ratio: float = Field(default=0.80, ge=0.0, le=1.0)
+    resume_target_page_usage_ratio: float = Field(default=0.88, ge=0.0, le=1.0)
+    resume_max_page_usage_ratio: float = Field(default=0.95, ge=0.0, le=1.0)
+    resume_candidate_pool_target_ratio: float = Field(default=1.20, ge=1.0)
 
     # Files
     file_parse_timeout_seconds: float = Field(default=60.0, gt=0)

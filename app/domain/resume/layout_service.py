@@ -12,6 +12,7 @@ from app.domain.resume.layout_models import (
     LayoutConstraint,
     LayoutReport,
     LayoutStatus,
+    LayoutTuning,
     LayoutViolation,
     PageReport,
     SectionLayoutReport,
@@ -98,6 +99,16 @@ class ResumeLayoutService:
         constraint: LayoutConstraint | None = None,
     ) -> LayoutReport:
         constraint = constraint or LayoutConstraint()
+        raw_tuning = structured.get("layout_tuning")
+        if isinstance(raw_tuning, dict):
+            tuning = LayoutTuning.model_validate(raw_tuning)
+            if tuning != LayoutTuning():
+                tuned_profile = self._profile_with_tuning(tuning)
+                untuned_structure = dict(structured)
+                untuned_structure.pop("layout_tuning", None)
+                return ResumeLayoutService(self.metrics, tuned_profile).measure_resume_layout(
+                    untuned_structure, constraint
+                )
         violations: list[LayoutViolation] = []
         language = str(structured.get("language") or "zh-CN")
         active_font = self.profile.font_for_language(language)
@@ -265,6 +276,8 @@ class ResumeLayoutService:
             page_count=len(pages),
             overflow_mm=round(overflow, 3),
             minimum_page_usage_ratio=constraint.minimum_page_usage_ratio,
+            target_page_usage_ratio=constraint.target_page_usage_ratio,
+            maximum_page_usage_ratio=constraint.maximum_page_usage_ratio,
             underfill_mm=round(underfill, 3),
             pages=pages,
             sections=section_reports,
@@ -273,6 +286,31 @@ class ResumeLayoutService:
             forced_break_block_ids=forced,
             status=status,
         )
+
+    def _profile_with_tuning(self, tuning: LayoutTuning) -> ResumeLayoutProfile:
+        body = self.profile.body.model_copy(
+            update={
+                "font_size_pt": self.profile.body.font_size_pt * tuning.body_font_scale,
+                "line_height": tuning.body_line_height,
+            }
+        )
+        spacing = self.profile.spacing.model_copy(
+            update={
+                "section_before_mm": (
+                    self.profile.spacing.section_before_mm * tuning.section_gap_scale
+                ),
+                "section_after_mm": (
+                    self.profile.spacing.section_after_mm * tuning.section_gap_scale
+                ),
+                "item_after_mm": self.profile.spacing.item_after_mm * tuning.item_gap_scale,
+                "bullet_before_mm": (
+                    self.profile.spacing.bullet_before_mm * tuning.bullet_gap_scale
+                ),
+            }
+        )
+        # layout_tuning is versioned separately in the structured resume. Keep the
+        # base profile hash so the browser can verify the shared CSS/font contract.
+        return self.profile.model_copy(update={"body": body, "spacing": spacing})
 
     def _measure_header(self, raw_contact: object, language: str) -> _MeasuredBlock:
         if not isinstance(raw_contact, dict):
@@ -285,11 +323,7 @@ class ResumeLayoutService:
         ]
         name_style = self._style_for_language(self.profile.name, language)
         contact_style = self._style_for_language(self.profile.contact, language)
-        height = (
-            self._text_height(name, self.profile.content_width_mm, name_style)
-            if name
-            else 0.0
-        )
+        height = self._text_height(name, self.profile.content_width_mm, name_style) if name else 0.0
         if contacts:
             height += self._text_height(
                 " · ".join(contacts), self.profile.content_width_mm, contact_style
@@ -325,9 +359,7 @@ class ResumeLayoutService:
         if role or location:
             secondary_width = max(
                 1.0,
-                self.profile.content_width_mm
-                - self._inline_width(location, date_style)
-                - 3.0,
+                self.profile.content_width_mm - self._inline_width(location, date_style) - 3.0,
             )
             height += max(
                 self._text_height(role, secondary_width, item_subheading_style),

@@ -6,12 +6,33 @@ from app.graphs.resume.nodes import (
 )
 
 
-def test_layout_revision_budget_never_fakes_pass(monkeypatch) -> None:
+def test_layout_revision_budget_routes_to_content_gap(monkeypatch) -> None:
     monkeypatch.setattr("app.graphs.resume.nodes.settings.max_layout_revision_iterations", 3)
     monkeypatch.setattr("app.graphs.resume.nodes.settings.max_resume_generation_calls", 7)
 
     state = {
-        "layout_report": {"status": "needs_revision"},
+        "layout_report": {
+            "status": "needs_revision",
+            "violations": [{"code": "page_underfilled"}],
+        },
+        "layout_revision_iteration": 3,
+        "generation_call_count": 4,
+    }
+
+    assert layout_route(state) == "content_gap"
+
+
+def test_in_band_layout_issue_does_not_route_to_content_gap(monkeypatch) -> None:
+    monkeypatch.setattr("app.graphs.resume.nodes.settings.max_layout_revision_iterations", 3)
+    monkeypatch.setattr("app.graphs.resume.nodes.settings.max_resume_generation_calls", 7)
+
+    state = {
+        "layout_report": {
+            "status": "needs_revision",
+            "pages": [{"usage_ratio": 0.86}],
+            "violations": [{"code": "bullet_awkward_wrap"}],
+        },
+        "layout_fit_status": "fit",
         "layout_revision_iteration": 3,
         "generation_call_count": 4,
     }
@@ -78,8 +99,8 @@ async def test_layout_or_coverage_issue_requires_explicit_decision() -> None:
         }
     )
 
-    assert result["quality_status"] == "needs_user_decision"
-    assert quality_gate_route(result) == "needs_user_decision"
+    assert result["quality_status"] == "failed"
+    assert quality_gate_route(result) == "failed"
 
 
 async def test_uncalibrated_layout_never_silently_passes(monkeypatch) -> None:
@@ -97,6 +118,14 @@ async def test_uncalibrated_layout_never_silently_passes(monkeypatch) -> None:
                 "page_available_height_mm": 279,
                 "page_count": 1,
                 "overflow_mm": 0,
+                "pages": [
+                    {
+                        "page_number": 1,
+                        "available_height_mm": 279,
+                        "used_height_mm": 245.52,
+                        "usage_ratio": 0.88,
+                    }
+                ],
                 "violations": [],
                 "status": "pass",
             },

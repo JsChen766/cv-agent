@@ -46,6 +46,7 @@ def test_application_package_graph_uses_full_resume_quality_pipeline() -> None:
         "persist_decision_candidate",
         "output_for_decision",
         "output_failure",
+        "content_gap",
     }.issubset(graph.nodes)
     assert ("draft_generation", "layout_measure") in graph.edges
     assert ("layout_revision", "layout_measure") in graph.edges

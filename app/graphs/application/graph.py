@@ -8,6 +8,8 @@ from app.graphs.application.nodes import (
 )
 from app.graphs.application.state import ApplicationPackageState
 from app.graphs.resume.nodes import (
+    content_gap_node,
+    content_gap_route,
     context_assembly_node,
     cot_planning_node,
     coverage_check_node,
@@ -48,6 +50,7 @@ def build_application_package_subgraph() -> StateGraph[ApplicationPackageState]:
     builder.add_node("output", output_node)
     builder.add_node("output_for_decision", output_node)
     builder.add_node("output_failure", output_failure_node)
+    builder.add_node("content_gap", content_gap_node)
 
     builder.add_edge(START, "context_assembly")
     builder.add_edge("context_assembly", "package_plan")
@@ -58,7 +61,11 @@ def build_application_package_subgraph() -> StateGraph[ApplicationPackageState]:
     builder.add_conditional_edges(
         "layout_measure",
         layout_route,
-        {"revision": "layout_revision", "fact_check": "fact_check"},
+        {
+            "revision": "layout_revision",
+            "fact_check": "fact_check",
+            "content_gap": "content_gap",
+        },
     )
     builder.add_edge("layout_revision", "layout_measure")
     builder.add_edge("fact_check", "coverage_check")
@@ -81,6 +88,11 @@ def build_application_package_subgraph() -> StateGraph[ApplicationPackageState]:
     builder.add_edge("persist_draft", "output")
     builder.add_edge("persist_decision_candidate", "output_for_decision")
     builder.add_edge("output_failure", END)
+    builder.add_conditional_edges(
+        "content_gap",
+        content_gap_route,
+        {"revision": "cot_planning", "end": END},
+    )
     builder.add_conditional_edges(
         "output", output_route, {"revision": "draft_generation", "end": END}
     )

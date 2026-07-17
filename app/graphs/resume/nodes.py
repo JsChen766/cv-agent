@@ -19,7 +19,9 @@ from pydantic import BaseModel, Field, JsonValue, ValidationError
 
 from app.core.config import settings
 from app.core.events import AgentInterruptEvent
+from app.domain.resume.content_budget import build_resume_content_budget
 from app.domain.resume.layout_models import LayoutConstraint, LayoutReport
+from app.domain.resume.layout_optimizer import ResumeLayoutOptimizer
 from app.domain.resume.layout_profile import DEFAULT_RESUME_LAYOUT_PROFILE
 from app.domain.resume.models import ResumeVariantCreate
 from app.domain.resume.render import render_structured_to_markdown
@@ -91,95 +93,31 @@ class MatchingPlan(BaseModel):
 
 
 async def cot_planning_node(state: ResumeGenerationState) -> dict[str, object]:
-    """Chain-of-thought planning before generation.
-
-    Produces a per-requirement `coverage_plan` mapping each JD requirement to the
-    source experiences that should support it. The plan is a hint to the LLM in
-    draft_generation — the LLM still owns final bullet-to-requirement decisions,
-    which coverage_check verifies afterwards.
-    """
-    provider = get_provider()
-
-    jd_text = state.get("jd_text") or state.get("assembled_jd_text", "")
-    jd_requirements = state.get("jd_requirements") or []
+    """Build a deterministic JD/evidence content budget without an LLM call."""
     experiences = state.get("relevant_experiences") or state.get("assembled_experiences", [])
-    prefs = state.get("user_preferences") or state.get("assembled_preferences", [])
-    profile = state.get("user_profile") or state.get("assembled_user_profile")
-    intent = state.get("intent_description", "Generate a tailored resume")
-
-    context_parts = [f"Intent: {intent}"]
-    if jd_text:
-        context_parts.append(f"JD Summary:\n{jd_text[:1500]}")
-    if jd_requirements:
-        req_lines = [
-            f"- id={r.get('id') or f'req-{i + 1}'}: {r.get('text', '')}"
-            for i, r in enumerate(jd_requirements)
-            if isinstance(r, dict)
-        ]
-        context_parts.append(
-            "JD requirements (map coverage_plan entries to these ids verbatim):\n"
-            + "\n".join(req_lines)
-        )
-    if profile:
-        context_parts.append(
-            f"User: {profile.get('current_title', '')} | {profile.get('career_stage', '')}"
-        )
-    if experiences:
-        exp_lines: list[str] = []
-        for experience in experiences[:12]:
-            content = str(experience.get("content") or "")[:600]
-            raw_claims = experience.get("claims") or []
-            claim_texts = [
-                str(claim.get("text"))
-                for claim in raw_claims[:8]
-                if isinstance(claim, dict) and claim.get("text")
-            ] if isinstance(raw_claims, list) else []
-            details = content
-            if claim_texts:
-                details += "\n  extracted facts: " + "; ".join(claim_texts)
-            exp_lines.append(
-                f"- id={experience.get('id', 'N/A')}: {experience.get('title')} at "
-                f"{experience.get('organization', 'N/A')}\n  source details: {details}"
-            )
-        exp_list = "\n".join(exp_lines)
-        context_parts.append(f"Available Experiences:\n{exp_list}")
-    if prefs:
-        pref_list = "\n".join(f"- {p.get('rule')}" for p in prefs[:5])
-        context_parts.append(f"User Preferences:\n{pref_list}")
-
     writer = get_optional_stream_writer()
     if writer is not None:
-        emit_thinking(writer, "正在匹配岗位要求与经历证据…")
-
-    plan: MatchingPlan = await provider.chat_structured(
-        [
-            {
-                "role": "system",
-                "content": (
-                    "You are a senior resume strategist. Based on the JD requirements and "
-                    "the candidate's source experiences, produce a strategic plan for resume generation.\n"
-                    "Think step by step about:\n"
-                    "1. Which experiences best support each JD requirement.\n"
-                    "2. What skills to emphasize.\n"
-                    "3. The overall tone and structure.\n\n"
-                    "You MUST populate `coverage_plan`: one entry per JD requirement. For each "
-                    "entry, set `requirement_id` and `requirement_text` VERBATIM from the input, "
-                    "and list `planned_source_experience_ids` — the ids of source experiences "
-                    "whose content should back that requirement in the final resume. If no "
-                    "experience truly supports a requirement, return an empty list for that "
-                    "requirement (do NOT invent). Do not include ids that were not shown to you."
-                ),
-            },
-            {"role": "user", "content": "\n\n".join(context_parts)},
-        ],
-        MatchingPlan,
-        temperature=0.3,
+        emit_thinking(writer, "正在计算岗位匹配度与一页简历内容预算…")
+    budget = build_resume_content_budget(
+        experiences,
+        state.get("evidence_pack") or {},
+        target_usage_ratio=settings.resume_target_page_usage_ratio,
+        candidate_pool_target_ratio=settings.resume_candidate_pool_target_ratio,
     )
-
     layout_constraint = _layout_constraint_from_state(state)
+    ranked = sorted(budget.experiences, key=lambda value: value.jd_match_score, reverse=True)
+    plan = {
+        "strategy": "deterministic_evidence_budget",
+        "key_experiences_to_highlight": [value.experience_id for value in ranked[:4]],
+        "skills_to_emphasize": [],
+        "tone": "professional",
+        "structure_suggestions": [],
+        "coverage_plan": [],
+    }
     return {
-        "matching_plan": plan.model_dump() if plan else None,
-        "generation_strategy": plan.strategy if plan else "standard",
+        "matching_plan": plan,
+        "generation_strategy": "deterministic_evidence_budget",
+        "content_budget": budget.model_dump(),
         "layout_constraint": layout_constraint.model_dump(),
         "layout_profile_version": DEFAULT_RESUME_LAYOUT_PROFILE.version,
         "layout_profile_hash": DEFAULT_RESUME_LAYOUT_PROFILE.profile_hash,
@@ -197,12 +135,16 @@ def _layout_constraint_from_state(state: ResumeGenerationState) -> LayoutConstra
             max_pages=1,
             requested_pages=1,
             minimum_page_usage_ratio=settings.resume_min_page_usage_ratio,
+            target_page_usage_ratio=settings.resume_target_page_usage_ratio,
+            maximum_page_usage_ratio=settings.resume_max_page_usage_ratio,
         )
     if isinstance(raw_pages, int) and raw_pages >= 2:
         return LayoutConstraint(
             max_pages=None,
             requested_pages=raw_pages,
             minimum_page_usage_ratio=settings.resume_min_page_usage_ratio,
+            target_page_usage_ratio=settings.resume_target_page_usage_ratio,
+            maximum_page_usage_ratio=settings.resume_max_page_usage_ratio,
         )
     intent = str(state.get("intent_description") or "")
     if re.search(r"(?:two|2|两|二)\s*(?:pages?|页)", intent, re.IGNORECASE):
@@ -210,17 +152,23 @@ def _layout_constraint_from_state(state: ResumeGenerationState) -> LayoutConstra
             max_pages=None,
             requested_pages=2,
             minimum_page_usage_ratio=settings.resume_min_page_usage_ratio,
+            target_page_usage_ratio=settings.resume_target_page_usage_ratio,
+            maximum_page_usage_ratio=settings.resume_max_page_usage_ratio,
         )
     if re.search(r"(?:multi|multiple|多)\s*(?:pages?|页)", intent, re.IGNORECASE):
         return LayoutConstraint(
             max_pages=None,
             minimum_page_usage_ratio=settings.resume_min_page_usage_ratio,
+            target_page_usage_ratio=settings.resume_target_page_usage_ratio,
+            maximum_page_usage_ratio=settings.resume_max_page_usage_ratio,
         )
     if re.search(r"(?:one|1|single|一|单)\s*(?:pages?|页(?:纸)?)", intent, re.IGNORECASE):
         return LayoutConstraint(
             max_pages=1,
             requested_pages=1,
             minimum_page_usage_ratio=settings.resume_min_page_usage_ratio,
+            target_page_usage_ratio=settings.resume_target_page_usage_ratio,
+            maximum_page_usage_ratio=settings.resume_max_page_usage_ratio,
         )
     # Default to a *soft* one-page target: a sparse draft must keep expanding until
     # the first page is substantially filled, while distinct grounded content is not
@@ -230,6 +178,8 @@ def _layout_constraint_from_state(state: ResumeGenerationState) -> LayoutConstra
         max_pages=None,
         requested_pages=1,
         minimum_page_usage_ratio=settings.resume_min_page_usage_ratio,
+        target_page_usage_ratio=settings.resume_target_page_usage_ratio,
+        maximum_page_usage_ratio=settings.resume_max_page_usage_ratio,
     )
 
 
@@ -371,6 +321,7 @@ async def draft_generation_node(state: ResumeGenerationState) -> dict[str, objec
     guidelines = state.get("guideline_instructions") or []
     prefs = state.get("user_preferences") or []
     plan = state.get("matching_plan") or {}
+    content_budget = state.get("content_budget") or {}
     profile = state.get("user_profile") or {}
     evidence_pack = state.get("evidence_pack") or {}
     revision_instruction = state.get("revision_instruction")
@@ -411,6 +362,26 @@ async def draft_generation_node(state: ResumeGenerationState) -> dict[str, objec
                 + "\n".join(coverage_lines)
             )
         prompt_parts.append("\n".join(plan_lines))
+    if content_budget:
+        budget_lines: list[str] = []
+        for value in content_budget.get("experiences") or []:
+            if not isinstance(value, dict) or value.get("category") == "education":
+                continue
+            budget_lines.append(
+                "- {experience_id}: jd_match={score:.0%}, candidate_bullets={target}".format(
+                    experience_id=value.get("experience_id"),
+                    score=float(value.get("jd_match_score") or 0.0),
+                    target=int(value.get("target_candidate_bullets") or 0),
+                )
+            )
+        if budget_lines:
+            prompt_parts.append(
+                "Candidate pool budget (HARD): produce at least the requested number of "
+                "distinct grounded bullet candidates for every listed experience. The pool is "
+                f"intentionally sized for about {settings.resume_candidate_pool_target_ratio:.0%} "
+                "of a page; the backend will select the final 80%-95% combination.\n"
+                + "\n".join(budget_lines)
+            )
     if experiences:
         sorted_experiences = _sort_experiences_by_recency(experiences)
         prompt_parts.append(
@@ -510,6 +481,8 @@ async def draft_generation_node(state: ResumeGenerationState) -> dict[str, objec
         fallback_contact=profile_contact,
         previous_structured=previous_structured or state.get("resume_structure"),
     )
+    _copy_source_metadata(structured, experiences)
+    _remove_unsourced_numeric_bullets(structured, experiences)
     content_str = _render_structured_to_markdown(structured)
 
     variant_id = f"resume-draft-{uuid.uuid4()}"
@@ -552,6 +525,7 @@ async def draft_generation_node(state: ResumeGenerationState) -> dict[str, objec
     return {
         "variants": [variant],
         "resume_structure": structured,
+        "resume_candidate_pool": structured,
         "pending_sse_events": [*existing_events, *buffered_events],
         "coverage_before_layout": coverage_before,
         "generation_call_count": state.get("generation_call_count", 0) + 1,
@@ -584,7 +558,8 @@ You MUST return a single JSON object matching the response schema — no prose o
           "bullets": [
             {{
               "text": "...",
-              "matched_jd_requirement_ids": ["req-1", ...]   // ids from the JD requirements block; [] if the bullet doesn't directly support a listed requirement
+              "matched_jd_requirement_ids": ["req-1", ...],  // ids from the JD requirements block; [] if the bullet doesn't directly support a listed requirement
+              "source_fact_ids": ["exp-id-fact-1", ...]      // facts from the same source experience used by this bullet
             }}
           ],
           "raw_text": "..." | null        // use for skills/education lines; null when bullets are used
@@ -603,6 +578,8 @@ You MUST return a single JSON object matching the response schema — no prose o
 5. Do not merge or split source experiences: one item per source experience within its section.
 6. For each experience/project item, set `source_experience_id` to the exact id shown in the Source experiences block. Never invent an id.
 7. For each bullet, set `matched_jd_requirement_ids` to the list of JD requirement ids that bullet directly supports. Only use ids shown in the JD requirements block. Empty array is allowed and expected for bullets that describe context, ownership, or achievements not tied to any listed requirement. Do NOT tag every bullet with every requirement — be specific.
+8. For each bullet, set `source_fact_ids` to the distinct labeled source facts used to write it. Every id must belong to the same `source_experience_id`. Do not reuse the exact same fact combination merely to pad the page.
+9. Order bullet candidates within each item from highest to lowest value: direct JD evidence first, then quantified results, ownership/action/method, and finally supporting context. The backend may trim candidates from the tail.
 
 ## Section order and content
 
@@ -637,7 +614,9 @@ async def layout_measure_node(
     state: ResumeGenerationState, config: RunnableConfig | None = None
 ) -> dict[str, object]:
     variants = state.get("variants") or []
-    structured = variants[0].get("structured") if variants else state.get("resume_structure")
+    structured = state.get("resume_candidate_pool")
+    if not isinstance(structured, dict):
+        structured = variants[0].get("structured") if variants else state.get("resume_structure")
     if not isinstance(structured, dict):
         return {
             "layout_status": "profile_mismatch",
@@ -665,10 +644,43 @@ async def layout_measure_node(
     constraint = LayoutConstraint.model_validate(
         state.get("layout_constraint") or LayoutConstraint().model_dump()
     )
-    report = layout_service.measure_resume_layout(structured, constraint)
+    experience_scores = {
+        str(value.get("experience_id")): float(value.get("jd_match_score") or 0.0)
+        for value in (state.get("content_budget") or {}).get("experiences", [])
+        if isinstance(value, dict) and value.get("experience_id")
+    }
+    optimized = ResumeLayoutOptimizer(layout_service).optimize(
+        structured,
+        constraint,
+        experience_scores,
+    )
+    fitted_structure = optimized.structure
+    report = optimized.report
+    usage = report.pages[0].usage_ratio if report.pages else 0.0
+    fitted_structure["layout_usage_ratio"] = usage
+    fitted_structure["layout_target_band"] = {
+        "minimum": constraint.minimum_page_usage_ratio,
+        "target": constraint.target_page_usage_ratio,
+        "maximum": constraint.maximum_page_usage_ratio,
+    }
+    content = _render_structured_to_markdown(fitted_structure)
+    updated_variants: list[dict[str, object]] = []
+    for index, value in enumerate(variants):
+        variant = dict(value)
+        if index == 0:
+            variant["structured"] = fitted_structure
+            variant["content"] = content
+        updated_variants.append(variant)
+    fit_status = "fit"
+    if not optimized.fits_target_band:
+        fit_status = "underfilled" if usage < constraint.minimum_page_usage_ratio else "overfilled"
     return {
+        "variants": updated_variants,
+        "resume_structure": fitted_structure,
         "layout_report": report.model_dump(),
         "layout_status": report.status,
+        "layout_fit_status": fit_status,
+        "maximum_candidate_usage_ratio": optimized.maximum_usage_ratio,
         "layout_profile_version": report.profile_version,
         "layout_profile_hash": report.profile_hash,
     }
@@ -683,6 +695,13 @@ def layout_route(state: ResumeGenerationState) -> str:
     )
     if status == "needs_revision" and can_revise:
         return "revision"
+    violations = report.get("violations") or []
+    is_genuinely_underfilled = any(
+        isinstance(violation, dict) and violation.get("code") == "page_underfilled"
+        for violation in violations
+    )
+    if status == "needs_revision" and is_genuinely_underfilled:
+        return "content_gap"
     return "fact_check"
 
 
@@ -768,6 +787,8 @@ async def layout_revision_node(state: ResumeGenerationState) -> dict[str, object
                     + json.dumps(current, ensure_ascii=False, indent=2)
                     + "\n\nSOURCE EXPERIENCES (only ground truth):\n"
                     + _format_experiences_for_prompt(experiences)
+                    + "\n\nCONTENT BUDGET (add bullets first to the highest JD-match scores):\n"
+                    + json.dumps(state.get("content_budget") or {}, ensure_ascii=False, indent=2)
                 ),
             },
         ],
@@ -781,6 +802,8 @@ async def layout_revision_node(state: ResumeGenerationState) -> dict[str, object
         ),
         previous_structured=current,
     )
+    _copy_source_metadata(structured, experiences)
+    _remove_unsourced_numeric_bullets(structured, experiences)
     content = _render_structured_to_markdown(structured)
     updated_variants: list[dict[str, object]] = []
     for index, value in enumerate(variants):
@@ -792,6 +815,7 @@ async def layout_revision_node(state: ResumeGenerationState) -> dict[str, object
     return {
         "variants": updated_variants,
         "resume_structure": structured,
+        "resume_candidate_pool": structured,
         "layout_revision_iteration": state.get("layout_revision_iteration", 0) + 1,
         "generation_call_count": state.get("generation_call_count", 0) + 1,
         "layout_report": None,
@@ -996,11 +1020,12 @@ def _format_experiences_for_prompt(experiences: list[dict[str, object]]) -> str:
         if isinstance(claims, list) and claims:
             claim_lines = [
                 (
-                    f"    - [{claim.get('category', 'fact')}] {claim.get('text')}"
+                    f"    - id={exp_id}-fact-{claim_index} "
+                    f"[{claim.get('category', 'fact')}] {claim.get('text')}"
                     if isinstance(claim, dict)
-                    else f"    - {claim}"
+                    else f"    - id={exp_id}-fact-{claim_index} {claim}"
                 )
-                for claim in claims
+                for claim_index, claim in enumerate(claims, start=1)
                 if (isinstance(claim, dict) and claim.get("text")) or isinstance(claim, str)
             ]
             if claim_lines:
@@ -1008,8 +1033,95 @@ def _format_experiences_for_prompt(experiences: list[dict[str, object]]) -> str:
                     "  extracted_fact_inventory (navigation aid only; original content above "
                     "remains authoritative):\n" + "\n".join(claim_lines)
                 )
+        else:
+            raw_fact_lines = [
+                line.strip(" -•\t") for line in str(content).splitlines() if line.strip()
+            ]
+            if raw_fact_lines:
+                lines.append(
+                    "  source_fact_inventory:\n"
+                    + "\n".join(
+                        f"    - id={exp_id}-fact-{fact_index} {fact}"
+                        for fact_index, fact in enumerate(raw_fact_lines, start=1)
+                    )
+                )
         blocks.append("\n".join(lines))
     return "\n\n".join(blocks)
+
+
+def _copy_source_metadata(
+    structured: dict[str, object], experiences: list[dict[str, object]]
+) -> None:
+    """Make source-owned identity/date fields deterministic instead of LLM-authored."""
+    sources = {
+        str(value.get("id")): value
+        for value in experiences
+        if isinstance(value, dict) and value.get("id")
+    }
+    raw_sections = structured.get("sections")
+    sections = raw_sections if isinstance(raw_sections, list) else []
+    for section in sections:
+        if not isinstance(section, dict):
+            continue
+        raw_items = section.get("items")
+        items = raw_items if isinstance(raw_items, list) else []
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            source = sources.get(str(item.get("source_experience_id") or ""))
+            if source is None:
+                continue
+            for field in ("title", "organization", "role", "start_date", "end_date"):
+                item[field] = source.get(field)
+
+
+def _remove_unsourced_numeric_bullets(
+    structured: dict[str, object], experiences: list[dict[str, object]]
+) -> None:
+    sources = {
+        str(value.get("id")): value
+        for value in experiences
+        if isinstance(value, dict) and value.get("id")
+    }
+    raw_sections = structured.get("sections")
+    sections = raw_sections if isinstance(raw_sections, list) else []
+    for section in sections:
+        if not isinstance(section, dict):
+            continue
+        raw_items = section.get("items")
+        items = raw_items if isinstance(raw_items, list) else []
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            source = sources.get(str(item.get("source_experience_id") or ""))
+            bullets = item.get("bullets")
+            if source is None or not isinstance(bullets, list):
+                continue
+            raw_tags = source.get("tags")
+            tags = raw_tags if isinstance(raw_tags, list) else []
+            raw_claims = source.get("claims")
+            claims = raw_claims if isinstance(raw_claims, list) else []
+            source_blob = "\n".join(
+                [
+                    str(source.get("content") or ""),
+                    str(source.get("title") or ""),
+                    str(source.get("organization") or ""),
+                    str(source.get("role") or ""),
+                    " ".join(str(value) for value in tags),
+                    " ".join(
+                        str(value.get("text") or "") for value in claims if isinstance(value, dict)
+                    ),
+                ]
+            )
+            allowed = set(re.findall(r"(?<!\w)\d+(?:[.,]\d+)?%?", source_blob))
+            item["bullets"] = [
+                bullet
+                for bullet in bullets
+                if isinstance(bullet, dict)
+                and set(
+                    re.findall(r"(?<!\w)\d+(?:[.,]\d+)?%?", str(bullet.get("text") or ""))
+                ).issubset(allowed)
+            ]
 
 
 def _indent(text: str, spaces: int) -> str:
@@ -1056,83 +1168,100 @@ def _evidence_summary(evidence_pack: dict[str, object]) -> list[dict[str, object
 # ── 3.5. Fact Check ───────────────────────────────────────────────────────────
 
 
-class _FactMismatch(BaseModel):
-    field: Literal["date", "organization", "role", "metric", "technology", "title", "other"]
-    drafted_value: str
-    source_value: str | None = None  # None when the draft claim has no source at all
-    experience_title: str = ""  # which source experience it should have come from
-    detail: str | None = None  # short explanation
-
-
-class _FactCheckResult(BaseModel):
-    mismatches: list[_FactMismatch] = Field(default_factory=list)
-
-
 async def fact_check_node(state: ResumeGenerationState) -> dict[str, object]:
     """Verify every date / organization / role / metric / technology in the draft
     can be sourced verbatim from `relevant_experiences`. Uses the structured draft
     (if available) for precise per-field comparison, falling back to markdown."""
-    import json as _json
-
     variants = state.get("variants", [])
     if not variants:
         return {"fact_mismatches": []}
 
     structured = variants[0].get("structured") or state.get("resume_structure")
-    draft_content = variants[0].get("content", "")
-
     experiences = state.get("relevant_experiences") or []
     if not experiences:
         return {"fact_mismatches": []}
 
-    if isinstance(structured, dict) and structured.get("sections"):
-        draft_block = "DRAFT (structured JSON):\n" + _json.dumps(
-            structured, ensure_ascii=False, indent=2
-        )
-    elif isinstance(draft_content, str) and draft_content.strip():
-        draft_block = "DRAFT (markdown):\n" + draft_content
-    else:
+    if not isinstance(structured, dict) or not structured.get("sections"):
         return {"fact_mismatches": []}
-
-    provider = get_provider()
     writer = get_optional_stream_writer()
     if writer is not None:
         emit_thinking(writer, "正在核对简历中的事实与数据…")
-
-    result: _FactCheckResult = await provider.chat_structured(
-        [
-            {
-                "role": "system",
-                "content": (
-                    "You are a strict fact-checker. Compare a resume DRAFT against the "
-                    "SOURCE experiences. Flag every case where the DRAFT contains a specific "
-                    "date, organization name, role, quantitative claim (number/percentage/count), "
-                    "or technology name that does NOT appear verbatim in the SOURCE for the "
-                    "same experience. Normalise date formats (2024.04 == 2024-04 == 2024年4月). "
-                    "When the DRAFT is structured JSON, use `source_experience_id` on each item "
-                    "to look up the correct source experience for comparison — do not compare an "
-                    "item against a different experience. "
-                    "Do NOT flag: rewording, restructuring, translation of connectives, or "
-                    "well-known synonyms. DO flag: any date year/month/day change, any org name "
-                    "substitution, any role substitution, any number that isn't in source, any "
-                    "tech name not in source. Return an empty list if the draft is clean."
-                ),
-            },
-            {
-                "role": "user",
-                "content": (
-                    "SOURCE experiences:\n"
-                    + _format_experiences_for_prompt(experiences)
-                    + "\n\n"
-                    + draft_block
-                ),
-            },
-        ],
-        _FactCheckResult,
-        temperature=0.0,
-    )
-
-    mismatches = [m.model_dump() for m in result.mismatches] if result else []
+    sources = {
+        str(value.get("id")): value
+        for value in experiences
+        if isinstance(value, dict) and value.get("id")
+    }
+    mismatches: list[dict[str, object]] = []
+    field_map = {
+        "organization": "organization",
+        "role": "role",
+        "title": "title",
+        "start_date": "date",
+        "end_date": "date",
+    }
+    for section in structured.get("sections") or []:
+        if not isinstance(section, dict):
+            continue
+        for item in section.get("items") or []:
+            if not isinstance(item, dict):
+                continue
+            source_id = str(item.get("source_experience_id") or "")
+            source = sources.get(source_id)
+            if source is None:
+                if source_id:
+                    mismatches.append(
+                        {
+                            "field": "other",
+                            "drafted_value": source_id,
+                            "source_value": None,
+                            "experience_title": str(item.get("title") or ""),
+                            "detail": "Unknown source_experience_id",
+                        }
+                    )
+                continue
+            for field, mismatch_field in field_map.items():
+                drafted = str(item.get(field) or "").strip()
+                sourced = str(source.get(field) or "").strip()
+                if drafted and drafted != sourced:
+                    mismatches.append(
+                        {
+                            "field": mismatch_field,
+                            "drafted_value": drafted,
+                            "source_value": sourced or None,
+                            "experience_title": str(source.get("title") or source_id),
+                            "detail": f"{field} must be copied from the source experience",
+                        }
+                    )
+            source_blob = "\n".join(
+                [
+                    str(source.get("content") or ""),
+                    str(source.get("title") or ""),
+                    str(source.get("organization") or ""),
+                    str(source.get("role") or ""),
+                    " ".join(str(value) for value in source.get("tags") or []),
+                    " ".join(
+                        str(value.get("text") or "")
+                        for value in source.get("claims") or []
+                        if isinstance(value, dict)
+                    ),
+                ]
+            )
+            source_numbers = set(re.findall(r"(?<!\w)\d+(?:[.,]\d+)?%?", source_blob))
+            for bullet in item.get("bullets") or []:
+                if not isinstance(bullet, dict):
+                    continue
+                text = str(bullet.get("text") or "")
+                for number in re.findall(r"(?<!\w)\d+(?:[.,]\d+)?%?", text):
+                    if number not in source_numbers:
+                        mismatches.append(
+                            {
+                                "field": "metric",
+                                "drafted_value": number,
+                                "source_value": None,
+                                "experience_title": str(source.get("title") or source_id),
+                                "detail": "Numeric claim is absent from the source experience",
+                            }
+                        )
     return {"fact_mismatches": mismatches}
 
 
@@ -1257,13 +1386,6 @@ async def coverage_check_node(state: ResumeGenerationState) -> dict[str, object]
 # ── 4. Self Review ────────────────────────────────────────────────────────────
 
 
-class ReviewResult(BaseModel):
-    verdict: str  # "pass" | "needs_revision"
-    revision_instruction: str | None = None
-    issues: list[str] = Field(default_factory=list)
-    score_estimate: float = 0.7
-
-
 async def self_review_node(state: ResumeGenerationState) -> dict[str, object]:
     """Review generated variants for quality. Max 3 iterations.
 
@@ -1271,7 +1393,10 @@ async def self_review_node(state: ResumeGenerationState) -> dict[str, object]:
     revision regardless of the qualitative review verdict.
     """
     iteration = state.get("review_iteration", 0)
-    if iteration >= settings.max_self_review_iterations:
+    # `review_iteration` counts completed revisions. At the configured limit the
+    # latest revised draft still deserves one final evaluation; only values beyond
+    # the limit indicate an invalid loop state.
+    if iteration > settings.max_self_review_iterations:
         return {
             "review_result": {
                 "verdict": "needs_revision",
@@ -1318,40 +1443,37 @@ async def self_review_node(state: ResumeGenerationState) -> dict[str, object]:
             "revision_instruction": composition_gap,
         }
 
-    content = variants[0].get("content", "")
-    jd_text = state.get("jd_text") or ""
-
-    provider = get_provider()
     writer = get_optional_stream_writer()
     if writer is not None:
-        emit_thinking(writer, "正在检查简历质量和岗位匹配度…")
-
-    result: ReviewResult = await provider.chat_structured(
-        [
-            {
-                "role": "system",
-                "content": (
-                    "Review this resume for quality. Check:\n"
-                    "1. Are claims specific and verifiable (not vague)?\n"
-                    "2. Does it address the JD requirements?\n"
-                    "3. Are there unsubstantiated superlatives?\n"
-                    "4. Is the language natural and professional?\n\n"
-                    "If issues found, provide a specific revision_instruction. "
-                    "Only fail if there are significant quality issues worth fixing."
-                ),
-            },
-            {
-                "role": "user",
-                "content": f"JD:\n{jd_text[:1000]}\n\nResume:\n{content[:2000]}",
-            },
-        ],
-        ReviewResult,
-        temperature=0.2,
-    )
-
+        emit_thinking(writer, "正在执行确定性内容完整性检查…")
+    deterministic_issues: list[str] = []
+    seen_bullets: set[str] = set()
+    structured = variants[0].get("structured") or state.get("resume_structure")
+    if isinstance(structured, dict):
+        for section in structured.get("sections") or []:
+            if not isinstance(section, dict):
+                continue
+            for item in section.get("items") or []:
+                if not isinstance(item, dict):
+                    continue
+                for bullet in item.get("bullets") or []:
+                    if not isinstance(bullet, dict):
+                        continue
+                    text = str(bullet.get("text") or "").strip()
+                    normalized = "".join(text.lower().split())
+                    if normalized in seen_bullets:
+                        deterministic_issues.append(f"Duplicate bullet: {text[:80]}")
+                    elif normalized:
+                        seen_bullets.add(normalized)
+                    if text and len(text) < 8:
+                        deterministic_issues.append(f"Very short bullet: {text}")
     return {
-        "review_result": result.model_dump() if result else {"verdict": "pass"},
-        "revision_instruction": result.revision_instruction if result else None,
+        "review_result": {
+            "verdict": "pass",
+            "issues": deterministic_issues,
+            "score_estimate": 0.8 if not deterministic_issues else 0.7,
+        },
+        "revision_instruction": None,
     }
 
 
@@ -1388,6 +1510,28 @@ async def quality_gate_node(state: ResumeGenerationState) -> dict[str, object]:
                     "code": "invalid_layout_report",
                     "message": "Final layout report is invalid and cannot be trusted.",
                     "detail": str(exc),
+                }
+            ],
+        }
+    constraint = LayoutConstraint.model_validate(
+        state.get("layout_constraint") or LayoutConstraint().model_dump()
+    )
+    usage = report.pages[0].usage_ratio if report.pages else 0.0
+    if (
+        report.page_count != 1
+        or usage < constraint.minimum_page_usage_ratio
+        or usage > constraint.maximum_page_usage_ratio
+    ):
+        return {
+            "quality_status": "failed",
+            "quality_issues": [
+                {
+                    "code": "layout_usage_out_of_band",
+                    "message": (
+                        f"Resume uses {usage:.1%} of the first page; required band is "
+                        f"{constraint.minimum_page_usage_ratio:.0%}-"
+                        f"{constraint.maximum_page_usage_ratio:.0%}."
+                    ),
                 }
             ],
         }
@@ -1605,6 +1749,162 @@ async def output_failure_node(state: ResumeGenerationState) -> dict[str, object]
     }
 
 
+async def content_gap_node(
+    state: ResumeGenerationState, config: RunnableConfig | None = None
+) -> dict[str, object]:
+    """Ask for grounded source detail when no 80%-95% candidate can be assembled."""
+    from langgraph.types import interrupt
+
+    report_raw = state.get("layout_report") or {}
+    report = LayoutReport.model_validate(report_raw)
+    constraint = LayoutConstraint.model_validate(
+        state.get("layout_constraint") or LayoutConstraint().model_dump()
+    )
+    usage = report.pages[0].usage_ratio if report.pages else 0.0
+    if (
+        report.page_count == 1
+        and constraint.minimum_page_usage_ratio <= usage <= constraint.maximum_page_usage_ratio
+    ):
+        logger.warning(
+            "Bypassing stale resume content-gap route for in-band layout usage %.1f%%",
+            usage * 100,
+        )
+        return {
+            "resume_user_action": "continue",
+            "interrupt_payload": None,
+        }
+    missing_mm = max(
+        0.0,
+        report.page_available_height_mm * constraint.minimum_page_usage_ratio
+        - (report.pages[0].used_height_mm if report.pages else 0.0),
+    )
+    missing_lines = max(
+        0,
+        math.ceil(missing_mm / DEFAULT_RESUME_LAYOUT_PROFILE.body.line_height_mm),
+    )
+    budgets = [
+        value
+        for value in (state.get("content_budget") or {}).get("experiences", [])
+        if isinstance(value, dict) and value.get("category") != "education"
+    ]
+    budgets.sort(key=lambda value: float(value.get("jd_match_score") or 0.0), reverse=True)
+    experience_by_id = {
+        str(value.get("id")): value
+        for value in state.get("relevant_experiences") or []
+        if isinstance(value, dict) and value.get("id")
+    }
+    suggestions: list[dict[str, object]] = []
+    for value in budgets[:3]:
+        experience_id = str(value.get("experience_id") or "")
+        experience = experience_by_id.get(experience_id, {})
+        suggestions.append(
+            {
+                "experience_id": experience_id,
+                "title": str(experience.get("title") or experience_id),
+                "jd_match_score": float(value.get("jd_match_score") or 0.0),
+                "questions": [
+                    "你具体负责了哪些模块、流程或交付物？",
+                    "使用了哪些技术、方法或工具？",
+                    "遇到了什么约束或难点，你如何解决？",
+                    "最终产生了什么可验证的结果或影响？",
+                ],
+            }
+        )
+
+    interrupt_id = str(uuid.uuid4())
+    payload = {
+        "interrupt_id": interrupt_id,
+        "type": "resume_content_gap",
+        "message": (
+            f"当前可验证内容约占一页的 {usage:.0%}，距离最低 "
+            f"{constraint.minimum_page_usage_ratio:.0%} 还差约 "
+            f"{missing_lines} 行。请补充最匹配经历的项目、职责、方法或结果细节。"
+        ),
+        "current_usage_ratio": usage,
+        "target_usage_ratio": constraint.minimum_page_usage_ratio,
+        "missing_height_mm": round(missing_mm, 2),
+        "approximate_missing_lines": missing_lines,
+        "suggestions": suggestions,
+        "action_options": [
+            {
+                "id": "supplement",
+                "label": "补充经历",
+                "description": "提交某段经历的新增事实并重新生成",
+            },
+            {"id": "cancel", "label": "暂不补充", "description": "结束本次生成"},
+        ],
+    }
+    resume_value = interrupt(payload)
+    if not isinstance(resume_value, dict) or resume_value.get("action") != "supplement":
+        return {
+            "assistant_message": "简历内容不足，已暂停生成。补充经历后可以重新生成。",
+            "resume_user_action": "complete",
+            "interrupt_payload": None,
+        }
+
+    while True:
+        experience_id = str(resume_value.get("experience_id") or "")
+        supplemental = str(
+            resume_value.get("content")
+            or resume_value.get("additional_content")
+            or resume_value.get("message")
+            or ""
+        ).strip()
+        if experience_id and supplemental and experience_id in experience_by_id:
+            break
+        resume_value = interrupt(
+            {
+                **payload,
+                "interrupt_id": str(uuid.uuid4()),
+                "message": "请选择一段有效经历，并填写要补充的具体事实。",
+                "validation_error": "缺少有效的经历 ID 或具体事实。",
+            }
+        )
+        if not isinstance(resume_value, dict) or resume_value.get("action") != "supplement":
+            return {
+                "assistant_message": "简历内容不足，已暂停生成。补充经历后可以重新生成。",
+                "resume_user_action": "complete",
+                "interrupt_payload": None,
+            }
+
+    updated_experiences: list[dict[str, object]] = []
+    combined_content = ""
+    for value in state.get("relevant_experiences") or []:
+        experience = dict(value)
+        if str(experience.get("id")) == experience_id:
+            combined_content = (
+                str(experience.get("content") or "").rstrip()
+                + "\n\n用户补充事实：\n"
+                + supplemental
+            )
+            experience["content"] = combined_content
+            experience["claims"] = []
+        updated_experiences.append(experience)
+
+    services = services_from_config(config)
+    if services is not None:
+        try:
+            await services.experience.add_revision(
+                state.get("user_id", ""),
+                experience_id,
+                combined_content,
+                source="copilot",
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Failed to persist resume content supplement: %s", exc)
+
+    return {
+        "relevant_experiences": updated_experiences,
+        "resume_user_action": "revise",
+        "revision_instruction": "Use the newly supplied grounded experience facts.",
+        "layout_revision_iteration": 0,
+        "generation_call_count": 0,
+        "resume_candidate_pool": None,
+        "layout_report": None,
+        "interrupt_payload": None,
+    }
+
+
 async def output_node(
     state: ResumeGenerationState, config: RunnableConfig | None = None
 ) -> dict[str, object]:
@@ -1783,6 +2083,15 @@ def output_route(state: ResumeGenerationState) -> str:
     return "revision" if state.get("resume_user_action") == "revise" else "end"
 
 
+def content_gap_route(state: ResumeGenerationState) -> str:
+    action = state.get("resume_user_action")
+    if action == "revise":
+        return "revision"
+    if action == "continue":
+        return "fact_check"
+    return "end"
+
+
 # ── Structured schema and rendering ───────────────────────────────────────────
 
 
@@ -1792,6 +2101,7 @@ _SectionType = Literal["education", "experience", "project", "skills", "other"]
 class _LlmBullet(BaseModel):
     text: str
     matched_jd_requirement_ids: list[str] = Field(default_factory=list)
+    source_fact_ids: list[str] = Field(default_factory=list)
     layout_exception: Literal["unfixable_grounded_short"] | None = None
 
 
@@ -1924,6 +2234,7 @@ def _assign_structure_ids(
                         "id": bul_id,
                         "text": b.text,
                         "matched_jd_requirement_ids": list(b.matched_jd_requirement_ids),
+                        "source_fact_ids": list(b.source_fact_ids),
                         "layout_exception": b.layout_exception,
                     }
                 )

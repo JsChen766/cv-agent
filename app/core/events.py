@@ -114,15 +114,15 @@ class AgentActivityUpdatedEvent(TypedDict, total=False):
 class ContentDiffStartedEvent(TypedDict, total=False):
     event: Literal["content.diff.started"]
     resume_id: str
-    section: str          # legacy; optional
-    variant_id: str       # Phase 3: new variant id
+    section: str  # legacy; optional
+    variant_id: str  # Phase 3: new variant id
 
 
 class ContentDiffDeltaEvent(TypedDict, total=False):
     event: Literal["content.diff.delta"]
     operations: list[DiffOperation]
-    structured: dict[str, Any]   # Phase 3: full new structured
-    diff: dict[str, Any]         # Phase 3: changed/added/removed id sets
+    structured: dict[str, Any]  # Phase 3: full new structured
+    diff: dict[str, Any]  # Phase 3: changed/added/removed id sets
 
 
 class ContentDiffCompletedEvent(TypedDict, total=False):
@@ -130,7 +130,7 @@ class ContentDiffCompletedEvent(TypedDict, total=False):
     resume_id: str
     total_insertions: int
     total_deletions: int  # legacy; optional
-    variant_id: str       # Phase 3: new variant id
+    variant_id: str  # Phase 3: new variant id
     diff: dict[str, Any]  # Phase 3: changed/added/removed id sets
 
 
@@ -193,6 +193,7 @@ class _AgentInterruptBase(TypedDict):
         "confirm_action",
         "jd_save",
         "resume_edit_review",
+        "resume_content_gap",
     ]
     message: str
     action_options: list[InterruptActionOption]
@@ -204,6 +205,11 @@ class AgentInterruptEvent(_AgentInterruptBase, total=False):
     candidates: list[dict[str, Any]]  # for experience_import
     candidate: dict[str, Any]  # for jd_save
     diff: dict[str, Any] | None  # for resume_edit_review — changed id sets
+    current_usage_ratio: float  # for resume_content_gap
+    target_usage_ratio: float  # for resume_content_gap
+    missing_height_mm: float  # for resume_content_gap
+    approximate_missing_lines: int  # for resume_content_gap
+    suggestions: list[dict[str, Any]]  # for resume_content_gap
 
 
 class AgentCompletedEvent(TypedDict):

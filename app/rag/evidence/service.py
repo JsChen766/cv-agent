@@ -42,8 +42,7 @@ class EvidenceRagService:
         if not embeddings or not embeddings[0]:
             return await self.retrieve_recent(user_id, top_k=top_k)
         avg_vec = [
-            sum(e[i] for e in embeddings) / len(embeddings)
-            for i in range(len(embeddings[0]))
+            sum(e[i] for e in embeddings) / len(embeddings) for i in range(len(embeddings[0]))
         ]
         vec_str = f"[{','.join(str(v) for v in avg_vec)}]"
 
@@ -67,18 +66,17 @@ class EvidenceRagService:
                 ORDER BY e.embedding <=> $1::vector
                 LIMIT $3
                 """,
-                vec_str, user_id, top_k,
+                vec_str,
+                user_id,
+                top_k,
             )
 
         if not rows:
             return await self.retrieve_recent(user_id, top_k=top_k)
         experiences = [self._to_experience(row) for row in rows]
-        await self._hydrate_missing_claims(experiences)
         return experiences
 
-    async def retrieve_recent(
-        self, user_id: str, *, top_k: int = 5
-    ) -> list[ExperienceWithClaims]:
+    async def retrieve_recent(self, user_id: str, *, top_k: int = 5) -> list[ExperienceWithClaims]:
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(
                 """
@@ -96,12 +94,9 @@ class EvidenceRagService:
                 top_k,
             )
         experiences = [self._to_experience(row) for row in rows]
-        await self._hydrate_missing_claims(experiences)
         return experiences
 
-    async def retrieve_by_category(
-        self, user_id: str, category: str
-    ) -> list[ExperienceWithClaims]:
+    async def retrieve_by_category(self, user_id: str, category: str) -> list[ExperienceWithClaims]:
         """Fetch every active experience of a given category, no limit.
 
         Used for guaranteed inclusion of categories (e.g. all education entries) that
@@ -124,7 +119,6 @@ class EvidenceRagService:
                 category,
             )
         experiences = [self._to_experience(row) for row in rows]
-        await self._hydrate_missing_claims(experiences)
         return experiences
 
     @staticmethod
@@ -134,7 +128,7 @@ class EvidenceRagService:
         if isinstance(raw_claims, str):
             raw_claims = json.loads(raw_claims)
         claims = [Claim.model_validate(claim) for claim in (raw_claims or [])]
-        raw_tags = row["tags"] if "tags" in row.keys() else None
+        raw_tags = row.get("tags")
         if isinstance(raw_tags, str):
             raw_tags = json.loads(raw_tags)
         tags = [str(t) for t in (raw_tags or []) if t]
@@ -150,10 +144,10 @@ class EvidenceRagService:
             revision_id=row["revision_id"],
             title=row["title"],
             organization=row["organization"],
-            role=row["role"] if "role" in row.keys() else None,
-            category=row["category"] if "category" in row.keys() else "other",
-            start_date=_iso(row["start_date"]) if "start_date" in row.keys() else None,
-            end_date=_iso(row["end_date"]) if "end_date" in row.keys() else None,
+            role=row.get("role"),
+            category=row.get("category", "other"),
+            start_date=_iso(row["start_date"]) if "start_date" in row else None,
+            end_date=_iso(row["end_date"]) if "end_date" in row else None,
             tags=tags,
             content=row["content"],
             claims=claims,
@@ -161,9 +155,7 @@ class EvidenceRagService:
             relevance_score=float(row["relevance_score"] or 0.0),
         )
 
-    async def _hydrate_missing_claims(
-        self, experiences: list[ExperienceWithClaims]
-    ) -> None:
+    async def _hydrate_missing_claims(self, experiences: list[ExperienceWithClaims]) -> None:
         missing = [experience for experience in experiences if not experience.claims_indexed]
         if not missing:
             return
@@ -216,7 +208,7 @@ class EvidenceRagService:
 
         all_embeddings = await self._embed.embed(all_texts)
         req_embeddings = all_embeddings[: len(req_texts)]
-        claim_embeddings = all_embeddings[len(req_texts):]
+        claim_embeddings = all_embeddings[len(req_texts) :]
 
         threshold = settings.evidence_similarity_threshold
         matches: list[EvidenceMatch] = []
