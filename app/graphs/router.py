@@ -25,6 +25,20 @@ ArtifactRouteType = Literal[
 ]
 
 
+_RESUME_TERMS = ("简历", "resume", "cv")
+_RESUME_GENERATION_TERMS = (
+    "生成",
+    "写",
+    "优化",
+    "修改",
+    "改",
+    "润色",
+    "generate",
+    "rewrite",
+    "improve",
+)
+
+
 class RouterOutput(BaseModel):
     target_subgraph: Literal[
         "experience_import",
@@ -41,6 +55,23 @@ class RouterOutput(BaseModel):
     context_hints: list[str] = Field(default_factory=list)
     extracted_params: dict[str, JsonValue] = Field(default_factory=dict)
     confidence: float = Field(default=0.8, ge=0.0, le=1.0)
+
+
+def _looks_like_resume_request(text: str) -> bool:
+    """Return whether the latest message explicitly asks to create/edit a resume."""
+    normalized = text.lower().strip()
+    # Users commonly put the instruction either before or after a long pasted
+    # JD. Inspect both boundaries so the JD body cannot push an explicit resume
+    # request out of the routing window.
+    instruction_scope = (
+        normalized
+        if len(normalized) <= 480
+        else f"{normalized[:240]}\n{normalized[-240:]}"
+    )
+    return (
+        any(term in instruction_scope for term in _RESUME_TERMS)
+        and any(term in instruction_scope for term in _RESUME_GENERATION_TERMS)
+    )
 
 
 _ROUTER_SYSTEM = """You are a routing agent for a resume assistant application.
@@ -204,6 +235,24 @@ async def router_node(state: MainState) -> dict[str, object]:
     )
     routing = _normalize_llm_routing(routing)
 
+    # The latest user message is authoritative. If it explicitly asks for a
+    # resume, an LLM that labels the JD source material as a JD-ingestion task
+    # must not send the user into the save-JD confirmation flow.
+    has_resume_hint = state.get("routing_hint") == "resume_generation"
+    if (has_resume_hint or _looks_like_resume_request(user_msg)) and routing.target_subgraph in {
+        "jd",
+        "clarify",
+        "open_ended",
+    }:
+        routing = routing.model_copy(
+            update={
+                "target_subgraph": "resume_generation",
+                "intent_description": "Generate or improve resume content.",
+                "context_hints": ["active_jd", "active_resume", "experiences"],
+                "confidence": max(routing.confidence, 0.95),
+            }
+        )
+
     # Inject raw_jd_text into extracted_params for resume targets when the user
     # message appears to contain inline JD content but the LLM didn't extract it.
     # This mirrors the heuristic-path logic so jd_id always gets persisted to snapshot.
@@ -332,10 +381,15 @@ def _heuristic_route(
     )
     not_jd_terms = ("不是jd", "不是 jd", "不是岗位", "不是职位描述", "但不是jd")
     not_experience_terms = ("不是我的经历", "别把这个当我的经历", "不是经历")
-    resume_terms = ("简历", "resume", "cv")
+    # Detect an explicit resume request before ingestion routes. A JD/岗位 is
+    # often mentioned as the source material for the resume, not as a record
+    # the user wants to save. This signal must be available before the JD save
+    # branch below so generation cannot be swallowed by the ingestion flow.
+    requests_resume = _looks_like_resume_request(text)
 
     if (
         has_save_intent
+        and not requests_resume
         and any(term in lower for term in jd_terms)
         and not any(term in lower for term in not_jd_terms)
     ):
@@ -359,6 +413,7 @@ def _heuristic_route(
 
     if (
         has_save_intent
+        and not requests_resume
         and any(term in lower for term in experience_terms)
         and not any(term in lower for term in not_experience_terms)
     ):
@@ -380,12 +435,6 @@ def _heuristic_route(
             confidence=0.95,
         )
 
-    generation_terms = ("生成", "写", "优化", "修改", "改", "润色", "generate", "rewrite", "improve")
-    instruction_scope = lower[-240:] if len(lower) > 240 else lower
-    requests_resume = (
-        any(term in instruction_scope for term in resume_terms)
-        and any(term in instruction_scope for term in generation_terms)
-    )
     looks_like_pasted_jd = len(text) >= 300 and any(term in lower for term in jd_terms)
     has_application_package_hint = any(
         term in lower
@@ -428,7 +477,7 @@ def _heuristic_route(
     if requests_resume:
         target: Literal["application_package", "resume_generation"] = (
             "application_package"
-            if looks_like_pasted_jd or has_active_jd or has_application_package_hint
+            if looks_like_pasted_jd or has_application_package_hint
             else "resume_generation"
         )
         params: dict[str, JsonValue] = {}

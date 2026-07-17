@@ -56,15 +56,17 @@ class ResumeLayoutService:
         item_id: str,
         section_type: str,
         exception: str | None = None,
+        language: str = "zh-CN",
     ) -> BulletFitReport:
+        body_style = self._style_for_language(self.profile.body, language)
         available = (
             self.profile.content_width_mm
             - self.profile.bullet.indent_mm
             - self.profile.bullet.marker_width_mm
             - self.profile.bullet.gap_mm
         )
-        lines = self._wrap_inline_text(text, available, self.profile.body)
-        widths = [self._inline_width(line, self.profile.body) for line in lines] or [0.0]
+        lines = self._wrap_inline_text(text, available, body_style)
+        widths = [self._inline_width(line, body_style) for line in lines] or [0.0]
         last_ratio = widths[-1] / available if available else 0.0
         status: Literal["pass", "too_short", "awkward_wrap", "unfixable_grounded_short"]
         recommendation: Literal["shorten", "expand_from_source", "rephrase", "remove", "none"]
@@ -97,6 +99,8 @@ class ResumeLayoutService:
     ) -> LayoutReport:
         constraint = constraint or LayoutConstraint()
         violations: list[LayoutViolation] = []
+        language = str(structured.get("language") or "zh-CN")
+        active_font = self.profile.font_for_language(language)
         provided_version = structured.get("layout_profile_version")
         provided_hash = structured.get("layout_profile_hash")
         if provided_version != self.profile.version or provided_hash != self.profile.profile_hash:
@@ -106,11 +110,15 @@ class ResumeLayoutService:
                     message="Resume structure does not match the active layout profile.",
                 )
             )
-        if self.metrics.font_checksum != self.profile.font.checksum_sha256:
+        actual_font_checksum = self.metrics.font_checksums.get(active_font.family)
+        if actual_font_checksum != active_font.checksum_sha256:
             violations.append(
                 LayoutViolation(
                     code="font_checksum_mismatch",
-                    message="Text metrics font checksum does not match the layout profile.",
+                    message=(
+                        f"Text metrics font checksum for {active_font.family} does not match "
+                        "the layout profile."
+                    ),
                 )
             )
 
@@ -127,7 +135,7 @@ class ResumeLayoutService:
 
         blocks: list[_MeasuredBlock] = []
         bullet_fits: list[BulletFitReport] = []
-        header = self._measure_header(structured.get("contact"))
+        header = self._measure_header(structured.get("contact"), language)
         if header.height_mm:
             blocks.append(header)
 
@@ -141,7 +149,9 @@ class ResumeLayoutService:
             heading_height = (
                 self.profile.spacing.section_before_mm
                 + self._text_height(
-                    heading, self.profile.content_width_mm, self.profile.section_heading
+                    heading,
+                    self.profile.content_width_mm,
+                    self._style_for_language(self.profile.section_heading, language),
                 )
                 + self.profile.spacing.heading_border_mm
                 + self.profile.spacing.section_after_mm
@@ -162,7 +172,12 @@ class ResumeLayoutService:
                     continue
                 item_id = str(raw_item.get("id") or f"{section_id}:item-{item_index}")
                 item_ids.append(item_id)
-                item_height, item_bullets = self._measure_item(raw_item, item_id, section_type)
+                item_height, item_bullets = self._measure_item(
+                    raw_item,
+                    item_id,
+                    section_type,
+                    language,
+                )
                 bullet_fits.extend(item_bullets)
                 blocks.append(
                     _MeasuredBlock(
@@ -210,6 +225,22 @@ class ResumeLayoutService:
                     message=f"Resume requires {len(pages)} pages; limit is {constraint.max_pages}.",
                 )
             )
+        underfill = 0.0
+        if constraint.is_single_page and len(pages) == 1:
+            page = pages[0]
+            minimum_used_height = page.available_height_mm * constraint.minimum_page_usage_ratio
+            if page.used_height_mm < minimum_used_height:
+                underfill = minimum_used_height - page.used_height_mm
+                violations.append(
+                    LayoutViolation(
+                        code="page_underfilled",
+                        message=(
+                            f"Resume uses {page.usage_ratio:.1%} of the printable A4 height; "
+                            f"minimum is {constraint.minimum_page_usage_ratio:.0%}. "
+                            f"Add approximately {underfill:.1f} mm of grounded content."
+                        ),
+                    )
+                )
         for block_id in forced:
             violations.append(
                 LayoutViolation(
@@ -233,6 +264,8 @@ class ResumeLayoutService:
             page_available_height_mm=self.profile.content_height_mm,
             page_count=len(pages),
             overflow_mm=round(overflow, 3),
+            minimum_page_usage_ratio=constraint.minimum_page_usage_ratio,
+            underfill_mm=round(underfill, 3),
             pages=pages,
             sections=section_reports,
             bullet_fits=bullet_fits,
@@ -241,7 +274,7 @@ class ResumeLayoutService:
             status=status,
         )
 
-    def _measure_header(self, raw_contact: object) -> _MeasuredBlock:
+    def _measure_header(self, raw_contact: object, language: str) -> _MeasuredBlock:
         if not isinstance(raw_contact, dict):
             return _MeasuredBlock("header", "header", 0.0)
         name = str(raw_contact.get("name") or "")
@@ -250,32 +283,42 @@ class ResumeLayoutService:
             for key in ("phone", "email", "location", "linkedin")
             if raw_contact.get(key)
         ]
+        name_style = self._style_for_language(self.profile.name, language)
+        contact_style = self._style_for_language(self.profile.contact, language)
         height = (
-            self._text_height(name, self.profile.content_width_mm, self.profile.name)
+            self._text_height(name, self.profile.content_width_mm, name_style)
             if name
             else 0.0
         )
         if contacts:
             height += self._text_height(
-                " · ".join(contacts), self.profile.content_width_mm, self.profile.contact
+                " · ".join(contacts), self.profile.content_width_mm, contact_style
             )
         if height:
             height += self.profile.spacing.header_after_mm
         return _MeasuredBlock("header", "header", height)
 
     def _measure_item(
-        self, item: dict[str, object], item_id: str, section_type: str
+        self,
+        item: dict[str, object],
+        item_id: str,
+        section_type: str,
+        language: str,
     ) -> tuple[float, list[BulletFitReport]]:
+        item_heading_style = self._style_for_language(self.profile.item_heading, language)
+        item_subheading_style = self._style_for_language(self.profile.item_subheading, language)
+        date_style = self._style_for_language(self.profile.date, language)
+        body_style = self._style_for_language(self.profile.body, language)
         primary = " · ".join(
             str(item.get(key)) for key in ("title", "organization") if item.get(key)
         )
         date = " – ".join(str(item.get(key)) for key in ("start_date", "end_date") if item.get(key))
         primary_width = max(
-            1.0, self.profile.content_width_mm - self._inline_width(date, self.profile.date) - 3.0
+            1.0, self.profile.content_width_mm - self._inline_width(date, date_style) - 3.0
         )
         height = max(
-            self._text_height(primary, primary_width, self.profile.item_heading),
-            self._text_height(date, self.profile.content_width_mm, self.profile.date),
+            self._text_height(primary, primary_width, item_heading_style),
+            self._text_height(date, self.profile.content_width_mm, date_style),
         )
         role = str(item.get("role") or "")
         location = str(item.get("location") or "")
@@ -283,17 +326,17 @@ class ResumeLayoutService:
             secondary_width = max(
                 1.0,
                 self.profile.content_width_mm
-                - self._inline_width(location, self.profile.date)
+                - self._inline_width(location, date_style)
                 - 3.0,
             )
             height += max(
-                self._text_height(role, secondary_width, self.profile.item_subheading),
-                self._text_height(location, self.profile.content_width_mm, self.profile.date),
+                self._text_height(role, secondary_width, item_subheading_style),
+                self._text_height(location, self.profile.content_width_mm, date_style),
             )
         raw_text = item.get("raw_text")
         if isinstance(raw_text, str) and raw_text.strip():
             height += self.profile.spacing.raw_text_before_mm
-            height += self._text_height(raw_text, self.profile.content_width_mm, self.profile.body)
+            height += self._text_height(raw_text, self.profile.content_width_mm, body_style)
 
         reports: list[BulletFitReport] = []
         raw_bullets = item.get("bullets")
@@ -312,10 +355,11 @@ class ResumeLayoutService:
                     if raw_bullet.get("layout_exception")
                     else None
                 ),
+                language=language,
             )
             reports.append(report)
             height += self.profile.spacing.bullet_before_mm
-            height += report.line_count * self.profile.body.line_height_mm
+            height += report.line_count * body_style.line_height_mm
             height += self.profile.spacing.bullet_after_mm
         height += self.profile.spacing.item_after_mm
         return height, reports
@@ -492,3 +536,7 @@ class ResumeLayoutService:
         if cursor < len(text):
             segments.append((text[cursor:], 400, False))
         return segments or [(text, 400, False)]
+
+    def _style_for_language(self, style: TextStyle, language: str) -> TextStyle:
+        font = self.profile.font_for_language(language)
+        return style.model_copy(update={"font_family": font.family})

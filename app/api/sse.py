@@ -8,6 +8,7 @@ so the FastAPI route can return a StreamingResponse.
 from __future__ import annotations
 
 import logging
+import re
 from collections.abc import AsyncGenerator, AsyncIterator, Generator, Mapping
 from datetime import UTC, datetime
 from typing import Any, Protocol, cast
@@ -25,6 +26,8 @@ from app.graphs.state import MainState
 from app.memory.thread_state import ActiveWorkspace, MessageDict
 
 logger = logging.getLogger(__name__)
+
+_TASK_NAME_NOTE = re.compile(r"During task with name '([^']+)'")
 
 
 class EventStreamingGraph(Protocol):
@@ -55,6 +58,7 @@ async def stream_graph_events(
     activity_sequence = 0
     final_state: dict[str, Any] = dict(initial_state)
     flushed_pending_event_count = 0
+    active_node_name: str | None = None
 
     def commit_activity(event: dict[str, Any] | None) -> dict[str, Any] | None:
         nonlocal activity_sequence
@@ -69,6 +73,7 @@ async def stream_graph_events(
             event_type = event.get("event", "")
             event_name = event.get("name", "")
             data = event.get("data", {})
+            metadata = event.get("metadata")
 
             # Custom events pushed by nodes via get_stream_writer() arrive as
             # on_chain_stream with chunk = ('custom', {...}).  Forward them
@@ -82,6 +87,13 @@ async def stream_graph_events(
                 continue
 
             if event_type == "on_chain_start":
+                metadata_node = (
+                    metadata.get("langgraph_node")
+                    if isinstance(metadata, Mapping)
+                    else None
+                )
+                if isinstance(metadata_node, str) and metadata_node:
+                    active_node_name = metadata_node
                 activity = activity_from_node_event(
                     event_name,
                     "running",
@@ -149,9 +161,14 @@ async def stream_graph_events(
 
     except Exception as exc:
         logger.exception("Graph execution error: %s", exc)
+        failed_node_name = _failed_node_from_exception(exc, active_node_name)
         failed_event = {
             "event": "agent.failed",
-            "error": {"code": "GRAPH_ERROR", "message": str(exc)},
+            "error": {
+                "code": "GRAPH_ERROR",
+                "message": str(exc),
+                "node": failed_node_name,
+            },
         }
         yield format_sse(failed_event)
         return
@@ -177,6 +194,16 @@ async def stream_graph_events(
         "response": _build_completed_response(final_state),
     }
     yield format_sse(completed_event)
+
+
+def _failed_node_from_exception(exc: Exception, fallback: str | None) -> str | None:
+    """Return the leaf LangGraph task name attached to an execution error."""
+    notes = getattr(exc, "__notes__", ())
+    for note in notes:
+        match = _TASK_NAME_NOTE.search(str(note))
+        if match:
+            return match.group(1)
+    return fallback
 
 
 def _build_initial_state(

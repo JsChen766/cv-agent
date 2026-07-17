@@ -59,7 +59,7 @@ async def test_draft_regeneration_preserves_review_iteration(monkeypatch) -> Non
     # Layer 2: structured is the primary product; markdown is derived
     assert variant["structured"]["sections"][0]["type"] == "skills"
     assert "Python" in variant["content"]
-    assert variant["structured"]["layout_profile_version"] == "resume-template-v1"
+    assert variant["structured"]["layout_profile_version"] == "resume-template-v2"
 
 
 def test_review_route_stops_at_configured_iteration(monkeypatch) -> None:

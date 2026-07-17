@@ -79,6 +79,7 @@ class ClientState(StrictRequestModel):
     resumeUpload: ResumeUploadState | None = None
     intentSource: str | None = None
     sourceComponent: str | None = None
+    requestedSubgraph: Literal["resume_generation"] | None = None
     editingScope: str | None = None
     requireReviewBeforeApply: bool | None = None
 
@@ -715,6 +716,8 @@ async def _build_chat_initial_state(
     initial_state = _build_initial_state(thread_id, user_id, messages, workspace, turn_id)
     initial_state["rolling_summary"] = rolling_summary
     initial_state["turn_count"] = turn_count
+    if client_state.requestedSubgraph == "resume_generation":
+        initial_state["routing_hint"] = "resume_generation"
     upload_params = await _upload_extracted_params(client_state, user_id, pool)
     if upload_params:
         initial_state["extracted_params"] = upload_params

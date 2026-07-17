@@ -4,6 +4,11 @@
 
 **修订日期**：2026-07-16
 
+> 2026-07-17 增量规则：默认单页除“不溢出”外，正文高度使用率必须达到
+> 90%；中文简历使用宋体，英文简历使用 Times New Roman。具体实现与兼容
+> 策略见 `docs/resume-one-page-90-percent-strategy.md`。本文后续提到的首版
+> `resume-template-v1` 和固定 Noto 字体仅作为历史背景与旧版兼容说明。
+
 **适用范围**：后端 `/Users/apple/cv-agent` + 前端 `/Users/apple/cv_agent_frontend`
 
 ## 1. 目标与范围边界

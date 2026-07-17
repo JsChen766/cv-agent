@@ -76,6 +76,29 @@ _NODE_ACTIVITY: dict[str, ActivitySpec] = {
     "output_node": ActivitySpec("resume_reviewer", "简历质检员", "正在准备简历确认", "已准备好简历确认"),
 }
 
+# Resume quality-gate nodes are internal implementation details, but they still
+# need a stable presentation event while the SSE stream is running.  Keep both
+# the graph node name and the *_node callback name because LangGraph can expose
+# either form depending on the stream nesting level.
+_NODE_ACTIVITY.update(
+    {
+        "layout_measure": ActivitySpec("resume_reviewer", "简历质检员", "正在检查 A4 版面", "已完成版面检查"),
+        "layout_measure_node": ActivitySpec("resume_reviewer", "简历质检员", "正在检查 A4 版面", "已完成版面检查"),
+        "layout_revision": ActivitySpec("resume_writer", "简历写手", "正在修订简历版面", "已完成版面修订"),
+        "layout_revision_node": ActivitySpec("resume_writer", "简历写手", "正在修订简历版面", "已完成版面修订"),
+        "fact_check": ActivitySpec("resume_reviewer", "简历质检员", "正在核对简历事实", "已完成事实核对"),
+        "fact_check_node": ActivitySpec("resume_reviewer", "简历质检员", "正在核对简历事实", "已完成事实核对"),
+        "coverage_check": ActivitySpec("resume_reviewer", "简历质检员", "正在检查 JD 要求覆盖", "已完成要求覆盖检查"),
+        "coverage_check_node": ActivitySpec("resume_reviewer", "简历质检员", "正在检查 JD 要求覆盖", "已完成要求覆盖检查"),
+        "quality_gate": ActivitySpec("resume_reviewer", "简历质检员", "正在执行最终质量门", "已完成最终质量门"),
+        "quality_gate_node": ActivitySpec("resume_reviewer", "简历质检员", "正在执行最终质量门", "已完成最终质量门"),
+        "persist_decision_candidate": ActivitySpec("resume_reviewer", "简历质检员", "正在保存待确认候选", "已保存待确认候选"),
+        "persist_decision_candidate_node": ActivitySpec("resume_reviewer", "简历质检员", "正在保存待确认候选", "已保存待确认候选"),
+        "output_for_decision": ActivitySpec("resume_reviewer", "简历质检员", "正在准备简历审核", "已准备好简历审核"),
+        "output_failure": ActivitySpec("resume_reviewer", "简历质检员", "正在处理质量检查失败", "已完成失败结果处理"),
+    }
+)
+
 _TOOL_LABELS: dict[str, str] = {
     "list_experiences": "读取经历库",
     "get_experience": "读取经历详情",

@@ -19,6 +19,7 @@ class TextStyle(BaseModel):
     font_weight: int = 400
     line_height: float = 1.2
     italic: bool = False
+    font_family: str | None = None
 
     @property
     def line_height_mm(self) -> float:
@@ -52,7 +53,7 @@ class BlockPaginationRules(BaseModel):
 
 
 class ResumeLayoutProfile(BaseModel):
-    version: str = "resume-template-v1"
+    version: str = "resume-template-v2"
     page_width_mm: float = 210.0
     page_height_mm: float = 297.0
     orientation: str = "portrait"
@@ -60,7 +61,10 @@ class ResumeLayoutProfile(BaseModel):
     padding_right_mm: float = 9.0
     padding_bottom_mm: float = 9.0
     padding_left_mm: float = 9.0
+    # Kept for legacy preview/measurement compatibility.
     font: FontAsset
+    chinese_font: FontAsset
+    english_font: FontAsset
     body: TextStyle = Field(default_factory=lambda: TextStyle(font_size_pt=9.75, line_height=1.18))
     name: TextStyle = Field(
         default_factory=lambda: TextStyle(font_size_pt=17.0, font_weight=700, line_height=1.12)
@@ -93,6 +97,10 @@ class ResumeLayoutProfile(BaseModel):
     def content_height_mm(self) -> float:
         return self.page_height_mm - self.padding_top_mm - self.padding_bottom_mm
 
+    def font_for_language(self, language: str | None) -> FontAsset:
+        normalized = (language or "zh-CN").lower()
+        return self.chinese_font if normalized.startswith("zh") else self.english_font
+
     def with_computed_hash(self) -> ResumeLayoutProfile:
         payload = self.model_dump(exclude={"profile_hash"}, exclude_computed_fields=True)
         digest = hashlib.sha256(
@@ -102,11 +110,25 @@ class ResumeLayoutProfile(BaseModel):
 
 
 FONT_CHECKSUM_SHA256 = "2c76254f6fc379fddfce0a7e84fb5385bb135d3e399294f6eeb6680d0365b74b"
+SIMSUN_CHECKSUM_SHA256 = "1526ac24375f51f6eb73bc2d3f8072dbe4a80a3a65217677c9d9a84f67dab2ab"
+TIMES_NEW_ROMAN_CHECKSUM_SHA256 = (
+    "931c5de5c70401d9324d5014c123802b4fb753000360ceb2f56c589403cd58c5"
+)
 
 DEFAULT_RESUME_LAYOUT_PROFILE = ResumeLayoutProfile(
     font=FontAsset(
         family="CV Noto Sans CJK SC",
         file_id="NotoSansCJKsc-Regular.otf",
         checksum_sha256=FONT_CHECKSUM_SHA256,
-    )
+    ),
+    chinese_font=FontAsset(
+        family="SimSun",
+        file_id="simsun.ttc",
+        checksum_sha256=SIMSUN_CHECKSUM_SHA256,
+    ),
+    english_font=FontAsset(
+        family="Times New Roman",
+        file_id="times.ttf",
+        checksum_sha256=TIMES_NEW_ROMAN_CHECKSUM_SHA256,
+    ),
 ).with_computed_hash()

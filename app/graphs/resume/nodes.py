@@ -14,7 +14,7 @@ from collections.abc import Mapping
 from typing import Literal, cast
 
 from langchain_core.runnables import RunnableConfig
-from pydantic import BaseModel, Field, JsonValue
+from pydantic import BaseModel, Field, JsonValue, ValidationError
 
 from app.core.config import settings
 from app.core.events import AgentInterruptEvent
@@ -178,13 +178,27 @@ def _layout_constraint_from_state(state: ResumeGenerationState) -> LayoutConstra
     extracted = state.get("extracted_params", {})
     raw_pages = extracted.get("page_count") or extracted.get("pages")
     if isinstance(raw_pages, int) and raw_pages >= 2:
-        return LayoutConstraint(max_pages=None, requested_pages=raw_pages)
+        return LayoutConstraint(
+            max_pages=None,
+            requested_pages=raw_pages,
+            minimum_page_usage_ratio=settings.resume_min_page_usage_ratio,
+        )
     intent = str(state.get("intent_description") or "")
     if re.search(r"(?:two|2|两|二)\s*(?:pages?|页)", intent, re.IGNORECASE):
-        return LayoutConstraint(max_pages=None, requested_pages=2)
+        return LayoutConstraint(
+            max_pages=None,
+            requested_pages=2,
+            minimum_page_usage_ratio=settings.resume_min_page_usage_ratio,
+        )
     if re.search(r"(?:multi|multiple|多)\s*(?:pages?|页)", intent, re.IGNORECASE):
-        return LayoutConstraint(max_pages=None)
-    return LayoutConstraint(max_pages=1)
+        return LayoutConstraint(
+            max_pages=None,
+            minimum_page_usage_ratio=settings.resume_min_page_usage_ratio,
+        )
+    return LayoutConstraint(
+        max_pages=1,
+        minimum_page_usage_ratio=settings.resume_min_page_usage_ratio,
+    )
 
 
 def _grounded_coverage_ids(
@@ -338,8 +352,10 @@ async def draft_generation_node(state: ResumeGenerationState) -> dict[str, objec
     prompt_parts.append(
         "Layout budget: "
         + (
-            "the final resume must fit one A4 page. Prefer 3–4 bullets for the strongest "
-            "items and 1–2 for supporting items; do not generate filler."
+            "the final resume must fit one A4 page and use at least "
+            f"{constraint.minimum_page_usage_ratio:.0%} of the printable height. Prefer 3–4 "
+            "bullets for the strongest items and 1–2 for supporting items. Fill unused space "
+            "only with distinct facts from the source experiences; never generate filler."
             if constraint.is_single_page
             else "multiple A4 pages are allowed, but page breaks must remain natural and content dense."
         )
@@ -558,7 +574,10 @@ async def layout_revision_node(state: ResumeGenerationState) -> dict[str, object
     experiences = state.get("relevant_experiences") or []
     writer = get_optional_stream_writer()
     if writer is not None:
-        emit_thinking(writer, "正在压缩低信息密度内容并优化换行…")
+        if any(violation.code == "page_underfilled" for violation in report.violations):
+            emit_thinking(writer, "正在从已有经历中补充高价值事实，使版面达到一页的 90%…")
+        else:
+            emit_thinking(writer, "正在压缩低信息密度内容并优化换行…")
     provider = get_provider()
     revised: _LlmResumeStructure = await provider.chat_structured(
         [
@@ -573,7 +592,11 @@ async def layout_revision_node(state: ResumeGenerationState) -> dict[str, object
                     "otherwise remove a low-value duplicate. Only when a single-line bullet is a key "
                     "fact that cannot be expanded, set layout_exception=unfixable_grounded_short. "
                     "For one-page overflow, remove lowest-JD-value redundant bullets/items first, while "
-                    "keeping all education entries and at least one work and project item when sourced."
+                    "keeping all education entries and at least one work and project item when sourced. "
+                    "For page_underfilled, increase printable-height usage to at least 90% by adding "
+                    "unused, distinct, high-value facts from the supplied source experiences, adding "
+                    "relevant sourced items, or expanding bullets with sourced scope, method, scenario, "
+                    "technology, or result details. Never repeat facts or add generic filler."
                 ),
             },
             {
@@ -1161,7 +1184,20 @@ async def quality_gate_node(state: ResumeGenerationState) -> dict[str, object]:
                 {"code": "missing_layout_report", "message": "Final layout was not measured."}
             ],
         }
-    report = LayoutReport.model_validate(report_raw)
+    try:
+        report = LayoutReport.model_validate(report_raw)
+    except ValidationError as exc:
+        logger.exception("Invalid layout report at quality gate")
+        return {
+            "quality_status": "failed",
+            "quality_issues": [
+                {
+                    "code": "invalid_layout_report",
+                    "message": "Final layout report is invalid and cannot be trusted.",
+                    "detail": str(exc),
+                }
+            ],
+        }
     hard_layout = [violation for violation in report.violations if violation.severity == "hard"]
     issues.extend(
         {"code": violation.code, "message": violation.message} for violation in hard_layout

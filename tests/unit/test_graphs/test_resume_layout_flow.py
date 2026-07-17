@@ -60,7 +60,7 @@ async def test_layout_or_coverage_issue_requires_explicit_decision() -> None:
             "uncovered_jd_requirement_ids": ["req-1"],
             "review_result": {"verdict": "pass"},
             "layout_report": {
-                "profile_version": "resume-template-v1",
+                "profile_version": "resume-template-v2",
                 "profile_hash": "hash",
                 "content_width_mm": 192,
                 "page_available_height_mm": 279,
@@ -91,7 +91,7 @@ async def test_uncalibrated_layout_never_silently_passes(monkeypatch) -> None:
             "uncovered_jd_requirement_ids": [],
             "review_result": {"verdict": "pass"},
             "layout_report": {
-                "profile_version": "resume-template-v1",
+                "profile_version": "resume-template-v2",
                 "profile_hash": "hash",
                 "content_width_mm": 192,
                 "page_available_height_mm": 279,
@@ -113,3 +113,18 @@ async def test_uncalibrated_layout_never_silently_passes(monkeypatch) -> None:
             ),
         }
     ]
+
+
+async def test_invalid_layout_report_becomes_quality_failure() -> None:
+    result = await quality_gate_node(
+        {
+            "fact_mismatches": [],
+            "layout_report": {"status": "needs_revision"},
+            "review_result": {"verdict": "pass"},
+            "coverage_before_layout": [],
+            "uncovered_jd_requirement_ids": [],
+        }
+    )
+
+    assert result["quality_status"] == "failed"
+    assert result["quality_issues"][0]["code"] == "invalid_layout_report"

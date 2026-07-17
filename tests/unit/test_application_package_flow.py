@@ -5,6 +5,7 @@ from typing import Any
 import pytest
 
 from app.api.routes.copilot import _resume_canvas_metadata
+from app.graphs.application.graph import build_application_package_subgraph
 from app.graphs.application.nodes import (
     generate_application_artifacts_node,
     plan_application_package_node,
@@ -33,6 +34,35 @@ async def test_router_sends_pasted_jd_resume_request_to_application_package() ->
 
     assert result["target_subgraph"] == "application_package"
     assert result["extracted_params"] == {"raw_jd_text": _JD_WITH_SELF_INTRO}
+
+
+def test_application_package_graph_uses_full_resume_quality_pipeline() -> None:
+    graph = build_application_package_subgraph()
+
+    assert {
+        "layout_measure",
+        "layout_revision",
+        "quality_gate",
+        "persist_decision_candidate",
+        "output_for_decision",
+        "output_failure",
+    }.issubset(graph.nodes)
+    assert ("draft_generation", "layout_measure") in graph.edges
+    assert ("layout_revision", "layout_measure") in graph.edges
+    assert ("persist_decision_candidate", "output_for_decision") in graph.edges
+    assert ("output_failure", "__end__") in graph.edges
+
+    review_branch = graph.branches["self_review"]["review_route"]
+    assert review_branch.ends == {
+        "revision": "revision",
+        "quality_gate": "quality_gate",
+    }
+    quality_branch = graph.branches["quality_gate"]["quality_gate_route"]
+    assert quality_branch.ends == {
+        "passed": "persist_draft",
+        "needs_user_decision": "persist_decision_candidate",
+        "failed": "output_failure",
+    }
 
 
 class _PlanProvider:

@@ -26,6 +26,9 @@ class MainState(TypedDict, total=False):
     context_hints: list[str]
     extracted_params: dict[str, Any]
     router_confidence: float
+    # Optional client-side intent hint. Only known routing hints are accepted
+    # by the HTTP schema; legacy requests still use message-based detection.
+    routing_hint: str | None
 
     # Assembled context (from context_assembly_node)
     assembled_jd_text: str | None

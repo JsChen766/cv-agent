@@ -13,6 +13,7 @@ LayoutStatus = Literal["pass", "needs_revision", "needs_user_decision", "profile
 class LayoutConstraint(BaseModel):
     max_pages: int | None = Field(default=1, ge=1)
     requested_pages: int | None = Field(default=None, ge=1)
+    minimum_page_usage_ratio: float = Field(default=0.90, ge=0.0, le=1.0)
 
     @property
     def is_single_page(self) -> bool:
@@ -77,6 +78,8 @@ class LayoutReport(BaseModel):
     page_available_height_mm: float
     page_count: int
     overflow_mm: float
+    minimum_page_usage_ratio: float = 0.90
+    underfill_mm: float = 0.0
     pages: list[PageReport] = Field(default_factory=list)
     sections: list[SectionLayoutReport] = Field(default_factory=list)
     bullet_fits: list[BulletFitReport] = Field(default_factory=list)

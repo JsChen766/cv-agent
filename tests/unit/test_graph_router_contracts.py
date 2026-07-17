@@ -28,6 +28,96 @@ async def test_router_node_uses_preset_route_without_llm() -> None:
     ]
 
 
+async def test_router_prioritizes_resume_generation_over_jd_reference() -> None:
+    result = await router_node(
+        {
+            "messages": [
+                {
+                    "role": "user",
+                    "content": "请根据当前激活的 JD 和我的经历，生成一份针对后端岗位的简历。",
+                    "turn_id": None,
+                }
+            ],
+            "workspace": {"jd_id": "jd-1"},
+            "pending_sse_events": [],
+        }
+    )
+
+    assert result["target_subgraph"] == "resume_generation"
+
+
+async def test_router_prioritizes_application_package_over_experience_import() -> None:
+    message = (
+        "Generate a complete application package and resume from this job description. "
+        "Use my saved experience records and also include a cover letter. "
+        + "Backend platform engineering requirements with Python and PostgreSQL. " * 6
+    )
+
+    result = await router_node(
+        {
+            "messages": [{"role": "user", "content": message, "turn_id": None}],
+            "workspace": {},
+            "pending_sse_events": [],
+        }
+    )
+
+    assert result["target_subgraph"] == "application_package"
+
+
+class _MisroutingProvider:
+    async def chat_structured(self, messages, schema, *, temperature=0.2):
+        return schema.model_validate(
+            {
+                "target_subgraph": "jd",
+                "intent_description": "Save the job description.",
+                "confidence": 0.95,
+            }
+        )
+
+
+async def test_router_corrects_llm_jd_route_for_explicit_resume_request(monkeypatch) -> None:
+    monkeypatch.setattr("app.graphs.router._heuristic_route", lambda *args, **kwargs: None)
+    monkeypatch.setattr("app.graphs.router.get_provider", lambda: _MisroutingProvider())
+
+    result = await router_node(
+        {
+            "messages": [
+                {
+                    "role": "user",
+                    "content": "根据这个 JD 帮我生成一版简历。",
+                    "turn_id": None,
+                }
+            ],
+            "workspace": {},
+            "pending_sse_events": [],
+        }
+    )
+
+    assert result["target_subgraph"] == "resume_generation"
+
+
+async def test_router_honors_validated_resume_generation_hint(monkeypatch) -> None:
+    monkeypatch.setattr("app.graphs.router._heuristic_route", lambda *args, **kwargs: None)
+    monkeypatch.setattr("app.graphs.router.get_provider", lambda: _MisroutingProvider())
+
+    result = await router_node(
+        {
+            "messages": [
+                {
+                    "role": "user",
+                    "content": "请按目标岗位处理我的材料。",
+                    "turn_id": None,
+                }
+            ],
+            "workspace": {},
+            "routing_hint": "resume_generation",
+            "pending_sse_events": [],
+        }
+    )
+
+    assert result["target_subgraph"] == "resume_generation"
+
+
 def test_low_confidence_specialized_route_is_normalized_to_clarify() -> None:
     routing = RouterOutput(
         target_subgraph="resume_generation",

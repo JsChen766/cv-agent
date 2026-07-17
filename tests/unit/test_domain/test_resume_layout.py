@@ -46,13 +46,13 @@ def test_bullet_fit_uses_measured_width_and_conservative_gate() -> None:
     service = ResumeLayoutService(PillowFontMetrics())
 
     below_gate = service.measure_bullet_fit(
-        "A" * 60, bullet_id="short", item_id="item", section_type="experience"
+        "A" * 70, bullet_id="short", item_id="item", section_type="experience"
     )
     passing = service.measure_bullet_fit(
-        "A" * 70, bullet_id="pass", item_id="item", section_type="experience"
+        "A" * 75, bullet_id="pass", item_id="item", section_type="experience"
     )
     awkward = service.measure_bullet_fit(
-        "A" * 90, bullet_id="awkward", item_id="item", section_type="experience"
+        "A" * 110, bullet_id="awkward", item_id="item", section_type="experience"
     )
 
     assert 0.667 <= below_gate.last_line_ratio < below_gate.gate_ratio
@@ -90,6 +90,32 @@ def test_layout_paginates_by_blocks_and_enforces_single_page() -> None:
     assert multi_page.page_count == single_page.page_count
     assert multi_page.overflow_mm == 0
     assert all(page.blocks for page in multi_page.pages)
+
+
+def test_single_page_requires_at_least_ninety_percent_usage() -> None:
+    service = ResumeLayoutService(PillowFontMetrics())
+    structure = _structure(bullet_text="A" * 75)
+
+    report = service.measure_resume_layout(structure, LayoutConstraint(max_pages=1))
+
+    assert report.page_count == 1
+    assert report.pages[0].usage_ratio < 0.90
+    assert report.underfill_mm > 0
+    assert report.status == "needs_revision"
+    assert any(v.code == "page_underfilled" for v in report.violations)
+
+
+def test_single_page_at_or_above_ninety_percent_has_no_underfill_violation() -> None:
+    service = ResumeLayoutService(PillowFontMetrics())
+    structure = _structure(bullet_text="A" * 75, item_count=6)
+
+    report = service.measure_resume_layout(structure, LayoutConstraint(max_pages=1))
+
+    assert report.page_count == 1
+    assert report.pages[0].usage_ratio >= 0.90
+    assert report.underfill_mm == 0
+    assert report.status == "pass"
+    assert all(v.code != "page_underfilled" for v in report.violations)
 
 
 def test_profile_mismatch_and_summary_never_pass() -> None:

@@ -143,6 +143,27 @@ class CustomDeltaGraph:
         }
 
 
+class MisleadingActiveNodeFailureGraph:
+    async def astream_events(
+        self,
+        initial_state: MainState,
+        *,
+        config: RunnableConfig,
+        version: str,
+        stream_mode: list[str],
+    ) -> AsyncIterator[dict[str, Any]]:
+        yield {
+            "event": "on_chain_start",
+            "name": "quality_gate",
+            "metadata": {"langgraph_node": "quality_gate"},
+            "data": {},
+        }
+        exc = RuntimeError("Structured LLM call failed")
+        exc.add_note("During task with name 'classify' and id 'task-1'")
+        exc.add_note("During task with name 'edit_resume' and id 'task-2'")
+        raise exc
+
+
 async def test_stream_graph_events_projects_activity_events() -> None:
     initial_state: MainState = {
         "thread_id": "thread-1",
@@ -240,6 +261,33 @@ async def test_stream_graph_events_forwards_custom_delta_chunks_individually() -
         "agent.message.delta"
     )
     assert payloads[-1]["event"] == "agent.completed"
+
+
+async def test_stream_graph_events_reports_leaf_task_from_exception_notes() -> None:
+    initial_state: MainState = {
+        "thread_id": "thread-1",
+        "current_turn_id": "turn-1",
+        "messages": [],
+        "workspace": {},
+        "pending_sse_events": [],
+    }
+
+    chunks = [
+        chunk
+        async for chunk in stream_graph_events(
+            MisleadingActiveNodeFailureGraph(),
+            initial_state,
+            config={},
+        )
+    ]
+    failed = next(
+        payload
+        for payload in (_payload(chunk) for chunk in chunks)
+        if payload["event"] == "agent.failed"
+    )
+
+    assert failed["error"]["node"] == "classify"
+    assert failed["error"]["message"] == "Structured LLM call failed"
 
 
 def _payload(chunk: str) -> dict[str, Any]:

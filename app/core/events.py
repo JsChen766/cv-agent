@@ -214,11 +214,15 @@ class AgentCompletedEvent(TypedDict):
     response: dict[str, Any]
 
 
+class AgentFailedError(TypedDict):
+    code: str
+    message: str
+    node: str | None
+
+
 class AgentFailedEvent(TypedDict):
     event: Literal["agent.failed"]
-    error_code: str
-    message: str
-    retryable: bool
+    error: AgentFailedError
 
 
 # ── Union type ────────────────────────────────────────────────────────────────
