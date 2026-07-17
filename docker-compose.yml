@@ -27,8 +27,16 @@ services:
   api:
     build: .
     env_file: .env.docker
+    environment:
+      # The model is downloaded once on the host and mounted read-only.
+      EMBEDDING_MODEL: /models/bge-small-zh-v1.5
+      EMBEDDING_LOCAL_FILES_ONLY: "true"
+      HF_HUB_OFFLINE: "1"
+      TRANSFORMERS_OFFLINE: "1"
     ports:
       - "8000:8000"
+    volumes:
+      - ./models:/models:ro
     depends_on:
       migrate:
         condition: service_completed_successfully

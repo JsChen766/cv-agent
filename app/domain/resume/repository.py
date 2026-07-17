@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import builtins
-from typing import Protocol
+from typing import Any, Protocol
 
 from app.domain.resume.models import (
     Resume,
@@ -64,12 +64,24 @@ class ResumeRepository(Protocol):
         self, user_id: str, variant_id: str, patch: ResumeVariantPatch
     ) -> ResumeVariant: ...
 
+    async def save_variant_structure(
+        self,
+        user_id: str,
+        variant_id: str,
+        structured: dict[str, Any],
+        content: str,
+        *,
+        title: str | None = None,
+    ) -> ResumeVariant:
+        """Atomically replace a variant's canonical JSON and derived content."""
+        ...
+
     async def list_variants(self, resume_id: str) -> builtins.list[ResumeVariant]: ...
 
     async def patch_variant_structured(
         self,
         variant_id: str,
-        structured: dict,
+        structured: dict[str, Any],
         content: str,
         parent_variant_id: str,
     ) -> ResumeVariant:

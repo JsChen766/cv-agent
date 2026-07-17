@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 from typing import Any
 
 from app.core.errors import NotFoundError
@@ -141,6 +142,33 @@ class ResumeService:
         variant = await self.get_variant(variant_id)
         await self.get_resume(user_id, variant.resume_id)
         return await self._repo.update_variant(user_id, variant_id, patch)
+
+    async def save_variant_structure(
+        self,
+        user_id: str,
+        variant_id: str,
+        structured: dict[str, Any],
+        *,
+        title: str | None = None,
+    ) -> ResumeVariant:
+        """Save one canvas revision while keeping structured JSON canonical.
+
+        The Markdown content is always derived here so callers cannot persist a
+        structured/content pair that describes two different resumes.
+        """
+        variant = await self.get_variant(variant_id)
+        await self.get_resume(user_id, variant.resume_id)
+        canonical = copy.deepcopy(structured)
+        content = render_structured_to_markdown(canonical)
+        if not content.strip():
+            raise ValueError("Resume structure must contain renderable content")
+        return await self._repo.save_variant_structure(
+            user_id,
+            variant_id,
+            canonical,
+            content,
+            title=title,
+        )
 
     async def list_variants(self, resume_id: str) -> list[ResumeVariant]:
         return await self._repo.list_variants(resume_id)

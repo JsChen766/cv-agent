@@ -252,6 +252,7 @@ def _serialize_variant(v: ResumeVariant) -> dict[str, object]:
         "id": v.id,
         "title": v.title,
         "content": v.content,
+        "structured": v.structured,
         "parentVariantId": v.parent_variant_id,
         "version": v.version,
         "score": {

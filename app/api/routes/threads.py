@@ -19,13 +19,19 @@ import asyncpg
 from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import JSONResponse
 from langchain_core.runnables import RunnableConfig
-from pydantic import Field, JsonValue
+from pydantic import Field, JsonValue, model_validator
 
 from app.api.deps import build_service_container, get_current_user_id, pool_dep
 from app.api.interrupts import PendingInterrupt, pending_interrupt_from_snapshot
 from app.api.response import ok, ok_list
 from app.api.schemas import StrictRequestModel
-from app.core.errors import ConflictError, ExternalServiceError, ForbiddenError, NotFoundError
+from app.core.errors import (
+    ConflictError,
+    ExternalServiceError,
+    ForbiddenError,
+    NotFoundError,
+    ValidationError,
+)
 from app.core.types import ThreadStatus
 from app.domain.resume.models import ResumeItemPatch, ResumeVariantPatch
 
@@ -55,8 +61,15 @@ class DiscardRequest(StrictRequestModel):
 
 class SaveResumeCanvasRequest(StrictRequestModel):
     selectedVariantId: str = Field(min_length=1)
-    content: str = Field(min_length=1)
+    structured: dict[str, JsonValue] | None = None
+    content: str | None = Field(default=None, min_length=1)
     title: str | None = Field(default=None, min_length=1)
+
+    @model_validator(mode="after")
+    def require_resume_source(self) -> SaveResumeCanvasRequest:
+        if self.structured is None and self.content is None:
+            raise ValueError("Either structured or content is required")
+        return self
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -451,16 +464,16 @@ async def save_resume_canvas(
     body: SaveResumeCanvasRequest,
     request: Request,
     user_id: str = Depends(get_current_user_id),
-    pool: asyncpg.Pool = Depends(pool_dep),
+    pool: asyncpg.Pool | None = Depends(pool_dep),
 ) -> JSONResponse:
     """Persist an edited resume canvas without changing its place in the chat timeline."""
     import json
 
-    from app.infra.db.connection import get_pool as _get_pool
-
-    _pool = _get_pool()
-    await _require_thread(_pool, thread_id, user_id)
-    async with _pool.acquire() as conn:
+    if pool is None:
+        raise ExternalServiceError("Database unavailable")
+    checked_pool = pool
+    await _require_thread(checked_pool, thread_id, user_id)
+    async with checked_pool.acquire() as conn:
         row = await conn.fetchrow(
             "SELECT metadata FROM thread_messages WHERE id = $1 AND thread_id = $2",
             message_id,
@@ -487,12 +500,24 @@ async def save_resume_canvas(
     if not isinstance(variant, dict):
         raise NotFoundError(f"Resume variant '{body.selectedVariantId}' is not in this canvas")
 
-    services = build_service_container(_pool)
-    updated_variant = await services.resume.update_variant(
-        user_id,
-        body.selectedVariantId,
-        ResumeVariantPatch(title=body.title, content=body.content),
-    )
+    services = build_service_container(checked_pool)
+    try:
+        if body.structured is not None:
+            updated_variant = await services.resume.save_variant_structure(
+                user_id,
+                body.selectedVariantId,
+                dict(body.structured),
+                title=body.title,
+            )
+        else:
+            # Compatibility path for clients released before structured canvas saves.
+            updated_variant = await services.resume.update_variant(
+                user_id,
+                body.selectedVariantId,
+                ResumeVariantPatch(title=body.title, content=body.content),
+            )
+    except ValueError as exc:
+        raise ValidationError(str(exc)) from exc
     resume_item_id = presentation.get("resume_item_id")
     if isinstance(resume_item_id, str):
         await services.resume.update_item_by_id(
@@ -506,11 +531,18 @@ async def save_resume_canvas(
 
     variant["content"] = updated_variant.content
     variant["title"] = updated_variant.title
+    variant["structured"] = updated_variant.structured
+    selected_resume = presentation.get("resume")
+    if isinstance(selected_resume, dict) and selected_resume.get("id") == updated_variant.id:
+        selected_resume["content"] = updated_variant.content
+        selected_resume["title"] = updated_variant.title
+        selected_resume["structured"] = updated_variant.structured
     presentation["selected_variant_id"] = updated_variant.id
     presentation["content_snapshot"] = updated_variant.content
+    presentation["structured_snapshot"] = updated_variant.structured
     presentation["status"] = "edited"
     metadata["presentation"] = presentation
-    async with _pool.acquire() as conn:
+    async with checked_pool.acquire() as conn:
         await conn.execute(
             "UPDATE thread_messages SET metadata = $1::jsonb WHERE id = $2 AND thread_id = $3",
             json.dumps(metadata),
@@ -651,9 +683,7 @@ async def resume_thread(
     assistant_msg = str(final_state.get("assistant_message") or "Done.")
     extracted_interrupt = _extract_interrupt_payload(final_state)
     interrupt_payload = (
-        cast("dict[str, JsonValue]", extracted_interrupt)
-        if isinstance(extracted_interrupt, dict)
-        else None
+        extracted_interrupt if isinstance(extracted_interrupt, dict) else None
     )
     workspace = (
         cast("dict[str, JsonValue]", final_state.get("workspace"))

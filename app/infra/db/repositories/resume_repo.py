@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import builtins
 import json
+import uuid
+from typing import Any
 
 import asyncpg
 
+from app.core.types import VARIANT_PREFIX
 from app.domain.resume.models import (
     EvidenceItem,
     Resume,
@@ -68,6 +71,11 @@ class PostgresResumeRepository:
                 resume_id,
             )
             resume.items = [self._to_item(r) for r in item_rows]
+            variant_rows = await conn.fetch(
+                "SELECT * FROM resume_variants WHERE resume_id=$1 ORDER BY created_at DESC",
+                resume_id,
+            )
+            resume.variants = [self._to_variant(r) for r in variant_rows]
         return resume
 
     async def create(
@@ -292,6 +300,39 @@ class PostgresResumeRepository:
             raise ValueError(f"Resume variant not found: {variant_id}")
         return self._to_variant(row)
 
+    async def save_variant_structure(
+        self,
+        user_id: str,
+        variant_id: str,
+        structured: dict[str, Any],
+        content: str,
+        *,
+        title: str | None = None,
+    ) -> ResumeVariant:
+        """Persist canonical structured JSON and its derived content together."""
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                UPDATE resume_variants AS rv
+                SET structured = $1::jsonb,
+                    content = $2,
+                    title = COALESCE($3, rv.title)
+                FROM resumes AS r
+                WHERE rv.id = $4
+                  AND rv.resume_id = r.id
+                  AND r.user_id = $5
+                RETURNING rv.*
+                """,
+                json.dumps(structured),
+                content,
+                title,
+                variant_id,
+                user_id,
+            )
+        if row is None:
+            raise ValueError(f"Resume variant not found: {variant_id}")
+        return self._to_variant(row)
+
     async def list_variants(self, resume_id: str) -> builtins.list[ResumeVariant]:
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(
@@ -303,14 +344,12 @@ class PostgresResumeRepository:
     async def patch_variant_structured(
         self,
         variant_id: str,
-        structured: dict,
+        structured: dict[str, Any],
         content: str,
         parent_variant_id: str,
     ) -> ResumeVariant:
         """Insert a new variant row derived from an existing one."""
-        import uuid as _uuid
-        from app.core.types import VARIANT_PREFIX
-        new_id = f"{VARIANT_PREFIX}{_uuid.uuid4()}"
+        new_id = f"{VARIANT_PREFIX}{uuid.uuid4()}"
         async with self._pool.acquire() as conn:
             # Derive resume_id and title from source variant
             source_row = await conn.fetchrow(
@@ -389,7 +428,7 @@ class PostgresResumeRepository:
     @staticmethod
     def _to_variant(row: asyncpg.Record) -> ResumeVariant:
         raw_score = parse_jsonb(row["score"]) or {}
-        structured_raw = parse_jsonb(row["structured"]) if "structured" in row.keys() else None
+        structured_raw = parse_jsonb(row["structured"]) if "structured" in row else None
         keys = row.keys()
         parent_variant_id = row["parent_variant_id"] if "parent_variant_id" in keys else None
         return ResumeVariant(
