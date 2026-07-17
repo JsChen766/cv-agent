@@ -157,3 +157,41 @@ async def test_invalid_layout_report_becomes_quality_failure() -> None:
 
     assert result["quality_status"] == "failed"
     assert result["quality_issues"][0]["code"] == "invalid_layout_report"
+
+
+async def test_short_bullet_is_not_user_overridable() -> None:
+    result = await quality_gate_node(
+        {
+            "fact_mismatches": [],
+            "coverage_before_layout": [],
+            "uncovered_jd_requirement_ids": [],
+            "review_result": {"verdict": "pass"},
+            "layout_report": {
+                "profile_version": "resume-template-v2",
+                "profile_hash": "hash",
+                "content_width_mm": 192,
+                "page_available_height_mm": 279,
+                "page_count": 1,
+                "overflow_mm": 0,
+                "pages": [
+                    {
+                        "page_number": 1,
+                        "available_height_mm": 279,
+                        "used_height_mm": 245.52,
+                        "usage_ratio": 0.88,
+                    }
+                ],
+                "violations": [
+                    {
+                        "code": "bullet_too_short",
+                        "message": "Last line is below the width gate",
+                        "severity": "hard",
+                    }
+                ],
+                "status": "needs_revision",
+            },
+        }
+    )
+
+    assert result["quality_status"] == "failed"
+    assert quality_gate_route(result) == "failed"

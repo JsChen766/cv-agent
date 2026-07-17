@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any
+
 from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import JSONResponse
 from pydantic import Field
@@ -83,7 +85,7 @@ class ReorderBody(StrictRequestModel):
 
 
 class PatchStructuredBody(StrictRequestModel):
-    operations: list[dict] = Field(min_length=1)
+    operations: list[dict[str, Any]] = Field(min_length=1)
 
 
 @router.get("/product/resumes")
@@ -201,12 +203,15 @@ async def patch_variant_structured(
             "content": variant.content,
             "version": variant.version,
             "parentVariantId": variant.parent_variant_id,
+            "qualityStatus": variant.quality_status,
+            "layoutReport": variant.layout_report.model_dump(mode="json"),
         },
         request,
     )
 
 
 # ── Serialisers ───────────────────────────────────────────────────────────────
+
 
 def _serialize(r: Resume) -> dict[str, object]:
     return {
@@ -266,8 +271,7 @@ def _serialize_variant(v: ResumeVariant) -> dict[str, object]:
             for e in v.evidence_summary
         ],
         "riskSummary": [
-            {"type": r.type, "text": r.text, "severity": r.severity}
-            for r in v.risk_summary
+            {"type": r.type, "text": r.text, "severity": r.severity} for r in v.risk_summary
         ],
         "missingInfo": v.missing_info,
         "createdAt": v.created_at.isoformat(),

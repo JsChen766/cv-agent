@@ -49,17 +49,18 @@ def _require_pool(pool: asyncpg.Pool | None) -> asyncpg.Pool:
 
 def build_service_container(pool: asyncpg.Pool | None) -> ServiceContainer:
     checked_pool = _require_pool(pool)
+    resume_layout = ResumeLayoutService(PillowFontMetrics())
     return ServiceContainer(
         experience=ExperienceService(
             PostgresExperienceRepository(checked_pool),
             EvidenceExperienceIndexer(checked_pool),
         ),
         jd=JdService(PostgresJdRepository(checked_pool)),
-        resume=ResumeService(PostgresResumeRepository(checked_pool)),
+        resume=ResumeService(PostgresResumeRepository(checked_pool), resume_layout),
         artifact=ArtifactService(PostgresArtifactRepository(checked_pool)),
         preference=PreferenceService(PostgresPreferenceRepository(checked_pool)),
         user=UserService(PostgresUserRepository(checked_pool)),
-        resume_layout=ResumeLayoutService(PillowFontMetrics()),
+        resume_layout=resume_layout,
     )
 
 
@@ -82,7 +83,10 @@ async def get_jd_service(pool: asyncpg.Pool | None = Depends(pool_dep)) -> JdSer
 
 
 async def get_resume_service(pool: asyncpg.Pool | None = Depends(pool_dep)) -> ResumeService:
-    return ResumeService(PostgresResumeRepository(_require_pool(pool)))
+    return ResumeService(
+        PostgresResumeRepository(_require_pool(pool)),
+        ResumeLayoutService(PillowFontMetrics()),
+    )
 
 
 async def get_artifact_service(pool: asyncpg.Pool | None = Depends(pool_dep)) -> ArtifactService:

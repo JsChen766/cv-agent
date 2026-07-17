@@ -128,9 +128,7 @@ def _id_exists_in_structured(target_id: str, structured: dict[str, Any]) -> bool
     return False
 
 
-def _compute_structured_diff(
-    old: dict[str, Any], new: dict[str, Any]
-) -> dict[str, list[str]]:
+def _compute_structured_diff(old: dict[str, Any], new: dict[str, Any]) -> dict[str, list[str]]:
     changed_bullet_ids: list[str] = []
     changed_item_ids: list[str] = []
     changed_section_ids: list[str] = []
@@ -225,9 +223,7 @@ async def _load_latest_structured(
     return None
 
 
-def _build_tier3_instruction(
-    instruction: str, current_structured: dict[str, Any] | None
-) -> str:
+def _build_tier3_instruction(instruction: str, current_structured: dict[str, Any] | None) -> str:
     if not current_structured:
         return instruction
     summary = _summarize_structured_for_classify(current_structured)
@@ -257,7 +253,10 @@ async def edit_classify_node(
             "assistant_message": "当前没有可编辑的简历，请先生成一份简历。",
             "pending_sse_events": [
                 *(state.get("pending_sse_events") or []),
-                {"event": "agent.message.completed", "content": "当前没有可编辑的简历，请先生成一份简历。"},
+                {
+                    "event": "agent.message.completed",
+                    "content": "当前没有可编辑的简历，请先生成一份简历。",
+                },
             ],
         }
 
@@ -290,12 +289,20 @@ async def edit_classify_node(
         emit_thinking(writer, "正在理解你的简历修改要求…")
 
     result: EditClassification = await provider.chat_structured(
-        [{"role": "system", "content": _CLASSIFY_SYSTEM_PROMPT}, {"role": "user", "content": user_content}],
+        [
+            {"role": "system", "content": _CLASSIFY_SYSTEM_PROMPT},
+            {"role": "user", "content": user_content},
+        ],
         EditClassification,
         temperature=0.1,
     )
 
-    if result.tier == 1 and result.target_id and current_structured and not _id_exists_in_structured(result.target_id, current_structured):
+    if (
+        result.tier == 1
+        and result.target_id
+        and current_structured
+        and not _id_exists_in_structured(result.target_id, current_structured)
+    ):
         result = result.model_copy(update={"tier": 2, "target_id": None, "operation": None})
 
     # Tier 1: populate edit_operations so apply_node can proceed without locate_node
@@ -336,7 +343,10 @@ async def locate_node(
             "assistant_message": "找不到当前简历数据，请重新打开简历后再试。",
             "pending_sse_events": [
                 *(state.get("pending_sse_events") or []),
-                {"event": "agent.message.completed", "content": "找不到当前简历数据，请重新打开简历后再试。"},
+                {
+                    "event": "agent.message.completed",
+                    "content": "找不到当前简历数据，请重新打开简历后再试。",
+                },
             ],
         }
 
@@ -348,7 +358,13 @@ async def locate_node(
         emit_thinking(writer, "正在定位需要修改的简历内容…")
 
     result: EditLocation = await provider.chat_structured(
-        [{"role": "system", "content": _LOCATE_SYSTEM_PROMPT}, {"role": "user", "content": f"用户编辑指令：{instruction}\n\n完整简历结构（含所有 id）：\n{full_structured_text}"}],
+        [
+            {"role": "system", "content": _LOCATE_SYSTEM_PROMPT},
+            {
+                "role": "user",
+                "content": f"用户编辑指令：{instruction}\n\n完整简历结构（含所有 id）：\n{full_structured_text}",
+            },
+        ],
         EditLocation,
         temperature=0.1,
     )
@@ -359,7 +375,10 @@ async def locate_node(
             "assistant_message": f"未能在当前简历中定位到目标（{result.target_id}），请描述得更具体一些。",
             "pending_sse_events": [
                 *(state.get("pending_sse_events") or []),
-                {"event": "agent.message.completed", "content": f"未能在当前简历中定位到目标（{result.target_id}），请描述得更具体一些。"},
+                {
+                    "event": "agent.message.completed",
+                    "content": f"未能在当前简历中定位到目标（{result.target_id}），请描述得更具体一些。",
+                },
             ],
         }
 
@@ -369,9 +388,7 @@ async def locate_node(
     }
 
 
-async def apply_node(
-    state: dict[str, Any], config: RunnableConfig | None = None
-) -> dict[str, Any]:
+async def apply_node(state: dict[str, Any], config: RunnableConfig | None = None) -> dict[str, Any]:
     from app.graphs.runtime import services_from_config
 
     user_id = str(state.get("user_id") or "")
@@ -385,12 +402,21 @@ async def apply_node(
     if not resume_id:
         return {
             "assistant_message": "当前没有可编辑的简历。",
-            "pending_sse_events": [*events, {"event": "agent.message.completed", "content": "当前没有可编辑的简历。"}],
+            "pending_sse_events": [
+                *events,
+                {"event": "agent.message.completed", "content": "当前没有可编辑的简历。"},
+            ],
         }
     if not operations:
         return {
             "assistant_message": "未能确定编辑操作，请描述得更具体一些。",
-            "pending_sse_events": [*events, {"event": "agent.message.completed", "content": "未能确定编辑操作，请描述得更具体一些。"}],
+            "pending_sse_events": [
+                *events,
+                {
+                    "event": "agent.message.completed",
+                    "content": "未能确定编辑操作，请描述得更具体一些。",
+                },
+            ],
         }
 
     services = services_from_config(config)
@@ -401,12 +427,17 @@ async def apply_node(
     if not detail.variants:
         return {
             "assistant_message": "找不到简历草稿。",
-            "pending_sse_events": [*events, {"event": "agent.message.completed", "content": "找不到简历草稿。"}],
+            "pending_sse_events": [
+                *events,
+                {"event": "agent.message.completed", "content": "找不到简历草稿。"},
+            ],
         }
     old_variant = sorted(detail.variants, key=lambda v: v.created_at, reverse=True)[0]
     old_structured = old_variant.structured or {}
 
     new_variant = await services.resume.patch_variant(user_id, old_variant.id, operations)
+    layout_report = getattr(new_variant, "layout_report", None)
+    layout_quality_status = getattr(new_variant, "quality_status", None)
 
     diff = _compute_structured_diff(old_structured, new_variant.structured or {})
 
@@ -416,6 +447,10 @@ async def apply_node(
             "edit_new_content": new_variant.content,
             "edit_new_variant_id": new_variant.id,
             "edit_diff": diff,
+            "layout_report": (
+                layout_report.model_dump(mode="json") if layout_report is not None else None
+            ),
+            "quality_status": layout_quality_status,
             "workspace": workspace,
             "pending_sse_events": events,
         }
@@ -436,12 +471,18 @@ async def apply_node(
     events.extend(buffered_events)
 
     confirmation_msg = _edit_confirmation_message(diff)
+    if layout_quality_status == "needs_revision":
+        confirmation_msg += " 当前版本尚未通过版面标准，请继续调整"
     events.append({"event": "agent.message.completed", "content": confirmation_msg})
 
     return {
         "assistant_message": confirmation_msg,
         "edit_new_variant_id": new_variant.id,
         "edit_diff": diff,
+        "layout_report": (
+            layout_report.model_dump(mode="json") if layout_report is not None else None
+        ),
+        "quality_status": layout_quality_status,
         "workspace": workspace,
         "pending_sse_events": events,
     }
@@ -460,17 +501,26 @@ async def edit_interrupt_node(
     new_structured = state.get("edit_new_structured")
     new_content = state.get("edit_new_content") or ""
     new_variant_id = state.get("edit_new_variant_id") or ""
+    layout_report = state.get("layout_report")
+    quality_status = state.get("quality_status")
+    review_message = (
+        "已完成编辑，但当前版本尚未通过版面标准，请继续调整。"
+        if quality_status == "needs_revision"
+        else "已完成编辑，请确认修改是否符合预期。"
+    )
 
     payload = {
         "interrupt_id": interrupt_id,
         "type": "resume_edit_review",
-        "message": "已完成编辑，请确认修改是否符合预期。",
+        "message": review_message,
         "resume": {
             "structured": new_structured,
             "content": new_content,
             "id": new_variant_id,
         },
         "diff": diff,
+        "layout_report": layout_report,
+        "quality_status": quality_status,
         "action_options": [
             {"id": "accept", "label": "应用修改", "description": "确认并保存此次编辑"},
             {"id": "discard", "label": "撤销", "description": "放弃此次编辑，恢复原版"},
@@ -480,16 +530,20 @@ async def edit_interrupt_node(
 
     existing_events = list(state.get("pending_sse_events") or [])
     events: list[dict[str, Any]] = list(existing_events)
-    events.append({
-        "event": "agent.interrupt",
-        "interrupt_id": interrupt_id,
-        "type": "resume_edit_review",
-        "message": payload["message"],
-        "resume": payload["resume"],
-        "diff": diff,
-        "variants": [],
-        "action_options": payload["action_options"],
-    })
+    events.append(
+        {
+            "event": "agent.interrupt",
+            "interrupt_id": interrupt_id,
+            "type": "resume_edit_review",
+            "message": payload["message"],
+            "resume": payload["resume"],
+            "diff": diff,
+            "layout_report": layout_report,
+            "quality_status": quality_status,
+            "variants": [],
+            "action_options": payload["action_options"],
+        }
+    )
 
     resume_value = interrupt(payload)
 

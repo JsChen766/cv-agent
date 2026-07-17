@@ -1,4 +1,5 @@
 """ResumeEditState — resume_edit subgraph state."""
+
 from __future__ import annotations
 
 from typing import Any
@@ -17,3 +18,5 @@ class ResumeEditState(MainState, total=False):
     edit_new_structured: dict[str, Any] | None
     edit_new_content: str | None
     edit_new_variant_id: str | None
+    layout_report: dict[str, Any] | None
+    quality_status: str | None

@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
+
+from app.domain.resume.layout_models import LayoutReport
 
 ResumeStatus = Literal["draft", "active", "published", "archived"]
 ResumeSectionType = Literal["summary", "experience", "education", "skills", "projects", "other"]
@@ -25,7 +27,7 @@ class EvidenceItem(BaseModel):
 
 
 class RiskItem(BaseModel):
-    type: str   # "unverifiable_claim" | "missing_evidence" | "overstatement"
+    type: str  # "unverifiable_claim" | "missing_evidence" | "overstatement"
     text: str
     severity: str  # "high" | "medium" | "low"
 
@@ -36,14 +38,23 @@ class ResumeVariant(BaseModel):
     jd_id: str | None = None
     title: str
     content: str  # markdown, derived from `structured`
-    structured: dict | None = None  # ResumeStructure JSON (canvas source of truth)
-    parent_variant_id: str | None = None  # version chain: points to the variant this was derived from
+    structured: dict[str, Any] | None = None  # ResumeStructure JSON (canvas source of truth)
+    parent_variant_id: str | None = (
+        None  # version chain: points to the variant this was derived from
+    )
     version: int = 1  # auto-incremented within the chain (populated by repo from DB sequence count)
     score: ScoreBreakdown = Field(default_factory=ScoreBreakdown)
     evidence_summary: list[EvidenceItem] = Field(default_factory=list)
     risk_summary: list[RiskItem] = Field(default_factory=list)
     missing_info: list[str] = Field(default_factory=list)
     created_at: datetime
+
+
+class ResumeVariantPatchResult(ResumeVariant):
+    """A persisted canvas edit plus its deterministic layout assessment."""
+
+    layout_report: LayoutReport
+    quality_status: Literal["pass", "needs_revision"]
 
 
 class ResumeItem(BaseModel):
@@ -106,7 +117,7 @@ class ResumeVariantCreate(BaseModel):
     jd_id: str | None = None
     title: str = "Variant"
     content: str = ""
-    structured: dict | None = None
+    structured: dict[str, Any] | None = None
     parent_variant_id: str | None = None
     score: ScoreBreakdown = Field(default_factory=ScoreBreakdown)
     evidence_summary: list[EvidenceItem] = Field(default_factory=list)

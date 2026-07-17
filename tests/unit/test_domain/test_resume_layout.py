@@ -62,7 +62,7 @@ def test_bullet_fit_uses_measured_width_and_conservative_gate() -> None:
     assert awkward.status == "awkward_wrap"
 
 
-def test_single_line_grounded_short_exception_is_soft_only() -> None:
+def test_single_line_grounded_short_exception_cannot_bypass_gate() -> None:
     service = ResumeLayoutService(PillowFontMetrics())
 
     result = service.measure_bullet_fit(
@@ -70,11 +70,25 @@ def test_single_line_grounded_short_exception_is_soft_only() -> None:
         bullet_id="short",
         item_id="item",
         section_type="experience",
-        exception="unfixable_grounded_short",
     )
 
     assert result.line_count == 1
-    assert result.status == "unfixable_grounded_short"
+    assert result.status == "too_short"
+
+
+def test_terminal_periods_are_hard_layout_violations() -> None:
+    service = ResumeLayoutService(PillowFontMetrics())
+    structure = _structure(bullet_text="A" * 75 + ".")
+    sections = structure["sections"]
+    assert isinstance(sections, list)
+    sections[0]["items"][0]["raw_text"] = "GPA 3.8。"
+
+    report = service.measure_resume_layout(structure)
+
+    codes = {violation.code for violation in report.violations}
+    assert "bullet_terminal_period" in codes
+    assert "raw_text_terminal_period" in codes
+    assert report.status == "needs_revision"
 
 
 def test_layout_paginates_by_blocks_and_enforces_single_page() -> None:

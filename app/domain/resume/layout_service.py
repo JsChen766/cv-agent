@@ -6,6 +6,7 @@ import re
 from dataclasses import dataclass
 from typing import Literal
 
+from app.domain.resume.content_style import find_terminal_period_violations
 from app.domain.resume.layout_models import (
     BlockLayoutReport,
     BulletFitReport,
@@ -56,7 +57,6 @@ class ResumeLayoutService:
         bullet_id: str,
         item_id: str,
         section_type: str,
-        exception: str | None = None,
         language: str = "zh-CN",
     ) -> BulletFitReport:
         body_style = self._style_for_language(self.profile.body, language)
@@ -69,12 +69,10 @@ class ResumeLayoutService:
         lines = self._wrap_inline_text(text, available, body_style)
         widths = [self._inline_width(line, body_style) for line in lines] or [0.0]
         last_ratio = widths[-1] / available if available else 0.0
-        status: Literal["pass", "too_short", "awkward_wrap", "unfixable_grounded_short"]
+        status: Literal["pass", "too_short", "awkward_wrap"]
         recommendation: Literal["shorten", "expand_from_source", "rephrase", "remove", "none"]
         if last_ratio >= self.profile.bullet.gate_ratio:
             status, recommendation = "pass", "none"
-        elif exception == "unfixable_grounded_short" and len(lines) == 1:
-            status, recommendation = "unfixable_grounded_short", "none"
         elif len(lines) == 1:
             status, recommendation = "too_short", "expand_from_source"
         else:
@@ -110,6 +108,28 @@ class ResumeLayoutService:
                     untuned_structure, constraint
                 )
         violations: list[LayoutViolation] = []
+        for style_violation in find_terminal_period_violations(structured):
+            if style_violation.field == "bullet":
+                violations.append(
+                    LayoutViolation(
+                        code="bullet_terminal_period",
+                        message=(
+                            f"Bullet {style_violation.bullet_id} ends with a sentence period."
+                        ),
+                        item_id=style_violation.item_id,
+                        bullet_id=style_violation.bullet_id,
+                    )
+                )
+            else:
+                violations.append(
+                    LayoutViolation(
+                        code="raw_text_terminal_period",
+                        message=(
+                            f"Item {style_violation.item_id} raw text ends with a sentence period."
+                        ),
+                        item_id=style_violation.item_id,
+                    )
+                )
         language = str(structured.get("language") or "zh-CN")
         active_font = self.profile.font_for_language(language)
         provided_version = structured.get("layout_profile_version")
@@ -211,16 +231,6 @@ class ResumeLayoutService:
                             f"{fit.last_line_ratio:.1%} of the available width."
                         ),
                         section_id=None,
-                        item_id=fit.item_id,
-                        bullet_id=fit.bullet_id,
-                    )
-                )
-            elif fit.status == "unfixable_grounded_short":
-                violations.append(
-                    LayoutViolation(
-                        code="unfixable_grounded_short",
-                        message=f"Bullet {fit.bullet_id} is a grounded short-line exception.",
-                        severity="soft",
                         item_id=fit.item_id,
                         bullet_id=fit.bullet_id,
                     )
@@ -382,11 +392,6 @@ class ResumeLayoutService:
                 bullet_id=bullet_id,
                 item_id=item_id,
                 section_type=section_type,
-                exception=(
-                    str(raw_bullet.get("layout_exception"))
-                    if raw_bullet.get("layout_exception")
-                    else None
-                ),
                 language=language,
             )
             reports.append(report)

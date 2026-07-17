@@ -1,7 +1,12 @@
 from __future__ import annotations
 
+from typing import Any
+
 from app.core.errors import NotFoundError
 from app.core.types import RESUME_PREFIX, VARIANT_PREFIX, generate_id
+from app.domain.resume.content_style import normalize_resume_narrative_punctuation
+from app.domain.resume.layout_models import LayoutConstraint
+from app.domain.resume.layout_service import ResumeLayoutService
 from app.domain.resume.models import (
     Resume,
     ResumeItem,
@@ -11,6 +16,7 @@ from app.domain.resume.models import (
     ResumeVariant,
     ResumeVariantCreate,
     ResumeVariantPatch,
+    ResumeVariantPatchResult,
 )
 from app.domain.resume.patch import apply_patch_operations
 from app.domain.resume.render import render_structured_to_markdown
@@ -18,8 +24,13 @@ from app.domain.resume.repository import ResumeRepository
 
 
 class ResumeService:
-    def __init__(self, repo: ResumeRepository) -> None:
+    def __init__(
+        self,
+        repo: ResumeRepository,
+        layout: ResumeLayoutService | None = None,
+    ) -> None:
         self._repo = repo
+        self._layout = layout
 
     async def list_resumes(
         self,
@@ -49,9 +60,7 @@ class ResumeService:
             resume_id, user_id, title, target_role=target_role, jd_id=jd_id
         )
 
-    async def update_resume(
-        self, user_id: str, resume_id: str, patch: ResumePatch
-    ) -> Resume:
+    async def update_resume(self, user_id: str, resume_id: str, patch: ResumePatch) -> Resume:
         await self.get_resume(user_id, resume_id)
         return await self._repo.update(user_id, resume_id, patch)
 
@@ -89,9 +98,7 @@ class ResumeService:
             raise NotFoundError(f"Resume item not found: {item_id}")
         return await self._repo.update_item(user_id, item_id, patch)
 
-    async def delete_item(
-        self, user_id: str, resume_id: str, item_id: str
-    ) -> None:
+    async def delete_item(self, user_id: str, resume_id: str, item_id: str) -> None:
         await self.get_resume(user_id, resume_id)
         item = await self._repo.get_item_for_user(user_id, item_id)
         if not item or item.resume_id != resume_id:
@@ -142,8 +149,8 @@ class ResumeService:
         self,
         user_id: str,
         variant_id: str,
-        operations: list[dict],
-    ) -> ResumeVariant:
+        operations: list[dict[str, Any]],
+    ) -> ResumeVariantPatchResult:
         """Apply deterministic patch ops to a variant's structured data.
 
         Ownership is verified via the variant's resume. A new variant row is
@@ -155,11 +162,27 @@ class ResumeService:
         await self.get_resume(user_id, variant.resume_id)
         if not variant.structured:
             raise NotFoundError(f"Variant has no structured data: {variant_id}")
+        if self._layout is None:
+            raise RuntimeError("Resume layout service is required for structured canvas edits")
         new_structured = apply_patch_operations(variant.structured, operations)
+        new_structured = normalize_resume_narrative_punctuation(new_structured)
+        report = self._layout.measure_resume_layout(new_structured, LayoutConstraint())
+        usage = report.pages[0].usage_ratio if report.pages else 0.0
+        new_structured["layout_usage_ratio"] = usage
+        new_structured["layout_target_band"] = {
+            "minimum": report.minimum_page_usage_ratio,
+            "target": report.target_page_usage_ratio,
+            "maximum": report.maximum_page_usage_ratio,
+        }
         new_content = render_structured_to_markdown(new_structured)
-        return await self._repo.patch_variant_structured(
+        persisted = await self._repo.patch_variant_structured(
             variant_id=variant_id,
             structured=new_structured,
             content=new_content,
             parent_variant_id=variant_id,
+        )
+        return ResumeVariantPatchResult(
+            **persisted.model_dump(),
+            layout_report=report,
+            quality_status="pass" if report.status == "pass" else "needs_revision",
         )

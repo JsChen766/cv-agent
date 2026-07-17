@@ -20,6 +20,7 @@ from pydantic import BaseModel, Field, JsonValue, ValidationError
 from app.core.config import settings
 from app.core.events import AgentInterruptEvent
 from app.domain.resume.content_budget import build_resume_content_budget
+from app.domain.resume.content_style import normalize_resume_narrative_punctuation
 from app.domain.resume.layout_models import LayoutConstraint, LayoutReport
 from app.domain.resume.layout_optimizer import ResumeLayoutOptimizer
 from app.domain.resume.layout_profile import DEFAULT_RESUME_LAYOUT_PROFILE
@@ -580,6 +581,7 @@ You MUST return a single JSON object matching the response schema — no prose o
 7. For each bullet, set `matched_jd_requirement_ids` to the list of JD requirement ids that bullet directly supports. Only use ids shown in the JD requirements block. Empty array is allowed and expected for bullets that describe context, ownership, or achievements not tied to any listed requirement. Do NOT tag every bullet with every requirement — be specific.
 8. For each bullet, set `source_fact_ids` to the distinct labeled source facts used to write it. Every id must belong to the same `source_experience_id`. Do not reuse the exact same fact combination merely to pad the page.
 9. Order bullet candidates within each item from highest to lowest value: direct JD evidence first, then quantified results, ownership/action/method, and finally supporting context. The backend may trim candidates from the tail.
+10. Narrative prose MUST NOT end with a Chinese or English full stop (`。`, `．`, `.`). Internal dots in decimals, versions, URLs, and email addresses are allowed.
 
 ## Section order and content
 
@@ -649,8 +651,9 @@ async def layout_measure_node(
         for value in (state.get("content_budget") or {}).get("experiences", [])
         if isinstance(value, dict) and value.get("experience_id")
     }
+    normalized_structure = normalize_resume_narrative_punctuation(structured)
     optimized = ResumeLayoutOptimizer(layout_service).optimize(
-        structured,
+        normalized_structure,
         constraint,
         experience_scores,
     )
@@ -763,8 +766,9 @@ async def layout_revision_node(state: ResumeGenerationState) -> dict[str, object
                     "facts, truncate text, use ellipses, or add a summary. For long/awkward bullets: "
                     "remove repetition, merge synonymous phrasing, and preserve action, object, method, "
                     "and grounded result. For short bullets: expand only from the source experience; "
-                    "otherwise remove a low-value duplicate. Only when a single-line bullet is a key "
-                    "fact that cannot be expanded, set layout_exception=unfixable_grounded_short. "
+                    "otherwise merge it with a related bullet or remove a low-value duplicate. Every "
+                    "bullet must pass the final-line width gate; there are no short-line exceptions. "
+                    "Narrative prose must not end with a Chinese or English full stop. "
                     "For one-page overflow, remove lowest-JD-value redundant bullets/items first, while "
                     "keeping all education entries and at least one work and project item when sourced. "
                     "For page_underfilled, increase printable-height usage to at least "
@@ -1536,6 +1540,15 @@ async def quality_gate_node(state: ResumeGenerationState) -> dict[str, object]:
             ],
         }
     hard_layout = [violation for violation in report.violations if violation.severity == "hard"]
+    non_waivable_layout_codes = {
+        "bullet_too_short",
+        "bullet_awkward_wrap",
+        "bullet_terminal_period",
+        "raw_text_terminal_period",
+    }
+    non_waivable_layout = [
+        violation for violation in hard_layout if violation.code in non_waivable_layout_codes
+    ]
     issues.extend(
         {"code": violation.code, "message": violation.message} for violation in hard_layout
     )
@@ -1561,7 +1574,7 @@ async def quality_gate_node(state: ResumeGenerationState) -> dict[str, object]:
         for issue in review.get("issues") or ["Self-review still requires revision."]:
             issues.append({"code": "self_review_unresolved", "message": str(issue)})
 
-    if report.status == "profile_mismatch" or review_failed:
+    if report.status == "profile_mismatch" or review_failed or non_waivable_layout:
         quality_status = "failed"
     elif hard_layout or coverage_regressions:
         quality_status = "needs_user_decision"
@@ -2102,7 +2115,6 @@ class _LlmBullet(BaseModel):
     text: str
     matched_jd_requirement_ids: list[str] = Field(default_factory=list)
     source_fact_ids: list[str] = Field(default_factory=list)
-    layout_exception: Literal["unfixable_grounded_short"] | None = None
 
 
 class _LlmSectionItem(BaseModel):
@@ -2235,7 +2247,6 @@ def _assign_structure_ids(
                         "text": b.text,
                         "matched_jd_requirement_ids": list(b.matched_jd_requirement_ids),
                         "source_fact_ids": list(b.source_fact_ids),
-                        "layout_exception": b.layout_exception,
                     }
                 )
 
@@ -2263,13 +2274,15 @@ def _assign_structure_ids(
     elif fallback_contact is not None:
         contact = fallback_contact
 
-    return {
-        "language": llm.language,
-        "contact": contact,
-        "sections": sections,
-        "layout_profile_version": DEFAULT_RESUME_LAYOUT_PROFILE.version,
-        "layout_profile_hash": DEFAULT_RESUME_LAYOUT_PROFILE.profile_hash,
-    }
+    return normalize_resume_narrative_punctuation(
+        {
+            "language": llm.language,
+            "contact": contact,
+            "sections": sections,
+            "layout_profile_version": DEFAULT_RESUME_LAYOUT_PROFILE.version,
+            "layout_profile_hash": DEFAULT_RESUME_LAYOUT_PROFILE.profile_hash,
+        }
+    )
 
 
 def _text_similarity(a: str, b: str) -> float:
