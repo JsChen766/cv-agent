@@ -33,8 +33,10 @@ class AssembledContext:
         preferences: list[dict[str, object]],
         user_profile: dict[str, object] | None,
         evidence_pack: EvidencePack | None,
+        jd_requirements: list[dict[str, object]] | None = None,
     ) -> None:
         self.jd_text = jd_text
+        self.jd_requirements = jd_requirements or []
         self.experiences = experiences
         self.guideline_instructions = guideline_instructions
         self.preferences = preferences
@@ -121,6 +123,11 @@ async def assemble_context(
     experiences, evidence_pack = experience_context
     context = AssembledContext(
         jd_text=jd.raw_text if jd is not None else None,
+        jd_requirements=(
+            [requirement.model_dump(mode="json") for requirement in jd.requirements]
+            if jd is not None
+            else []
+        ),
         experiences=experiences,
         guideline_instructions=guidelines,
         preferences=preferences,

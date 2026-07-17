@@ -226,7 +226,7 @@ class ResumeLayoutService:
                 )
             )
         underfill = 0.0
-        if constraint.is_single_page and len(pages) == 1:
+        if constraint.targets_one_page and len(pages) == 1:
             page = pages[0]
             minimum_used_height = page.available_height_mm * constraint.minimum_page_usage_ratio
             if page.used_height_mm < minimum_used_height:

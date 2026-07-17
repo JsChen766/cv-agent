@@ -30,6 +30,8 @@ async def test_draft_regeneration_preserves_review_iteration(monkeypatch) -> Non
     monkeypatch.setattr("app.graphs.resume.nodes.get_provider", lambda: _DraftProvider())
     result = await draft_generation_node(
         {
+            "intent_description": "Generate an English resume",
+            "user_profile": {"preferred_language": "zh-CN"},
             "review_iteration": 2,
             "revision_instruction": "Make the evidence more specific",
             "evidence_pack": {
@@ -58,6 +60,7 @@ async def test_draft_regeneration_preserves_review_iteration(monkeypatch) -> Non
     ]
     # Layer 2: structured is the primary product; markdown is derived
     assert variant["structured"]["sections"][0]["type"] == "skills"
+    assert variant["structured"]["language"] == "en-US"
     assert "Python" in variant["content"]
     assert variant["structured"]["layout_profile_version"] == "resume-template-v2"
 

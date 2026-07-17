@@ -220,7 +220,7 @@ def _build_initial_state(
     routing and generation fields are explicitly reset so a fresh turn is never
     short-circuited by stale checkpoint state.
     """
-    return {
+    return cast("MainState", {
         "thread_id": thread_id,
         "user_id": user_id,
         "messages": cast("list[MessageDict]", messages),
@@ -242,6 +242,28 @@ def _build_initial_state(
         "current_diff": None,
         "review_result": None,
         "review_iteration": 0,
+        "variants": [],
+        "layout_constraint": {},
+        "layout_report": None,
+        "layout_revision_iteration": 0,
+        "layout_status": None,
+        "quality_status": None,
+        "quality_issues": [],
+        "coverage_before_layout": [],
+        "generation_call_count": 0,
+        "final_candidate_emitted": False,
+        "revision_instruction": None,
+        "resume_user_action": None,
+        "fact_mismatches": [],
+        "resume_structure": None,
+        "coverage_report": None,
+        "uncovered_jd_requirement_ids": [],
+        "jd_requirements": None,
+        "relevant_experiences": [],
+        "guideline_instructions": [],
+        "user_preferences": [],
+        "user_profile": None,
+        "evidence_pack": None,
         "assembled_jd_text": None,
         "assembled_experiences": [],
         "assembled_guideline_instructions": [],
@@ -250,7 +272,7 @@ def _build_initial_state(
         "application_tasks": [],
         "application_deliverables": [],
         "unsupported_requirements": [],
-    }
+    })
 
 
 def _emit_interrupt_sse(

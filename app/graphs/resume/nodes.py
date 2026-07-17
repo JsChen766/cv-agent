@@ -8,6 +8,7 @@ Flow:
 
 import json
 import logging
+import math
 import re
 import uuid
 from collections.abc import Mapping
@@ -59,6 +60,7 @@ async def context_assembly_node(
         )
         return {
             "jd_text": ctx.jd_text or fallback_jd_text,
+            "jd_requirements": ctx.jd_requirements,
             "relevant_experiences": ctx.experiences,
             "guideline_instructions": ctx.guideline_instructions,
             "user_preferences": ctx.preferences,
@@ -123,10 +125,23 @@ async def cot_planning_node(state: ResumeGenerationState) -> dict[str, object]:
             f"User: {profile.get('current_title', '')} | {profile.get('career_stage', '')}"
         )
     if experiences:
-        exp_list = "\n".join(
-            f"- id={e.get('id', 'N/A')}: {e.get('title')} at {e.get('organization', 'N/A')}"
-            for e in experiences[:12]
-        )
+        exp_lines: list[str] = []
+        for experience in experiences[:12]:
+            content = str(experience.get("content") or "")[:600]
+            raw_claims = experience.get("claims") or []
+            claim_texts = [
+                str(claim.get("text"))
+                for claim in raw_claims[:8]
+                if isinstance(claim, dict) and claim.get("text")
+            ] if isinstance(raw_claims, list) else []
+            details = content
+            if claim_texts:
+                details += "\n  extracted facts: " + "; ".join(claim_texts)
+            exp_lines.append(
+                f"- id={experience.get('id', 'N/A')}: {experience.get('title')} at "
+                f"{experience.get('organization', 'N/A')}\n  source details: {details}"
+            )
+        exp_list = "\n".join(exp_lines)
         context_parts.append(f"Available Experiences:\n{exp_list}")
     if prefs:
         pref_list = "\n".join(f"- {p.get('rule')}" for p in prefs[:5])
@@ -177,6 +192,12 @@ async def cot_planning_node(state: ResumeGenerationState) -> dict[str, object]:
 def _layout_constraint_from_state(state: ResumeGenerationState) -> LayoutConstraint:
     extracted = state.get("extracted_params", {})
     raw_pages = extracted.get("page_count") or extracted.get("pages")
+    if isinstance(raw_pages, int) and raw_pages == 1:
+        return LayoutConstraint(
+            max_pages=1,
+            requested_pages=1,
+            minimum_page_usage_ratio=settings.resume_min_page_usage_ratio,
+        )
     if isinstance(raw_pages, int) and raw_pages >= 2:
         return LayoutConstraint(
             max_pages=None,
@@ -195,10 +216,103 @@ def _layout_constraint_from_state(state: ResumeGenerationState) -> LayoutConstra
             max_pages=None,
             minimum_page_usage_ratio=settings.resume_min_page_usage_ratio,
         )
+    if re.search(r"(?:one|1|single|一|单)\s*(?:pages?|页(?:纸)?)", intent, re.IGNORECASE):
+        return LayoutConstraint(
+            max_pages=1,
+            requested_pages=1,
+            minimum_page_usage_ratio=settings.resume_min_page_usage_ratio,
+        )
+    # Default to a *soft* one-page target: a sparse draft must keep expanding until
+    # the first page is substantially filled, while distinct grounded content is not
+    # discarded merely because it crosses onto a second page. An explicit one-page
+    # request above remains a hard cap.
     return LayoutConstraint(
-        max_pages=1,
+        max_pages=None,
+        requested_pages=1,
         minimum_page_usage_ratio=settings.resume_min_page_usage_ratio,
     )
+
+
+def _layout_budget_instruction(constraint: LayoutConstraint) -> str:
+    target = f"{constraint.minimum_page_usage_ratio:.0%}"
+    if constraint.is_single_page:
+        return (
+            "Layout objective (explicit hard one-page request): fill at least "
+            f"{target} of the printable A4 height without exceeding one page. Start from a "
+            "comprehensive grounded draft; remove only the lowest-value duplicate material if "
+            "measurement later proves it overflows."
+        )
+    if constraint.targets_one_page:
+        return (
+            "Layout objective (default comprehensive mode): use at least "
+            f"{target} of the first A4 page's printable height. One full page is the density "
+            "target, not a content ceiling: crossing onto a second page is acceptable when the "
+            "source contains additional distinct, useful facts. Do not shorten or omit grounded "
+            "material merely to force a one-page result."
+        )
+    requested = (
+        f" Aim for approximately {constraint.requested_pages} pages."
+        if constraint.requested_pages
+        else ""
+    )
+    return (
+        "Layout objective: multiple A4 pages are allowed; keep page breaks natural and make "
+        f"the content comprehensive and information-dense.{requested}"
+    )
+
+
+def _normalize_resume_language(value: object) -> str | None:
+    normalized = str(value or "").strip().lower()
+    if normalized.startswith("en") or normalized in {"english", "英文", "英语"}:
+        return "en-US"
+    if normalized.startswith("zh") or normalized in {"chinese", "中文", "汉语", "普通话"}:
+        return "zh-CN"
+    return None
+
+
+def _requested_resume_language(
+    state: ResumeGenerationState,
+    profile: dict[str, object],
+) -> str:
+    """Resolve output language without letting a profile default override this turn."""
+    extracted = state.get("extracted_params") or {}
+    for key in ("output_language", "language", "locale"):
+        explicit = _normalize_resume_language(extracted.get(key))
+        if explicit:
+            return explicit
+
+    request_parts = [str(state.get("intent_description") or "")]
+    messages = state.get("messages") or []
+    if messages and isinstance(messages[-1], dict) and messages[-1].get("role") == "user":
+        request_parts.append(str(messages[-1].get("content") or ""))
+    request_text = "\n".join(request_parts)
+    english_request = re.search(
+        r"(?:英文|英语)(?:版简历|简历|版)|(?:用|使用)(?:英文|英语)|"
+        r"\benglish\s+(?:resume|cv)\b|\b(?:resume|cv)\s+(?:in\s+)?english\b|"
+        r"\b(?:write|make|translate)[^\n]{0,24}\benglish\b",
+        request_text,
+        re.IGNORECASE,
+    )
+    if english_request:
+        return "en-US"
+    chinese_request = re.search(
+        r"(?:中文|汉语)(?:版简历|简历|版)|(?:用|使用)(?:中文|汉语)|"
+        r"\bchinese\s+(?:resume|cv)\b|\b(?:resume|cv)\s+(?:in\s+)?chinese\b|"
+        r"\b(?:write|make|translate)[^\n]{0,24}\bchinese\b",
+        request_text,
+        re.IGNORECASE,
+    )
+    if chinese_request:
+        return "zh-CN"
+
+    for key in ("previous_structured", "resume_structure"):
+        structured = state.get(key)
+        if isinstance(structured, dict):
+            existing = _normalize_resume_language(structured.get("language"))
+            if existing:
+                return existing
+
+    return _normalize_resume_language(profile.get("preferred_language")) or "zh-CN"
 
 
 def _grounded_coverage_ids(
@@ -254,6 +368,7 @@ async def draft_generation_node(state: ResumeGenerationState) -> dict[str, objec
     jd_text = state.get("jd_text") or ""
     jd_requirements = state.get("jd_requirements") or []
     experiences = state.get("relevant_experiences") or []
+    guidelines = state.get("guideline_instructions") or []
     prefs = state.get("user_preferences") or []
     plan = state.get("matching_plan") or {}
     profile = state.get("user_profile") or {}
@@ -307,12 +422,18 @@ async def draft_generation_node(state: ResumeGenerationState) -> dict[str, objec
         match_tiers = _rank_experiences_by_jd_match(sorted_experiences, plan)
         if match_tiers:
             prompt_parts.append(
-                "JD-match ranking (higher tier = stronger JD match; use to allocate bullet counts):\n"
+                "Content-depth plan (higher tier = stronger JD match; target_bullets is an "
+                "exploration goal when the source supports distinct facts, not a maximum):\n"
                 + "\n".join(
                     f"- {exp_id}: tier={tier} (target_bullets={target})"
                     for exp_id, tier, target in match_tiers
                 )
             )
+    if guidelines:
+        prompt_parts.append(
+            "Retrieved resume-writing guidelines:\n"
+            + "\n".join(f"- {instruction}" for instruction in guidelines[:10])
+        )
     if prefs:
         pref_rules = "\n".join(f"- {p.get('rule')}" for p in prefs[:8])
         prompt_parts.append(f"Writing preferences:\n{pref_rules}")
@@ -350,20 +471,22 @@ async def draft_generation_node(state: ResumeGenerationState) -> dict[str, objec
     if revision_instruction:
         prompt_parts.append(f"Additional revision instruction: {revision_instruction}")
     prompt_parts.append(
-        "Layout budget: "
-        + (
-            "the final resume must fit one A4 page and use at least "
-            f"{constraint.minimum_page_usage_ratio:.0%} of the printable height. Prefer 3–4 "
-            "bullets for the strongest items and 1–2 for supporting items. Fill unused space "
-            "only with distinct facts from the source experiences; never generate filler."
-            if constraint.is_single_page
-            else "multiple A4 pages are allowed, but page breaks must remain natural and content dense."
-        )
+        "Content expansion policy (HARD): write a comprehensive first draft, not a minimalist "
+        "summary. Inspect every source experience for distinct responsibilities, deliverables, "
+        "workflow stages, decisions, collaboration, tools, domain context, scale, constraints, "
+        "and results. Preserve all useful source-supported details, including facts that do not "
+        "map directly to the JD. A broad source statement may become multiple bullets only when "
+        "each bullet expresses a different grounded angle. If the source cannot support more "
+        "distinct bullets, write fewer but fuller bullets that combine grounded context, action, "
+        "method, and result; never invent or repeat facts as padding."
     )
+    prompt_parts.append(_layout_budget_instruction(constraint))
 
-    preferred_lang = profile.get("preferred_language", "zh-CN")
+    preferred_lang = _requested_resume_language(state, profile)
     lang_instruction = (
-        "Respond in Chinese (Simplified)." if "zh" in preferred_lang else "Respond in English."
+        "Respond in Chinese (Simplified)."
+        if preferred_lang.startswith("zh")
+        else "Respond in English."
     )
     profile_contact = _extract_contact_from_profile(profile)
 
@@ -380,6 +503,7 @@ async def draft_generation_node(state: ResumeGenerationState) -> dict[str, objec
         _LlmResumeStructure,
         temperature=0.2,
     )
+    llm_structure = llm_structure.model_copy(update={"language": preferred_lang})
     previous_structured = state.get("previous_structured")
     structured = _assign_structure_ids(
         llm_structure,
@@ -487,21 +611,18 @@ Emit sections in this order, skipping any with zero relevant data:
 1. `education` — one item per source `category="education"`. Include the degree in `title`, school in `organization`, dates, and put courses / GPA / honours in `raw_text` (a compact block); leave `bullets` empty.
 2. `experience` — one item per source `category="work"`. Populate `title`/`organization`/`role`/dates from source. Leave `raw_text` null.
 3. `project` — one item per source `category="project"`. Same bullet rules as experience.
-4. `skills` — one item with `raw_text` grouping skills by area (e.g. "编程语言：..."). Only include technologies actually appearing in source content or the JD. Leave `bullets` empty.
+4. `skills` — one item with `raw_text` grouping skills by area (e.g. "编程语言：..."). Only include technologies actually appearing in the source experiences. A JD requirement alone is never evidence that the candidate has that skill. Leave `bullets` empty.
 
 Never emit a summary/profile/about section.
 
 ## Experience & project selection rules (HARD)
 
 R1. **Education is exhaustive**: the `education` section MUST contain ONE item for EVERY source experience with `category=education`. Never omit an education entry — even if it looks less relevant to the JD. This is non-negotiable.
-R2. **Page-aware inclusion for work / project**: include the strongest JD-matched work and project items first. Include additional items only when they add distinct grounded evidence and fit the stated page budget.
+R2. **Comprehensive inclusion for work / project**: include every source work/project item that contains substantive, distinct grounded material. Prioritize the strongest JD-matched items, but do not omit useful sourced items merely to make the draft concise. If an explicit hard one-page request later measures as overflow, the layout revision step may remove only the lowest-value redundant material.
     - Coverage floor: if the source has ≥1 work experience, `experience` section MUST have ≥1 item. Same for project.
 R3. **Recency-first, per section**: within EACH of the `experience` and `project` sections, order items strictly by end_date DESCENDING (most recent first). If end_date is missing use start_date. Never interleave categories; each item stays in its section. The `education` section follows the same rule.
-R4. **Bullet count by JD match**: use the JD-match ranking block to decide how many bullets each item gets.
-    - tier=1 (top JD match): 3–4 bullets in one-page mode, up to 5 in multi-page mode
-    - tier=2: 2–3 bullets
-    - tier=3 or unranked: 1–2 bullets
-    Each bullet must remain specific and quantified where the source supports it. Do NOT pad with generic filler to reach a count — if the source cannot support N bullets faithfully, emit fewer and stay honest.
+R4. **Bullet depth by source portfolio**: follow each item's `target_bullets` from the content-depth plan. It is an exploration target, not a maximum and never permission to invent. When only one or two substantive work/project sources exist, go deeper: normally aim for 6–8 distinct bullets on the strongest item and 4–6 on the supporting item when the source supports them. Without a content-depth plan, aim for 4–6 bullets per substantive item. Emit fewer only when the source genuinely cannot support more distinct angles.
+R5. **Depth instead of filler**: limited experience means deeper use of the available evidence, not a shorter resume. Mine separate grounded angles such as context/scope, ownership, action, method or workflow, collaboration, tools, constraints, deliverable, and result. Preserve useful qualifiers from the source. Never repeat the same fact with synonyms, infer a candidate skill from the JD, or add generic responsibilities.
 
 ## Language
 
@@ -565,12 +686,46 @@ def layout_route(state: ResumeGenerationState) -> str:
     return "fact_check"
 
 
+def _layout_revision_objective(
+    report: LayoutReport,
+    constraint: LayoutConstraint,
+) -> str:
+    underfilled = any(violation.code == "page_underfilled" for violation in report.violations)
+    if not underfilled:
+        return (
+            "Resolve every hard violation in the report while preserving grounded content and "
+            "JD coverage."
+        )
+
+    approximate_lines = max(
+        1,
+        math.ceil(report.underfill_mm / DEFAULT_RESUME_LAYOUT_PROFILE.body.line_height_mm),
+    )
+    overflow_policy = (
+        "Crossing naturally onto a second page is acceptable; do not delete distinct grounded "
+        "content after the first page reaches the target."
+        if constraint.allows_overflow
+        else "The result must still remain within the explicit one-page hard limit."
+    )
+    return (
+        f"The current draft is short by {report.underfill_mm:.1f} mm, approximately "
+        f"{approximate_lines} body-text lines. Add at least that much useful, grounded detail in "
+        "this revision by exhausting unused source facts and deepening existing bullets with "
+        "source-supported context, scope, action, method, workflow, collaboration, constraint, "
+        f"deliverable, or result details. {overflow_policy}"
+    )
+
+
 async def layout_revision_node(state: ResumeGenerationState) -> dict[str, object]:
     variants = state.get("variants") or []
     current = variants[0].get("structured") if variants else state.get("resume_structure")
     if not isinstance(current, dict):
         return {}
     report = LayoutReport.model_validate(state.get("layout_report") or {})
+    constraint = LayoutConstraint.model_validate(
+        state.get("layout_constraint") or LayoutConstraint().model_dump()
+    )
+    revision_objective = _layout_revision_objective(report, constraint)
     experiences = state.get("relevant_experiences") or []
     writer = get_optional_stream_writer()
     if writer is not None:
@@ -593,16 +748,21 @@ async def layout_revision_node(state: ResumeGenerationState) -> dict[str, object
                     "fact that cannot be expanded, set layout_exception=unfixable_grounded_short. "
                     "For one-page overflow, remove lowest-JD-value redundant bullets/items first, while "
                     "keeping all education entries and at least one work and project item when sourced. "
-                    "For page_underfilled, increase printable-height usage to at least 90% by adding "
+                    "For page_underfilled, increase printable-height usage to at least "
+                    f"{report.minimum_page_usage_ratio:.0%} by adding "
                     "unused, distinct, high-value facts from the supplied source experiences, adding "
                     "relevant sourced items, or expanding bullets with sourced scope, method, scenario, "
-                    "technology, or result details. Never repeat facts or add generic filler."
+                    "technology, or result details. Limited experience requires deeper treatment of "
+                    "the available facts, not a short minimalist draft. Never repeat facts or add "
+                    "generic filler."
                 ),
             },
             {
                 "role": "user",
                 "content": (
-                    "LAYOUT REPORT:\n"
+                    "REVISION OBJECTIVE:\n"
+                    + revision_objective
+                    + "\n\nLAYOUT REPORT:\n"
                     + json.dumps(report.model_dump(), ensure_ascii=False, indent=2)
                     + "\n\nCURRENT STRUCTURE:\n"
                     + json.dumps(current, ensure_ascii=False, indent=2)
@@ -746,14 +906,23 @@ def _rank_experiences_by_jd_match(
     experiences: list[dict[str, object]],
     plan: dict[str, object],
 ) -> list[tuple[str, int, str]]:
-    """Assign each experience a JD-match tier (1=top / 2=mid / 3=other) and a target bullet count.
+    """Assign narrative experiences a depth tier and content-rich bullet target.
 
     Uses `matching_plan.coverage_plan` — how many JD requirements planned to lean on the
     experience — as the proxy for match strength. Ties broken by recency (input order is
-    already most-recent-first).
+    already most-recent-first). Without a JD plan, recency supplies deterministic tiers so
+    sparse portfolios do not fall through to the old 1–2 bullet default.
 
     Returns list of (source_experience_id, tier, target_bullets_hint).
     """
+    narrative_experiences = [
+        experience
+        for experience in experiences
+        if str(experience.get("category") or "other") != "education"
+    ]
+    if not narrative_experiences:
+        return []
+
     coverage_plan = plan.get("coverage_plan") if isinstance(plan, dict) else None
     hit_counts: dict[str, int] = {}
     if isinstance(coverage_plan, list):
@@ -767,25 +936,33 @@ def _rank_experiences_by_jd_match(
                 key = str(raw_id)
                 hit_counts[key] = hit_counts.get(key, 0) + 1
 
-    if not hit_counts:
-        return []
+    portfolio_size = len(narrative_experiences)
+    if portfolio_size <= 2:
+        targets = {1: "6-8", 2: "4-6", 3: "3-5"}
+    elif portfolio_size <= 4:
+        targets = {1: "5-7", 2: "4-6", 3: "3-4"}
+    else:
+        targets = {1: "4-6", 2: "3-5", 3: "2-4"}
 
-    max_hits = max(hit_counts.values())
+    max_hits = max(hit_counts.values()) if hit_counts else 0
     ranked: list[tuple[str, int, str]] = []
-    for exp in experiences:
+    for index, exp in enumerate(narrative_experiences):
         exp_id = exp.get("id")
         if not isinstance(exp_id, str):
             continue
-        hits = hit_counts.get(exp_id, 0)
-        if hits == 0:
-            tier, target = 3, "2-3"
-        elif hits >= max_hits:
-            tier, target = 1, "5-6"
-        elif hits >= max(1, max_hits - 1):
-            tier, target = 2, "4-5"
+        if not hit_counts:
+            tier = 1 if index == 0 else 2 if index == 1 else 3
         else:
-            tier, target = 3, "2-3"
-        ranked.append((exp_id, tier, target))
+            hits = hit_counts.get(exp_id, 0)
+            if hits == 0:
+                tier = 3
+            elif hits >= max_hits:
+                tier = 1
+            elif hits >= max(1, max_hits - 1):
+                tier = 2
+            else:
+                tier = 3
+        ranked.append((exp_id, tier, targets[tier]))
     return ranked
 
 
@@ -802,6 +979,7 @@ def _format_experiences_for_prompt(experiences: list[dict[str, object]]) -> str:
         end_date = exp.get("end_date")
         content = exp.get("content") or ""
         tags = exp.get("tags") or []
+        claims = exp.get("claims") or []
 
         header = f"[Experience #{idx} — category={category} — source_experience_id={exp_id}]"
         lines = [
@@ -815,6 +993,21 @@ def _format_experiences_for_prompt(experiences: list[dict[str, object]]) -> str:
         if isinstance(tags, list) and tags:
             lines.append(f"  tags: {', '.join(str(t) for t in tags)}")
         lines.append(f"  content:\n{_indent(str(content), 4)}")
+        if isinstance(claims, list) and claims:
+            claim_lines = [
+                (
+                    f"    - [{claim.get('category', 'fact')}] {claim.get('text')}"
+                    if isinstance(claim, dict)
+                    else f"    - {claim}"
+                )
+                for claim in claims
+                if (isinstance(claim, dict) and claim.get("text")) or isinstance(claim, str)
+            ]
+            if claim_lines:
+                lines.append(
+                    "  extracted_fact_inventory (navigation aid only; original content above "
+                    "remains authoritative):\n" + "\n".join(claim_lines)
+                )
         blocks.append("\n".join(lines))
     return "\n\n".join(blocks)
 

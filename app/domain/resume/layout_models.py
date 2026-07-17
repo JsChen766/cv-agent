@@ -17,7 +17,17 @@ class LayoutConstraint(BaseModel):
 
     @property
     def is_single_page(self) -> bool:
+        """Whether one page is a hard upper bound."""
         return self.max_pages == 1
+
+    @property
+    def targets_one_page(self) -> bool:
+        """Whether the first page should be filled even when overflow is allowed."""
+        return self.is_single_page or self.requested_pages == 1
+
+    @property
+    def allows_overflow(self) -> bool:
+        return self.max_pages is None
 
 
 class BulletFitReport(BaseModel):
