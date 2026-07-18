@@ -34,6 +34,7 @@ class ResumeGenerationState(MainState, total=False):
     layout_constraint: dict[str, Any]
     layout_profile_version: str
     layout_profile_hash: str
+    layout_template_id: str
     layout_report: dict[str, Any] | None
     layout_revision_iteration: int
     layout_status: str | None
@@ -46,6 +47,8 @@ class ResumeGenerationState(MainState, total=False):
     layout_fit_status: str | None
     local_repair_call_count: int
     local_repair_status: str | None
+    local_repair_diagnostics: list[dict[str, Any]]
+    local_repair_rejection_codes: list[str]
 
     # Generation output
     variants: list[dict[str, Any]]

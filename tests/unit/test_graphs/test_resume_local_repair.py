@@ -58,6 +58,26 @@ class _TwoBulletRepairProvider:
         )
 
 
+class _RejectedRepairProvider:
+    async def chat_structured(self, messages, schema, **kwargs):
+        return schema.model_validate(
+            {
+                "repairs": [
+                    {
+                        "bullet_id": "bullet-1",
+                        "candidates": [
+                            {
+                                "text": "still short",
+                                "source_fact_ids": ["exp-1-fact-1"],
+                                "matched_jd_requirement_ids": ["req-1"],
+                            }
+                        ],
+                    }
+                ]
+            }
+        )
+
+
 async def test_layout_revision_is_one_local_batch_and_keeps_one_variant(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -128,6 +148,34 @@ async def test_layout_revision_repairs_all_failed_bullets_in_one_call(
     assert len(provider.calls) == 1
     repaired_bullets = result["variants"][0]["structured"]["sections"][0]["items"][0]["bullets"]
     assert [bullet["text"] for bullet in repaired_bullets] == ["A" * 68, "A" * 69]
+
+
+async def test_layout_revision_exposes_pii_free_rejection_diagnostics(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    layout, structured, report, experiences, budget = _repair_context()
+    monkeypatch.setattr(
+        "app.graphs.resume.nodes.get_provider", lambda: _RejectedRepairProvider()
+    )
+
+    result = await layout_revision_node(
+        {
+            "variants": [{"id": "variant-1", "structured": structured, "content": "old"}],
+            "layout_report": report.model_dump(),
+            "relevant_experiences": experiences,
+            "content_budget": budget,
+            "generation_call_count": 1,
+        },
+        {"configurable": {"services": ServiceContainer.model_construct(resume_layout=layout)}},
+    )
+
+    assert result["local_repair_status"] == "rejected"
+    assert result["local_repair_rejection_codes"] == [
+        "no_passing_candidate",
+        "layout_not_pass",
+    ]
+    assert result["local_repair_diagnostics"][0]["bullet_id"] == "bullet-1"
+    assert "text" not in result["local_repair_diagnostics"][0]
 
 
 def test_layout_route_does_not_send_non_bullet_failures_to_model() -> None:

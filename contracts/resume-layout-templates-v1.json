@@ -1,0 +1,55 @@
+{
+  "schema_version": "resume-layout-templates-v1",
+  "templates": [
+    {
+      "template_id": "resume-standard",
+      "profile_version": "resume-template-v2",
+      "profile_hash": "6546b7a86dafbd62a72b82420ba5a4abf08634c6a59c32e1d575f4d1a8c20873",
+      "page": {"width_mm": 210.0, "height_mm": 297.0, "orientation": "portrait"},
+      "padding_mm": {"top": 9.0, "right": 9.0, "bottom": 9.0, "left": 9.0},
+      "content": {"width_mm": 192.0, "height_mm": 279.0},
+      "fonts": {
+        "chinese": {"family": "SimSun", "file_id": "simsun.ttc", "checksum_sha256": "120a51d2b14eb588700a21e15fc301f0ea55d7c1a4e1f3ae61db83b7c8d42cd6"},
+        "english": {"family": "Times New Roman", "file_id": "times.ttf", "checksum_sha256": "2cff2a03d8034801979dd6d16f09b9a825c3d710fcf068f2ebfbf0e1425c87cf"}
+      },
+      "styles": {
+        "body": {"font_size_pt": 9.75, "font_weight": 400, "line_height": 1.18, "italic": false},
+        "name": {"font_size_pt": 17.0, "font_weight": 700, "line_height": 1.12, "italic": false},
+        "contact": {"font_size_pt": 9.0, "font_weight": 400, "line_height": 1.15, "italic": false},
+        "section_heading": {"font_size_pt": 11.5, "font_weight": 700, "line_height": 1.08, "italic": false},
+        "item_heading": {"font_size_pt": 9.75, "font_weight": 700, "line_height": 1.18, "italic": false},
+        "item_subheading": {"font_size_pt": 9.5, "font_weight": 400, "line_height": 1.18, "italic": true},
+        "date": {"font_size_pt": 9.5, "font_weight": 400, "line_height": 1.18, "italic": false}
+      },
+      "spacing_mm": {"header_after_mm": 1.2, "section_before_mm": 1.2, "section_after_mm": 0.7, "item_after_mm": 0.45, "raw_text_before_mm": 0.25, "bullet_before_mm": 0.2, "bullet_after_mm": 0.0, "heading_border_mm": 0.25},
+      "bullet": {"marker_width_mm": 2.0, "indent_mm": 0.3, "gap_mm": 1.5, "target_ratio": 0.667, "gate_ratio": 0.667},
+      "pagination": {"keep_section_heading_with_first_item": true, "avoid_item_break_inside": true, "orphans": 2, "widows": 2},
+      "density": {"minimum": 0.8, "target": 0.88, "maximum": 0.95}
+    },
+    {
+      "template_id": "resume-sparse",
+      "profile_version": "resume-sparse-v1",
+      "profile_hash": "5335cd4ad831203f9c86e4507be3c1d09b57bb7da646b44a560d439a36a659a3",
+      "page": {"width_mm": 210.0, "height_mm": 297.0, "orientation": "portrait"},
+      "padding_mm": {"top": 14.0, "right": 14.0, "bottom": 14.0, "left": 14.0},
+      "content": {"width_mm": 182.0, "height_mm": 269.0},
+      "fonts": {
+        "chinese": {"family": "SimSun", "file_id": "simsun.ttc", "checksum_sha256": "120a51d2b14eb588700a21e15fc301f0ea55d7c1a4e1f3ae61db83b7c8d42cd6"},
+        "english": {"family": "Times New Roman", "file_id": "times.ttf", "checksum_sha256": "2cff2a03d8034801979dd6d16f09b9a825c3d710fcf068f2ebfbf0e1425c87cf"}
+      },
+      "styles": {
+        "body": {"font_size_pt": 11.25, "font_weight": 400, "line_height": 1.25, "italic": false},
+        "name": {"font_size_pt": 21.0, "font_weight": 700, "line_height": 1.15, "italic": false},
+        "contact": {"font_size_pt": 10.5, "font_weight": 400, "line_height": 1.22, "italic": false},
+        "section_heading": {"font_size_pt": 13.5, "font_weight": 700, "line_height": 1.15, "italic": false},
+        "item_heading": {"font_size_pt": 11.25, "font_weight": 700, "line_height": 1.25, "italic": false},
+        "item_subheading": {"font_size_pt": 10.75, "font_weight": 400, "line_height": 1.25, "italic": true},
+        "date": {"font_size_pt": 10.75, "font_weight": 400, "line_height": 1.25, "italic": false}
+      },
+      "spacing_mm": {"header_after_mm": 3.0, "section_before_mm": 3.5, "section_after_mm": 1.8, "item_after_mm": 2.0, "raw_text_before_mm": 0.8, "bullet_before_mm": 0.9, "bullet_after_mm": 0.35, "heading_border_mm": 0.45},
+      "bullet": {"marker_width_mm": 2.0, "indent_mm": 0.3, "gap_mm": 1.5, "target_ratio": 0.667, "gate_ratio": 0.667},
+      "pagination": {"keep_section_heading_with_first_item": true, "avoid_item_break_inside": true, "orphans": 2, "widows": 2},
+      "density": {"minimum": 0.52, "target": 0.68, "maximum": 0.9}
+    }
+  ]
+}

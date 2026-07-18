@@ -43,6 +43,14 @@ class Settings(BaseSettings):
     resume_target_page_usage_ratio: float = Field(default=0.88, ge=0.0, le=1.0)
     resume_max_page_usage_ratio: float = Field(default=0.95, ge=0.0, le=1.0)
     resume_candidate_pool_target_ratio: float = Field(default=1.20, ge=1.0)
+    # Staged A/B path: generate independent experience bullet pools concurrently,
+    # then assemble one deterministic resume. Keep disabled until production
+    # latency/quality baselines confirm the provider has sufficient concurrency.
+    resume_parallel_generation_enabled: bool = False
+    resume_generation_max_concurrency: int = Field(default=3, ge=1, le=4)
+    resume_parallel_min_experiences: int = Field(default=2, ge=2, le=4)
+    # Enable only when the frontend preview/print renderer supports resume-sparse-v1.
+    resume_sparse_template_enabled: bool = False
 
     # Resume generation observability (P0). Raw payload capture is never
     # permitted in production, even if an environment variable enables it.

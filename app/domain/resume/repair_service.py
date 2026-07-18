@@ -9,7 +9,13 @@ from typing import Any
 
 from app.domain.resume.layout_models import LayoutReport
 from app.domain.resume.layout_service import ResumeLayoutService
-from app.domain.resume.repair_models import BulletRepairBatch, BulletRepairCandidate
+from app.domain.resume.repair_models import (
+    BulletRepairBatch,
+    BulletRepairCandidate,
+    BulletRepairCandidateDiagnostic,
+    BulletRepairEvaluation,
+    RepairRejectionCode,
+)
 
 _NUMBER = re.compile(r"(?<!\w)\d+(?:[.,]\d+)?%?")
 
@@ -35,16 +41,38 @@ class ResumeBulletRepairService:
         experiences: list[dict[str, Any]],
         content_budget: dict[str, Any] | None = None,
     ) -> dict[str, Any] | None:
+        return self.evaluate_batch(
+            structured,
+            report,
+            batch,
+            experiences=experiences,
+            content_budget=content_budget,
+        ).structure
+
+    def evaluate_batch(
+        self,
+        structured: dict[str, Any],
+        report: LayoutReport,
+        batch: BulletRepairBatch,
+        *,
+        experiences: list[dict[str, Any]],
+        content_budget: dict[str, Any] | None = None,
+    ) -> BulletRepairEvaluation:
         failing_ids = {
             fit.bullet_id
             for fit in report.bullet_fits
             if fit.status in {"too_short", "awkward_wrap"}
         }
         if not failing_ids:
-            return None
+            return BulletRepairEvaluation(batch_rejection_codes=["no_failing_bullets"])
         repair_ids = [repair.bullet_id for repair in batch.repairs]
-        if len(repair_ids) != len(set(repair_ids)) or set(repair_ids) != failing_ids:
-            return None
+        batch_codes: list[RepairRejectionCode] = []
+        if len(repair_ids) != len(set(repair_ids)):
+            batch_codes.append("duplicate_repair_id")
+        if set(repair_ids) != failing_ids:
+            batch_codes.append("repair_id_mismatch")
+        if batch_codes:
+            return BulletRepairEvaluation(batch_rejection_codes=batch_codes)
 
         candidate = deepcopy(structured)
         locations = _bullet_locations(candidate)
@@ -55,14 +83,20 @@ class ResumeBulletRepairService:
         }
         allowed_facts = _allowed_fact_ids(content_budget or {})
         language = str(candidate.get("language") or "zh-CN")
+        diagnostics: list[BulletRepairCandidateDiagnostic] = []
 
         for repair in batch.repairs:
             location = locations.get(repair.bullet_id)
             if location is None:
-                return None
+                return BulletRepairEvaluation(
+                    batch_rejection_codes=["unknown_bullet"], candidates=diagnostics
+                )
             source = sources.get(location.source_experience_id)
             if source is None:
-                return None
+                return BulletRepairEvaluation(
+                    batch_rejection_codes=["unknown_source_experience"],
+                    candidates=diagnostics,
+                )
             current_fact_ids = {
                 str(value) for value in location.bullet.get("source_fact_ids") or [] if value
             }
@@ -74,7 +108,7 @@ class ResumeBulletRepairService:
                 if value
             }
             allowed_numbers = set(_NUMBER.findall(_source_blob(source)))
-            selected = self._select_candidate(
+            selected, candidate_diagnostics = self._select_candidate(
                 repair.candidates,
                 bullet_id=repair.bullet_id,
                 location=location,
@@ -83,14 +117,18 @@ class ResumeBulletRepairService:
                 required_requirement_ids=current_requirement_ids,
                 allowed_numbers=allowed_numbers,
             )
+            diagnostics.extend(candidate_diagnostics)
             if selected is None:
-                return None
+                return BulletRepairEvaluation(
+                    batch_rejection_codes=["no_passing_candidate"],
+                    candidates=diagnostics,
+                )
             location.bullet["text"] = selected.text.strip().rstrip("。.")
             location.bullet["source_fact_ids"] = list(dict.fromkeys(selected.source_fact_ids))
             location.bullet["matched_jd_requirement_ids"] = list(
                 dict.fromkeys(selected.matched_jd_requirement_ids)
             )
-        return candidate
+        return BulletRepairEvaluation(structure=candidate, candidates=diagnostics)
 
     def _select_candidate(
         self,
@@ -102,22 +140,35 @@ class ResumeBulletRepairService:
         permitted_fact_ids: set[str],
         required_requirement_ids: set[str],
         allowed_numbers: set[str],
-    ) -> BulletRepairCandidate | None:
-        ranked: list[tuple[tuple[object, ...], BulletRepairCandidate]] = []
+    ) -> tuple[BulletRepairCandidate | None, list[BulletRepairCandidateDiagnostic]]:
+        ranked: list[
+            tuple[tuple[object, ...], int, BulletRepairCandidate, BulletRepairCandidateDiagnostic]
+        ] = []
+        diagnostics: list[BulletRepairCandidateDiagnostic] = []
         original_text = str(location.bullet.get("text") or "")
-        for value in candidates:
+        for index, value in enumerate(candidates):
             text = value.text.strip()
             fact_ids = {str(item) for item in value.source_fact_ids if item}
             requirement_ids = {str(item) for item in value.matched_jd_requirement_ids if item}
+            rejection_codes: list[RepairRejectionCode] = []
             if not fact_ids.issubset(permitted_fact_ids):
-                continue
+                rejection_codes.append("fact_id_not_allowed")
             if permitted_fact_ids and not fact_ids:
-                continue
+                rejection_codes.append("grounding_missing")
             if requirement_ids != required_requirement_ids:
-                continue
+                rejection_codes.append("coverage_mismatch")
             if not set(_NUMBER.findall(text)).issubset(allowed_numbers):
-                continue
+                rejection_codes.append("number_not_allowed")
             if text.endswith((".", "。")):
+                rejection_codes.append("terminal_period")
+            if rejection_codes:
+                diagnostics.append(
+                    BulletRepairCandidateDiagnostic(
+                        bullet_id=bullet_id,
+                        candidate_index=index,
+                        rejection_codes=rejection_codes,
+                    )
+                )
                 continue
             fit = self._layout.measure_bullet_fit(
                 text,
@@ -127,14 +178,34 @@ class ResumeBulletRepairService:
                 language=language,
             )
             if fit.status != "pass":
+                diagnostics.append(
+                    BulletRepairCandidateDiagnostic(
+                        bullet_id=bullet_id,
+                        candidate_index=index,
+                        rejection_codes=["layout_not_pass"],
+                        fit_status=fit.status,
+                        last_line_ratio=fit.last_line_ratio,
+                    )
+                )
                 continue
+            diagnostic = BulletRepairCandidateDiagnostic(
+                bullet_id=bullet_id,
+                candidate_index=index,
+                fit_status=fit.status,
+                last_line_ratio=fit.last_line_ratio,
+            )
+            diagnostics.append(diagnostic)
             rank = (
                 abs(fit.last_line_ratio - fit.target_ratio),
                 abs(len(text) - len(original_text)),
                 text,
             )
-            ranked.append((rank, value))
-        return min(ranked, key=lambda item: item[0])[1] if ranked else None
+            ranked.append((rank, index, value, diagnostic))
+        if not ranked:
+            return None, diagnostics
+        _rank, selected_index, selected, _diagnostic = min(ranked, key=lambda item: item[0])
+        diagnostics[selected_index] = diagnostics[selected_index].model_copy(update={"selected": True})
+        return selected, diagnostics
 
 
 def _bullet_locations(structured: dict[str, Any]) -> dict[str, _BulletLocation]:

@@ -6,6 +6,7 @@ Flow:
   layout_measure → fact_check → coverage_check → self_review → quality_gate
 """
 
+import asyncio
 import json
 import logging
 import math
@@ -25,6 +26,12 @@ from app.domain.resume.content_style import normalize_resume_narrative_punctuati
 from app.domain.resume.layout_models import LayoutConstraint, LayoutReport
 from app.domain.resume.layout_optimizer import ResumeLayoutOptimizer
 from app.domain.resume.layout_profile import DEFAULT_RESUME_LAYOUT_PROFILE
+from app.domain.resume.layout_templates import (
+    STANDARD_RESUME_TEMPLATE,
+    ResumeTemplateDefinition,
+    get_resume_template,
+    select_resume_template,
+)
 from app.domain.resume.models import ResumeVariantCreate
 from app.domain.resume.render import render_structured_to_markdown
 from app.domain.resume.repair_models import BulletRepairBatch
@@ -36,6 +43,7 @@ from app.graphs.streaming import (
     emit_thinking,
     get_optional_stream_writer,
 )
+from app.providers.base import LLMProvider
 from app.providers.factory import get_provider
 from app.tools.actions import capabilities as action_capabilities
 from app.tools.actions.models import VariantInput
@@ -134,6 +142,7 @@ async def cot_planning_node(state: ResumeGenerationState) -> dict[str, object]:
         "layout_constraint": layout_constraint.model_dump(),
         "layout_profile_version": DEFAULT_RESUME_LAYOUT_PROFILE.version,
         "layout_profile_hash": DEFAULT_RESUME_LAYOUT_PROFILE.profile_hash,
+        "layout_template_id": STANDARD_RESUME_TEMPLATE.template_id,
     }
 
 
@@ -477,14 +486,31 @@ async def draft_generation_node(state: ResumeGenerationState) -> dict[str, objec
     writer = get_optional_stream_writer() or buffered_events.append
     emit_thinking(writer, "正在生成并组织简历内容…")
 
-    llm_structure: _LlmResumeStructure = await provider.chat_structured(
-        [
-            {"role": "system", "content": _DRAFT_SYSTEM_PROMPT.format(lang=lang_instruction)},
-            {"role": "user", "content": "\n\n".join(prompt_parts)},
-        ],
-        _LlmResumeStructure,
-        temperature=0.2,
-    )
+    llm_structure: _LlmResumeStructure | None = None
+    draft_strategy = "whole_resume"
+    if settings.resume_parallel_generation_enabled and not revision_instruction:
+        try:
+            llm_structure = await _generate_resume_by_experience(
+                provider,
+                experiences=experiences,
+                content_budget=content_budget,
+                jd_requirements=jd_requirements,
+                language=preferred_lang,
+                fallback_contact=profile_contact,
+            )
+        except Exception:
+            logger.exception("Parallel experience generation failed; falling back to whole resume")
+        if llm_structure is not None:
+            draft_strategy = "parallel_experience_drafts"
+    if llm_structure is None:
+        llm_structure = await provider.chat_structured(
+            [
+                {"role": "system", "content": _DRAFT_SYSTEM_PROMPT.format(lang=lang_instruction)},
+                {"role": "user", "content": "\n\n".join(prompt_parts)},
+            ],
+            _LlmResumeStructure,
+            temperature=0.2,
+        )
     llm_structure = llm_structure.model_copy(update={"language": preferred_lang})
     previous_structured = state.get("previous_structured")
     structured = _assign_structure_ids(
@@ -542,8 +568,10 @@ async def draft_generation_node(state: ResumeGenerationState) -> dict[str, objec
         "generation_call_count": state.get("generation_call_count", 0) + 1,
         "layout_profile_version": DEFAULT_RESUME_LAYOUT_PROFILE.version,
         "layout_profile_hash": DEFAULT_RESUME_LAYOUT_PROFILE.profile_hash,
+        "layout_template_id": STANDARD_RESUME_TEMPLATE.template_id,
         "quality_status": None,
         "quality_issues": [],
+        "generation_strategy": draft_strategy,
     }
 
 
@@ -654,7 +682,7 @@ async def layout_measure_node(
     writer = get_optional_stream_writer()
     if writer is not None:
         emit_thinking(writer, "正在检查 A4 版面与每条要点的换行…")
-    constraint = LayoutConstraint.model_validate(
+    base_constraint = LayoutConstraint.model_validate(
         state.get("layout_constraint") or LayoutConstraint().model_dump()
     )
     experience_scores = {
@@ -663,19 +691,43 @@ async def layout_measure_node(
         if isinstance(value, dict) and value.get("experience_id")
     }
     normalized_structure = normalize_resume_narrative_punctuation(structured)
-    optimized = ResumeLayoutOptimizer(layout_service).optimize(
+    template = get_resume_template(normalized_structure.get("layout_template_id"))
+    active_constraint = _constraint_for_template(base_constraint, template)
+    normalized_structure["layout_template_id"] = template.template_id
+    normalized_structure["layout_profile_version"] = template.profile.version
+    normalized_structure["layout_profile_hash"] = template.profile.profile_hash
+    active_layout = layout_service.with_profile(template.profile)
+    optimized = ResumeLayoutOptimizer(active_layout).optimize(
         normalized_structure,
-        constraint,
+        active_constraint,
         experience_scores,
     )
+    if (
+        settings.resume_sparse_template_enabled
+        and template.template_id == STANDARD_RESUME_TEMPLATE.template_id
+    ):
+        selected = select_resume_template(optimized.maximum_usage_ratio)
+        if selected.template_id != template.template_id:
+            template = selected
+            active_constraint = _constraint_for_template(base_constraint, template)
+            sparse_structure = dict(normalized_structure)
+            sparse_structure["layout_template_id"] = template.template_id
+            sparse_structure["layout_profile_version"] = template.profile.version
+            sparse_structure["layout_profile_hash"] = template.profile.profile_hash
+            active_layout = layout_service.with_profile(template.profile)
+            optimized = ResumeLayoutOptimizer(active_layout).optimize(
+                sparse_structure,
+                active_constraint,
+                experience_scores,
+            )
     fitted_structure = optimized.structure
     report = optimized.report
     usage = report.pages[0].usage_ratio if report.pages else 0.0
     fitted_structure["layout_usage_ratio"] = usage
     fitted_structure["layout_target_band"] = {
-        "minimum": constraint.minimum_page_usage_ratio,
-        "target": constraint.target_page_usage_ratio,
-        "maximum": constraint.maximum_page_usage_ratio,
+        "minimum": active_constraint.minimum_page_usage_ratio,
+        "target": active_constraint.target_page_usage_ratio,
+        "maximum": active_constraint.maximum_page_usage_ratio,
     }
     content = _render_structured_to_markdown(fitted_structure)
     recorder = current_recorder()
@@ -696,7 +748,11 @@ async def layout_measure_node(
         updated_variants.append(variant)
     fit_status = "fit"
     if not optimized.fits_target_band:
-        fit_status = "underfilled" if usage < constraint.minimum_page_usage_ratio else "overfilled"
+        fit_status = (
+            "underfilled"
+            if usage < active_constraint.minimum_page_usage_ratio
+            else "overfilled"
+        )
     return {
         "variants": updated_variants,
         "resume_structure": fitted_structure,
@@ -706,7 +762,24 @@ async def layout_measure_node(
         "maximum_candidate_usage_ratio": optimized.maximum_usage_ratio,
         "layout_profile_version": report.profile_version,
         "layout_profile_hash": report.profile_hash,
+        "layout_template_id": template.template_id,
+        "layout_constraint": active_constraint.model_dump(),
     }
+
+
+def _constraint_for_template(
+    base: LayoutConstraint,
+    template: ResumeTemplateDefinition,
+) -> LayoutConstraint:
+    if template.template_id == STANDARD_RESUME_TEMPLATE.template_id:
+        return base
+    return base.model_copy(
+        update={
+            "minimum_page_usage_ratio": template.minimum_page_usage_ratio,
+            "target_page_usage_ratio": template.target_page_usage_ratio,
+            "maximum_page_usage_ratio": template.maximum_page_usage_ratio,
+        }
+    )
 
 
 def layout_route(state: ResumeGenerationState) -> str:
@@ -786,19 +859,39 @@ async def layout_revision_node(
         BulletRepairBatch,
         temperature=0.1,
     )
-    structured = ResumeBulletRepairService(layout_service).apply_batch(
+    evaluation = ResumeBulletRepairService(layout_service).evaluate_batch(
         current,
         report,
         repaired,
         experiences=experiences,
         content_budget=state.get("content_budget") or {},
     )
+    structured = evaluation.structure
+    diagnostics = [value.model_dump(mode="json") for value in evaluation.candidates]
+    rejection_codes = evaluation.rejection_codes
+    with observation_span(
+        "layout_calls",
+        "layout.repair_validation",
+        attributes={
+            "candidate_count": len(evaluation.candidates),
+            "accepted_candidate_count": sum(
+                not value.rejection_codes for value in evaluation.candidates
+            ),
+            "rejected_candidate_count": sum(
+                bool(value.rejection_codes) for value in evaluation.candidates
+            ),
+            "repair_rejection_codes": rejection_codes,
+        },
+    ):
+        pass
     common = {
         "layout_revision_iteration": state.get("layout_revision_iteration", 0) + 1,
         "local_repair_call_count": state.get("local_repair_call_count", 0) + 1,
         "generation_call_count": state.get("generation_call_count", 0) + 1,
         "layout_report": None,
         "layout_status": None,
+        "local_repair_diagnostics": diagnostics,
+        "local_repair_rejection_codes": rejection_codes,
     }
     if structured is None:
         return {**common, "local_repair_status": "rejected"}
@@ -1883,9 +1976,10 @@ async def content_gap_node(
         report.page_available_height_mm * constraint.minimum_page_usage_ratio
         - (report.pages[0].used_height_mm if report.pages else 0.0),
     )
+    template = get_resume_template(state.get("layout_template_id"))
     missing_lines = max(
         0,
-        math.ceil(missing_mm / DEFAULT_RESUME_LAYOUT_PROFILE.body.line_height_mm),
+        math.ceil(missing_mm / template.profile.body.line_height_mm),
     )
     budgets = [
         value
@@ -2238,6 +2332,157 @@ class _LlmResumeStructure(BaseModel):
     sections: list[_LlmSection] = Field(default_factory=list)
 
 
+class _LlmExperienceDraft(BaseModel):
+    source_experience_id: str
+    bullets: list[_LlmBullet] = Field(default_factory=list)
+
+
+async def _generate_resume_by_experience(
+    provider: LLMProvider,
+    *,
+    experiences: list[dict[str, object]],
+    content_budget: dict[str, object],
+    jd_requirements: list[dict[str, object]],
+    language: str,
+    fallback_contact: dict[str, object] | None,
+) -> _LlmResumeStructure | None:
+    """Fan out narrative writing by experience and assemble one grounded draft."""
+    narrative = [
+        value
+        for value in _sort_experiences_by_recency(experiences)
+        if str(value.get("category") or "other") != "education"
+        and (value.get("content") or value.get("claims"))
+    ]
+    if len(narrative) < settings.resume_parallel_min_experiences:
+        return None
+
+    raw_budgets = content_budget.get("experiences")
+    budgets = raw_budgets if isinstance(raw_budgets, list) else []
+    budget_by_id = {
+        str(value.get("experience_id")): value
+        for value in budgets
+        if isinstance(value, dict) and value.get("experience_id")
+    }
+    valid_requirement_ids = {
+        str(value.get("id") or f"req-{index + 1}")
+        for index, value in enumerate(jd_requirements)
+        if isinstance(value, dict)
+    }
+    semaphore = asyncio.Semaphore(settings.resume_generation_max_concurrency)
+
+    async def generate_one(experience: dict[str, object]) -> _LlmExperienceDraft:
+        source_id = str(experience.get("id") or "")
+        budget = budget_by_id.get(source_id, {})
+        allowed_fact_ids = {
+            str(value.get("id"))
+            for value in budget.get("facts") or []
+            if isinstance(value, dict) and value.get("id")
+        }
+        payload = {
+            "source_experience": {
+                "id": source_id,
+                "category": experience.get("category"),
+                "title": experience.get("title"),
+                "organization": experience.get("organization"),
+                "role": experience.get("role"),
+                "content": experience.get("content"),
+                "claims": experience.get("claims") or [],
+                "tags": experience.get("tags") or [],
+            },
+            "allowed_facts": budget.get("facts") or [],
+            "target_candidate_bullets": budget.get("target_candidate_bullets") or 4,
+            "jd_requirements": jd_requirements,
+            "language": language,
+        }
+        async with semaphore:
+            result: _LlmExperienceDraft = await provider.chat_structured(
+                [
+                    {
+                        "role": "system",
+                        "content": (
+                            "Return JSON only. Write a candidate bullet pool for exactly one "
+                            "resume experience. Use only the supplied source and allowed fact "
+                            "IDs. Preserve every number and named technology verbatim. Each "
+                            "source_fact_id must be allowed, each matched_jd_requirement_id must "
+                            "come from the supplied JD list, and source_experience_id must equal "
+                            "the supplied id. Produce distinct grounded angles, ordered by value. "
+                            "Do not end bullets with a Chinese or English full stop. Aim for "
+                            "36-52 full-width characters in Chinese or 80-115 characters in "
+                            "English when the evidence supports that length; never add filler."
+                        ),
+                    },
+                    {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
+                ],
+                _LlmExperienceDraft,
+                temperature=0.2,
+            )
+        if result.source_experience_id != source_id or not result.bullets:
+            raise ValueError("Parallel experience draft returned an invalid source or no bullets")
+        for bullet in result.bullets:
+            if not set(bullet.source_fact_ids).issubset(allowed_fact_ids):
+                raise ValueError("Parallel experience draft returned an unknown fact id")
+            if not set(bullet.matched_jd_requirement_ids).issubset(valid_requirement_ids):
+                raise ValueError("Parallel experience draft returned an unknown requirement id")
+        return result
+
+    drafts = await asyncio.gather(*(generate_one(value) for value in narrative))
+    sections: dict[str, list[_LlmSectionItem]] = {
+        "education": [],
+        "experience": [],
+        "project": [],
+        "other": [],
+    }
+    draft_by_id = {value.source_experience_id: value for value in drafts}
+    for experience in _sort_experiences_by_recency(experiences):
+        source_id = str(experience.get("id") or "")
+        category = str(experience.get("category") or "other")
+        section_type = {
+            "work": "experience",
+            "project": "project",
+            "education": "education",
+        }.get(category, "other")
+        draft = draft_by_id.get(source_id)
+        raw_text = str(experience.get("content") or "").strip() if category == "education" else None
+        sections[section_type].append(
+            _LlmSectionItem(
+                title=_optional_string(experience.get("title")),
+                organization=_optional_string(experience.get("organization")),
+                role=_optional_string(experience.get("role")),
+                location=_optional_string(experience.get("location")),
+                start_date=_optional_string(experience.get("start_date")),
+                end_date=_optional_string(experience.get("end_date")),
+                source_experience_id=source_id,
+                bullets=list(draft.bullets) if draft is not None else [],
+                raw_text=raw_text or None,
+            )
+        )
+
+    llm_sections = [
+        _LlmSection(type=cast("_SectionType", section_type), items=items)
+        for section_type, items in sections.items()
+        if items
+    ]
+    skill_values: set[str] = set()
+    for experience in experiences:
+        raw_tags = experience.get("tags")
+        tags = raw_tags if isinstance(raw_tags, list) else []
+        skill_values.update(str(tag).strip() for tag in tags if str(tag).strip())
+    skills = sorted(skill_values)
+    if skills:
+        llm_sections.append(
+            _LlmSection(
+                type="skills",
+                items=[_LlmSectionItem(raw_text=" · ".join(skills))],
+            )
+        )
+    contact = _LlmContact.model_validate(fallback_contact) if fallback_contact else None
+    return _LlmResumeStructure(language=language, contact=contact, sections=llm_sections)
+
+
+def _optional_string(value: object) -> str | None:
+    return str(value) if value is not None and str(value).strip() else None
+
+
 _DEFAULT_HEADINGS_ZH: dict[str, str] = {
     "education": "教育背景",
     "experience": "实习/工作经历",
@@ -2371,6 +2616,7 @@ def _assign_structure_ids(
             "sections": sections,
             "layout_profile_version": DEFAULT_RESUME_LAYOUT_PROFILE.version,
             "layout_profile_hash": DEFAULT_RESUME_LAYOUT_PROFILE.profile_hash,
+            "layout_template_id": STANDARD_RESUME_TEMPLATE.template_id,
         }
     )
 

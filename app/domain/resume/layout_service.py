@@ -58,6 +58,16 @@ class ResumeLayoutService:
         self._wrap_cache = _wrap_cache if _wrap_cache is not None else {}
         self._cache_stats = _cache_stats if _cache_stats is not None else {}
 
+    def with_profile(self, profile: ResumeLayoutProfile) -> ResumeLayoutService:
+        """Use another registered template profile while sharing safe metric caches."""
+        return ResumeLayoutService(
+            self.metrics,
+            profile,
+            _width_cache=self._width_cache,
+            _wrap_cache=self._wrap_cache,
+            _cache_stats=self._cache_stats,
+        )
+
     def measure_bullet_fit(
         self,
         text: str,

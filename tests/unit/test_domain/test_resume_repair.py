@@ -116,6 +116,40 @@ def test_local_repair_rejects_unknown_fact_number_or_coverage(candidate) -> None
     assert result is None
 
 
+def test_local_repair_reports_candidate_rejection_without_retaining_text() -> None:
+    layout, structured, report, experiences, budget = _repair_context()
+    batch = BulletRepairBatch.model_validate(
+        {
+            "repairs": [
+                {
+                    "bullet_id": "bullet-1",
+                    "candidates": [
+                        {
+                            "text": "A" * 68 + " 999.",
+                            "source_fact_ids": ["unknown-fact"],
+                            "matched_jd_requirement_ids": ["req-new"],
+                        }
+                    ],
+                }
+            ]
+        }
+    )
+
+    evaluation = ResumeBulletRepairService(layout).evaluate_batch(
+        structured, report, batch, experiences=experiences, content_budget=budget
+    )
+
+    assert evaluation.structure is None
+    assert evaluation.batch_rejection_codes == ["no_passing_candidate"]
+    assert evaluation.candidates[0].rejection_codes == [
+        "fact_id_not_allowed",
+        "coverage_mismatch",
+        "number_not_allowed",
+        "terminal_period",
+    ]
+    assert "text" not in evaluation.candidates[0].model_dump()
+
+
 def test_local_repair_requires_exactly_all_failing_bullet_ids() -> None:
     layout, structured, report, experiences, budget = _repair_context()
     batch = BulletRepairBatch.model_validate(

@@ -47,6 +47,11 @@ class OpenAIFormatProvider:
         self._model = model or settings.llm_model
         self._api_key = api_key or settings.llm_api_key
         self._base_url = base_url or settings.llm_base_url
+        # A provider/model endpoint normally supports one stable structured-output
+        # protocol. Remember the last successful mode so subsequent logical calls
+        # do not repeat the compatibility ladder. A later failure still falls back
+        # through the remaining modes and refreshes the cached capability.
+        self._structured_protocol: str | None = None
 
         self._llm = ChatOpenAI(
             model=self._model,
@@ -188,16 +193,25 @@ class OpenAIFormatProvider:
                 },
             ) as span:
                 first_error: Exception | None = None
-                for method in ("json_mode", "json_schema"):
+                preferred_protocol = getattr(self, "_structured_protocol", None)
+                for method in _structured_protocol_order(preferred_protocol):
                     protocol_stats = RetryStats()
                     try:
-                        structured_llm = _structured_with_raw(bound, schema, method)
-                        raw_result = await run_with_transport_retries(
-                            partial(_invoke, structured_llm, lc_msgs),
-                            max_retries=settings.llm_max_transport_retries,
-                            stats=protocol_stats,
-                        )
-                        parsed, raw_message = _unwrap_structured_result(raw_result)
+                        if method == "json_prompt":
+                            parsed, raw_message = await self._chat_structured_via_json_prompt(
+                                normalized_messages,
+                                schema,
+                                temperature=temperature,
+                                retry_stats=protocol_stats,
+                            )
+                        else:
+                            structured_llm = _structured_with_raw(bound, schema, method)
+                            raw_result = await run_with_transport_retries(
+                                partial(_invoke, structured_llm, lc_msgs),
+                                max_retries=settings.llm_max_transport_retries,
+                                stats=protocol_stats,
+                            )
+                            parsed, raw_message = _unwrap_structured_result(raw_result)
                     except Exception as exc:
                         first_error = first_error or exc
                         protocol_attempts.append(
@@ -210,6 +224,8 @@ class OpenAIFormatProvider:
                         )
                         total_stats.attempts += protocol_stats.attempts
                         total_stats.retries += protocol_stats.retries
+                        if method == preferred_protocol:
+                            self._structured_protocol = None
                         continue
                     protocol_attempts.append(
                         {
@@ -220,6 +236,7 @@ class OpenAIFormatProvider:
                     )
                     total_stats.attempts += protocol_stats.attempts
                     total_stats.retries += protocol_stats.retries
+                    self._structured_protocol = method
                     _update_span(
                         span,
                         stats=total_stats,
@@ -228,53 +245,15 @@ class OpenAIFormatProvider:
                         protocol_attempts=protocol_attempts,
                     )
                     return parsed
-
-                protocol_stats = RetryStats()
-                try:
-                    parsed, raw_message = await self._chat_structured_via_json_prompt(
-                        normalized_messages,
-                        schema,
-                        temperature=temperature,
-                        retry_stats=protocol_stats,
-                    )
-                except Exception as fallback_error:
-                    protocol_attempts.append(
-                        {
-                            "protocol": "json_prompt",
-                            "status": "failed",
-                            "transport_attempts": protocol_stats.attempts,
-                            "error_category": fallback_error.__class__.__name__,
-                        }
-                    )
-                    total_stats.attempts += protocol_stats.attempts
-                    total_stats.retries += protocol_stats.retries
-                    _update_span(
-                        span,
-                        stats=total_stats,
-                        protocol="json_prompt",
-                        protocol_attempts=protocol_attempts,
-                    )
-                    raise ExternalServiceError(
-                        f"Structured LLM call failed: {first_error}; "
-                        f"prompt fallback failed: {fallback_error}"
-                    ) from fallback_error
-                protocol_attempts.append(
-                    {
-                        "protocol": "json_prompt",
-                        "status": "completed",
-                        "transport_attempts": protocol_stats.attempts,
-                    }
-                )
-                total_stats.attempts += protocol_stats.attempts
-                total_stats.retries += protocol_stats.retries
                 _update_span(
                     span,
                     stats=total_stats,
-                    message=raw_message,
-                    protocol="json_prompt",
+                    protocol=preferred_protocol or "json_mode",
                     protocol_attempts=protocol_attempts,
                 )
-                return parsed
+                raise ExternalServiceError(
+                    f"Structured LLM call failed for all supported protocols: {first_error}"
+                )
         except ExternalServiceError:
             raise
         except Exception as exc:
@@ -574,3 +553,11 @@ def _ensure_json_mode_prompt(messages: list[dict[str, str]]) -> list[dict[str, s
         {"role": "system", "content": "Return the answer as a valid JSON object."},
     )
     return normalized
+
+
+def _structured_protocol_order(preferred: str | None) -> tuple[str, ...]:
+    """Return the compatibility ladder with a known-good mode first."""
+    supported = ("json_mode", "json_schema", "json_prompt")
+    if preferred not in supported:
+        return supported
+    return (preferred, *(method for method in supported if method != preferred))

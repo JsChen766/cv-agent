@@ -20,10 +20,12 @@ class StructuredResult(BaseModel):
 
 
 class FakeStructuredInvocation:
-    def __init__(self, method: str) -> None:
+    def __init__(self, method: str, calls: list[str]) -> None:
         self.method = method
+        self.calls = calls
 
     async def ainvoke(self, messages: list[Any]) -> dict[str, object]:
+        self.calls.append(self.method)
         if self.method == "json_mode":
             raise ValueError("unsupported protocol")
         raw = AIMessage(
@@ -38,13 +40,16 @@ class FakeStructuredInvocation:
 
 
 class FakeBound:
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
     def bind(self, **kwargs: Any) -> FakeBound:
         return self
 
     def with_structured_output(
         self, schema: type, *, method: str, include_raw: bool = False
     ) -> FakeStructuredInvocation:
-        return FakeStructuredInvocation(method)
+        return FakeStructuredInvocation(method, self.calls)
 
 
 def _recorder() -> TraceRecorder:
@@ -78,6 +83,31 @@ async def test_structured_fallback_is_one_logical_call_with_two_physical_request
     assert calls[0]["protocol"] == "json_schema"
     assert calls[0]["input_tokens"] == 11
     assert calls[0]["output_tokens"] == 5
+
+
+async def test_structured_protocol_success_is_cached_for_later_calls() -> None:
+    provider = OpenAIFormatProvider.__new__(OpenAIFormatProvider)
+    provider._model = "fake-model"
+    provider._llm = FakeBound()
+    recorder = _recorder()
+
+    with recorder.activate(node="draft_generation"):
+        first = await provider.chat_structured(
+            [{"role": "system", "content": "Return JSON."}],
+            StructuredResult,
+        )
+        second = await provider.chat_structured(
+            [{"role": "system", "content": "Return JSON."}],
+            StructuredResult,
+        )
+
+    assert first == second == StructuredResult(value=7)
+    assert provider._llm.calls == ["json_mode", "json_schema", "json_schema"]
+    calls = recorder.metrics()["llm_calls"]
+    assert calls[0]["protocol_attempt_count"] == 2
+    assert calls[1]["protocol_attempt_count"] == 1
+    assert calls[1]["physical_request_count"] == 1
+    assert calls[1]["protocol"] == "json_schema"
 
 
 async def test_transport_retry_counts_attempts_and_skips_schema_errors() -> None:
