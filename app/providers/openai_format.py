@@ -13,6 +13,7 @@ from collections.abc import AsyncIterator, Sequence
 from functools import partial
 from typing import Any, cast
 
+from json_repair import repair_json
 from langchain_core.messages import BaseMessage
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 from pydantic import SecretStr
@@ -52,6 +53,7 @@ class OpenAIFormatProvider:
         # do not repeat the compatibility ladder. A later failure still falls back
         # through the remaining modes and refreshes the cached capability.
         self._structured_protocol: str | None = None
+        self._json_schema_supported = _endpoint_supports_json_schema(self._base_url)
 
         self._llm = ChatOpenAI(
             model=self._model,
@@ -194,15 +196,21 @@ class OpenAIFormatProvider:
             ) as span:
                 first_error: Exception | None = None
                 preferred_protocol = getattr(self, "_structured_protocol", None)
-                for method in _structured_protocol_order(preferred_protocol):
+                supports_json_schema = getattr(self, "_json_schema_supported", True)
+                for method in _structured_protocol_order(
+                    preferred_protocol,
+                    supports_json_schema=supports_json_schema,
+                ):
                     protocol_stats = RetryStats()
                     try:
                         if method == "json_prompt":
-                            parsed, raw_message = await self._chat_structured_via_json_prompt(
-                                normalized_messages,
-                                schema,
-                                temperature=temperature,
-                                retry_stats=protocol_stats,
+                            parsed, raw_message, repaired = (
+                                await self._chat_structured_via_json_prompt(
+                                    normalized_messages,
+                                    schema,
+                                    temperature=temperature,
+                                    retry_stats=protocol_stats,
+                                )
                             )
                         else:
                             structured_llm = _structured_with_raw(bound, schema, method)
@@ -211,7 +219,10 @@ class OpenAIFormatProvider:
                                 max_retries=settings.llm_max_transport_retries,
                                 stats=protocol_stats,
                             )
-                            parsed, raw_message = _unwrap_structured_result(raw_result)
+                            parsed, raw_message, repaired = _unwrap_structured_result(
+                                raw_result,
+                                schema,
+                            )
                     except Exception as exc:
                         first_error = first_error or exc
                         protocol_attempts.append(
@@ -232,6 +243,7 @@ class OpenAIFormatProvider:
                             "protocol": method,
                             "status": "completed",
                             "transport_attempts": protocol_stats.attempts,
+                            "repaired": repaired,
                         }
                     )
                     total_stats.attempts += protocol_stats.attempts
@@ -252,8 +264,10 @@ class OpenAIFormatProvider:
                     protocol_attempts=protocol_attempts,
                 )
                 raise ExternalServiceError(
-                    f"Structured LLM call failed for all supported protocols: {first_error}"
-                )
+                    "模型未能返回有效的结构化内容，自动修复与重试均已失败，请重试。",
+                    code="llm_structured_output_failed",
+                    retryable=True,
+                ) from first_error
         except ExternalServiceError:
             raise
         except Exception as exc:
@@ -266,7 +280,7 @@ class OpenAIFormatProvider:
         *,
         temperature: float,
         retry_stats: RetryStats,
-    ) -> tuple[Any, Any]:
+    ) -> tuple[Any, Any, bool]:
         schema_json = "{}"
         if hasattr(schema, "model_json_schema"):
             schema_json = json.dumps(schema.model_json_schema(), ensure_ascii=False)
@@ -290,13 +304,11 @@ class OpenAIFormatProvider:
             max_retries=settings.llm_max_transport_retries,
             stats=retry_stats,
         )
-        json_text = self._extract_json_object(text_from_content(raw_message.content))
-
-        if hasattr(schema, "model_validate_json"):
-            return schema.model_validate_json(json_text), raw_message
-        if hasattr(schema, "model_validate"):
-            return schema.model_validate(json.loads(json_text)), raw_message
-        return json.loads(json_text), raw_message
+        parsed, repaired = _parse_structured_text(
+            text_from_content(raw_message.content),
+            schema,
+        )
+        return parsed, raw_message, repaired
 
 
     @staticmethod
@@ -476,13 +488,54 @@ def _structured_with_raw(bound: Any, schema: type, method: str) -> Any:
         return bound.with_structured_output(schema, method=method)
 
 
-def _unwrap_structured_result(result: Any) -> tuple[Any, Any | None]:
+def _unwrap_structured_result(result: Any, schema: type) -> tuple[Any, Any | None, bool]:
     if isinstance(result, dict) and "parsed" in result:
         parsing_error = result.get("parsing_error")
         if parsing_error is not None:
+            raw_message = result.get("raw")
+            raw_text = text_from_content(getattr(raw_message, "content", ""))
+            if raw_text:
+                try:
+                    parsed, _ = _parse_structured_text(raw_text, schema, force_repair=True)
+                    return parsed, raw_message, True
+                except Exception as repair_error:
+                    raise parsing_error from repair_error
             raise parsing_error
-        return result.get("parsed"), result.get("raw")
-    return result, getattr(result, "raw", None)
+        parsed = result.get("parsed")
+        if parsed is None:
+            raise ValueError("Structured LLM response did not contain a parsed value")
+        return parsed, result.get("raw"), False
+    return result, getattr(result, "raw", None), False
+
+
+def _parse_structured_text(
+    text: str,
+    schema: type,
+    *,
+    force_repair: bool = False,
+) -> tuple[Any, bool]:
+    """Validate model JSON, repairing syntax only after strict parsing fails."""
+    if not force_repair:
+        try:
+            json_text = OpenAIFormatProvider._extract_json_object(text)
+            if hasattr(schema, "model_validate_json"):
+                return schema.model_validate_json(json_text), False
+            value = json.loads(json_text)
+            if hasattr(schema, "model_validate"):
+                return schema.model_validate(value), False
+            return value, False
+        except Exception:
+            pass
+
+    repaired_value = repair_json(
+        text,
+        return_objects=True,
+        ensure_ascii=False,
+        skip_json_loads=force_repair,
+    )
+    if hasattr(schema, "model_validate"):
+        return schema.model_validate(repaired_value), True
+    return repaired_value, True
 
 
 async def _invoke(runnable: Any, messages: list[BaseMessage]) -> Any:
@@ -555,9 +608,22 @@ def _ensure_json_mode_prompt(messages: list[dict[str, str]]) -> list[dict[str, s
     return normalized
 
 
-def _structured_protocol_order(preferred: str | None) -> tuple[str, ...]:
+def _structured_protocol_order(
+    preferred: str | None,
+    *,
+    supports_json_schema: bool = True,
+) -> tuple[str, ...]:
     """Return the compatibility ladder with a known-good mode first."""
-    supported = ("json_mode", "json_schema", "json_prompt")
-    if preferred not in supported:
+    supported = (
+        ("json_mode", "json_schema", "json_prompt")
+        if supports_json_schema
+        else ("json_mode", "json_prompt")
+    )
+    if preferred is None or preferred not in supported:
         return supported
     return (preferred, *(method for method in supported if method != preferred))
+
+
+def _endpoint_supports_json_schema(base_url: str | None) -> bool:
+    """DeepSeek currently supports json_object but rejects json_schema."""
+    return not base_url or "deepseek.com" not in base_url.lower()

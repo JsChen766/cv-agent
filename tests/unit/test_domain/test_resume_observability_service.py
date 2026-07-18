@@ -56,6 +56,7 @@ def _observation(**updates: object) -> BrowserLayoutObservationInput:
         "run_id": "rgrun-1",
         "surface": "preview",
         "measurement_version": "browser-layout-observation-v1",
+        "template_id": "resume-standard",
         "profile_version": "resume-template-v2",
         "profile_hash": "profile-hash",
         "fonts_ready": True,
@@ -154,3 +155,105 @@ def test_duplicate_bullet_ids_and_non_finite_values_are_rejected() -> None:
     invalid["overflow_px"] = float("nan")
     with pytest.raises(ValueError):
         BrowserLayoutObservationInput.model_validate(invalid)
+
+
+def _structured() -> dict[str, object]:
+    return {
+        "language": "zh-CN",
+        "layout_template_id": "resume-standard",
+        "layout_profile_version": "resume-template-v2",
+        "layout_profile_hash": "profile-hash",
+        "contact": {"name": "测试用户"},
+        "sections": [
+            {
+                "id": "section-1",
+                "type": "experience",
+                "heading": "工作经历",
+                "items": [
+                    {
+                        "id": "item-1",
+                        "title": "后端工程师",
+                        "bullets": [
+                            {"id": "bullet-1", "text": "负责平台服务开发"}
+                        ],
+                    }
+                ],
+            }
+        ],
+    }
+
+
+async def test_browser_verification_passes_only_after_server_side_checks() -> None:
+    service = ResumeObservabilityService(FakeRepository())
+
+    result = await service.verify_layout_observation(
+        user_id="user-1",
+        resume_id="resume-1",
+        variant_id="variant-1",
+        structured=_structured(),
+        observation=_observation(
+            loaded_font_families=["SimSun"],
+            bullets=[
+                BrowserBulletMeasurement(
+                    bullet_id="bullet-1",
+                    line_count=2,
+                    last_line_width_px=210,
+                    available_line_width_px=300,
+                )
+            ],
+        ),
+    )
+
+    assert result.status == "passed"
+    assert result.violations == []
+
+
+async def test_browser_verification_returns_only_tail_failures_as_repairable() -> None:
+    service = ResumeObservabilityService(FakeRepository())
+
+    result = await service.verify_layout_observation(
+        user_id="user-1",
+        resume_id="resume-1",
+        variant_id="variant-1",
+        structured=_structured(),
+        observation=_observation(
+            loaded_font_families=["SimSun"],
+            bullets=[
+                BrowserBulletMeasurement(
+                    bullet_id="bullet-1",
+                    line_count=2,
+                    last_line_width_px=120,
+                    available_line_width_px=300,
+                )
+            ],
+        ),
+    )
+
+    assert result.status == "needs_revision"
+    assert result.repairable_bullet_ids == ["bullet-1"]
+    assert [violation.code for violation in result.violations] == ["bullet_tail"]
+
+
+async def test_browser_verification_rejects_stale_candidate_ids() -> None:
+    service = ResumeObservabilityService(FakeRepository())
+
+    result = await service.verify_layout_observation(
+        user_id="user-1",
+        resume_id="resume-1",
+        variant_id="variant-1",
+        structured=_structured(),
+        observation=_observation(
+            loaded_font_families=["SimSun"],
+            bullets=[
+                BrowserBulletMeasurement(
+                    bullet_id="stale-bullet",
+                    line_count=1,
+                    last_line_width_px=250,
+                    available_line_width_px=300,
+                )
+            ],
+        ),
+    )
+
+    assert result.status == "failed"
+    assert any(violation.code == "candidate_mismatch" for violation in result.violations)

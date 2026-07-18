@@ -12,6 +12,7 @@ from app.domain.resume.models import (
     ResumeVariant,
     ResumeVariantCreate,
     ResumeVariantPatch,
+    ResumeVariantQualityStatus,
 )
 
 
@@ -77,6 +78,15 @@ class ResumeRepository(Protocol):
         ...
 
     async def list_variants(self, resume_id: str) -> builtins.list[ResumeVariant]: ...
+
+    async def update_variant_quality(
+        self,
+        user_id: str,
+        variant_id: str,
+        status: ResumeVariantQualityStatus,
+        issues: builtins.list[dict[str, Any]],
+        gate_version: str,
+    ) -> ResumeVariant: ...
 
     async def patch_variant_structured(
         self,

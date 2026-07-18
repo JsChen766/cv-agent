@@ -128,13 +128,14 @@ class PostgresResumeObservabilityRepository:
                 """
                 INSERT INTO resume_layout_observations (
                     id, run_id, user_id, resume_id, variant_id, surface,
-                    measurement_version, profile_version, profile_hash, profile_matches,
+                    measurement_version, template_id, profile_version, profile_hash, profile_matches,
                     fonts_ready, loaded_font_families, page_count, overflow_px,
-                    page_usage_ratio, viewport, page_metrics, bullet_metrics,
+                    used_height_px, available_height_px, page_usage_ratio,
+                    viewport, page_metrics, bullet_metrics,
                     client_build, observed_at, idempotency_key
                 )
-                SELECT $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12::jsonb,$13,$14,$15,
-                       $16::jsonb,$17::jsonb,$18::jsonb,$19,$20,$21
+                SELECT $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13::jsonb,$14,$15,$16,$17,
+                       $18,$19::jsonb,$20::jsonb,$21::jsonb,$22,$23,$24
                 FROM resume_variants rv
                 JOIN resumes r ON r.id=rv.resume_id
                 WHERE r.user_id=$3 AND r.id=$4 AND rv.id=$5
@@ -148,6 +149,7 @@ class PostgresResumeObservabilityRepository:
                 data.variant_id,
                 data.surface,
                 data.measurement_version,
+                data.template_id,
                 data.profile_version,
                 data.profile_hash,
                 data.profile_matches,
@@ -155,6 +157,8 @@ class PostgresResumeObservabilityRepository:
                 data.loaded_font_families,
                 data.page_count,
                 data.overflow_px,
+                data.used_height_px,
+                data.available_height_px,
                 data.page_usage_ratio,
                 data.viewport,
                 data.page_metrics,
@@ -195,6 +199,7 @@ def _observation_result(
         variant_id=row["variant_id"],
         surface=row["surface"],
         measurement_version=row["measurement_version"],
+        template_id=row["template_id"],
         profile_version=row["profile_version"],
         profile_hash=row["profile_hash"],
         profile_matches=row["profile_matches"],
@@ -202,6 +207,8 @@ def _observation_result(
         loaded_font_families=parse_jsonb(row["loaded_font_families"]) or [],
         page_count=row["page_count"],
         overflow_px=float(row["overflow_px"]),
+        used_height_px=float(row["used_height_px"]),
+        available_height_px=float(row["available_height_px"]),
         page_usage_ratio=float(row["page_usage_ratio"]),
         viewport=parse_jsonb(row["viewport"]) or {},
         page_metrics=parse_jsonb(row["page_metrics"]) or [],

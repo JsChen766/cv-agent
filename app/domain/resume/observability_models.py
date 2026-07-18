@@ -19,6 +19,7 @@ RunTrigger = Literal[
     "tool_bypass",
 ]
 ObservationSurface = Literal["preview", "review", "print", "application_package"]
+BrowserLayoutVerificationStatus = Literal["passed", "needs_revision", "failed"]
 
 
 class ResumeGenerationRunStart(BaseModel):
@@ -84,6 +85,7 @@ class BrowserLayoutObservationInput(BaseModel):
     run_id: str | None = None
     surface: ObservationSurface
     measurement_version: Literal["browser-layout-observation-v1"]
+    template_id: Literal["resume-standard", "resume-sparse"]
     profile_version: str = Field(min_length=1)
     profile_hash: str = Field(min_length=1)
     fonts_ready: bool
@@ -137,6 +139,7 @@ class BrowserLayoutObservationCreate(BaseModel):
     variant_id: str
     surface: ObservationSurface
     measurement_version: str
+    template_id: str
     profile_version: str
     profile_hash: str
     profile_matches: bool
@@ -144,6 +147,8 @@ class BrowserLayoutObservationCreate(BaseModel):
     loaded_font_families: list[str]
     page_count: int
     overflow_px: float
+    used_height_px: float
+    available_height_px: float
     page_usage_ratio: float
     viewport: dict[str, object]
     page_metrics: list[dict[str, Any]]
@@ -156,6 +161,20 @@ class BrowserLayoutObservationCreate(BaseModel):
 class BrowserLayoutObservationResult(BrowserLayoutObservationCreate):
     created_at: datetime
     created: bool = True
+
+
+class BrowserLayoutViolation(BaseModel):
+    code: str
+    message: str
+    bullet_id: str | None = None
+    retryable: bool = False
+
+
+class BrowserLayoutVerificationResult(BaseModel):
+    status: BrowserLayoutVerificationStatus
+    observation: BrowserLayoutObservationResult
+    violations: list[BrowserLayoutViolation] = Field(default_factory=list)
+    repairable_bullet_ids: list[str] = Field(default_factory=list)
 
 
 class ResumeGenerationRunRecord(BaseModel):

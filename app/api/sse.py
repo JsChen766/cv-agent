@@ -15,6 +15,7 @@ from typing import Any, Protocol, cast
 
 from langchain_core.runnables import RunnableConfig
 
+from app.core.errors import AppError
 from app.core.events import format_sse
 from app.core.types import generate_id
 from app.graphs.activity import (
@@ -37,6 +38,7 @@ class EventStreamingGraph(Protocol):
         *,
         config: RunnableConfig,
         version: str,
+        stream_mode: list[str],
     ) -> AsyncIterator[dict[str, Any]]: ...
 
 
@@ -162,10 +164,11 @@ async def stream_graph_events(
     except Exception as exc:
         logger.exception("Graph execution error: %s", exc)
         failed_node_name = _failed_node_from_exception(exc, active_node_name)
+        error_code = exc.code if isinstance(exc, AppError) else "GRAPH_ERROR"
         failed_event = {
             "event": "agent.failed",
             "error": {
-                "code": "GRAPH_ERROR",
+                "code": error_code,
                 "message": str(exc),
                 "node": failed_node_name,
             },

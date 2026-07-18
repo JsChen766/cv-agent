@@ -352,6 +352,37 @@ class PostgresResumeRepository:
             )
         return [self._to_variant(r) for r in rows]
 
+    async def update_variant_quality(
+        self,
+        user_id: str,
+        variant_id: str,
+        status: ResumeVariantQualityStatus,
+        issues: builtins.list[dict[str, Any]],
+        gate_version: str,
+    ) -> ResumeVariant:
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                UPDATE resume_variants AS rv
+                SET quality_status = $1,
+                    quality_issues = $2::jsonb,
+                    quality_gate_version = $3
+                FROM resumes AS r
+                WHERE rv.id = $4
+                  AND rv.resume_id = r.id
+                  AND r.user_id = $5
+                RETURNING rv.*
+                """,
+                status,
+                issues,
+                gate_version,
+                variant_id,
+                user_id,
+            )
+        if row is None:
+            raise ValueError(f"Resume variant not found: {variant_id}")
+        return self._to_variant(row)
+
     async def patch_variant_structured(
         self,
         variant_id: str,

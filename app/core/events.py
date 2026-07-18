@@ -194,6 +194,7 @@ class _AgentInterruptBase(TypedDict):
         "jd_save",
         "resume_edit_review",
         "resume_content_gap",
+        "resume_layout_verification",
     ]
     message: str
     action_options: list[InterruptActionOption]
@@ -210,6 +211,7 @@ class AgentInterruptEvent(_AgentInterruptBase, total=False):
     missing_height_mm: float  # for resume_content_gap
     approximate_missing_lines: int  # for resume_content_gap
     suggestions: list[dict[str, Any]]  # for resume_content_gap
+    verification_iteration: int  # for resume_layout_verification
 
 
 class AgentCompletedEvent(TypedDict):

@@ -18,6 +18,7 @@ from app.domain.resume.models import (
     ResumeVariantCreate,
     ResumeVariantPatch,
     ResumeVariantPatchResult,
+    ResumeVariantQualityStatus,
 )
 from app.domain.resume.patch import apply_patch_operations
 from app.domain.resume.render import render_structured_to_markdown
@@ -183,6 +184,23 @@ class ResumeService:
 
     async def list_variants(self, resume_id: str) -> list[ResumeVariant]:
         return await self._repo.list_variants(resume_id)
+
+    async def set_variant_quality(
+        self,
+        user_id: str,
+        variant_id: str,
+        status: ResumeVariantQualityStatus,
+        issues: list[dict[str, Any]],
+        *,
+        gate_version: str = "browser-layout-gate-v1",
+    ) -> ResumeVariant:
+        return await self._repo.update_variant_quality(
+            user_id,
+            variant_id,
+            status,
+            issues,
+            gate_version,
+        )
 
     async def patch_variant(
         self,

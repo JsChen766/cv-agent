@@ -11,7 +11,11 @@ from pydantic import BaseModel
 
 from app.core.observability import TraceRecorder
 from app.providers.local_embedding import LocalEmbeddingProvider
-from app.providers.openai_format import OpenAIFormatProvider
+from app.providers.openai_format import (
+    OpenAIFormatProvider,
+    _endpoint_supports_json_schema,
+    _structured_protocol_order,
+)
 from app.providers.retry import RetryStats, run_with_transport_retries
 
 
@@ -50,6 +54,36 @@ class FakeBound:
         self, schema: type, *, method: str, include_raw: bool = False
     ) -> FakeStructuredInvocation:
         return FakeStructuredInvocation(method, self.calls)
+
+
+class FakeMalformedStructuredInvocation:
+    def __init__(self, calls: list[str]) -> None:
+        self.calls = calls
+
+    async def ainvoke(self, messages: list[Any]) -> dict[str, object]:
+        self.calls.append("json_mode")
+        return {
+            "parsed": None,
+            "raw": AIMessage(
+                content='{"value": 7,}',
+                usage_metadata={"input_tokens": 9, "output_tokens": 5, "total_tokens": 14},
+            ),
+            "parsing_error": ValueError("invalid json output"),
+        }
+
+
+class FakeMalformedBound:
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    def bind(self, **kwargs: Any) -> FakeMalformedBound:
+        return self
+
+    def with_structured_output(
+        self, schema: type, *, method: str, include_raw: bool = False
+    ) -> FakeMalformedStructuredInvocation:
+        assert method == "json_mode"
+        return FakeMalformedStructuredInvocation(self.calls)
 
 
 def _recorder() -> TraceRecorder:
@@ -108,6 +142,43 @@ async def test_structured_protocol_success_is_cached_for_later_calls() -> None:
     assert calls[1]["protocol_attempt_count"] == 1
     assert calls[1]["physical_request_count"] == 1
     assert calls[1]["protocol"] == "json_schema"
+
+
+async def test_structured_invalid_json_is_repaired_without_protocol_fallback() -> None:
+    provider = OpenAIFormatProvider.__new__(OpenAIFormatProvider)
+    provider._model = "fake-model"
+    provider._llm = FakeMalformedBound()
+    provider._json_schema_supported = False
+    recorder = _recorder()
+
+    with recorder.activate(node="draft_generation"):
+        result = await provider.chat_structured(
+            [{"role": "system", "content": "Return JSON."}],
+            StructuredResult,
+        )
+
+    assert result == StructuredResult(value=7)
+    assert provider._llm.calls == ["json_mode"]
+    calls = recorder.metrics()["llm_calls"]
+    assert calls[0]["protocol_attempt_count"] == 1
+    assert calls[0]["physical_request_count"] == 1
+    assert calls[0]["protocol_attempts"] == [
+        {
+            "protocol": "json_mode",
+            "status": "completed",
+            "transport_attempts": 1,
+            "repaired": True,
+        }
+    ]
+
+
+def test_deepseek_endpoint_skips_unsupported_json_schema_protocol() -> None:
+    assert not _endpoint_supports_json_schema("https://api.deepseek.com")
+    assert _endpoint_supports_json_schema("https://api.openai.com/v1")
+    assert _structured_protocol_order(None, supports_json_schema=False) == (
+        "json_mode",
+        "json_prompt",
+    )
 
 
 async def test_transport_retry_counts_attempts_and_skips_schema_errors() -> None:

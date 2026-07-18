@@ -49,6 +49,11 @@ class ResumeGenerationState(MainState, total=False):
     local_repair_status: str | None
     local_repair_diagnostics: list[dict[str, Any]]
     local_repair_rejection_codes: list[str]
+    browser_staged_variant_id: str | None
+    browser_verification_status: str | None
+    browser_verification_iteration: int
+    browser_layout_observation: dict[str, Any] | None
+    browser_layout_violations: list[dict[str, Any]]
 
     # Generation output
     variants: list[dict[str, Any]]

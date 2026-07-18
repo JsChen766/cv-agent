@@ -23,7 +23,7 @@ from app.core.events import AgentInterruptEvent
 from app.core.observability import current_recorder, observation_span
 from app.domain.resume.content_budget import build_resume_content_budget
 from app.domain.resume.content_style import normalize_resume_narrative_punctuation
-from app.domain.resume.layout_models import LayoutConstraint, LayoutReport
+from app.domain.resume.layout_models import LayoutConstraint, LayoutReport, LayoutViolation
 from app.domain.resume.layout_optimizer import ResumeLayoutOptimizer
 from app.domain.resume.layout_profile import DEFAULT_RESUME_LAYOUT_PROFILE
 from app.domain.resume.layout_templates import (
@@ -33,6 +33,7 @@ from app.domain.resume.layout_templates import (
     select_resume_template,
 )
 from app.domain.resume.models import ResumeVariantCreate
+from app.domain.resume.observability_models import BrowserLayoutObservationInput
 from app.domain.resume.render import render_structured_to_markdown
 from app.domain.resume.repair_models import BulletRepairBatch
 from app.domain.resume.repair_service import ResumeBulletRepairService
@@ -337,7 +338,11 @@ async def draft_generation_node(state: ResumeGenerationState) -> dict[str, objec
     intent = state.get("intent_description", "Generate a tailored resume")
     jd_text = state.get("jd_text") or ""
     jd_requirements = state.get("jd_requirements") or []
-    experiences = state.get("relevant_experiences") or []
+    experiences = (
+        state.get("relevant_experiences")
+        or state.get("assembled_experiences")
+        or []
+    )
     guidelines = state.get("guideline_instructions") or []
     prefs = state.get("user_preferences") or []
     plan = state.get("matching_plan") or {}
@@ -488,7 +493,7 @@ async def draft_generation_node(state: ResumeGenerationState) -> dict[str, objec
 
     llm_structure: _LlmResumeStructure | None = None
     draft_strategy = "whole_resume"
-    if settings.resume_parallel_generation_enabled and not revision_instruction:
+    if settings.resume_parallel_generation_enabled:
         try:
             llm_structure = await _generate_resume_by_experience(
                 provider,
@@ -497,6 +502,9 @@ async def draft_generation_node(state: ResumeGenerationState) -> dict[str, objec
                 jd_requirements=jd_requirements,
                 language=preferred_lang,
                 fallback_contact=profile_contact,
+                revision_instruction=(
+                    str(revision_instruction) if revision_instruction else None
+                ),
             )
         except Exception:
             logger.exception("Parallel experience generation failed; falling back to whole resume")
@@ -1855,31 +1863,56 @@ async def persist_resume_draft_node(
     title = variant.get("title")
     content = variant.get("content")
     structured = variant.get("structured")
+    staged_variant_id = state.get("browser_staged_variant_id")
     with observation_span(
         "persistence_calls",
         "resume.variant_insert",
         attributes={"read_write": "write"},
     ):
-        saved = await services.resume.save_variant(
-            resume_id,
-            ResumeVariantCreate.model_validate(
-                {
-                    "jd_id": jd_id,
-                    "title": (
-                        title if isinstance(title, str) and title else "AI Generated Variant"
-                    ),
-                    "content": content if isinstance(content, str) else "",
-                    "structured": structured if isinstance(structured, dict) else None,
-                    "score": variant.get("score", {}),
-                    "evidence_summary": variant.get("evidence_summary", []),
-                    "risk_summary": variant.get("risk_summary", []),
-                    "missing_info": variant.get("missing_info", []),
-                    "gate_status": "passed",
-                    "quality_issues": state.get("quality_issues", []),
-                    "quality_gate_version": "resume-quality-gate-v1",
-                }
-            ),
-        )
+        if isinstance(staged_variant_id, str) and isinstance(structured, dict):
+            saved = await services.resume.save_variant_structure(
+                state.get("user_id", ""),
+                staged_variant_id,
+                structured,
+                title=title if isinstance(title, str) else None,
+            )
+        else:
+            browser_gate_pending = settings.resume_layout_hard_gate_enabled
+            saved = await services.resume.save_variant(
+                resume_id,
+                ResumeVariantCreate.model_validate(
+                    {
+                        "jd_id": jd_id,
+                        "title": (
+                            title
+                            if isinstance(title, str) and title
+                            else "AI Generated Variant"
+                        ),
+                        "content": content if isinstance(content, str) else "",
+                        "structured": structured if isinstance(structured, dict) else None,
+                        "score": variant.get("score", {}),
+                        "evidence_summary": variant.get("evidence_summary", []),
+                        "risk_summary": variant.get("risk_summary", []),
+                        "missing_info": variant.get("missing_info", []),
+                        "gate_status": "unverified" if browser_gate_pending else "passed",
+                        "quality_issues": (
+                            [
+                                {
+                                    "code": "browser_verification_pending",
+                                    "message": "Waiting for a matching browser DOM observation.",
+                                }
+                            ]
+                            if browser_gate_pending
+                            else state.get("quality_issues", [])
+                        ),
+                        "quality_gate_version": (
+                            "browser-layout-gate-v1"
+                            if browser_gate_pending
+                            else "resume-quality-gate-v1"
+                        ),
+                    }
+                ),
+            )
     saved_variants = [saved.model_dump(mode="json")]
 
     # Persist workspace ids so future turns don't lose them even if client omits them.
@@ -1927,7 +1960,235 @@ async def persist_resume_draft_node(
                 ),
             },
         )
-    return {"workspace": workspace, "variants": saved_variants}
+    return {
+        "workspace": workspace,
+        "variants": saved_variants,
+        "browser_staged_variant_id": saved.id,
+    }
+
+
+async def browser_layout_gate_node(
+    state: ResumeGenerationState, config: RunnableConfig | None = None
+) -> dict[str, object]:
+    """Suspend for a real browser measurement before exposing review/accept."""
+    if not settings.resume_layout_hard_gate_enabled:
+        return {"browser_verification_status": "passed"}
+
+    from langgraph.types import interrupt
+
+    services = services_from_config(config)
+    variants = state.get("variants") or []
+    variant = variants[0] if len(variants) == 1 else None
+    workspace = dict(state.get("workspace", {}))
+    resume_id = workspace.get("resume_id")
+    variant_id = variant.get("id") if isinstance(variant, dict) else None
+    structured = variant.get("structured") if isinstance(variant, dict) else None
+    if (
+        services is None
+        or services.resume_observability is None
+        or not isinstance(resume_id, str)
+        or not isinstance(variant_id, str)
+        or not isinstance(structured, dict)
+    ):
+        return {
+            "quality_status": "failed",
+            "quality_issues": [
+                {
+                    "code": "browser_verification_unavailable",
+                    "message": "Browser layout verification could not be started.",
+                }
+            ],
+            "browser_verification_status": "failed",
+        }
+
+    interrupt_id = str(uuid.uuid4())
+    surface = (
+        "application_package"
+        if state.get("target_subgraph") == "application_package"
+        else "review"
+    )
+    payload = {
+        "interrupt_id": interrupt_id,
+        "type": "resume_layout_verification",
+        "message": "正在使用真实浏览器 DOM 校验页数、字体和 bullet 尾行。",
+        "resume": variant,
+        "variants": [],
+        "workspace": workspace,
+        "measurement_surface": surface,
+        "verification_iteration": state.get("browser_verification_iteration", 0),
+        "action_options": [
+            {
+                "id": "discard",
+                "label": "取消",
+                "description": "停止本次简历生成",
+            }
+        ],
+    }
+    resume_value = interrupt(payload)
+    if not isinstance(resume_value, dict) or resume_value.get("action") != "verify_layout":
+        issues = [
+            {
+                "code": "browser_verification_cancelled",
+                "message": "Browser layout verification was cancelled.",
+            }
+        ]
+        await services.resume.set_variant_quality(
+            state.get("user_id", ""), variant_id, "failed", issues
+        )
+        return {
+            "quality_status": "failed",
+            "quality_issues": issues,
+            "browser_verification_status": "failed",
+        }
+
+    raw_observation = resume_value.get("observation")
+    try:
+        observation = BrowserLayoutObservationInput.model_validate(raw_observation)
+    except ValidationError as exc:
+        issues = [
+            {
+                "code": "invalid_browser_observation",
+                "message": str(exc),
+            }
+        ]
+        await services.resume.set_variant_quality(
+            state.get("user_id", ""), variant_id, "failed", issues
+        )
+        return {
+            "quality_status": "failed",
+            "quality_issues": issues,
+            "browser_verification_status": "failed",
+        }
+    if observation.run_id is None and state.get("observability_run_id"):
+        observation = observation.model_copy(
+            update={"run_id": state.get("observability_run_id")}
+        )
+
+    verification = await services.resume_observability.verify_layout_observation(
+        user_id=state.get("user_id", ""),
+        resume_id=resume_id,
+        variant_id=variant_id,
+        structured=structured,
+        observation=observation,
+    )
+    issues = [violation.model_dump(mode="json") for violation in verification.violations]
+    iteration = state.get("browser_verification_iteration", 0) + 1
+    common: dict[str, object] = {
+        "browser_verification_iteration": iteration,
+        "browser_layout_observation": observation.model_dump(mode="json"),
+        "browser_layout_violations": issues,
+    }
+    if verification.status == "passed":
+        saved = await services.resume.set_variant_quality(
+            state.get("user_id", ""), variant_id, "passed", []
+        )
+        return {
+            **common,
+            "variants": [saved.model_dump(mode="json")],
+            "browser_verification_status": "passed",
+            "quality_status": "passed",
+            "quality_issues": [],
+        }
+
+    if verification.status == "needs_revision":
+        repaired_report = _browser_repair_report(
+            state.get("layout_report"),
+            observation,
+            set(verification.repairable_bullet_ids),
+        )
+        can_repair = (
+            repaired_report is not None
+            and state.get("layout_revision_iteration", 0)
+            < settings.max_layout_revision_iterations
+            and state.get("local_repair_call_count", 0)
+            < settings.max_resume_local_repair_calls
+        )
+        if can_repair:
+            await services.resume.set_variant_quality(
+                state.get("user_id", ""), variant_id, "needs_revision", issues
+            )
+            return {
+                **common,
+                "layout_report": repaired_report,
+                "browser_verification_status": "repair",
+                "quality_status": "failed",
+                "quality_issues": issues,
+            }
+
+    await services.resume.set_variant_quality(
+        state.get("user_id", ""), variant_id, "failed", issues
+    )
+    return {
+        **common,
+        "browser_verification_status": "failed",
+        "quality_status": "failed",
+        "quality_issues": issues,
+    }
+
+
+def _browser_repair_report(
+    raw_report: object,
+    observation: BrowserLayoutObservationInput,
+    failed_bullet_ids: set[str],
+) -> dict[str, object] | None:
+    try:
+        report = LayoutReport.model_validate(raw_report)
+    except ValidationError:
+        return None
+    observed = {bullet.bullet_id: bullet for bullet in observation.bullets}
+    bullet_fits = []
+    found: set[str] = set()
+    for fit in report.bullet_fits:
+        if fit.bullet_id not in failed_bullet_ids:
+            bullet_fits.append(fit)
+            continue
+        metric = observed.get(fit.bullet_id)
+        if metric is None:
+            return None
+        found.add(fit.bullet_id)
+        bullet_fits.append(
+            fit.model_copy(
+                update={
+                    "line_count": metric.line_count,
+                    "last_line_ratio": (
+                        metric.last_line_width_px / metric.available_line_width_px
+                    ),
+                    "status": "too_short",
+                    "recommendation": "rephrase",
+                }
+            )
+        )
+    if found != failed_bullet_ids:
+        return None
+    retained = [
+        violation
+        for violation in report.violations
+        if violation.bullet_id not in failed_bullet_ids
+    ]
+    retained.extend(
+        LayoutViolation(
+            code="bullet_too_short",
+            message="Browser DOM measured a bullet tail below the required ratio.",
+            bullet_id=bullet_id,
+        )
+        for bullet_id in sorted(failed_bullet_ids)
+    )
+    return report.model_copy(
+        update={
+            "bullet_fits": bullet_fits,
+            "violations": retained,
+            "status": "needs_revision",
+        }
+    ).model_dump(mode="json")
+
+
+def browser_layout_gate_route(state: ResumeGenerationState) -> str:
+    status = state.get("browser_verification_status")
+    if status == "passed":
+        return "passed"
+    if status == "repair":
+        return "repair"
+    return "failed"
 
 
 async def output_failure_node(state: ResumeGenerationState) -> dict[str, object]:
@@ -2345,17 +2606,9 @@ async def _generate_resume_by_experience(
     jd_requirements: list[dict[str, object]],
     language: str,
     fallback_contact: dict[str, object] | None,
+    revision_instruction: str | None,
 ) -> _LlmResumeStructure | None:
     """Fan out narrative writing by experience and assemble one grounded draft."""
-    narrative = [
-        value
-        for value in _sort_experiences_by_recency(experiences)
-        if str(value.get("category") or "other") != "education"
-        and (value.get("content") or value.get("claims"))
-    ]
-    if len(narrative) < settings.resume_parallel_min_experiences:
-        return None
-
     raw_budgets = content_budget.get("experiences")
     budgets = raw_budgets if isinstance(raw_budgets, list) else []
     budget_by_id = {
@@ -2363,6 +2616,39 @@ async def _generate_resume_by_experience(
         for value in budgets
         if isinstance(value, dict) and value.get("experience_id")
     }
+    ranked_budget_ids = [
+        str(value.get("experience_id"))
+        for value in sorted(
+            (value for value in budgets if isinstance(value, dict)),
+            key=lambda value: float(value.get("jd_match_score") or 0.0),
+            reverse=True,
+        )
+        if value.get("experience_id")
+        and int(value.get("target_candidate_bullets") or 0) > 0
+    ]
+    narrative_candidates = [
+        value
+        for value in _sort_experiences_by_recency(experiences)
+        if str(value.get("category") or "other") != "education"
+        and (value.get("content") or value.get("claims"))
+    ]
+    candidate_ids = {str(value.get("id") or "") for value in narrative_candidates}
+    selected_ranked_ids = [value for value in ranked_budget_ids if value in candidate_ids]
+    selected_ranked_ids.extend(
+        str(value.get("id") or "")
+        for value in narrative_candidates
+        if str(value.get("id") or "") not in selected_ranked_ids
+    )
+    selected_ranked_ids = selected_ranked_ids[: settings.resume_parallel_max_experiences]
+    selected_ids = set(selected_ranked_ids)
+    narrative = [
+        value
+        for value in narrative_candidates
+        if str(value.get("id") or "") in selected_ids
+    ]
+    if len(narrative) < settings.resume_parallel_min_experiences:
+        return None
+
     valid_requirement_ids = {
         str(value.get("id") or f"req-{index + 1}")
         for index, value in enumerate(jd_requirements)
@@ -2373,11 +2659,40 @@ async def _generate_resume_by_experience(
     async def generate_one(experience: dict[str, object]) -> _LlmExperienceDraft:
         source_id = str(experience.get("id") or "")
         budget = budget_by_id.get(source_id, {})
+        raw_allowed_facts = budget.get("facts") or _fallback_source_facts(experience)
+        allowed_facts = raw_allowed_facts if isinstance(raw_allowed_facts, list) else []
         allowed_fact_ids = {
             str(value.get("id"))
-            for value in budget.get("facts") or []
+            for value in allowed_facts
             if isinstance(value, dict) and value.get("id")
         }
+
+        def grounded_fallback() -> _LlmExperienceDraft:
+            target_count = max(
+                1,
+                min(int(budget.get("target_candidate_bullets") or 3), 3),
+            )
+            fallback_bullets: list[_LlmBullet] = []
+            for value in allowed_facts:
+                if not isinstance(value, dict) or not value.get("id") or not value.get("text"):
+                    continue
+                text = str(value["text"]).strip().rstrip("。. ")
+                if not text:
+                    continue
+                fallback_bullets.append(
+                    _LlmBullet(
+                        text=text,
+                        source_fact_ids=[str(value["id"])],
+                        matched_jd_requirement_ids=[],
+                    )
+                )
+                if len(fallback_bullets) >= target_count:
+                    break
+            return _LlmExperienceDraft(
+                source_experience_id=source_id,
+                bullets=fallback_bullets,
+            )
+
         payload = {
             "source_experience": {
                 "id": source_id,
@@ -2389,41 +2704,69 @@ async def _generate_resume_by_experience(
                 "claims": experience.get("claims") or [],
                 "tags": experience.get("tags") or [],
             },
-            "allowed_facts": budget.get("facts") or [],
+            "allowed_facts": allowed_facts,
             "target_candidate_bullets": budget.get("target_candidate_bullets") or 4,
             "jd_requirements": jd_requirements,
             "language": language,
+            "revision_instruction": revision_instruction,
         }
-        async with semaphore:
-            result: _LlmExperienceDraft = await provider.chat_structured(
-                [
-                    {
-                        "role": "system",
-                        "content": (
-                            "Return JSON only. Write a candidate bullet pool for exactly one "
-                            "resume experience. Use only the supplied source and allowed fact "
-                            "IDs. Preserve every number and named technology verbatim. Each "
-                            "source_fact_id must be allowed, each matched_jd_requirement_id must "
-                            "come from the supplied JD list, and source_experience_id must equal "
-                            "the supplied id. Produce distinct grounded angles, ordered by value. "
-                            "Do not end bullets with a Chinese or English full stop. Aim for "
-                            "36-52 full-width characters in Chinese or 80-115 characters in "
-                            "English when the evidence supports that length; never add filler."
-                        ),
-                    },
-                    {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
-                ],
-                _LlmExperienceDraft,
-                temperature=0.2,
+        try:
+            async with semaphore:
+                result: _LlmExperienceDraft = await provider.chat_structured(
+                    [
+                        {
+                            "role": "system",
+                            "content": (
+                                "Return JSON only. Write a candidate bullet pool for exactly one "
+                                "resume experience. Use only the supplied source and allowed fact "
+                                "IDs. Preserve every number and named technology verbatim. Each "
+                                "source_fact_id must be allowed, each matched_jd_requirement_id must "
+                                "come from the supplied JD list, and source_experience_id must equal "
+                                "the supplied id. Produce distinct grounded angles, ordered by value. "
+                                "Do not end bullets with a Chinese or English full stop. Aim for "
+                                "36-52 full-width characters in Chinese or 80-115 characters in "
+                                "English when the evidence supports that length; never add filler."
+                            ),
+                        },
+                        {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
+                    ],
+                    _LlmExperienceDraft,
+                    temperature=0.2,
+                )
+        except Exception as exc:
+            logger.warning(
+                "Experience draft generation failed for %s; using grounded fallback (%s)",
+                source_id,
+                type(exc).__name__,
             )
-        if result.source_experience_id != source_id or not result.bullets:
-            raise ValueError("Parallel experience draft returned an invalid source or no bullets")
+            return grounded_fallback()
+
+        sanitized_bullets: list[_LlmBullet] = []
         for bullet in result.bullets:
-            if not set(bullet.source_fact_ids).issubset(allowed_fact_ids):
-                raise ValueError("Parallel experience draft returned an unknown fact id")
-            if not set(bullet.matched_jd_requirement_ids).issubset(valid_requirement_ids):
-                raise ValueError("Parallel experience draft returned an unknown requirement id")
-        return result
+            fact_ids = [
+                value for value in bullet.source_fact_ids if value in allowed_fact_ids
+            ]
+            if not fact_ids:
+                continue
+            requirement_ids = [
+                value
+                for value in bullet.matched_jd_requirement_ids
+                if value in valid_requirement_ids
+            ]
+            sanitized_bullets.append(
+                bullet.model_copy(
+                    update={
+                        "source_fact_ids": fact_ids,
+                        "matched_jd_requirement_ids": requirement_ids,
+                    }
+                )
+            )
+        if not sanitized_bullets:
+            return grounded_fallback()
+        return _LlmExperienceDraft(
+            source_experience_id=source_id,
+            bullets=sanitized_bullets,
+        )
 
     drafts = await asyncio.gather(*(generate_one(value) for value in narrative))
     sections: dict[str, list[_LlmSectionItem]] = {
@@ -2442,6 +2785,8 @@ async def _generate_resume_by_experience(
             "education": "education",
         }.get(category, "other")
         draft = draft_by_id.get(source_id)
+        if category != "education" and draft is None:
+            continue
         raw_text = str(experience.get("content") or "").strip() if category == "education" else None
         sections[section_type].append(
             _LlmSectionItem(
@@ -2477,6 +2822,27 @@ async def _generate_resume_by_experience(
         )
     contact = _LlmContact.model_validate(fallback_contact) if fallback_contact else None
     return _LlmResumeStructure(language=language, contact=contact, sections=llm_sections)
+
+
+def _fallback_source_facts(experience: dict[str, object]) -> list[dict[str, str]]:
+    """Build deterministic fact ids when an older state lacks content-budget facts."""
+    source_id = str(experience.get("id") or "")
+    texts: list[str] = []
+    raw_claims = experience.get("claims")
+    claims = raw_claims if isinstance(raw_claims, list) else []
+    for claim in claims:
+        if isinstance(claim, dict) and claim.get("text"):
+            texts.append(str(claim["text"]).strip())
+    if not texts:
+        texts.extend(
+            line.strip()
+            for line in str(experience.get("content") or "").splitlines()
+            if line.strip()
+        )
+    return [
+        {"id": f"{source_id}-fact-{index}", "text": text}
+        for index, text in enumerate(texts, start=1)
+    ]
 
 
 def _optional_string(value: object) -> str | None:

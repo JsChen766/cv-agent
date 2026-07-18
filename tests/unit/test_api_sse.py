@@ -5,6 +5,7 @@ from typing import Any, cast
 from langchain_core.runnables import RunnableConfig
 
 from app.api.sse import stream_graph_events
+from app.core.errors import ExternalServiceError
 from app.graphs.state import MainState
 
 
@@ -288,6 +289,37 @@ async def test_stream_graph_events_reports_leaf_task_from_exception_notes() -> N
 
     assert failed["error"]["node"] == "classify"
     assert failed["error"]["message"] == "Structured LLM call failed"
+
+
+async def test_stream_graph_events_preserves_typed_app_error_code() -> None:
+    class TypedFailureGraph:
+        async def astream_events(self, *args: Any, **kwargs: Any):
+            raise ExternalServiceError(
+                "模型结构化输出失败，请重试。",
+                code="llm_structured_output_failed",
+            )
+            yield
+
+    initial_state: MainState = {
+        "thread_id": "thread-1",
+        "current_turn_id": "turn-1",
+        "messages": [],
+        "workspace": {},
+        "pending_sse_events": [],
+    }
+
+    chunks = [
+        chunk
+        async for chunk in stream_graph_events(TypedFailureGraph(), initial_state, config={})
+    ]
+    failed = next(
+        payload
+        for payload in (_payload(chunk) for chunk in chunks)
+        if payload["event"] == "agent.failed"
+    )
+
+    assert failed["error"]["code"] == "llm_structured_output_failed"
+    assert failed["error"]["message"] == "模型结构化输出失败，请重试。"
 
 
 def _payload(chunk: str) -> dict[str, Any]:

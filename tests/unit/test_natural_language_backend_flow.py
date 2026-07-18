@@ -288,7 +288,13 @@ async def test_resume_subgraph_interrupt_persisted_via_checkpointer() -> None:
     assert resume_result.get("workspace") == {"jd_id": "jd-1"}
 
 
-async def test_resume_review_accept_saves_variant_and_consumes_interrupt() -> None:
+async def test_resume_review_accept_saves_variant_and_consumes_interrupt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "app.graphs.resume.nodes.settings.resume_layout_hard_gate_enabled",
+        False,
+    )
     service = _FakeResumeService()
     services = ServiceContainer.model_construct(resume=service)
     checkpointer = MemorySaver()

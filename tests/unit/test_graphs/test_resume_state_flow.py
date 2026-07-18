@@ -58,6 +58,26 @@ class _ParallelDraftProvider:
         )
 
 
+class _InvalidParallelDraftProvider:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def chat_structured(self, messages, schema, **kwargs):
+        self.calls += 1
+        return schema.model_validate(
+            {
+                "source_experience_id": "wrong-source",
+                "bullets": [
+                    {
+                        "text": "Ungrounded model output",
+                        "source_fact_ids": ["unknown-fact"],
+                        "matched_jd_requirement_ids": ["unknown-requirement"],
+                    }
+                ],
+            }
+        )
+
+
 async def test_draft_regeneration_preserves_review_iteration(monkeypatch) -> None:
     monkeypatch.setattr("app.graphs.resume.nodes.get_provider", lambda: _DraftProvider())
     result = await draft_generation_node(
@@ -107,6 +127,7 @@ async def test_parallel_generation_fans_out_by_experience_and_keeps_one_variant(
     )
     monkeypatch.setattr("app.graphs.resume.nodes.settings.resume_parallel_min_experiences", 2)
     monkeypatch.setattr("app.graphs.resume.nodes.settings.resume_generation_max_concurrency", 2)
+    monkeypatch.setattr("app.graphs.resume.nodes.settings.resume_parallel_max_experiences", 4)
     experiences = [
         {
             "id": f"exp-{index}",
@@ -147,6 +168,149 @@ async def test_parallel_generation_fans_out_by_experience_and_keeps_one_variant(
         section["type"] for section in result["variants"][0]["structured"]["sections"]
     ]
     assert section_types == ["experience", "project", "skills"]
+
+
+async def test_parallel_generation_caps_calls_to_highest_ranked_experiences(
+    monkeypatch,
+) -> None:
+    provider = _ParallelDraftProvider()
+    monkeypatch.setattr("app.graphs.resume.nodes.get_provider", lambda: provider)
+    monkeypatch.setattr(
+        "app.graphs.resume.nodes.settings.resume_parallel_generation_enabled", True
+    )
+    monkeypatch.setattr("app.graphs.resume.nodes.settings.resume_parallel_min_experiences", 2)
+    monkeypatch.setattr("app.graphs.resume.nodes.settings.resume_generation_max_concurrency", 2)
+    monkeypatch.setattr("app.graphs.resume.nodes.settings.resume_parallel_max_experiences", 4)
+    experiences = [
+        {
+            "id": f"exp-{index}",
+            "category": "work",
+            "title": f"Experience {index}",
+            "content": f"Grounded fact {index}",
+            "claims": [{"text": f"Grounded fact {index}"}],
+        }
+        for index in range(1, 7)
+    ]
+    budget = {
+        "experiences": [
+            {
+                "experience_id": f"exp-{index}",
+                "jd_match_score": index / 10,
+                "target_candidate_bullets": 4,
+                "facts": [{"id": f"exp-{index}-fact-1", "text": f"Grounded fact {index}"}],
+            }
+            for index in range(1, 7)
+        ]
+    }
+
+    result = await draft_generation_node(
+        {
+            "relevant_experiences": experiences,
+            "content_budget": budget,
+            "user_profile": {"preferred_language": "en-US"},
+            "pending_sse_events": [],
+            "workspace": {},
+        }
+    )
+
+    assert provider.calls == 4
+    assert result["generation_strategy"] == "parallel_experience_drafts"
+    structured = result["variants"][0]["structured"]
+    generated_ids = {
+        item["source_experience_id"]
+        for section in structured["sections"]
+        for item in section["items"]
+        if item["bullets"]
+    }
+    assert generated_ids == {"exp-3", "exp-4", "exp-5", "exp-6"}
+    narrative_items = [
+        item
+        for section in structured["sections"]
+        if section["type"] != "skills"
+        for item in section["items"]
+    ]
+    assert len(narrative_items) == 4
+
+
+async def test_parallel_generation_uses_assembled_grounded_fallback_when_budget_is_missing(
+    monkeypatch,
+) -> None:
+    provider = _ParallelDraftProvider()
+    monkeypatch.setattr("app.graphs.resume.nodes.get_provider", lambda: provider)
+    monkeypatch.setattr(
+        "app.graphs.resume.nodes.settings.resume_parallel_generation_enabled", True
+    )
+    monkeypatch.setattr("app.graphs.resume.nodes.settings.resume_parallel_min_experiences", 2)
+    monkeypatch.setattr("app.graphs.resume.nodes.settings.resume_generation_max_concurrency", 2)
+    monkeypatch.setattr("app.graphs.resume.nodes.settings.resume_parallel_max_experiences", 4)
+    experiences = [
+        {
+            "id": f"legacy-{index}",
+            "category": "work",
+            "title": f"Legacy {index}",
+            "content": f"Grounded legacy fact {index}",
+            "claims": [],
+        }
+        for index in range(1, 4)
+    ]
+
+    result = await draft_generation_node(
+        {
+            "assembled_experiences": experiences,
+            "content_budget": {},
+            "user_profile": {"preferred_language": "en-US"},
+            "pending_sse_events": [],
+            "workspace": {},
+        }
+    )
+
+    assert provider.calls == 3
+    assert result["generation_strategy"] == "parallel_experience_drafts"
+
+
+async def test_parallel_generation_isolates_invalid_experience_output(monkeypatch) -> None:
+    provider = _InvalidParallelDraftProvider()
+    monkeypatch.setattr("app.graphs.resume.nodes.get_provider", lambda: provider)
+    monkeypatch.setattr(
+        "app.graphs.resume.nodes.settings.resume_parallel_generation_enabled", True
+    )
+    monkeypatch.setattr("app.graphs.resume.nodes.settings.resume_parallel_min_experiences", 2)
+    experiences = [
+        {
+            "id": f"grounded-{index}",
+            "category": "work",
+            "title": f"Grounded {index}",
+            "content": f"Verified source fact {index}",
+            "claims": [],
+        }
+        for index in range(1, 3)
+    ]
+
+    result = await draft_generation_node(
+        {
+            "relevant_experiences": experiences,
+            "content_budget": {},
+            "user_profile": {"preferred_language": "en-US"},
+            "pending_sse_events": [],
+            "workspace": {},
+        }
+    )
+
+    assert provider.calls == 2
+    assert result["generation_strategy"] == "parallel_experience_drafts"
+    bullets = [
+        bullet
+        for section in result["variants"][0]["structured"]["sections"]
+        for item in section["items"]
+        for bullet in item["bullets"]
+    ]
+    assert {bullet["text"] for bullet in bullets} == {
+        "Verified source fact 1",
+        "Verified source fact 2",
+    }
+    assert all(
+        bullet["source_fact_ids"][0].startswith("grounded-") for bullet in bullets
+    )
 
 
 def test_review_route_stops_at_configured_iteration(monkeypatch) -> None:

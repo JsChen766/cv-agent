@@ -172,6 +172,9 @@ _NODE_ACTIVITY.update(
         "quality_gate_node": ActivitySpec(
             "resume_reviewer", "简历质检员", "正在执行最终质量门", "已完成最终质量门"
         ),
+        "browser_layout_gate": ActivitySpec(
+            "resume_reviewer", "简历质检员", "正在等待浏览器版面实测", "已完成浏览器版面实测"
+        ),
         "persist_decision_candidate": ActivitySpec(
             "resume_reviewer", "简历质检员", "正在保存待确认候选", "已保存待确认候选"
         ),

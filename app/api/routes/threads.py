@@ -191,18 +191,30 @@ async def _completed_interrupt_operation(
     thread_id: str,
     turn_id: str,
     action: str,
+    interrupt_id: str | None = None,
 ) -> dict[str, JsonValue] | None:
     if pool is None:
         return None
     async with pool.acquire() as conn:
-        row = await conn.fetchrow(
-            "SELECT response FROM thread_interrupt_operations "
-            "WHERE thread_id = $1 AND turn_id = $2 AND action = $3 AND status = 'completed' "
-            "ORDER BY completed_at DESC LIMIT 1",
-            thread_id,
-            turn_id,
-            action,
-        )
+        if interrupt_id is not None:
+            row = await conn.fetchrow(
+                "SELECT response FROM thread_interrupt_operations "
+                "WHERE thread_id = $1 AND turn_id = $2 AND action = $3 "
+                "AND interrupt_id = $4 AND status = 'completed' LIMIT 1",
+                thread_id,
+                turn_id,
+                action,
+                interrupt_id,
+            )
+        else:
+            row = await conn.fetchrow(
+                "SELECT response FROM thread_interrupt_operations "
+                "WHERE thread_id = $1 AND turn_id = $2 AND action = $3 "
+                "AND status = 'completed' ORDER BY completed_at DESC LIMIT 1",
+                thread_id,
+                turn_id,
+                action,
+            )
     if row is None:
         return None
     response = _decode_metadata(row["response"])
@@ -644,6 +656,7 @@ async def resume_thread(
         thread_id=thread_id,
         turn_id=body.turnId,
         action="resume",
+        interrupt_id=body.interruptId,
     )
     if completed is not None:
         return ok(completed, request)
@@ -805,6 +818,7 @@ async def discard_thread(
         thread_id=thread_id,
         turn_id=body.turnId,
         action="discard",
+        interrupt_id=body.interruptId,
     )
     if completed is not None:
         return ok(completed, request)

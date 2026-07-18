@@ -7,6 +7,8 @@ from typing import Any, Protocol
 from langgraph.graph import END, START, StateGraph
 
 from app.graphs.resume.nodes import (
+    browser_layout_gate_node,
+    browser_layout_gate_route,
     content_gap_node,
     content_gap_route,
     context_assembly_node,
@@ -42,6 +44,7 @@ RESUME_NODE_DEFINITIONS = {
     "revision": revision_node,
     "quality_gate": quality_gate_node,
     "persist_draft": persist_resume_draft_node,
+    "browser_layout_gate": browser_layout_gate_node,
     "output": output_node,
     "output_failure": output_failure_node,
     "content_gap": content_gap_node,
@@ -93,7 +96,16 @@ def build_resume_subgraph() -> StateGraph[ResumeGenerationState]:
             "failed": "output_failure",
         },
     )
-    builder.add_edge("persist_draft", "output")
+    builder.add_edge("persist_draft", "browser_layout_gate")
+    builder.add_conditional_edges(
+        "browser_layout_gate",
+        browser_layout_gate_route,
+        {
+            "passed": "output",
+            "repair": "layout_revision",
+            "failed": "output_failure",
+        },
+    )
     builder.add_edge("output_failure", END)
     builder.add_conditional_edges(
         "content_gap",

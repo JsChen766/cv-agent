@@ -91,6 +91,7 @@ _SAFE_ATTRIBUTE_KEYS = frozenset(
         "read_write",
         "rejected_candidate_count",
         "repair_rejection_codes",
+        "repaired",
         "provider",
         "retry_count",
         "row_count",
