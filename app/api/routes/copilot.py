@@ -23,13 +23,17 @@ from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
 
 from app.api.deps import build_service_container, get_current_user_id, pool_dep
 from app.api.file_parsing import find_cached_parsed_text_for_upload, parse_file_for_request
+from app.api.observability import (
+    create_resume_trace,
+    finish_trace_best_effort,
+    inject_trace,
+)
 from app.api.response import ok
 from app.api.schemas import StrictRequestModel
 from app.api.sse import _build_initial_state, stream_graph_events
 from app.core.errors import ExternalServiceError, NotFoundError, ValidationError
 from app.core.events import format_sse
 from app.core.types import THREAD_PREFIX, ArtifactType, generate_id
-from app.domain.resume.models import ResumeVariantCreate
 from app.graphs.state import MainState
 from app.memory.thread_state import MessageDict
 from app.tools.actions import capabilities as action_capabilities
@@ -486,9 +490,7 @@ def _resume_canvas_metadata(
         if isinstance(deliverables, list):
             presentation["application_deliverables"] = cast("JsonValue", deliverables)
         if isinstance(unsupported_requirements, list):
-            presentation["unsupported_requirements"] = cast(
-                "JsonValue", unsupported_requirements
-            )
+            presentation["unsupported_requirements"] = cast("JsonValue", unsupported_requirements)
     return presentation
 
 
@@ -739,8 +741,7 @@ async def _load_thread_memory(
 
     async with pool.acquire() as conn:
         thread_row = await conn.fetchrow(
-            "SELECT rolling_summary, summarized_message_count, turn_count "
-            "FROM threads WHERE id=$1",
+            "SELECT rolling_summary, summarized_message_count, turn_count FROM threads WHERE id=$1",
             thread_id,
         )
         if thread_row is None:
@@ -754,9 +755,7 @@ async def _load_thread_memory(
         )
 
     existing_summary = (
-        thread_row["rolling_summary"]
-        if isinstance(thread_row["rolling_summary"], str)
-        else None
+        thread_row["rolling_summary"] if isinstance(thread_row["rolling_summary"], str) else None
     )
     unsummarized: list[MessageDict] = [
         {"role": row["role"], "content": row["content"], "turn_id": None}
@@ -948,46 +947,6 @@ def _final_assistant_message(final_state: object, fallback: str) -> str:
     return fallback
 
 
-async def _ensure_interrupt_variants_persisted(
-    services: ServiceContainer,
-    *,
-    resume_id: str,
-    jd_id: str | None,
-    interrupt_payload: JsonObject | None,
-) -> None:
-    if interrupt_payload is None:
-        return
-    variants = interrupt_payload.get("variants")
-    if not isinstance(variants, list):
-        return
-    for variant in variants:
-        if not isinstance(variant, dict):
-            continue
-        variant_id = variant.get("id")
-        if not isinstance(variant_id, str) or not variant_id:
-            continue
-        try:
-            await services.resume.get_variant(variant_id)
-            continue
-        except NotFoundError:
-            pass
-        await services.resume.save_variant_with_id(
-            resume_id,
-            variant_id,
-            ResumeVariantCreate.model_validate(
-                {
-                    "jd_id": jd_id,
-                    "title": variant.get("title", "AI Generated Variant"),
-                    "content": variant.get("content", ""),
-                    "score": variant.get("score", {}),
-                    "evidence_summary": variant.get("evidence_summary", []),
-                    "risk_summary": variant.get("risk_summary", []),
-                    "missing_info": variant.get("missing_info", []),
-                }
-            ),
-        )
-
-
 # ── Routes ─────────────────────────────────────────────────────────────────────
 
 
@@ -1027,16 +986,27 @@ async def chat(
         pool=_pool,
     )
     configurable: dict[str, object] = {"thread_id": thread_id}
+    services: ServiceContainer | None = None
     if _pool:
         from app.infra.db.repositories.thread_repo import PostgresThreadRepository
 
-        configurable["services"] = build_service_container(_pool)
+        services = build_service_container(_pool)
+        configurable["services"] = services
         configurable["pool"] = _pool
         configurable["thread_repo"] = PostgresThreadRepository(_pool)
     _cp = _get_checkpointer_or_none()
     if _cp is not None:
         configurable["checkpointer"] = _cp
     config: RunnableConfig = {"configurable": configurable}
+    recorder = create_resume_trace(
+        request_id=getattr(request.state, "request_id", None),
+        thread_id=thread_id,
+        turn_id=turn_id,
+        trigger="chat",
+    )
+    inject_trace(config, recorder)
+    if recorder is not None:
+        initial_state["observability_run_id"] = recorder.run_id
 
     await _persist_message(
         _pool,
@@ -1051,6 +1021,13 @@ async def chat(
         await _reject_if_pending_interrupt(graph, config)
         final_state = await graph.ainvoke(initial_state, config=config)
     except Exception as exc:
+        await finish_trace_best_effort(
+            recorder,
+            user_id=user_id,
+            service=services.resume_observability if services is not None else None,
+            status="failed",
+            error_code="graph_execution_failed",
+        )
         logger.exception("Graph error: %s", exc)
         raise ExternalServiceError("Graph execution failed") from exc
 
@@ -1083,6 +1060,13 @@ async def chat(
             metadata={"interrupt": bool(interrupt_payload)},
         )
 
+    await finish_trace_best_effort(
+        recorder,
+        user_id=user_id,
+        service=services.resume_observability if services is not None else None,
+        status="interrupted" if interrupt_payload is not None else "completed",
+    )
+
     return ok(
         _build_response(
             thread_id,
@@ -1103,6 +1087,7 @@ async def chat(
 )
 async def chat_stream(
     body: ChatRequest,
+    request: Request,
     user_id: str = Depends(get_current_user_id),
     pool: asyncpg.Pool = Depends(pool_dep),
 ) -> StreamingResponse:
@@ -1127,16 +1112,27 @@ async def chat_stream(
         pool=_pool,
     )
     configurable: dict[str, object] = {"thread_id": thread_id}
+    services: ServiceContainer | None = None
     if _pool:
         from app.infra.db.repositories.thread_repo import PostgresThreadRepository
 
-        configurable["services"] = build_service_container(_pool)
+        services = build_service_container(_pool)
+        configurable["services"] = services
         configurable["pool"] = _pool
         configurable["thread_repo"] = PostgresThreadRepository(_pool)
     _cp2 = _get_checkpointer_or_none()
     if _cp2 is not None:
         configurable["checkpointer"] = _cp2
     config: RunnableConfig = {"configurable": configurable}
+    recorder = create_resume_trace(
+        request_id=getattr(request.state, "request_id", None),
+        thread_id=thread_id,
+        turn_id=turn_id,
+        trigger="chat_stream",
+    )
+    inject_trace(config, recorder)
+    if recorder is not None:
+        initial_state["observability_run_id"] = recorder.run_id
 
     graph = get_graph(_get_checkpointer_or_none())
     await _reject_if_pending_interrupt(graph, config)
@@ -1151,6 +1147,7 @@ async def chat_stream(
 
     async def _stream_with_persistence() -> AsyncGenerator[str, None]:
         assistant_saved = False
+        trace_finished = False
         last_completed_content: str = ""
         try:
             async for chunk in stream_graph_events(graph, initial_state, config):
@@ -1225,16 +1222,42 @@ async def chat_stream(
                             metadata={"error": True},
                         )
                         assistant_saved = True
+                    if not trace_finished and evt in {
+                        "agent.completed",
+                        "agent.interrupt",
+                        "agent.failed",
+                    }:
+                        status = {
+                            "agent.completed": "completed",
+                            "agent.interrupt": "interrupted",
+                            "agent.failed": "failed",
+                        }[evt]
+                        await finish_trace_best_effort(
+                            recorder,
+                            user_id=user_id,
+                            service=(
+                                services.resume_observability if services is not None else None
+                            ),
+                            status=cast("Literal['completed', 'interrupted', 'failed']", status),
+                            error_code=("graph_stream_failed" if evt == "agent.failed" else None),
+                        )
+                        trace_finished = True
                 except Exception as exc:  # noqa: BLE001
                     logger.warning("SSE persistence hook failed: %s", exc)
                 yield chunk
         except GeneratorExit:
             raise
         except Exception as exc:  # noqa: BLE001
-            logger.warning(
-                "Stream ended with exception for thread %s: %s", thread_id, exc
-            )
+            logger.warning("Stream ended with exception for thread %s: %s", thread_id, exc)
         finally:
+            if not trace_finished:
+                await finish_trace_best_effort(
+                    recorder,
+                    user_id=user_id,
+                    service=services.resume_observability if services is not None else None,
+                    status="cancelled",
+                    error_code="client_cancelled",
+                )
             if not assistant_saved and last_completed_content:
                 try:
                     await _persist_message(
@@ -1319,6 +1342,13 @@ async def _run_generate_resume_from_jd_action(
     thread_id, turn_id, workspace, services, graph_config = await _prepare_action_context(
         body, user_id, action_pool
     )
+    recorder = create_resume_trace(
+        request_id=getattr(request.state, "request_id", None),
+        thread_id=thread_id,
+        turn_id=turn_id,
+        trigger="product_action",
+    )
+    inject_trace(graph_config, recorder)
     jd = await services.jd.get_jd(user_id, payload.jdId)
     if body.clientState.activeResumeId:
         resume = await services.resume.get_resume(user_id, body.clientState.activeResumeId)
@@ -1360,23 +1390,28 @@ async def _run_generate_resume_from_jd_action(
         workspace,
         turn_id,
     )
+    # Keep the existing Product Action response/interrupt contract while the
+    # application graph internally delegates resume work to the shared subgraph.
     initial_state["target_subgraph"] = "application_package"
     initial_state["intent_description"] = instruction
+    if recorder is not None:
+        initial_state["observability_run_id"] = recorder.run_id
 
     try:
         graph = get_graph(_get_checkpointer_or_none())
         final_state = await graph.ainvoke(initial_state, config=graph_config)
     except Exception as exc:
+        await finish_trace_best_effort(
+            recorder,
+            user_id=user_id,
+            service=services.resume_observability,
+            status="failed",
+            error_code="product_action_failed",
+        )
         logger.exception("Generate resume from JD action failed: %s", exc)
         raise ExternalServiceError("Generate resume from JD action failed") from exc
 
     interrupt_payload = _extract_interrupt_payload(final_state)
-    await _ensure_interrupt_variants_persisted(
-        services,
-        resume_id=resume.id,
-        jd_id=jd.id,
-        interrupt_payload=interrupt_payload,
-    )
     assistant_message = _final_assistant_message(
         final_state,
         "I've generated a resume variant for review.",
@@ -1401,6 +1436,12 @@ async def _run_generate_resume_from_jd_action(
         )
     if canvas_message_id and interrupt_payload is not None:
         interrupt_payload["canvas_message_id"] = canvas_message_id
+    await finish_trace_best_effort(
+        recorder,
+        user_id=user_id,
+        service=services.resume_observability,
+        status="interrupted" if interrupt_payload is not None else "completed",
+    )
     return ok(
         _build_response(
             thread_id,

@@ -12,6 +12,7 @@ from langchain_core.messages import BaseMessage
 
 from app.core.config import settings
 from app.core.errors import ExternalServiceError
+from app.core.observability import observation_span, sanitize_attributes
 from app.providers.base import (
     ChatResult,
     TokenCallback,
@@ -19,8 +20,10 @@ from app.providers.base import (
     ToolDefinition,
     forward_visible_tokens,
     text_from_content,
+    token_usage_from_message,
     visible_token_chunks,
 )
+from app.providers.retry import RetryStats, run_with_transport_retries
 from app.providers.tool_schema import to_anthropic_tool
 
 
@@ -36,6 +39,7 @@ class AnthropicFormatProvider:
             api_key=api_key or settings.llm_api_key,  # type: ignore[arg-type]
             timeout=None,
             stop=None,
+            max_retries=0,
         )
 
     async def chat(
@@ -63,23 +67,36 @@ class AnthropicFormatProvider:
         if max_tokens is not None:
             llm = llm.bind(max_tokens=max_tokens)
 
-        try:
-            if stream:
-
-                async def _stream() -> AsyncIterator[str]:
-                    try:
+        if stream:
+            async def _stream() -> AsyncIterator[str]:
+                try:
+                    with observation_span(
+                        "llm_calls",
+                        "chat_stream",
+                        attributes=_anthropic_attributes(self, mode="stream"),
+                    ) as span:
                         async for chunk in llm.astream(lc_msgs):
                             text = text_from_content(getattr(chunk, "content", ""))
                             async for part in visible_token_chunks(text):
                                 yield part
-                    except Exception as exc:
-                        raise ExternalServiceError(
-                            f"Anthropic streaming call failed: {exc}"
-                        ) from exc
+                        _update_anthropic_span(span, RetryStats(attempts=1), None)
+                except Exception as exc:
+                    raise ExternalServiceError(
+                        f"Anthropic streaming call failed: {exc}"
+                    ) from exc
+            return _stream()
 
-                return _stream()
-            else:
-                result = await llm.ainvoke(lc_msgs)
+        stats = RetryStats()
+        try:
+            with observation_span(
+                "llm_calls", "chat", attributes=_anthropic_attributes(self, mode="text")
+            ) as span:
+                result = await run_with_transport_retries(
+                    lambda: llm.ainvoke(lc_msgs),
+                    max_retries=settings.llm_max_transport_retries,
+                    stats=stats,
+                )
+                _update_anthropic_span(span, stats, result)
                 return str(result.content)
         except Exception as e:
             raise ExternalServiceError(f"Anthropic call failed: {e}") from e
@@ -98,9 +115,30 @@ class AnthropicFormatProvider:
             else HumanMessage(content=m["content"])
             for m in messages
         ]
-        structured_llm = self._llm.bind(temperature=temperature).with_structured_output(schema)
+        bound = self._llm.bind(temperature=temperature)
         try:
-            return await structured_llm.ainvoke(lc_msgs)
+            structured_llm = bound.with_structured_output(schema, include_raw=True)
+        except TypeError:
+            structured_llm = bound.with_structured_output(schema)
+        stats = RetryStats()
+        try:
+            with observation_span(
+                "llm_calls",
+                "chat_structured",
+                attributes={
+                    **_anthropic_attributes(self, mode="structured"),
+                    "schema_name": getattr(schema, "__name__", str(schema)),
+                    "protocol": "anthropic_tool_schema",
+                },
+            ) as span:
+                result = await run_with_transport_retries(
+                    lambda: structured_llm.ainvoke(lc_msgs),
+                    max_retries=settings.llm_max_transport_retries,
+                    stats=stats,
+                )
+                parsed, raw = _unwrap_anthropic_structured(result)
+                _update_anthropic_span(span, stats, raw, protocol_attempt_count=1)
+                return parsed
         except Exception as e:
             raise ExternalServiceError(f"Anthropic structured call failed: {e}") from e
 
@@ -128,9 +166,20 @@ class AnthropicFormatProvider:
                 tool_choice=tool_choice,
             )
 
+        stats = RetryStats()
         try:
-            result = await llm.ainvoke(_to_lc_messages(messages))
-            return _chat_result_from_ai_message(result)
+            with observation_span(
+                "llm_calls",
+                "chat_with_tools",
+                attributes=_anthropic_attributes(self, mode="tools"),
+            ) as span:
+                result = await run_with_transport_retries(
+                    lambda: llm.ainvoke(_to_lc_messages(messages)),
+                    max_retries=settings.llm_max_transport_retries,
+                    stats=stats,
+                )
+                _update_anthropic_span(span, stats, result)
+                return _chat_result_from_ai_message(result)
         except Exception as e:
             raise ExternalServiceError(f"Anthropic tool call failed: {e}") from e
 
@@ -155,14 +204,73 @@ class AnthropicFormatProvider:
             )
 
         try:
-            message = None
-            async for chunk in llm.astream(_to_lc_messages(messages)):
-                text = text_from_content(getattr(chunk, "content", ""))
-                await forward_visible_tokens(on_token, text)
-                message = chunk if message is None else message + chunk
-            return _chat_result_from_ai_message(message) if message is not None else ChatResult()
+            with observation_span(
+                "llm_calls",
+                "chat_with_tools_stream",
+                attributes=_anthropic_attributes(self, mode="tools_stream"),
+            ) as span:
+                message = None
+                async for chunk in llm.astream(_to_lc_messages(messages)):
+                    text = text_from_content(getattr(chunk, "content", ""))
+                    await forward_visible_tokens(on_token, text)
+                    message = chunk if message is None else message + chunk
+                _update_anthropic_span(span, RetryStats(attempts=1), message)
+                return (
+                    _chat_result_from_ai_message(message)
+                    if message is not None
+                    else ChatResult()
+                )
         except Exception as e:
             raise ExternalServiceError(f"Anthropic tool streaming call failed: {e}") from e
+
+
+def _anthropic_attributes(
+    provider: AnthropicFormatProvider, *, mode: str
+) -> dict[str, object]:
+    return {
+        "provider": "anthropic_format",
+        "model": getattr(provider, "_model", "unknown"),
+        "mode": mode,
+    }
+
+
+def _update_anthropic_span(
+    span: Any,
+    stats: RetryStats,
+    message: Any | None,
+    *,
+    protocol_attempt_count: int | None = None,
+) -> None:
+    if span is None:
+        return
+    usage = token_usage_from_message(message) if message is not None else None
+    values: dict[str, object] = {
+        "logical_call_count": 1,
+        "physical_request_count": stats.attempts,
+        "transport_attempts": stats.attempts,
+        "retry_count": stats.retries,
+        "usage_available": usage.available if usage else False,
+    }
+    if usage:
+        values.update(
+            {
+                "input_tokens": usage.input_tokens,
+                "output_tokens": usage.output_tokens,
+                "total_tokens": usage.total_tokens,
+            }
+        )
+    if protocol_attempt_count is not None:
+        values["protocol_attempt_count"] = protocol_attempt_count
+    span.attributes.update(sanitize_attributes(values))
+
+
+def _unwrap_anthropic_structured(result: Any) -> tuple[Any, Any | None]:
+    if isinstance(result, dict) and "parsed" in result:
+        parsing_error = result.get("parsing_error")
+        if parsing_error is not None:
+            raise parsing_error
+        return result.get("parsed"), result.get("raw")
+    return result, getattr(result, "raw", None)
 
 
 def _to_lc_messages(messages: list[dict[str, Any]]) -> list[BaseMessage]:

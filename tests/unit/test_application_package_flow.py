@@ -39,31 +39,14 @@ async def test_router_sends_pasted_jd_resume_request_to_application_package() ->
 def test_application_package_graph_uses_full_resume_quality_pipeline() -> None:
     graph = build_application_package_subgraph()
 
-    assert {
-        "layout_measure",
-        "layout_revision",
-        "quality_gate",
-        "persist_decision_candidate",
-        "output_for_decision",
-        "output_failure",
-        "content_gap",
-    }.issubset(graph.nodes)
-    assert ("draft_generation", "layout_measure") in graph.edges
-    assert ("layout_revision", "layout_measure") in graph.edges
-    assert ("persist_decision_candidate", "output_for_decision") in graph.edges
-    assert ("output_failure", "__end__") in graph.edges
-
-    review_branch = graph.branches["self_review"]["review_route"]
-    assert review_branch.ends == {
-        "revision": "revision",
-        "quality_gate": "quality_gate",
+    assert set(graph.nodes) == {
+        "context_assembly",
+        "package_plan",
+        "package_artifacts",
+        "resume_generation",
     }
-    quality_branch = graph.branches["quality_gate"]["quality_gate_route"]
-    assert quality_branch.ends == {
-        "passed": "persist_draft",
-        "needs_user_decision": "persist_decision_candidate",
-        "failed": "output_failure",
-    }
+    assert ("package_artifacts", "resume_generation") in graph.edges
+    assert ("resume_generation", "__end__") in graph.edges
 
 
 class _PlanProvider:
@@ -203,6 +186,7 @@ async def test_resume_output_combines_package_deliverables(
             ],
             "workspace": {"resume_id": "resume-1"},
             "pending_sse_events": [],
+            "quality_status": "passed",
         }
     )
 

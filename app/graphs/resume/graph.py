@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any, Protocol
+
 from langgraph.graph import END, START, StateGraph
 
 from app.graphs.resume.nodes import (
@@ -18,7 +20,6 @@ from app.graphs.resume.nodes import (
     output_failure_node,
     output_node,
     output_route,
-    persist_decision_candidate_node,
     persist_resume_draft_node,
     quality_gate_node,
     quality_gate_route,
@@ -27,27 +28,39 @@ from app.graphs.resume.nodes import (
     self_review_node,
 )
 from app.graphs.resume.state import ResumeGenerationState
+from app.graphs.tracing import traced_node
+
+RESUME_NODE_DEFINITIONS = {
+    "context_assembly": context_assembly_node,
+    "cot_planning": cot_planning_node,
+    "draft_generation": draft_generation_node,
+    "layout_measure": layout_measure_node,
+    "layout_revision": layout_revision_node,
+    "fact_check": fact_check_node,
+    "coverage_check": coverage_check_node,
+    "self_review": self_review_node,
+    "revision": revision_node,
+    "quality_gate": quality_gate_node,
+    "persist_draft": persist_resume_draft_node,
+    "output": output_node,
+    "output_failure": output_failure_node,
+    "content_gap": content_gap_node,
+}
+
+
+class _NodeBuilder(Protocol):
+    def add_node(self, node: str, action: Any) -> Any: ...
+
+
+def add_traced_resume_nodes(builder: _NodeBuilder) -> None:
+    for node_name, node in RESUME_NODE_DEFINITIONS.items():
+        builder.add_node(node_name, traced_node(node_name, node))
 
 
 def build_resume_subgraph() -> StateGraph[ResumeGenerationState]:
     builder = StateGraph(ResumeGenerationState)
 
-    builder.add_node("context_assembly", context_assembly_node)
-    builder.add_node("cot_planning", cot_planning_node)
-    builder.add_node("draft_generation", draft_generation_node)
-    builder.add_node("layout_measure", layout_measure_node)
-    builder.add_node("layout_revision", layout_revision_node)
-    builder.add_node("fact_check", fact_check_node)
-    builder.add_node("coverage_check", coverage_check_node)
-    builder.add_node("self_review", self_review_node)
-    builder.add_node("revision", revision_node)
-    builder.add_node("quality_gate", quality_gate_node)
-    builder.add_node("persist_draft", persist_resume_draft_node)
-    builder.add_node("persist_decision_candidate", persist_decision_candidate_node)
-    builder.add_node("output", output_node)
-    builder.add_node("output_for_decision", output_node)
-    builder.add_node("output_failure", output_failure_node)
-    builder.add_node("content_gap", content_gap_node)
+    add_traced_resume_nodes(builder)
 
     builder.add_edge(START, "context_assembly")
     builder.add_edge("context_assembly", "cot_planning")
@@ -60,6 +73,7 @@ def build_resume_subgraph() -> StateGraph[ResumeGenerationState]:
             "revision": "layout_revision",
             "fact_check": "fact_check",
             "content_gap": "content_gap",
+            "failed": "output_failure",
         },
     )
     builder.add_edge("layout_revision", "layout_measure")
@@ -76,12 +90,10 @@ def build_resume_subgraph() -> StateGraph[ResumeGenerationState]:
         quality_gate_route,
         {
             "passed": "persist_draft",
-            "needs_user_decision": "persist_decision_candidate",
             "failed": "output_failure",
         },
     )
     builder.add_edge("persist_draft", "output")
-    builder.add_edge("persist_decision_candidate", "output_for_decision")
     builder.add_edge("output_failure", END)
     builder.add_conditional_edges(
         "content_gap",
@@ -90,11 +102,6 @@ def build_resume_subgraph() -> StateGraph[ResumeGenerationState]:
     )
     builder.add_conditional_edges(
         "output",
-        output_route,
-        {"revision": "draft_generation", "end": END},
-    )
-    builder.add_conditional_edges(
-        "output_for_decision",
         output_route,
         {"revision": "draft_generation", "end": END},
     )

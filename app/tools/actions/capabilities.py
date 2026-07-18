@@ -2,16 +2,14 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Mapping
-from typing import cast
 
 from pydantic import JsonValue
 
-from app.domain.resume.models import ResumeItemCreate, ResumeItemPatch, ResumeVariantCreate
+from app.domain.resume.models import ResumeItemCreate, ResumeItemPatch
 from app.providers.factory import get_provider
 from app.tools.actions.models import (
     ExportResumeInput,
     GenerateArtifactInput,
-    GenerateResumeFromJdInput,
     JsonObject,
     OptimizeResumeItemInput,
     ProductActionResult,
@@ -128,7 +126,7 @@ async def accept_variant(
     *,
     base_workspace: Mapping[str, JsonValue] | None = None,
 ) -> ProductActionResult:
-    variant = await services.resume.get_variant(payload.variantId)
+    variant = await services.resume.get_acceptable_variant(user_id, payload.variantId)
     resume = await services.resume.get_resume(user_id, variant.resume_id)
     item = next(
         (candidate for candidate in resume.items if candidate.source_variant_id == variant.id),
@@ -291,81 +289,6 @@ async def export_resume(
         ),
         workspace=workspace,
         data=receipt,
-    )
-
-
-async def generate_resume_from_jd(
-    services: ServiceContainer,
-    user_id: str,
-    payload: GenerateResumeFromJdInput,
-    *,
-    base_workspace: Mapping[str, JsonValue] | None = None,
-) -> ProductActionResult:
-    jd = await services.jd.get_jd(user_id, payload.jdId)
-    resume_id = payload.resumeId
-    if resume_id:
-        resume = await services.resume.get_resume(user_id, resume_id)
-    else:
-        resume = await services.resume.create_resume(
-            user_id,
-            f"Resume for {jd.target_role or jd.title}",
-            target_role=jd.target_role,
-            jd_id=jd.id,
-        )
-
-    provider = get_provider()
-    requirements = "\n".join(f"- {req.text}" for req in jd.requirements[:12])
-    instruction = payload.instruction or "Generate a complete tailored resume in Markdown."
-    experiences, _ = await _load_experience_context(services, user_id)
-    experience_context = (
-        "\n\nExperience evidence:\n" + "\n\n".join(experiences)
-        if experiences
-        else ""
-    )
-    content = await provider.chat(
-        [
-            {
-                "role": "system",
-                "content": (
-                    "You are an expert resume writer. Generate a grounded, tailored resume in Markdown. "
-                    "If user experience context is missing, write conservative placeholders rather than inventing facts."
-                ),
-            },
-            {
-                "role": "user",
-                "content": (
-                    f"Task: {instruction}\n\n"
-                    f"JD title: {jd.title}\nCompany: {jd.company or ''}\n"
-                    f"Target role: {jd.target_role or ''}\n\n"
-                    f"JD text:\n{jd.raw_text[:3000]}\n\nRequirements:\n{requirements}"
-                    f"{experience_context}"
-                ),
-            },
-        ],
-        temperature=0.5,
-        max_tokens=3000,
-    )
-    content_str = content if isinstance(content, str) else ""
-    variant = await services.resume.save_variant(
-        resume.id,
-        ResumeVariantCreate(
-            jd_id=jd.id,
-            title="AI Generated Variant",
-            content=content_str.strip(),
-        ),
-    )
-    workspace = _workspace(base_workspace)
-    workspace["jd_id"] = jd.id
-    workspace["resume_id"] = resume.id
-    workspace["variant_id"] = variant.id
-    data = cast(
-        JsonValue,
-        {"resumeId": resume.id, "jdId": jd.id, "variant": variant.model_dump(mode="json")},
-    )
-    return ProductActionResult(
-        message="I've generated a resume variant for review.",
-        workspace=workspace,
-        data=data,
     )
 
 

@@ -6,6 +6,7 @@ import re
 from dataclasses import dataclass
 from typing import Literal
 
+from app.core.observability import observation_span, sanitize_attributes
 from app.domain.resume.content_style import find_terminal_period_violations
 from app.domain.resume.layout_models import (
     BlockLayoutReport,
@@ -46,9 +47,16 @@ class ResumeLayoutService:
         self,
         metrics: TextMetricsPort,
         profile: ResumeLayoutProfile = DEFAULT_RESUME_LAYOUT_PROFILE,
+        *,
+        _width_cache: dict[tuple[object, ...], float] | None = None,
+        _wrap_cache: dict[tuple[object, ...], tuple[str, ...]] | None = None,
+        _cache_stats: dict[str, int] | None = None,
     ) -> None:
         self.metrics = metrics
         self.profile = profile
+        self._width_cache = _width_cache if _width_cache is not None else {}
+        self._wrap_cache = _wrap_cache if _wrap_cache is not None else {}
+        self._cache_stats = _cache_stats if _cache_stats is not None else {}
 
     def measure_bullet_fit(
         self,
@@ -70,12 +78,10 @@ class ResumeLayoutService:
         lines = self._wrap_inline_text(text, available, body_style)
         widths = [self._inline_width(line, body_style) for line in lines] or [0.0]
         last_ratio = widths[-1] / available if available else 0.0
-        status: Literal["pass", "too_short", "awkward_wrap", "unfixable_grounded_short"]
+        status: Literal["pass", "too_short", "awkward_wrap"]
         recommendation: Literal["shorten", "expand_from_source", "rephrase", "remove", "none"]
         if last_ratio >= self.profile.bullet.gate_ratio:
             status, recommendation = "pass", "none"
-        elif exception == "unfixable_grounded_short" and len(lines) == 1:
-            status, recommendation = "unfixable_grounded_short", "none"
         elif len(lines) == 1:
             status, recommendation = "too_short", "expand_from_source"
         else:
@@ -95,6 +101,50 @@ class ResumeLayoutService:
         )
 
     def measure_resume_layout(
+        self,
+        structured: dict[str, object],
+        constraint: LayoutConstraint | None = None,
+    ) -> LayoutReport:
+        item_count, bullet_count = _structure_counts(structured)
+        with observation_span(
+            "layout_calls",
+            "layout.measure_resume",
+            attributes={
+                "profile_version": self.profile.version,
+                "profile_hash": self.profile.profile_hash,
+                "item_count": item_count,
+                "bullet_count": bullet_count,
+                "language": str(structured.get("language") or "zh-CN"),
+            },
+        ) as span:
+            before_stats = dict(self._cache_stats)
+            report = self._measure_resume_layout(structured, constraint)
+            if span is not None:
+                span.attributes.update(
+                    sanitize_attributes(
+                        {
+                            "final_page_count": report.page_count,
+                            "violation_count": len(report.violations),
+                            "final_usage_ratio": (
+                                report.pages[0].usage_ratio if report.pages else 0.0
+                            ),
+                            **{
+                                key: self._cache_stats.get(key, 0)
+                                - before_stats.get(key, 0)
+                                for key in (
+                                    "width_cache_hits",
+                                    "width_cache_misses",
+                                    "wrap_cache_hits",
+                                    "wrap_cache_misses",
+                                    "width_query_count",
+                                )
+                            },
+                        }
+                    )
+                )
+            return report
+
+    def _measure_resume_layout(
         self,
         structured: dict[str, object],
         constraint: LayoutConstraint | None = None,
@@ -235,16 +285,6 @@ class ResumeLayoutService:
                         bullet_id=fit.bullet_id,
                     )
                 )
-            elif fit.status == "unfixable_grounded_short":
-                violations.append(
-                    LayoutViolation(
-                        code="unfixable_grounded_short",
-                        message=f"Bullet {fit.bullet_id} is a grounded short-line exception.",
-                        severity="soft",
-                        item_id=fit.item_id,
-                        bullet_id=fit.bullet_id,
-                    )
-                )
 
         pages, forced = self._paginate(blocks)
         overflow = 0.0
@@ -332,7 +372,13 @@ class ResumeLayoutService:
         # layout_tuning is versioned separately in the structured resume. Keep the
         # base profile hash so the browser can verify the shared CSS/font contract.
         profile = self.profile.model_copy(update={"body": body, "spacing": spacing})
-        return ResumeLayoutService(self.metrics, profile)
+        return ResumeLayoutService(
+            self.metrics,
+            profile,
+            _width_cache=self._width_cache,
+            _wrap_cache=self._wrap_cache,
+            _cache_stats=self._cache_stats,
+        )
 
     def _measure_header(self, raw_contact: object, language: str) -> _MeasuredBlock:
         if not isinstance(raw_contact, dict):
@@ -513,6 +559,13 @@ class ResumeLayoutService:
         return len(self._wrap_inline_text(text, width_mm, style)) * style.line_height_mm
 
     def _inline_width(self, text: str, base_style: TextStyle) -> float:
+        self._increment_cache_stat("width_query_count")
+        cache_key = (text, *_style_cache_key(base_style))
+        cached = self._width_cache.get(cache_key)
+        if cached is not None:
+            self._increment_cache_stat("width_cache_hits")
+            return cached
+        self._increment_cache_stat("width_cache_misses")
         width = 0.0
         for chunk, weight, italic in self._inline_segments(text):
             style = base_style.model_copy(
@@ -522,9 +575,17 @@ class ResumeLayoutService:
                 }
             )
             width += self.metrics.text_width_mm(chunk, style)
+        _bounded_cache_put(self._width_cache, cache_key, width)
         return width
 
     def _wrap_inline_text(self, text: str, width_mm: float, style: TextStyle) -> list[str]:
+        cache_key = (text, width_mm, *_style_cache_key(style))
+        cached = self._wrap_cache.get(cache_key)
+        if cached is not None:
+            self._increment_cache_stat("wrap_cache_hits")
+            return list(cached)
+        self._increment_cache_stat("wrap_cache_misses")
+
         lines: list[str] = []
         for paragraph in text.replace("\r\n", "\n").split("\n"):
             if not paragraph:
@@ -532,20 +593,15 @@ class ResumeLayoutService:
                 continue
             start = 0
             while start < len(paragraph):
-                end = start + 1
-                last_break: int | None = None
-                while end <= len(paragraph):
-                    candidate = paragraph[start:end]
-                    if self._inline_width(candidate, style) > width_mm:
-                        break
-                    if self._is_break_opportunity(paragraph, end):
-                        last_break = end
-                    end += 1
-                if end > len(paragraph):
-                    chosen = len(paragraph)
-                else:
-                    chosen = (
-                        last_break if last_break and last_break > start else max(start + 1, end - 1)
+                chosen = self._farthest_fitting_end(paragraph, start, width_mm, style)
+                if chosen < len(paragraph):
+                    chosen = next(
+                        (
+                            end
+                            for end in range(chosen, start, -1)
+                            if self._is_break_opportunity(paragraph, end)
+                        ),
+                        chosen,
                     )
                 while chosen > start + 1 and paragraph[chosen - 1] in _NO_LINE_END:
                     chosen -= 1
@@ -559,7 +615,34 @@ class ResumeLayoutService:
                 start = chosen
                 while start < len(paragraph) and paragraph[start].isspace():
                     start += 1
-        return lines or [""]
+        result = tuple(lines or [""])
+        _bounded_cache_put(self._wrap_cache, cache_key, result)
+        return list(result)
+
+    def _farthest_fitting_end(
+        self,
+        text: str,
+        start: int,
+        width_mm: float,
+        style: TextStyle,
+    ) -> int:
+        """Find the longest fitting slice with logarithmic width probes."""
+        if self._inline_width(text[start:], style) <= width_mm:
+            return len(text)
+        low = start + 1
+        high = len(text)
+        best = start + 1
+        while low <= high:
+            middle = (low + high) // 2
+            if self._inline_width(text[start:middle], style) <= width_mm:
+                best = middle
+                low = middle + 1
+            else:
+                high = middle - 1
+        return best
+
+    def _increment_cache_stat(self, key: str) -> None:
+        self._cache_stats[key] = self._cache_stats.get(key, 0) + 1
 
     @staticmethod
     def _is_break_opportunity(text: str, end: int) -> bool:
@@ -594,3 +677,39 @@ class ResumeLayoutService:
     def _style_for_language(self, style: TextStyle, language: str) -> TextStyle:
         font = self.profile.font_for_language(language)
         return style.model_copy(update={"font_family": font.family})
+
+
+def _structure_counts(structured: dict[str, object]) -> tuple[int, int]:
+    item_count = 0
+    bullet_count = 0
+    raw_sections = structured.get("sections")
+    for section in raw_sections if isinstance(raw_sections, list) else []:
+        if not isinstance(section, dict):
+            continue
+        raw_items = section.get("items")
+        for item in raw_items if isinstance(raw_items, list) else []:
+            if not isinstance(item, dict):
+                continue
+            item_count += 1
+            bullets = item.get("bullets")
+            if isinstance(bullets, list):
+                bullet_count += sum(isinstance(bullet, dict) for bullet in bullets)
+    return item_count, bullet_count
+
+
+def _style_cache_key(style: TextStyle) -> tuple[object, ...]:
+    return (
+        style.font_family,
+        style.font_size_pt,
+        style.font_weight,
+        style.line_height,
+        style.italic,
+    )
+
+
+def _bounded_cache_put[CacheKey, CacheValue](
+    cache: dict[CacheKey, CacheValue], key: CacheKey, value: CacheValue
+) -> None:
+    if len(cache) >= 32_768:
+        cache.clear()
+    cache[key] = value

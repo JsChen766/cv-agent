@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncIterator, Callable, Sequence
-from typing import Any, Literal, Protocol
+from typing import Any, Literal, NamedTuple, Protocol
 
 from pydantic import BaseModel, Field
 
@@ -33,6 +33,39 @@ class ChatResult(BaseModel):
     content: str = ""
     tool_calls: list[ToolCall] = Field(default_factory=list)
     raw: Any | None = None
+
+
+class TokenUsage(NamedTuple):
+    input_tokens: int | None
+    output_tokens: int | None
+    total_tokens: int | None
+    available: bool
+
+
+def token_usage_from_message(message: Any) -> TokenUsage:
+    """Normalize LangChain/OpenAI/Anthropic usage metadata without estimation."""
+    usage = getattr(message, "usage_metadata", None)
+    if not isinstance(usage, dict):
+        response_metadata = getattr(message, "response_metadata", None)
+        if isinstance(response_metadata, dict):
+            usage = response_metadata.get("token_usage") or response_metadata.get("usage")
+    if not isinstance(usage, dict):
+        return TokenUsage(None, None, None, False)
+
+    def _integer(*keys: str) -> int | None:
+        for key in keys:
+            value = usage.get(key)
+            if isinstance(value, int) and value >= 0:
+                return value
+        return None
+
+    input_tokens = _integer("input_tokens", "prompt_tokens")
+    output_tokens = _integer("output_tokens", "completion_tokens")
+    total_tokens = _integer("total_tokens")
+    if total_tokens is None and input_tokens is not None and output_tokens is not None:
+        total_tokens = input_tokens + output_tokens
+    available = any(value is not None for value in (input_tokens, output_tokens, total_tokens))
+    return TokenUsage(input_tokens, output_tokens, total_tokens, available)
 
 
 TokenCallback = Callable[[str], None]

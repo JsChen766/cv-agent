@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import Field
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -37,11 +37,20 @@ class Settings(BaseSettings):
     max_self_review_iterations: int = 1
     max_layout_revision_iterations: int = 1
     max_resume_generation_calls: int = 2
+    max_resume_local_repair_calls: int = Field(default=1, ge=0, le=1)
     resume_layout_hard_gate_enabled: bool = False
     resume_min_page_usage_ratio: float = Field(default=0.80, ge=0.0, le=1.0)
     resume_target_page_usage_ratio: float = Field(default=0.88, ge=0.0, le=1.0)
     resume_max_page_usage_ratio: float = Field(default=0.95, ge=0.0, le=1.0)
     resume_candidate_pool_target_ratio: float = Field(default=1.20, ge=1.0)
+
+    # Resume generation observability (P0). Raw payload capture is never
+    # permitted in production, even if an environment variable enables it.
+    resume_observability_enabled: bool = True
+    resume_observability_capture_payloads: bool = False
+    resume_observability_sample_rate: float = Field(default=1.0, ge=0.0, le=1.0)
+    llm_max_transport_retries: int = Field(default=3, ge=0, le=10)
+    embedding_max_transport_retries: int = Field(default=3, ge=0, le=10)
 
     # Files
     file_parse_timeout_seconds: float = Field(default=60.0, gt=0)
@@ -53,6 +62,12 @@ class Settings(BaseSettings):
     # Dev mode — auto-auth when ENVIRONMENT=development and no token provided
     dev_auto_auth: bool = False
     dev_user_id: str = "dev-user"
+
+    @model_validator(mode="after")
+    def disable_production_payload_capture(self) -> Settings:
+        if self.environment == "production":
+            self.resume_observability_capture_payloads = False
+        return self
 
 
 settings = Settings()

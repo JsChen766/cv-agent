@@ -23,6 +23,11 @@ from pydantic import Field, JsonValue, model_validator
 
 from app.api.deps import build_service_container, get_current_user_id, pool_dep
 from app.api.interrupts import PendingInterrupt, pending_interrupt_from_snapshot
+from app.api.observability import (
+    create_resume_trace,
+    finish_trace_best_effort,
+    inject_trace,
+)
 from app.api.response import ok, ok_list
 from app.api.schemas import StrictRequestModel
 from app.core.errors import (
@@ -645,10 +650,19 @@ async def resume_thread(
 
     graph = get_graph(checkpointer)
     configurable: dict[str, object] = {"thread_id": thread_id}
+    services = None
     if _pool:
-        configurable["services"] = build_service_container(_pool)
+        services = build_service_container(_pool)
+        configurable["services"] = services
         configurable["pool"] = _pool
     config: RunnableConfig = {"configurable": configurable}
+    recorder = create_resume_trace(
+        request_id=getattr(request.state, "request_id", None),
+        thread_id=thread_id,
+        turn_id=body.turnId,
+        trigger="interrupt_resume",
+    )
+    inject_trace(config, recorder)
 
     resume_data = body.confirmedData or {"confirmed": True}
 
@@ -677,6 +691,13 @@ async def resume_thread(
     try:
         final_state = await graph.ainvoke(Command(resume=resume_data), config=config)
     except Exception as exc:
+        await finish_trace_best_effort(
+            recorder,
+            user_id=user_id,
+            service=services.resume_observability if services is not None else None,
+            status="failed",
+            error_code="interrupt_resume_failed",
+        )
         logger.exception("Resume error: %s", exc)
         raise ExternalServiceError("Graph resume failed") from exc
 
@@ -736,6 +757,12 @@ async def resume_thread(
         interrupt_id=pending_interrupt_id,
         action="resume",
         response=response,
+    )
+    await finish_trace_best_effort(
+        recorder,
+        user_id=user_id,
+        service=services.resume_observability if services is not None else None,
+        status="interrupted" if interrupt_payload is not None else "completed",
     )
     return ok(response, request)
 

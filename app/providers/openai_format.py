@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import AsyncIterator, Sequence
+from functools import partial
 from typing import Any, cast
 
 from langchain_core.messages import BaseMessage
@@ -18,6 +19,7 @@ from pydantic import SecretStr
 
 from app.core.config import settings
 from app.core.errors import ExternalServiceError
+from app.core.observability import observation_span, sanitize_attributes
 from app.providers.base import (
     ChatResult,
     TokenCallback,
@@ -25,8 +27,10 @@ from app.providers.base import (
     ToolDefinition,
     forward_visible_tokens,
     text_from_content,
+    token_usage_from_message,
     visible_token_chunks,
 )
+from app.providers.retry import RetryStats, run_with_transport_retries
 from app.providers.tool_schema import to_openai_tool
 
 
@@ -50,19 +54,20 @@ class OpenAIFormatProvider:
             base_url=self._base_url,
             streaming=False,
             timeout=60,
-            max_retries=3,
+            max_retries=0,
         )
         resolved_embedding_api_key = (
             embedding_api_key or settings.embedding_api_key or self._api_key
         )
+        self._embedding_model = embedding_model or settings.embedding_model
         self._embed = OpenAIEmbeddings(
-            model=embedding_model or settings.embedding_model,
+            model=self._embedding_model,
             api_key=(
                 SecretStr(resolved_embedding_api_key) if resolved_embedding_api_key else None
             ),
             base_url=embedding_base_url or settings.embedding_base_url or self._base_url,
             timeout=60,
-            max_retries=3,
+            max_retries=0,
         )
 
     async def chat(
@@ -90,19 +95,46 @@ class OpenAIFormatProvider:
         if max_tokens is not None:
             llm = llm.bind(max_tokens=max_tokens)
 
+        if stream:
+            async def _stream() -> AsyncIterator[str]:
+                stats = RetryStats()
+                emitted = False
+                try:
+                    with observation_span(
+                        "llm_calls",
+                        "chat_stream",
+                        attributes=_llm_attributes(self, mode="stream"),
+                    ) as span:
+                        # A stream can only be retried safely before the first visible token.
+                        for attempt in range(settings.llm_max_transport_retries + 1):
+                            stats.attempts += 1
+                            try:
+                                async for chunk in llm.astream(lc_msgs):
+                                    text = text_from_content(getattr(chunk, "content", ""))
+                                    async for part in visible_token_chunks(text):
+                                        emitted = True
+                                        yield part
+                                break
+                            except Exception:
+                                if emitted or attempt >= settings.llm_max_transport_retries:
+                                    raise
+                                stats.retries += 1
+                        _update_span(span, stats=stats)
+                except Exception as exc:
+                    raise ExternalServiceError(f"LLM streaming call failed: {exc}") from exc
+            return _stream()
+
+        stats = RetryStats()
         try:
-            if stream:
-                async def _stream() -> AsyncIterator[str]:
-                    try:
-                        async for chunk in llm.astream(lc_msgs):
-                            text = text_from_content(getattr(chunk, "content", ""))
-                            async for part in visible_token_chunks(text):
-                                yield part
-                    except Exception as exc:
-                        raise ExternalServiceError(f"LLM streaming call failed: {exc}") from exc
-                return _stream()
-            else:
-                result = await llm.ainvoke(lc_msgs)
+            with observation_span(
+                "llm_calls", "chat", attributes=_llm_attributes(self, mode="text")
+            ) as span:
+                result = await run_with_transport_retries(
+                    lambda: llm.ainvoke(lc_msgs),
+                    max_retries=settings.llm_max_transport_retries,
+                    stats=stats,
+                )
+                _update_span(span, stats=stats, message=result)
                 return str(result.content)
         except Exception as e:
             raise ExternalServiceError(f"LLM call failed: {e}") from e
@@ -143,35 +175,110 @@ class OpenAIFormatProvider:
                 lc_msgs.append(HumanMessage(content=content))
 
         bound = self._llm.bind(temperature=temperature)
-
-        # Tier 1: json_mode — works on DeepSeek + OpenAI + most compat vendors
+        total_stats = RetryStats()
+        protocol_attempts: list[dict[str, object]] = []
+        schema_name = getattr(schema, "__name__", str(schema))
         try:
-            return await bound.with_structured_output(
-                schema, method="json_mode"
-            ).ainvoke(lc_msgs)
-        except Exception as json_mode_error:
-            first_error: Exception = json_mode_error
+            with observation_span(
+                "llm_calls",
+                "chat_structured",
+                attributes={
+                    **_llm_attributes(self, mode="structured"),
+                    "schema_name": schema_name,
+                },
+            ) as span:
+                first_error: Exception | None = None
+                for method in ("json_mode", "json_schema"):
+                    protocol_stats = RetryStats()
+                    try:
+                        structured_llm = _structured_with_raw(bound, schema, method)
+                        raw_result = await run_with_transport_retries(
+                            partial(_invoke, structured_llm, lc_msgs),
+                            max_retries=settings.llm_max_transport_retries,
+                            stats=protocol_stats,
+                        )
+                        parsed, raw_message = _unwrap_structured_result(raw_result)
+                    except Exception as exc:
+                        first_error = first_error or exc
+                        protocol_attempts.append(
+                            {
+                                "protocol": method,
+                                "status": "failed",
+                                "transport_attempts": protocol_stats.attempts,
+                                "error_category": exc.__class__.__name__,
+                            }
+                        )
+                        total_stats.attempts += protocol_stats.attempts
+                        total_stats.retries += protocol_stats.retries
+                        continue
+                    protocol_attempts.append(
+                        {
+                            "protocol": method,
+                            "status": "completed",
+                            "transport_attempts": protocol_stats.attempts,
+                        }
+                    )
+                    total_stats.attempts += protocol_stats.attempts
+                    total_stats.retries += protocol_stats.retries
+                    _update_span(
+                        span,
+                        stats=total_stats,
+                        message=raw_message,
+                        protocol=method,
+                        protocol_attempts=protocol_attempts,
+                    )
+                    return parsed
 
-        # Tier 2: json_schema — OpenAI's stricter mode; DeepSeek 400s here
-        try:
-            return await bound.with_structured_output(
-                schema, method="json_schema"
-            ).ainvoke(lc_msgs)
-        except Exception:
-            pass
-
-        # Tier 3: prompt-based JSON — vendor-agnostic
-        try:
-            return await self._chat_structured_via_json_prompt(
-                normalized_messages,
-                schema,
-                temperature=temperature,
-            )
-        except Exception as fallback_error:
-            raise ExternalServiceError(
-                f"Structured LLM call failed: {first_error}; "
-                f"prompt fallback failed: {fallback_error}"
-            ) from fallback_error
+                protocol_stats = RetryStats()
+                try:
+                    parsed, raw_message = await self._chat_structured_via_json_prompt(
+                        normalized_messages,
+                        schema,
+                        temperature=temperature,
+                        retry_stats=protocol_stats,
+                    )
+                except Exception as fallback_error:
+                    protocol_attempts.append(
+                        {
+                            "protocol": "json_prompt",
+                            "status": "failed",
+                            "transport_attempts": protocol_stats.attempts,
+                            "error_category": fallback_error.__class__.__name__,
+                        }
+                    )
+                    total_stats.attempts += protocol_stats.attempts
+                    total_stats.retries += protocol_stats.retries
+                    _update_span(
+                        span,
+                        stats=total_stats,
+                        protocol="json_prompt",
+                        protocol_attempts=protocol_attempts,
+                    )
+                    raise ExternalServiceError(
+                        f"Structured LLM call failed: {first_error}; "
+                        f"prompt fallback failed: {fallback_error}"
+                    ) from fallback_error
+                protocol_attempts.append(
+                    {
+                        "protocol": "json_prompt",
+                        "status": "completed",
+                        "transport_attempts": protocol_stats.attempts,
+                    }
+                )
+                total_stats.attempts += protocol_stats.attempts
+                total_stats.retries += protocol_stats.retries
+                _update_span(
+                    span,
+                    stats=total_stats,
+                    message=raw_message,
+                    protocol="json_prompt",
+                    protocol_attempts=protocol_attempts,
+                )
+                return parsed
+        except ExternalServiceError:
+            raise
+        except Exception as exc:
+            raise ExternalServiceError(f"Structured LLM call failed: {exc}") from exc
 
     async def _chat_structured_via_json_prompt(
         self,
@@ -179,7 +286,8 @@ class OpenAIFormatProvider:
         schema: type,
         *,
         temperature: float,
-    ) -> Any:
+        retry_stats: RetryStats,
+    ) -> tuple[Any, Any]:
         schema_json = "{}"
         if hasattr(schema, "model_json_schema"):
             schema_json = json.dumps(schema.model_json_schema(), ensure_ascii=False)
@@ -197,17 +305,19 @@ class OpenAIFormatProvider:
         ]
         # No max_tokens cap: a full resume JSON with multiple experiences easily
         # exceeds 2k tokens; letting the vendor default apply avoids truncation.
-        raw = await self.chat(
-            fallback_messages,
-            temperature=temperature,
+        llm = self._llm.bind(temperature=temperature)
+        raw_message = await run_with_transport_retries(
+            lambda: llm.ainvoke(_to_lc_messages(fallback_messages)),
+            max_retries=settings.llm_max_transport_retries,
+            stats=retry_stats,
         )
-        json_text = self._extract_json_object(str(raw))
+        json_text = self._extract_json_object(text_from_content(raw_message.content))
 
         if hasattr(schema, "model_validate_json"):
-            return schema.model_validate_json(json_text)
+            return schema.model_validate_json(json_text), raw_message
         if hasattr(schema, "model_validate"):
-            return schema.model_validate(json.loads(json_text))
-        return json.loads(json_text)
+            return schema.model_validate(json.loads(json_text)), raw_message
+        return json.loads(json_text), raw_message
 
 
     @staticmethod
@@ -225,8 +335,33 @@ class OpenAIFormatProvider:
         return stripped[start : end + 1]
 
     async def embed(self, texts: list[str]) -> list[list[float]]:
+        stats = RetryStats()
         try:
-            return await self._embed.aembed_documents(texts)
+            with observation_span(
+                "embedding_calls",
+                "openai.embed",
+                attributes={
+                    "model": getattr(self, "_embedding_model", settings.embedding_model),
+                    "batch_size": len(texts),
+                    "input_char_count": sum(len(text) for text in texts),
+                },
+            ) as span:
+                vectors = await run_with_transport_retries(
+                    lambda: self._embed.aembed_documents(texts),
+                    max_retries=settings.embedding_max_transport_retries,
+                    stats=stats,
+                )
+                if span is not None:
+                    span.attributes.update(
+                        sanitize_attributes(
+                            {
+                                "transport_attempts": stats.attempts,
+                                "retry_count": stats.retries,
+                                "vector_count": len(vectors),
+                            }
+                        )
+                    )
+                return vectors
         except Exception as e:
             raise ExternalServiceError(f"Embedding call failed: {e}") from e
 
@@ -248,9 +383,18 @@ class OpenAIFormatProvider:
                 tool_choice=tool_choice,
             )
 
+        stats = RetryStats()
         try:
-            result = await llm.ainvoke(_to_lc_messages(messages))
-            return _chat_result_from_ai_message(result)
+            with observation_span(
+                "llm_calls", "chat_with_tools", attributes=_llm_attributes(self, mode="tools")
+            ) as span:
+                result = await run_with_transport_retries(
+                    lambda: llm.ainvoke(_to_lc_messages(messages)),
+                    max_retries=settings.llm_max_transport_retries,
+                    stats=stats,
+                )
+                _update_span(span, stats=stats, message=result)
+                return _chat_result_from_ai_message(result)
         except Exception as e:
             raise ExternalServiceError(f"LLM tool call failed: {e}") from e
 
@@ -280,14 +424,90 @@ class OpenAIFormatProvider:
             )
 
         try:
-            message = None
-            async for chunk in llm.astream(_to_lc_messages(messages)):
-                text = text_from_content(getattr(chunk, "content", ""))
-                await forward_visible_tokens(on_token, text)
-                message = chunk if message is None else message + chunk
-            return _chat_result_from_ai_message(message) if message is not None else ChatResult()
+            with observation_span(
+                "llm_calls",
+                "chat_with_tools_stream",
+                attributes=_llm_attributes(self, mode="tools_stream"),
+            ) as span:
+                message = None
+                async for chunk in llm.astream(_to_lc_messages(messages)):
+                    text = text_from_content(getattr(chunk, "content", ""))
+                    await forward_visible_tokens(on_token, text)
+                    message = chunk if message is None else message + chunk
+                _update_span(span, stats=RetryStats(attempts=1), message=message)
+                return (
+                    _chat_result_from_ai_message(message)
+                    if message is not None
+                    else ChatResult()
+                )
         except Exception as e:
             raise ExternalServiceError(f"LLM tool streaming call failed: {e}") from e
+
+
+def _llm_attributes(
+    provider: OpenAIFormatProvider, *, mode: str
+) -> dict[str, object]:
+    return {
+        "provider": "openai_format",
+        "model": getattr(provider, "_model", "unknown"),
+        "mode": mode,
+    }
+
+
+def _update_span(
+    span: Any,
+    *,
+    stats: RetryStats,
+    message: Any | None = None,
+    protocol: str | None = None,
+    protocol_attempts: list[dict[str, object]] | None = None,
+) -> None:
+    if span is None:
+        return
+    usage = token_usage_from_message(message) if message is not None else None
+    values: dict[str, object] = {
+        "logical_call_count": 1,
+        "physical_request_count": stats.attempts,
+        "transport_attempts": stats.attempts,
+        "retry_count": stats.retries,
+        "usage_available": usage.available if usage else False,
+    }
+    if usage:
+        values.update(
+            {
+                "input_tokens": usage.input_tokens,
+                "output_tokens": usage.output_tokens,
+                "total_tokens": usage.total_tokens,
+            }
+        )
+    if protocol is not None:
+        values["protocol"] = protocol
+    if protocol_attempts is not None:
+        values["protocol_attempt_count"] = len(protocol_attempts)
+        values["protocol_attempts"] = protocol_attempts
+    span.attributes.update(sanitize_attributes(values))
+
+
+def _structured_with_raw(bound: Any, schema: type, method: str) -> Any:
+    try:
+        return bound.with_structured_output(schema, method=method, include_raw=True)
+    except TypeError:
+        # Small local fakes and older compatible LangChain versions may not
+        # expose include_raw. The public provider result remains unchanged.
+        return bound.with_structured_output(schema, method=method)
+
+
+def _unwrap_structured_result(result: Any) -> tuple[Any, Any | None]:
+    if isinstance(result, dict) and "parsed" in result:
+        parsing_error = result.get("parsing_error")
+        if parsing_error is not None:
+            raise parsing_error
+        return result.get("parsed"), result.get("raw")
+    return result, getattr(result, "raw", None)
+
+
+async def _invoke(runnable: Any, messages: list[BaseMessage]) -> Any:
+    return await runnable.ainvoke(messages)
 
 
 def _to_lc_messages(messages: list[dict[str, Any]]) -> list[BaseMessage]:

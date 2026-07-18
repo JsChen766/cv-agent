@@ -1,0 +1,32 @@
+{
+  "bullet_fits": [
+    {
+      "bullet_id": "bullet-tail-gate-1",
+      "gate_ratio": 0.667,
+      "item_id": "item-tail-gate-1",
+      "last_line_ratio": 0.667,
+      "last_line_width_mm": 125.396,
+      "line_count": 2,
+      "line_widths_mm": [187.8, 125.396],
+      "recommendation": "none",
+      "section_type": "experience",
+      "status": "pass",
+      "target_ratio": 0.667
+    }
+  ],
+  "content_width_mm": 192.0,
+  "forced_break_block_ids": [],
+  "maximum_page_usage_ratio": 0.95,
+  "minimum_page_usage_ratio": 0.8,
+  "overflow_mm": 0.0,
+  "page_available_height_mm": 279.0,
+  "page_count": 1,
+  "pages": [{"available_height_mm": 279.0, "blocks": [], "overflow_mm": 0.0, "page_number": 1, "usage_ratio": 0.88, "used_height_mm": 245.52}],
+  "profile_hash": "6546b7a86dafbd62a72b82420ba5a4abf08634c6a59c32e1d575f4d1a8c20873",
+  "profile_version": "resume-template-v2",
+  "sections": [],
+  "status": "pass",
+  "target_page_usage_ratio": 0.88,
+  "underfill_mm": 0.0,
+  "violations": []
+}

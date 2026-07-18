@@ -1,0 +1,17 @@
+{
+  "aggregates": null,
+  "baseline_status": "pending",
+  "environment": null,
+  "invalid_samples": [
+    {
+      "reason": "No fixed-environment set of at least 30 valid persisted runs with matching DOM observations has been supplied.",
+      "sample_id": "p0-baseline-not-captured"
+    }
+  ],
+  "p95_published": false,
+  "required_valid_run_count": 30,
+  "run_ids": [],
+  "sample_selection": null,
+  "schema_version": "resume-generation-baseline-v1",
+  "valid_run_count": 0
+}

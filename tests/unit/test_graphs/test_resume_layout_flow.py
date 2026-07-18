@@ -6,7 +6,7 @@ from app.graphs.resume.nodes import (
 )
 
 
-def test_underfilled_layout_skips_content_gap_after_revision_budget(monkeypatch) -> None:
+def test_underfilled_layout_routes_to_content_gap_after_revision_budget(monkeypatch) -> None:
     monkeypatch.setattr("app.graphs.resume.nodes.settings.max_layout_revision_iterations", 3)
     monkeypatch.setattr("app.graphs.resume.nodes.settings.max_resume_generation_calls", 7)
 
@@ -19,10 +19,10 @@ def test_underfilled_layout_skips_content_gap_after_revision_budget(monkeypatch)
         "generation_call_count": 4,
     }
 
-    assert layout_route(state) == "fact_check"
+    assert layout_route(state) == "content_gap"
 
 
-def test_bullet_only_layout_issue_skips_llm_revision(monkeypatch) -> None:
+def test_bullet_only_layout_issue_requires_revision(monkeypatch) -> None:
     monkeypatch.setattr("app.graphs.resume.nodes.settings.max_layout_revision_iterations", 3)
     monkeypatch.setattr("app.graphs.resume.nodes.settings.max_resume_generation_calls", 7)
 
@@ -37,10 +37,10 @@ def test_bullet_only_layout_issue_skips_llm_revision(monkeypatch) -> None:
         "generation_call_count": 1,
     }
 
-    assert layout_route(state) == "fact_check"
+    assert layout_route(state) == "revision"
 
 
-def test_underfilled_bullet_repair_skips_llm_revision(monkeypatch) -> None:
+def test_underfilled_bullet_repair_requests_content(monkeypatch) -> None:
     monkeypatch.setattr("app.graphs.resume.nodes.settings.max_layout_revision_iterations", 3)
     monkeypatch.setattr("app.graphs.resume.nodes.settings.max_resume_generation_calls", 7)
 
@@ -58,7 +58,7 @@ def test_underfilled_bullet_repair_skips_llm_revision(monkeypatch) -> None:
         "generation_call_count": 1,
     }
 
-    assert layout_route(state) == "fact_check"
+    assert layout_route(state) == "content_gap"
 
 
 def test_self_review_limit_routes_to_quality_gate(monkeypatch) -> None:
@@ -153,19 +153,19 @@ async def test_uncalibrated_layout_never_silently_passes(monkeypatch) -> None:
         }
     )
 
-    assert result["quality_status"] == "needs_user_decision"
+    assert result["quality_status"] == "failed"
     assert result["quality_issues"] == [
         {
-            "code": "layout_calibration_pending",
+            "code": "browser_verification_required",
             "message": (
-                "Browser calibration is pending; the estimated layout cannot be silently "
-                "treated as a hard quality pass."
+                "Browser layout verification is required before this candidate can be "
+                "persisted or reviewed."
             ),
         }
     ]
 
 
-async def test_underfilled_resume_reaches_review_instead_of_failing() -> None:
+async def test_underfilled_resume_fails_closed() -> None:
     result = await quality_gate_node(
         {
             "fact_mismatches": [],
@@ -205,15 +205,15 @@ async def test_underfilled_resume_reaches_review_instead_of_failing() -> None:
         }
     )
 
-    assert result["quality_status"] == "needs_user_decision"
-    assert quality_gate_route(result) == "needs_user_decision"
+    assert result["quality_status"] == "failed"
+    assert quality_gate_route(result) == "failed"
     assert {issue["code"] for issue in result["quality_issues"]} == {
         "layout_usage_underfilled",
         "page_underfilled",
     }
 
 
-async def test_uncalibrated_profile_mismatch_requires_user_decision(monkeypatch) -> None:
+async def test_uncalibrated_profile_mismatch_is_fatal(monkeypatch) -> None:
     monkeypatch.setattr("app.graphs.resume.nodes.settings.resume_layout_hard_gate_enabled", False)
     result = await quality_gate_node(
         {
@@ -248,8 +248,8 @@ async def test_uncalibrated_profile_mismatch_requires_user_decision(monkeypatch)
         }
     )
 
-    assert result["quality_status"] == "needs_user_decision"
-    assert quality_gate_route(result) == "needs_user_decision"
+    assert result["quality_status"] == "failed"
+    assert quality_gate_route(result) == "failed"
 
 
 async def test_calibrated_profile_mismatch_remains_fatal(monkeypatch) -> None:
@@ -306,7 +306,7 @@ async def test_invalid_layout_report_becomes_quality_failure() -> None:
     assert result["quality_issues"][0]["code"] == "invalid_layout_report"
 
 
-async def test_unresolved_short_bullet_requires_user_decision() -> None:
+async def test_unresolved_short_bullet_fails_closed() -> None:
     result = await quality_gate_node(
         {
             "fact_mismatches": [],
@@ -340,5 +340,5 @@ async def test_unresolved_short_bullet_requires_user_decision() -> None:
         }
     )
 
-    assert result["quality_status"] == "needs_user_decision"
-    assert quality_gate_route(result) == "needs_user_decision"
+    assert result["quality_status"] == "failed"
+    assert quality_gate_route(result) == "failed"

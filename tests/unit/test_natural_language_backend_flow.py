@@ -174,6 +174,9 @@ class _FakeResumeService:
             evidence_summary=data.evidence_summary,
             risk_summary=data.risk_summary,
             missing_info=data.missing_info,
+            gate_status=data.gate_status,
+            quality_issues=data.quality_issues,
+            quality_gate_version=data.quality_gate_version,
             created_at=datetime.now(UTC),
         )
         return self.variant
@@ -181,6 +184,11 @@ class _FakeResumeService:
     async def get_variant(self, variant_id: str) -> ResumeVariant:
         assert self.variant is not None and self.variant.id == variant_id
         return self.variant
+
+    async def get_acceptable_variant(self, user_id: str, variant_id: str) -> ResumeVariant:
+        variant = await self.get_variant(variant_id)
+        assert variant.gate_status == "passed"
+        return variant
 
     async def get_resume(self, user_id: str, resume_id: str) -> Resume:
         assert self.resume is not None and self.resume.id == resume_id
@@ -218,6 +226,7 @@ async def test_resume_draft_persists_before_output_interrupt(
             "workspace": {"jd_id": "jd-1"},
             "variants": [{"title": "Draft", "content": "Resume markdown"}],
             "pending_sse_events": [],
+            "quality_status": "passed",
         },
         {"configurable": {"services": services}},
     )
@@ -230,6 +239,7 @@ async def test_resume_draft_persists_before_output_interrupt(
             "workspace": persisted["workspace"],
             "variants": persisted["variants"],
             "pending_sse_events": [],
+            "quality_status": "passed",
         },
         {"configurable": {"services": services}},
     )
@@ -260,6 +270,7 @@ async def test_resume_subgraph_interrupt_persisted_via_checkpointer() -> None:
         "workspace": {"jd_id": "jd-1"},
         "variants": [{"title": "Draft", "content": "Resume markdown"}],
         "pending_sse_events": [],
+        "quality_status": "passed",
     }
     config: RunnableConfig = {"configurable": {"thread_id": thread_id}}
 
@@ -301,6 +312,7 @@ async def test_resume_review_accept_saves_variant_and_consumes_interrupt() -> No
             "workspace": {"jd_id": "jd-1"},
             "variants": [{"title": "Draft", "content": "Resume markdown"}],
             "pending_sse_events": [],
+            "quality_status": "passed",
         },
         config=config,
     )

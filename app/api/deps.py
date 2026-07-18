@@ -13,6 +13,7 @@ from app.domain.experience.service import ExperienceService
 from app.domain.jd.service import JdService
 from app.domain.preference.service import PreferenceService
 from app.domain.resume.layout_service import ResumeLayoutService
+from app.domain.resume.observability_service import ResumeObservabilityService
 from app.domain.resume.service import ResumeService
 from app.domain.user.models import User
 from app.domain.user.service import UserService
@@ -21,6 +22,9 @@ from app.infra.db.repositories.artifact_repo import PostgresArtifactRepository
 from app.infra.db.repositories.experience_repo import PostgresExperienceRepository
 from app.infra.db.repositories.jd_repo import PostgresJdRepository
 from app.infra.db.repositories.preference_repo import PostgresPreferenceRepository
+from app.infra.db.repositories.resume_observability_repo import (
+    PostgresResumeObservabilityRepository,
+)
 from app.infra.db.repositories.resume_repo import PostgresResumeRepository
 from app.infra.db.repositories.user_repo import PostgresUserRepository
 from app.infra.layout import PillowFontMetrics
@@ -61,6 +65,9 @@ def build_service_container(pool: asyncpg.Pool | None) -> ServiceContainer:
         preference=PreferenceService(PostgresPreferenceRepository(checked_pool)),
         user=UserService(PostgresUserRepository(checked_pool)),
         resume_layout=resume_layout,
+        resume_observability=ResumeObservabilityService(
+            PostgresResumeObservabilityRepository(checked_pool)
+        ),
     )
 
 
@@ -86,6 +93,14 @@ async def get_resume_service(pool: asyncpg.Pool | None = Depends(pool_dep)) -> R
     return ResumeService(
         PostgresResumeRepository(_require_pool(pool)),
         ResumeLayoutService(PillowFontMetrics()),
+    )
+
+
+async def get_resume_observability_service(
+    pool: asyncpg.Pool | None = Depends(pool_dep),
+) -> ResumeObservabilityService:
+    return ResumeObservabilityService(
+        PostgresResumeObservabilityRepository(_require_pool(pool))
     )
 
 

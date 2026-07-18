@@ -5,6 +5,20 @@ from app.domain.resume.layout_service import ResumeLayoutService
 from app.infra.layout import PillowFontMetrics
 
 
+class _CountingMetrics:
+    def __init__(self) -> None:
+        self.delegate = PillowFontMetrics()
+        self.calls = 0
+
+    @property
+    def font_checksums(self) -> dict[str, str]:
+        return self.delegate.font_checksums
+
+    def text_width_mm(self, text, style) -> float:
+        self.calls += 1
+        return self.delegate.text_width_mm(text, style)
+
+
 def _structure(*, bullet_text: str = "A" * 70, item_count: int = 1) -> dict[str, object]:
     profile = DEFAULT_RESUME_LAYOUT_PROFILE
     return {
@@ -64,7 +78,30 @@ def test_bullet_fit_uses_exact_two_thirds_gate() -> None:
     assert awkward.status == "awkward_wrap"
 
 
-def test_single_line_grounded_short_exception_is_soft_only() -> None:
+def test_repeated_bullet_measurement_reuses_exact_width_and_wrap_cache() -> None:
+    metrics = _CountingMetrics()
+    service = ResumeLayoutService(metrics)
+
+    first = service.measure_bullet_fit(
+        "使用 **Python** 构建 API，并将 p95 延迟降低 40%",
+        bullet_id="bullet-1",
+        item_id="item-1",
+        section_type="experience",
+    )
+    calls_after_first = metrics.calls
+    second = service.measure_bullet_fit(
+        "使用 **Python** 构建 API，并将 p95 延迟降低 40%",
+        bullet_id="bullet-2",
+        item_id="item-1",
+        section_type="experience",
+    )
+
+    assert second.line_widths_mm == first.line_widths_mm
+    assert second.last_line_ratio == first.last_line_ratio
+    assert metrics.calls == calls_after_first
+
+
+def test_single_line_grounded_short_exception_cannot_bypass_gate() -> None:
     service = ResumeLayoutService(PillowFontMetrics())
 
     result = service.measure_bullet_fit(
@@ -76,7 +113,7 @@ def test_single_line_grounded_short_exception_is_soft_only() -> None:
     )
 
     assert result.line_count == 1
-    assert result.status == "unfixable_grounded_short"
+    assert result.status == "too_short"
 
 
 def test_grounded_short_exception_cannot_bypass_multiline_gate() -> None:
@@ -94,7 +131,7 @@ def test_grounded_short_exception_cannot_bypass_multiline_gate() -> None:
     assert result.status == "awkward_wrap"
 
 
-def test_grounded_short_exception_is_reported_as_soft_violation() -> None:
+def test_grounded_short_exception_is_reported_as_hard_width_violation() -> None:
     service = ResumeLayoutService(PillowFontMetrics())
     structure = _structure(bullet_text="Python")
     sections = structure["sections"]
@@ -102,15 +139,12 @@ def test_grounded_short_exception_is_reported_as_soft_violation() -> None:
     sections[0]["items"][0]["bullets"][0]["layout_exception"] = "unfixable_grounded_short"
 
     report = service.measure_resume_layout(structure)
-    exception = next(
-        violation for violation in report.violations if violation.code == "unfixable_grounded_short"
+    violation = next(
+        violation for violation in report.violations if violation.code == "bullet_too_short"
     )
 
-    assert exception.severity == "soft"
-    assert all(
-        not (violation.code == "bullet_too_short" and violation.bullet_id == "bullet-0-0")
-        for violation in report.violations
-    )
+    assert violation.severity == "hard"
+    assert report.status == "needs_revision"
 
 
 def test_terminal_periods_are_hard_layout_violations() -> None:

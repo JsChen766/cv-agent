@@ -9,6 +9,7 @@ from app.domain.experience.service import ExperienceService
 from app.domain.jd.service import JdService
 from app.domain.preference.service import PreferenceService
 from app.domain.resume.layout_service import ResumeLayoutService
+from app.domain.resume.observability_service import ResumeObservabilityService
 from app.domain.resume.service import ResumeService
 from app.domain.user.service import UserService
 
@@ -25,6 +26,7 @@ class ServiceContainer(BaseModel):
     preference: PreferenceService
     user: UserService
     resume_layout: ResumeLayoutService | None = None
+    resume_observability: ResumeObservabilityService | None = None
 
 
 class ToolContext(BaseModel):

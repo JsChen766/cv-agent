@@ -1,0 +1,150 @@
+{
+  "cases": [
+    {
+      "density": "sparse",
+      "files": {
+        "dom_preview": "zh_sparse/dom-preview.json",
+        "dom_print": "zh_sparse/dom-print.json",
+        "expected": "zh_sparse/expected.json",
+        "layout_constraint": "zh_sparse/layout-constraint.json",
+        "layout_report": "zh_sparse/layout-report.json",
+        "structured": "zh_sparse/structured.json"
+      },
+      "id": "zh_sparse",
+      "language": "zh-CN",
+      "p0_expectation": "known_bad",
+      "profile_hash": "6546b7a86dafbd62a72b82420ba5a4abf08634c6a59c32e1d575f4d1a8c20873",
+      "provenance": "synthetic",
+      "status": "valid",
+      "tags": ["zh", "sparse", "underfill", "short-single-line"]
+    },
+    {
+      "density": "dense",
+      "files": {
+        "dom_preview": "zh_dense/dom-preview.json",
+        "dom_print": "zh_dense/dom-print.json",
+        "expected": "zh_dense/expected.json",
+        "layout_constraint": "zh_dense/layout-constraint.json",
+        "layout_report": "zh_dense/layout-report.json",
+        "structured": "zh_dense/structured.json"
+      },
+      "id": "zh_dense",
+      "language": "zh-CN",
+      "p0_expectation": "expected_pass",
+      "profile_hash": "6546b7a86dafbd62a72b82420ba5a4abf08634c6a59c32e1d575f4d1a8c20873",
+      "provenance": "synthetic",
+      "status": "valid",
+      "tags": ["zh", "dense", "near-page-bottom", "block-pagination"]
+    },
+    {
+      "density": "dense",
+      "files": {
+        "dom_preview": "en_times_dense/dom-preview.json",
+        "dom_print": "en_times_dense/dom-print.json",
+        "expected": "en_times_dense/expected.json",
+        "layout_constraint": "en_times_dense/layout-constraint.json",
+        "layout_report": "en_times_dense/layout-report.json",
+        "structured": "en_times_dense/structured.json"
+      },
+      "id": "en_times_dense",
+      "language": "en-US",
+      "p0_expectation": "expected_pass",
+      "profile_hash": "6546b7a86dafbd62a72b82420ba5a4abf08634c6a59c32e1d575f4d1a8c20873",
+      "provenance": "synthetic",
+      "status": "valid",
+      "tags": ["en", "dense", "times-new-roman"]
+    },
+    {
+      "density": "dense",
+      "files": {
+        "dom_preview": "mixed_long_tech/dom-preview.json",
+        "dom_print": "mixed_long_tech/dom-print.json",
+        "expected": "mixed_long_tech/expected.json",
+        "layout_constraint": "mixed_long_tech/layout-constraint.json",
+        "layout_report": "mixed_long_tech/layout-report.json",
+        "structured": "mixed_long_tech/structured.json"
+      },
+      "id": "mixed_long_tech",
+      "language": "zh-CN",
+      "p0_expectation": "expected_pass",
+      "profile_hash": "6546b7a86dafbd62a72b82420ba5a4abf08634c6a59c32e1d575f4d1a8c20873",
+      "provenance": "synthetic",
+      "status": "valid",
+      "tags": ["mixed-language", "long-technical-token", "kubernetes", "opentelemetry"]
+    },
+    {
+      "density": "medium",
+      "files": {
+        "dom_preview": "long_numeric_tokens/dom-preview.json",
+        "dom_print": "long_numeric_tokens/dom-print.json",
+        "expected": "long_numeric_tokens/expected.json",
+        "layout_constraint": "long_numeric_tokens/layout-constraint.json",
+        "layout_report": "long_numeric_tokens/layout-report.json",
+        "structured": "long_numeric_tokens/structured.json"
+      },
+      "id": "long_numeric_tokens",
+      "language": "en-US",
+      "p0_expectation": "expected_pass",
+      "profile_hash": "6546b7a86dafbd62a72b82420ba5a4abf08634c6a59c32e1d575f4d1a8c20873",
+      "provenance": "synthetic",
+      "status": "valid",
+      "tags": ["numeric", "percentage", "version", "url-like-token"]
+    },
+    {
+      "density": "medium",
+      "files": {
+        "dom_preview": "tail_ratio_below_gate/dom-preview.json",
+        "dom_print": "tail_ratio_below_gate/dom-print.json",
+        "expected": "tail_ratio_below_gate/expected.json",
+        "layout_constraint": "tail_ratio_below_gate/layout-constraint.json",
+        "layout_report": "tail_ratio_below_gate/layout-report.json",
+        "structured": "tail_ratio_below_gate/structured.json"
+      },
+      "id": "tail_ratio_below_gate",
+      "language": "en-US",
+      "p0_expectation": "known_bad",
+      "profile_hash": "6546b7a86dafbd62a72b82420ba5a4abf08634c6a59c32e1d575f4d1a8c20873",
+      "provenance": "synthetic",
+      "status": "valid",
+      "tags": ["tail-ratio", "below-gate", "boundary"]
+    },
+    {
+      "density": "medium",
+      "files": {
+        "dom_preview": "tail_ratio_at_gate/dom-preview.json",
+        "dom_print": "tail_ratio_at_gate/dom-print.json",
+        "expected": "tail_ratio_at_gate/expected.json",
+        "layout_constraint": "tail_ratio_at_gate/layout-constraint.json",
+        "layout_report": "tail_ratio_at_gate/layout-report.json",
+        "structured": "tail_ratio_at_gate/structured.json"
+      },
+      "id": "tail_ratio_at_gate",
+      "language": "en-US",
+      "p0_expectation": "expected_pass",
+      "profile_hash": "6546b7a86dafbd62a72b82420ba5a4abf08634c6a59c32e1d575f4d1a8c20873",
+      "provenance": "synthetic",
+      "status": "valid",
+      "tags": ["tail-ratio", "at-gate", "boundary"]
+    },
+    {
+      "density": "unknown",
+      "files": {
+        "expected": "incident_two_page_zh/expected.json"
+      },
+      "id": "incident_two_page_zh",
+      "invalid_reason": "No authorized width-preserving structured payload and real font-loaded DOM observation have been supplied.",
+      "language": "zh-CN",
+      "p0_expectation": "pending",
+      "profile_hash": null,
+      "provenance": "not_captured",
+      "status": "invalid",
+      "tags": ["incident", "two-page", "requires-real-observation"]
+    }
+  ],
+  "profile": {
+    "hash": "6546b7a86dafbd62a72b82420ba5a4abf08634c6a59c32e1d575f4d1a8c20873",
+    "required_fonts": ["SimSun", "Times New Roman"],
+    "version": "resume-template-v2"
+  },
+  "schema_version": "resume-regression-manifest-v1"
+}

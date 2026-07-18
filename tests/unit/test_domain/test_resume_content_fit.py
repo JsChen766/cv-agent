@@ -68,3 +68,40 @@ def test_layout_optimizer_uses_bounded_tuning_then_reports_content_gap() -> None
     assert result.report.status == "needs_revision"
     assert result.structure["layout_tuning"]["body_font_scale"] == 1.08
     assert result.structure["layout_tuning"]["body_line_height"] == 1.28
+
+
+def test_layout_optimizer_preserves_explicit_multi_page_content() -> None:
+    service = ResumeLayoutService(PillowFontMetrics())
+    constraint = LayoutConstraint(max_pages=None, requested_pages=2)
+    candidate_pool = _structure(bullet_text="A" * 75, item_count=10)
+
+    result = ResumeLayoutOptimizer(service).optimize(candidate_pool, constraint)
+
+    assert result.report.page_count > 1
+    assert result.report.status == "pass"
+    assert result.fits_target_band is True
+    assert result.structure == candidate_pool
+
+
+def test_layout_beam_is_deterministic_and_preserves_unique_jd_coverage() -> None:
+    service = ResumeLayoutService(PillowFontMetrics())
+    constraint = LayoutConstraint(max_pages=1, requested_pages=1)
+    candidate_pool = _structure(bullet_text="A" * 75, item_count=6)
+    sections = candidate_pool["sections"]
+    unique_bullet = sections[0]["items"][0]["bullets"][2]
+    unique_bullet["matched_jd_requirement_ids"] = ["req-unique"]
+
+    first = ResumeLayoutOptimizer(service).optimize(candidate_pool, constraint)
+    second = ResumeLayoutOptimizer(service).optimize(candidate_pool, constraint)
+
+    assert first.structure == second.structure
+    assert first.report == second.report
+    selected_items = first.structure["sections"][0]["items"]
+    assert all(len(item["bullets"]) >= 2 for item in selected_items)
+    selected_requirement_ids = {
+        requirement_id
+        for item in selected_items
+        for bullet in item["bullets"]
+        for requirement_id in bullet.get("matched_jd_requirement_ids", [])
+    }
+    assert "req-unique" in selected_requirement_ids

@@ -9,3 +9,7 @@ __pycache__/
 .env.docker
 uploads/
 models/
+artifacts/resume-observability/
+artifacts/resume-benchmarks/
+docs/baselines/*.local.json
+docs/baselines/*.tmp.json

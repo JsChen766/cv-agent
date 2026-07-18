@@ -3,7 +3,7 @@ from __future__ import annotations
 import copy
 from typing import Any
 
-from app.core.errors import NotFoundError
+from app.core.errors import NotFoundError, ValidationError
 from app.core.types import RESUME_PREFIX, VARIANT_PREFIX, generate_id
 from app.domain.resume.content_style import normalize_resume_narrative_punctuation
 from app.domain.resume.layout_models import LayoutConstraint
@@ -135,6 +135,17 @@ class ResumeService:
         if not v:
             raise NotFoundError(f"Variant not found: {variant_id}")
         return v
+
+    async def get_acceptable_variant(self, user_id: str, variant_id: str) -> ResumeVariant:
+        """Return a user-owned variant only when it passed the persisted quality gate."""
+        variant = await self.get_variant(variant_id)
+        await self.get_resume(user_id, variant.resume_id)
+        if variant.gate_status != "passed":
+            raise ValidationError(
+                "Resume variant has not passed the quality gate",
+                code="resume_variant_not_acceptable",
+            )
+        return variant
 
     async def update_variant(
         self, user_id: str, variant_id: str, patch: ResumeVariantPatch

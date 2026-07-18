@@ -9,10 +9,12 @@ from __future__ import annotations
 
 import asyncio
 import json
+from typing import Any
 
 import asyncpg
 
 from app.core.config import settings
+from app.core.observability import observation_span, sanitize_attributes
 from app.domain.jd.models import JdRequirement
 from app.infra.db.helpers import column_is_vector
 from app.providers.factory import get_embedding_provider
@@ -38,7 +40,15 @@ class EvidenceRagService:
 
         # Embed all requirements and average them as a single query vector
         req_texts = [r.text for r in jd_requirements]
-        embeddings = await self._embed.embed(req_texts)
+        with observation_span(
+            "embedding_calls",
+            "evidence.requirement_embedding",
+            attributes={
+                "batch_size": len(req_texts),
+                "input_char_count": sum(len(text) for text in req_texts),
+            },
+        ):
+            embeddings = await self._embed.embed(req_texts)
         if not embeddings or not embeddings[0]:
             return await self.retrieve_recent(user_id, top_k=top_k)
         avg_vec = [
@@ -46,12 +56,22 @@ class EvidenceRagService:
         ]
         vec_str = f"[{','.join(str(v) for v in avg_vec)}]"
 
-        async with self._pool.acquire() as conn:
-            use_vector = await column_is_vector(conn, "experiences", "embedding")
+        with observation_span(
+            "database_calls",
+            "evidence.vector_capability",
+            attributes={"read_write": "read"},
+        ):
+            async with self._pool.acquire() as conn:
+                use_vector = await column_is_vector(conn, "experiences", "embedding")
         if not use_vector:
             return await self.retrieve_recent(user_id, top_k=top_k)
-        async with self._pool.acquire() as conn:
-            rows = await conn.fetch(
+        with observation_span(
+            "database_calls",
+            "evidence.experience_vector_query",
+            attributes={"read_write": "read"},
+        ) as span:
+            async with self._pool.acquire() as conn:
+                rows = await conn.fetch(
                 """
                 SELECT
                     e.id, e.title, e.organization, e.role, e.category,
@@ -68,8 +88,9 @@ class EvidenceRagService:
                 """,
                 vec_str,
                 user_id,
-                top_k,
-            )
+                    top_k,
+                )
+            _set_rows(span, len(rows))
 
         if not rows:
             return await self.retrieve_recent(user_id, top_k=top_k)
@@ -77,8 +98,13 @@ class EvidenceRagService:
         return experiences
 
     async def retrieve_recent(self, user_id: str, *, top_k: int = 5) -> list[ExperienceWithClaims]:
-        async with self._pool.acquire() as conn:
-            rows = await conn.fetch(
+        with observation_span(
+            "database_calls",
+            "evidence.recent_fallback_query",
+            attributes={"read_write": "read", "fallback_reason": "recent"},
+        ) as span:
+            async with self._pool.acquire() as conn:
+                rows = await conn.fetch(
                 """
                 SELECT e.id, e.title, e.organization, e.role, e.category,
                        e.start_date, e.end_date, e.tags,
@@ -91,8 +117,9 @@ class EvidenceRagService:
                 LIMIT $2
                 """,
                 user_id,
-                top_k,
-            )
+                    top_k,
+                )
+            _set_rows(span, len(rows))
         experiences = [self._to_experience(row) for row in rows]
         return experiences
 
@@ -102,8 +129,13 @@ class EvidenceRagService:
         Used for guaranteed inclusion of categories (e.g. all education entries) that
         must never be filtered out by JD similarity ranking.
         """
-        async with self._pool.acquire() as conn:
-            rows = await conn.fetch(
+        with observation_span(
+            "database_calls",
+            "evidence.category_query",
+            attributes={"read_write": "read", "category": category},
+        ) as span:
+            async with self._pool.acquire() as conn:
+                rows = await conn.fetch(
                 """
                 SELECT e.id, e.title, e.organization, e.role, e.category,
                        e.start_date, e.end_date, e.tags,
@@ -116,8 +148,9 @@ class EvidenceRagService:
                          e.updated_at DESC
                 """,
                 user_id,
-                category,
-            )
+                    category,
+                )
+            _set_rows(span, len(rows))
         experiences = [self._to_experience(row) for row in rows]
         return experiences
 
@@ -163,20 +196,25 @@ class EvidenceRagService:
             *(extract_claims(experience.content) for experience in missing),
             return_exceptions=True,
         )
-        async with self._pool.acquire() as conn:
-            for experience, result in zip(missing, extracted, strict=True):
-                if isinstance(result, asyncio.CancelledError):
-                    raise result
-                if isinstance(result, BaseException):
-                    continue
-                experience.claims = result
-                experience.claims_indexed = True
-                if experience.revision_id:
-                    await conn.execute(
-                        "UPDATE experience_revisions SET claims=$1::jsonb WHERE id=$2",
-                        json.dumps([claim.model_dump(mode="json") for claim in result]),
-                        experience.revision_id,
-                    )
+        with observation_span(
+            "database_calls",
+            "evidence.claims_hydration",
+            attributes={"read_write": "write", "row_count": len(missing)},
+        ):
+            async with self._pool.acquire() as conn:
+                for experience, result in zip(missing, extracted, strict=True):
+                    if isinstance(result, asyncio.CancelledError):
+                        raise result
+                    if isinstance(result, BaseException):
+                        continue
+                    experience.claims = result
+                    experience.claims_indexed = True
+                    if experience.revision_id:
+                        await conn.execute(
+                            "UPDATE experience_revisions SET claims=$1::jsonb WHERE id=$2",
+                            json.dumps([claim.model_dump(mode="json") for claim in result]),
+                            experience.revision_id,
+                        )
 
     async def build_evidence_pack(
         self,
@@ -206,7 +244,15 @@ class EvidenceRagService:
         claim_texts = [c.text for _, c in all_claims]
         all_texts = req_texts + claim_texts
 
-        all_embeddings = await self._embed.embed(all_texts)
+        with observation_span(
+            "embedding_calls",
+            "evidence.pack_embedding",
+            attributes={
+                "batch_size": len(all_texts),
+                "input_char_count": sum(len(text) for text in all_texts),
+            },
+        ):
+            all_embeddings = await self._embed.embed(all_texts)
         req_embeddings = all_embeddings[: len(req_texts)]
         claim_embeddings = all_embeddings[len(req_texts) :]
 
@@ -251,3 +297,8 @@ def _cosine_sim(a: list[float], b: list[float]) -> float:
     if norm_a == 0 or norm_b == 0:
         return 0.0
     return float(dot / (norm_a * norm_b))
+
+
+def _set_rows(span: Any | None, count: int) -> None:
+    if span is not None and hasattr(span, "attributes"):
+        span.attributes.update(sanitize_attributes({"row_count": count}))

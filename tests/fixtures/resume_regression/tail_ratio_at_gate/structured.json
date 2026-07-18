@@ -1,0 +1,32 @@
+{
+  "contact": {"name": "Synthetic Candidate G"},
+  "fixture_provenance": {"contains_real_person_data": false, "kind": "synthetic"},
+  "language": "en-US",
+  "layout_profile_hash": "6546b7a86dafbd62a72b82420ba5a4abf08634c6a59c32e1d575f4d1a8c20873",
+  "layout_profile_version": "resume-template-v2",
+  "layout_tuning": {"body_font_scale": 1.0, "body_line_height": 1.18, "bullet_gap_scale": 1.0, "item_gap_scale": 1.0, "section_gap_scale": 1.0},
+  "sections": [
+    {
+      "heading": "Experience",
+      "id": "section-tail-gate-experience",
+      "items": [
+        {
+          "bullets": [
+            {
+              "id": "bullet-tail-gate-1",
+              "matched_jd_requirement_ids": ["jd-layout"],
+              "source_fact_ids": ["fact-tail-gate-1"],
+              "text": "Built a deterministic synthetic layout probe that preserves source identifiers and places the measured final line exactly on the quality threshold"
+            }
+          ],
+          "id": "item-tail-gate-1",
+          "organization": "Synthetic Layout Lab",
+          "role": "Test Engineer",
+          "source_experience_id": "experience-tail-gate-1",
+          "title": "Tail Width Probe"
+        }
+      ],
+      "type": "experience"
+    }
+  ]
+}

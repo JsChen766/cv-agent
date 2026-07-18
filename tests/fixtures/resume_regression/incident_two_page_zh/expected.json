@@ -1,0 +1,12 @@
+{
+  "baseline_status": "pending",
+  "case_id": "incident_two_page_zh",
+  "invalid": true,
+  "reason": "Real incident data is unavailable. Do not substitute a synthetic two-page sample and claim incident reproduction.",
+  "required_evidence": [
+    "authorized width-preserving structured payload",
+    "saved backend layout report for the same payload",
+    "font-loaded preview DOM observation for the same variant"
+  ],
+  "schema_version": "resume-regression-expected-v1"
+}

@@ -8,6 +8,10 @@ from app.graphs.state import MainState
 
 
 class ResumeGenerationState(MainState, total=False):
+    # Request-level observability linkage only; full metrics stay out of checkpoints.
+    observability_run_id: str | None
+    parent_run_id: str | None
+
     # JD context
     jd_id: str | None
     jd_text: str | None
@@ -19,6 +23,7 @@ class ResumeGenerationState(MainState, total=False):
     evidence_pack: dict[str, Any] | None
     user_preferences: list[dict[str, Any]]
     user_profile: dict[str, Any] | None
+    resume_context_ready: bool
 
     # Planning
     matching_plan: dict[str, Any] | None
@@ -39,6 +44,8 @@ class ResumeGenerationState(MainState, total=False):
     final_candidate_emitted: bool
     maximum_candidate_usage_ratio: float
     layout_fit_status: str | None
+    local_repair_call_count: int
+    local_repair_status: str | None
 
     # Generation output
     variants: list[dict[str, Any]]

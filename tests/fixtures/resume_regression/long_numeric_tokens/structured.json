@@ -1,0 +1,38 @@
+{
+  "contact": {"name": "Synthetic Candidate E"},
+  "fixture_provenance": {"contains_real_person_data": false, "kind": "synthetic"},
+  "language": "en-US",
+  "layout_profile_hash": "6546b7a86dafbd62a72b82420ba5a4abf08634c6a59c32e1d575f4d1a8c20873",
+  "layout_profile_version": "resume-template-v2",
+  "layout_tuning": {"body_font_scale": 1.0, "body_line_height": 1.18, "bullet_gap_scale": 1.0, "item_gap_scale": 1.0, "section_gap_scale": 1.0},
+  "sections": [
+    {
+      "heading": "Projects",
+      "id": "section-long-numeric-project",
+      "items": [
+        {
+          "bullets": [
+            {
+              "id": "bullet-long-numeric-1",
+              "matched_jd_requirement_ids": ["jd-performance"],
+              "source_fact_ids": ["fact-long-numeric-1"],
+              "text": "Processed 12,345,678 synthetic records with release v2026.07.18-rc.12, improving measured throughput by 37.625% while preserving checksum 9F3A7C21"
+            },
+            {
+              "id": "bullet-long-numeric-2",
+              "matched_jd_requirement_ids": ["jd-api"],
+              "source_fact_ids": ["fact-long-numeric-2"],
+              "text": "Validated api.example.test/v2.14.7/events/000123456789 against 99.950% availability and a 250.75 ms synthetic latency budget"
+            }
+          ],
+          "id": "item-long-numeric-1",
+          "organization": "Synthetic Metrics Lab",
+          "role": "Performance Engineer",
+          "source_experience_id": "experience-long-numeric-1",
+          "title": "Numeric Token Boundary Suite"
+        }
+      ],
+      "type": "project"
+    }
+  ]
+}

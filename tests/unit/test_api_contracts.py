@@ -17,8 +17,11 @@ from app.api.routes.copilot import (
     _resume_generation_user_message,
 )
 from app.api.routes.product.jd import _serialize
+from app.api.routes.product.resume import _serialize_variant
 from app.api.routes.threads import _hydrate_resume_canvas_resume_id
 from app.domain.jd.models import JdRecord
+from app.domain.resume.models import ResumeVariant
+from app.main import app
 
 
 def test_action_payload_parses_supported_generate_artifact_action() -> None:
@@ -80,6 +83,31 @@ def test_action_payload_rejects_extra_fields() -> None:
             type="generate_artifact",
             payload={"artifactType": "self_intro", "unexpected": "nope"},
         )
+
+
+def test_resume_variant_response_contract_does_not_expose_internal_quality_fields() -> None:
+    variant = ResumeVariant(
+        id="variant-1",
+        resume_id="resume-1",
+        title="Resume",
+        content="# Resume",
+        gate_status="passed",
+        quality_issues=[{"code": "internal-only"}],
+        quality_gate_version="resume-quality-gate-v1",
+        created_at=datetime.now(),
+    )
+
+    payload = _serialize_variant(variant)
+
+    assert "qualityStatus" not in payload
+    assert "qualityIssues" not in payload
+    assert "qualityGateVersion" not in payload
+
+
+def test_observability_does_not_add_a_public_layout_observation_route() -> None:
+    paths = app.openapi()["paths"]
+
+    assert "/v1/product/resumes/{resume_id}/variants/{variant_id}/layout-observations" not in paths
 
 
 def test_resume_canvas_metadata_keeps_renderable_snapshot_and_variant_reference() -> None:

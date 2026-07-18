@@ -24,12 +24,6 @@ class RewriteExperienceInput(BaseModel):
     instruction: str = ""
 
 
-class GenerateResumeFromJdInput(BaseModel):
-    jdId: str = Field(min_length=1)
-    resumeId: str | None = None
-    instruction: str = ""
-
-
 class VariantInput(BaseModel):
     variantId: str = Field(min_length=1)
 
@@ -42,4 +36,3 @@ class GenerateArtifactInput(BaseModel):
 
 class ExportResumeInput(BaseModel):
     resumeId: str = Field(min_length=1)
-

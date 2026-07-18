@@ -1,9 +1,8 @@
 from __future__ import annotations
 
 import builtins
-import json
 import uuid
-from typing import Any
+from typing import Any, cast
 
 import asyncpg
 
@@ -18,6 +17,7 @@ from app.domain.resume.models import (
     ResumeVariant,
     ResumeVariantCreate,
     ResumeVariantPatch,
+    ResumeVariantQualityStatus,
     RiskItem,
     ScoreBreakdown,
 )
@@ -241,20 +241,25 @@ class PostgresResumeRepository:
                 """
                 INSERT INTO resume_variants
                     (id, resume_id, jd_id, title, content, structured, score,
-                     evidence_summary, risk_summary, missing_info, parent_variant_id)
-                VALUES ($1,$2,$3,$4,$5,$6::jsonb,$7::jsonb,$8::jsonb,$9::jsonb,$10::jsonb,$11)
+                     evidence_summary, risk_summary, missing_info, parent_variant_id,
+                     quality_status, quality_issues, quality_gate_version)
+                VALUES ($1,$2,$3,$4,$5,$6::jsonb,$7::jsonb,$8::jsonb,$9::jsonb,$10::jsonb,$11,
+                        $12,$13::jsonb,$14)
                 RETURNING *
                 """,
                 variant_id, resume_id,
                 data.jd_id,
                 data.title,
                 data.content,
-                json.dumps(data.structured) if data.structured is not None else None,
-                json.dumps(data.score.model_dump(mode="json")),
-                json.dumps([e.model_dump(mode="json") for e in data.evidence_summary]),
-                json.dumps([r.model_dump(mode="json") for r in data.risk_summary]),
-                json.dumps(data.missing_info),
+                data.structured,
+                data.score.model_dump(mode="json"),
+                [e.model_dump(mode="json") for e in data.evidence_summary],
+                [r.model_dump(mode="json") for r in data.risk_summary],
+                data.missing_info,
                 data.parent_variant_id,
+                data.gate_status,
+                data.quality_issues,
+                data.quality_gate_version,
             )
         if row is None:
             raise RuntimeError("Failed to create resume variant")
@@ -287,7 +292,10 @@ class PostgresResumeRepository:
         values.extend([variant_id, user_id])
         sql = f"""
             UPDATE resume_variants AS rv
-            SET {', '.join(set_parts)}
+            SET {', '.join(set_parts)},
+                quality_status = 'unverified',
+                quality_issues = '[]'::jsonb,
+                quality_gate_version = NULL
             FROM resumes AS r
             WHERE rv.id = ${idx}
               AND rv.resume_id = r.id
@@ -316,14 +324,17 @@ class PostgresResumeRepository:
                 UPDATE resume_variants AS rv
                 SET structured = $1::jsonb,
                     content = $2,
-                    title = COALESCE($3, rv.title)
+                    title = COALESCE($3, rv.title),
+                    quality_status = 'unverified',
+                    quality_issues = '[]'::jsonb,
+                    quality_gate_version = NULL
                 FROM resumes AS r
                 WHERE rv.id = $4
                   AND rv.resume_id = r.id
                   AND r.user_id = $5
                 RETURNING rv.*
                 """,
-                json.dumps(structured),
+                structured,
                 content,
                 title,
                 variant_id,
@@ -376,15 +387,17 @@ class PostgresResumeRepository:
                 """
                 INSERT INTO resume_variants
                     (id, resume_id, jd_id, title, content, structured, score,
-                     evidence_summary, risk_summary, missing_info, parent_variant_id)
+                     evidence_summary, risk_summary, missing_info, parent_variant_id,
+                     quality_status, quality_issues, quality_gate_version)
                 SELECT $1, resume_id, jd_id, title, $2, $3::jsonb, score,
-                       evidence_summary, risk_summary, missing_info, $4
+                       evidence_summary, risk_summary, missing_info, $4,
+                       'unverified', '[]'::jsonb, NULL
                 FROM resume_variants WHERE id = $4
                 RETURNING *
                 """,
                 new_id,
                 content,
-                json.dumps(structured),
+                structured,
                 parent_variant_id,
             )
         if row is None:
@@ -431,6 +444,11 @@ class PostgresResumeRepository:
         structured_raw = parse_jsonb(row["structured"]) if "structured" in row else None
         keys = row.keys()
         parent_variant_id = row["parent_variant_id"] if "parent_variant_id" in keys else None
+        quality_status = row["quality_status"] if "quality_status" in keys else "unverified"
+        quality_issues = parse_jsonb(row["quality_issues"]) if "quality_issues" in keys else []
+        quality_gate_version = (
+            row["quality_gate_version"] if "quality_gate_version" in keys else None
+        )
         return ResumeVariant(
             id=row["id"],
             resume_id=row["resume_id"],
@@ -443,5 +461,8 @@ class PostgresResumeRepository:
             evidence_summary=[EvidenceItem(**e) for e in (parse_jsonb(row["evidence_summary"]) or [])],
             risk_summary=[RiskItem(**r) for r in (parse_jsonb(row["risk_summary"]) or [])],
             missing_info=parse_jsonb(row["missing_info"]) or [],
+            gate_status=cast(ResumeVariantQualityStatus, quality_status),
+            quality_issues=quality_issues or [],
+            quality_gate_version=quality_gate_version,
             created_at=row["created_at"],
         )

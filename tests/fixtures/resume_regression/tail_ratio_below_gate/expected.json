@@ -1,0 +1,9 @@
+{
+  "backend": {"max_page_count": 1, "status": "needs_revision"},
+  "baseline_status": "known_bad",
+  "case_id": "tail_ratio_below_gate",
+  "dom_preview": {"max_page_count": 1, "max_tail_ratio": 0.666, "min_page_usage_ratio": 0.8},
+  "provenance": "synthetic",
+  "ratio_tolerance": 0.0001,
+  "schema_version": "resume-regression-expected-v1"
+}

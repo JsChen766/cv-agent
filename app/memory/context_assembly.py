@@ -9,11 +9,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import asyncpg
 
 from app.core.config import settings
+from app.core.observability import observation_span, sanitize_attributes
 from app.memory.thread_state import ThreadState
 
 if TYPE_CHECKING:
@@ -143,28 +144,42 @@ async def _fetch_jd(
     if jd_id is None:
         return None
     # JdService performs the ownership check. Never trust workspace IDs directly.
-    return await services.jd.get_jd(user_id, jd_id)
+    with observation_span(
+        "database_calls", "context.jd", attributes={"read_write": "read"}
+    ) as span:
+        result = await services.jd.get_jd(user_id, jd_id)
+        _set_row_count(span, 1 if result is not None else 0)
+        return result
 
 
 async def _fetch_profile(
     services: ServiceContainer, user_id: str
 ) -> dict[str, object] | None:
-    profile = await services.user.get_profile(user_id)
-    return profile.model_dump(mode="json", exclude_none=True)
+    with observation_span(
+        "database_calls", "context.profile", attributes={"read_write": "read"}
+    ) as span:
+        profile = await services.user.get_profile(user_id)
+        _set_row_count(span, 1)
+        return profile.model_dump(mode="json", exclude_none=True)
 
 
 async def _fetch_preferences(
     services: ServiceContainer, user_id: str
 ) -> list[dict[str, object]]:
-    preferences = await services.preference.get_active_preferences(user_id)
-    return [
-        {
-            "rule": preference.rule,
-            "category": preference.category,
-            "priority": preference.priority,
-        }
-        for preference in preferences[:15]
-    ]
+    with observation_span(
+        "database_calls", "context.preferences", attributes={"read_write": "read"}
+    ) as span:
+        preferences = await services.preference.get_active_preferences(user_id)
+        result = [
+            {
+                "rule": preference.rule,
+                "category": preference.category,
+                "priority": preference.priority,
+            }
+            for preference in preferences[:15]
+        ]
+        _set_row_count(span, len(result))
+        return result
 
 
 async def _fetch_experience_context(
@@ -175,46 +190,52 @@ async def _fetch_experience_context(
 ) -> tuple[list[dict[str, object]], EvidencePack | None]:
     from app.rag.evidence.service import EvidenceRagService
 
-    jd = await jd_task
-    rag = EvidenceRagService(pool)
-    if jd is not None and jd.requirements:
-        # Wide retrieval: pull 20 nearest work/project/other by JD similarity so we can
-        # keep every experience that is even tangentially related. Cheap page-length
-        # trimming happens in the resume generator, not here.
-        jd_retrieved = await rag.retrieve_for_jd(jd.requirements, user_id, top_k=20)
-        evidence_pack = await rag.build_evidence_pack(jd.requirements, jd_retrieved)
-    else:
-        jd_retrieved = await rag.retrieve_recent(user_id, top_k=15)
-        evidence_pack = None
+    with observation_span(
+        "database_calls",
+        "context.experience_evidence",
+        attributes={"read_write": "read"},
+    ) as span:
+        jd = await jd_task
+        rag = EvidenceRagService(pool)
+        if jd is not None and jd.requirements:
+            # Wide retrieval: pull 20 nearest work/project/other by JD similarity so we can
+            # keep every experience that is even tangentially related. Cheap page-length
+            # trimming happens in the resume generator, not here.
+            jd_retrieved = await rag.retrieve_for_jd(jd.requirements, user_id, top_k=20)
+            evidence_pack = await rag.build_evidence_pack(jd.requirements, jd_retrieved)
+        else:
+            jd_retrieved = await rag.retrieve_recent(user_id, top_k=15)
+            evidence_pack = None
 
     # Education is not JD-filtered: every education entry must always be available to
     # the resume generator, regardless of similarity ranking.
-    education = await rag.retrieve_by_category(user_id, "education")
+        education = await rag.retrieve_by_category(user_id, "education")
 
-    merged: dict[str, ExperienceWithClaims] = {}
-    for experience in jd_retrieved:
-        merged[experience.experience_id] = experience
-    for experience in education:
-        merged.setdefault(experience.experience_id, experience)
+        merged: dict[str, ExperienceWithClaims] = {}
+        for experience in jd_retrieved:
+            merged[experience.experience_id] = experience
+        for experience in education:
+            merged.setdefault(experience.experience_id, experience)
 
-    experiences: list[dict[str, object]] = []
-    for experience in merged.values():
-        experiences.append(
-            {
-                "id": experience.experience_id,
-                "title": experience.title,
-                "organization": experience.organization,
-                "role": experience.role,
-                "category": experience.category,
-                "start_date": experience.start_date,
-                "end_date": experience.end_date,
-                "tags": experience.tags,
-                "content": experience.content,
-                "claims": [claim.model_dump(mode="json") for claim in experience.claims],
-                "relevance_score": experience.relevance_score,
-            }
-        )
-    return experiences, evidence_pack
+        experiences: list[dict[str, object]] = []
+        for experience in merged.values():
+            experiences.append(
+                {
+                    "id": experience.experience_id,
+                    "title": experience.title,
+                    "organization": experience.organization,
+                    "role": experience.role,
+                    "category": experience.category,
+                    "start_date": experience.start_date,
+                    "end_date": experience.end_date,
+                    "tags": experience.tags,
+                    "content": experience.content,
+                    "claims": [claim.model_dump(mode="json") for claim in experience.claims],
+                    "relevance_score": experience.relevance_score,
+                }
+            )
+        _set_row_count(span, len(experiences))
+        return experiences, evidence_pack
 
 
 async def _fetch_guidelines(state: ThreadState, pool: asyncpg.Pool) -> list[str]:
@@ -226,11 +247,21 @@ async def _fetch_guidelines(state: ThreadState, pool: asyncpg.Pool) -> list[str]
     try:
         from app.rag.guideline.service import GuidelineRagService
 
-        return await GuidelineRagService(pool).retrieve(query, top_k=5)
+        with observation_span(
+            "database_calls", "context.guidelines", attributes={"read_write": "read"}
+        ) as span:
+            result = await GuidelineRagService(pool).retrieve(query, top_k=5)
+            _set_row_count(span, len(result))
+            return result
     except Exception as exc:
         # Guidelines are optional; preserve generation while making degradation observable.
         logger.warning("Guideline retrieval failed: %s", exc)
         return []
+
+
+def _set_row_count(span: Any | None, count: int) -> None:
+    if span is not None and hasattr(span, "attributes"):
+        span.attributes.update(sanitize_attributes({"row_count": count}))
 
 
 def _trim_context(context: AssembledContext, token_budget: int) -> AssembledContext:

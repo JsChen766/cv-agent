@@ -8,7 +8,6 @@ from app.tools.actions import capabilities
 from app.tools.actions.models import (
     ExportResumeInput,
     GenerateArtifactInput,
-    GenerateResumeFromJdInput,
     OptimizeResumeItemInput,
     RewriteExperienceInput,
     VariantInput,
@@ -51,22 +50,6 @@ class RewriteExperienceTool:
             context.services,
             context.user_id,
             RewriteExperienceInput.model_validate(input),
-        )
-        return ToolResult(status="success", data=_tool_data(result.data, result.workspace), message=result.message)
-
-
-class GenerateResumeFromJdTool:
-    name: str = "generate_resume_from_jd"
-    description: str = "Create a tailored resume variant from a saved JD"
-    input_schema: type[BaseModel] = GenerateResumeFromJdInput
-    requires_confirmation: bool = True
-    risk_level: Literal["low", "medium", "high"] = "medium"
-
-    async def execute(self, input: BaseModel, context: ToolContext) -> ToolResult:
-        result = await capabilities.generate_resume_from_jd(
-            context.services,
-            context.user_id,
-            GenerateResumeFromJdInput.model_validate(input),
         )
         return ToolResult(status="success", data=_tool_data(result.data, result.workspace), message=result.message)
 
@@ -137,7 +120,6 @@ class ExportResumeTool:
 
 register(OptimizeResumeItemTool())
 register(RewriteExperienceTool())
-register(GenerateResumeFromJdTool())
 register(AcceptVariantTool())
 register(ShowEvidenceTool())
 register(GenerateArtifactTool())

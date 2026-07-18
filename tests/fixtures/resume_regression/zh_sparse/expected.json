@@ -1,0 +1,17 @@
+{
+  "backend": {
+    "max_page_count": 1,
+    "max_page_usage_ratio": 0.42,
+    "status": "needs_revision"
+  },
+  "baseline_status": "known_bad",
+  "case_id": "zh_sparse",
+  "dom_preview": {
+    "max_page_count": 1,
+    "max_tail_ratio": 0.32,
+    "min_page_usage_ratio": 0.4
+  },
+  "provenance": "synthetic",
+  "ratio_tolerance": 0.0001,
+  "schema_version": "resume-regression-expected-v1"
+}

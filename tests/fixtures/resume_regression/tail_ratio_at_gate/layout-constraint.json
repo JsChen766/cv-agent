@@ -1,0 +1,7 @@
+{
+  "max_pages": 1,
+  "maximum_page_usage_ratio": 0.95,
+  "minimum_page_usage_ratio": 0.8,
+  "requested_pages": 1,
+  "target_page_usage_ratio": 0.88
+}

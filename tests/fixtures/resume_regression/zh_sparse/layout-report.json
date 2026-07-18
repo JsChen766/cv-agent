@@ -1,0 +1,55 @@
+{
+  "bullet_fits": [
+    {
+      "bullet_id": "bullet-zh-sparse-1",
+      "gate_ratio": 0.667,
+      "item_id": "item-zh-sparse-1",
+      "last_line_ratio": 0.312,
+      "last_line_width_mm": 58.656,
+      "line_count": 1,
+      "line_widths_mm": [58.656],
+      "recommendation": "expand_from_source",
+      "section_type": "experience",
+      "status": "too_short",
+      "target_ratio": 0.667
+    }
+  ],
+  "content_width_mm": 192.0,
+  "forced_break_block_ids": [],
+  "maximum_page_usage_ratio": 0.95,
+  "minimum_page_usage_ratio": 0.8,
+  "overflow_mm": 0.0,
+  "page_available_height_mm": 279.0,
+  "page_count": 1,
+  "pages": [
+    {
+      "available_height_mm": 279.0,
+      "blocks": [],
+      "overflow_mm": 0.0,
+      "page_number": 1,
+      "usage_ratio": 0.41,
+      "used_height_mm": 114.39
+    }
+  ],
+  "profile_hash": "6546b7a86dafbd62a72b82420ba5a4abf08634c6a59c32e1d575f4d1a8c20873",
+  "profile_version": "resume-template-v2",
+  "sections": [],
+  "status": "needs_revision",
+  "target_page_usage_ratio": 0.88,
+  "underfill_mm": 108.81,
+  "violations": [
+    {
+      "bullet_id": "bullet-zh-sparse-1",
+      "code": "bullet_too_short",
+      "item_id": "item-zh-sparse-1",
+      "message": "Synthetic short bullet is below the tail-width gate",
+      "section_id": "section-zh-sparse-experience",
+      "severity": "hard"
+    },
+    {
+      "code": "page_underfilled",
+      "message": "Synthetic sparse page is below minimum usage",
+      "severity": "hard"
+    }
+  ]
+}

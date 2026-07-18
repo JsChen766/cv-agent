@@ -1,0 +1,9 @@
+{
+  "backend": {"max_page_count": 1, "min_page_usage_ratio": 0.93, "status": "pass"},
+  "baseline_status": "expected_pass",
+  "case_id": "zh_dense",
+  "dom_preview": {"max_overflow_px": 0.5, "max_page_count": 1, "min_tail_ratio": 0.667, "min_page_usage_ratio": 0.93},
+  "provenance": "synthetic",
+  "ratio_tolerance": 0.0001,
+  "schema_version": "resume-regression-expected-v1"
+}

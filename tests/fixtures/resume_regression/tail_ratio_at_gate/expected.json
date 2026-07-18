@@ -1,0 +1,9 @@
+{
+  "backend": {"max_page_count": 1, "status": "pass"},
+  "baseline_status": "expected_pass",
+  "case_id": "tail_ratio_at_gate",
+  "dom_preview": {"max_page_count": 1, "min_tail_ratio": 0.667, "min_page_usage_ratio": 0.8},
+  "provenance": "synthetic",
+  "ratio_tolerance": 0.0001,
+  "schema_version": "resume-regression-expected-v1"
+}

@@ -1,0 +1,43 @@
+{
+  "contact": {
+    "name": "合成样本甲"
+  },
+  "fixture_provenance": {
+    "contains_real_person_data": false,
+    "kind": "synthetic"
+  },
+  "language": "zh-CN",
+  "layout_profile_hash": "6546b7a86dafbd62a72b82420ba5a4abf08634c6a59c32e1d575f4d1a8c20873",
+  "layout_profile_version": "resume-template-v2",
+  "layout_tuning": {
+    "body_font_scale": 1.0,
+    "body_line_height": 1.18,
+    "bullet_gap_scale": 1.0,
+    "item_gap_scale": 1.0,
+    "section_gap_scale": 1.0
+  },
+  "sections": [
+    {
+      "heading": "工作经历",
+      "id": "section-zh-sparse-experience",
+      "items": [
+        {
+          "bullets": [
+            {
+              "id": "bullet-zh-sparse-1",
+              "matched_jd_requirement_ids": ["jd-api"],
+              "source_fact_ids": ["fact-zh-sparse-1"],
+              "text": "维护数据接口并整理交付说明"
+            }
+          ],
+          "id": "item-zh-sparse-1",
+          "organization": "合成科技实验室",
+          "role": "后端工程师",
+          "source_experience_id": "experience-zh-sparse-1",
+          "title": "接口维护项目"
+        }
+      ],
+      "type": "experience"
+    }
+  ]
+}

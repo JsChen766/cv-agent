@@ -1,0 +1,16 @@
+{
+  "availableHeightPx": 1040.0,
+  "bullets": [{"availableLineWidthPx": 300.0, "bulletId": "bullet-tail-below-1", "lastLineWidthPx": 199.8, "lineCount": 2}],
+  "clientBuild": "synthetic-p0-fixture",
+  "fontsReady": true,
+  "loadedFontFamilies": ["Times New Roman"],
+  "measurementSource": "synthetic_boundary_fixture",
+  "measurementVersion": "browser-layout-observation-v1",
+  "overflowPx": 0.0,
+  "pageCount": 1,
+  "profileHash": "6546b7a86dafbd62a72b82420ba5a4abf08634c6a59c32e1d575f4d1a8c20873",
+  "profileVersion": "resume-template-v2",
+  "surface": "preview",
+  "usedHeightPx": 915.2,
+  "viewport": {"devicePixelRatio": 1.0, "heightPx": 1200.0, "widthPx": 1440.0}
+}

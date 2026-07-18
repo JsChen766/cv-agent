@@ -8,9 +8,9 @@ def test_registry_lazy_loads_tools() -> None:
 
     assert "list_experiences" in names
     assert "save_jd" in names
-    assert "generate_resume_from_jd" in names
+    assert "generate_resume_from_jd" not in names
     assert "accept_variant" in names
-    assert len(get_all()) >= 16
+    assert len(get_all()) >= 15
 
 
 def test_registered_tools_have_input_schema() -> None:

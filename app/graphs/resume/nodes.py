@@ -19,6 +19,7 @@ from pydantic import BaseModel, Field, JsonValue, ValidationError
 
 from app.core.config import settings
 from app.core.events import AgentInterruptEvent
+from app.core.observability import current_recorder, observation_span
 from app.domain.resume.content_budget import build_resume_content_budget
 from app.domain.resume.content_style import normalize_resume_narrative_punctuation
 from app.domain.resume.layout_models import LayoutConstraint, LayoutReport
@@ -26,6 +27,8 @@ from app.domain.resume.layout_optimizer import ResumeLayoutOptimizer
 from app.domain.resume.layout_profile import DEFAULT_RESUME_LAYOUT_PROFILE
 from app.domain.resume.models import ResumeVariantCreate
 from app.domain.resume.render import render_structured_to_markdown
+from app.domain.resume.repair_models import BulletRepairBatch
+from app.domain.resume.repair_service import ResumeBulletRepairService
 from app.graphs.resume.state import ResumeGenerationState
 from app.graphs.runtime import pool_from_config, services_from_config
 from app.graphs.streaming import (
@@ -46,6 +49,8 @@ async def context_assembly_node(
     state: ResumeGenerationState, config: RunnableConfig | None = None
 ) -> dict[str, object]:
     """Gather all context needed for resume generation."""
+    if state.get("resume_context_ready"):
+        return {}
     from app.memory.context_assembly import assemble_context
 
     extracted = state.get("extracted_params", {})
@@ -55,7 +60,10 @@ async def context_assembly_node(
     try:
         pool = pool_from_config(config)
         if pool is None:
-            return {"jd_text": fallback_jd_text} if fallback_jd_text else {}
+            return {
+                "jd_text": fallback_jd_text,
+                "resume_context_ready": True,
+            }
         ctx = await assemble_context(
             state,
             pool,
@@ -69,10 +77,14 @@ async def context_assembly_node(
             "user_preferences": ctx.preferences,
             "user_profile": ctx.user_profile,
             "evidence_pack": ctx.evidence_pack.model_dump() if ctx.evidence_pack else None,
+            "resume_context_ready": True,
         }
     except RuntimeError:
         # Pool not available (test mode)
-        return {"jd_text": fallback_jd_text} if fallback_jd_text else {}
+        return {
+            "jd_text": fallback_jd_text,
+            "resume_context_ready": True,
+        }
 
 
 # ── 2. CoT Planning ───────────────────────────────────────────────────────────
@@ -171,12 +183,10 @@ def _layout_constraint_from_state(state: ResumeGenerationState) -> LayoutConstra
             target_page_usage_ratio=settings.resume_target_page_usage_ratio,
             maximum_page_usage_ratio=settings.resume_max_page_usage_ratio,
         )
-    # Default to a *soft* one-page target: a sparse draft must keep expanding until
-    # the first page is substantially filled, while distinct grounded content is not
-    # discarded merely because it crosses onto a second page. An explicit one-page
-    # request above remains a hard cap.
+    # Product default is a hard single page. Only explicit multi-page input above
+    # may remove the cap.
     return LayoutConstraint(
-        max_pages=None,
+        max_pages=1,
         requested_pages=1,
         minimum_page_usage_ratio=settings.resume_min_page_usage_ratio,
         target_page_usage_ratio=settings.resume_target_page_usage_ratio,
@@ -668,6 +678,15 @@ async def layout_measure_node(
         "maximum": constraint.maximum_page_usage_ratio,
     }
     content = _render_structured_to_markdown(fitted_structure)
+    recorder = current_recorder()
+    if recorder is not None:
+        recorder.bind_result(
+            structured=fitted_structure,
+            payload_snapshot=(
+                fitted_structure if settings.resume_observability_capture_payloads else None
+            ),
+            layout_report=report.model_dump(mode="json"),
+        )
     updated_variants: list[dict[str, object]] = []
     for index, value in enumerate(variants):
         variant = dict(value)
@@ -699,167 +718,90 @@ def layout_route(state: ResumeGenerationState) -> str:
         for violation in violations
         if isinstance(violation, dict) and violation.get("severity", "hard") == "hard"
     }
-    if (
-        status == "needs_revision"
-        and hard_codes
-        and hard_codes
-        <= {
-            "bullet_too_short",
-            "bullet_awkward_wrap",
-            "page_underfilled",
-        }
-    ):
+    if status == "pass" and not hard_codes:
         return "fact_check"
+    if status == "profile_mismatch":
+        return "failed"
+    if status == "needs_revision" and "page_underfilled" in hard_codes:
+        return "content_gap"
+    repairable_codes = {"bullet_too_short", "bullet_awkward_wrap"}
     can_revise = (
-        state.get("layout_revision_iteration", 0) < settings.max_layout_revision_iterations
+        bool(hard_codes & repairable_codes)
+        and hard_codes.issubset(repairable_codes)
+        and state.get("layout_revision_iteration", 0) < settings.max_layout_revision_iterations
         and state.get("generation_call_count", 0) < settings.max_resume_generation_calls
+        and state.get("local_repair_call_count", 0) < settings.max_resume_local_repair_calls
     )
     if status == "needs_revision" and can_revise:
         return "revision"
-    is_genuinely_underfilled = any(
-        isinstance(violation, dict) and violation.get("code") == "page_underfilled"
-        for violation in violations
-    )
-    if status == "needs_revision" and is_genuinely_underfilled:
-        return "content_gap"
-    return "fact_check"
+    return "failed"
 
 
-def _layout_revision_objective(
-    report: LayoutReport,
-    constraint: LayoutConstraint,
-) -> str:
-    failing_bullets = [
-        fit for fit in report.bullet_fits if fit.status in {"too_short", "awkward_wrap"}
-    ]
-    bullet_objective = ""
-    if failing_bullets:
-        too_short = sum(fit.status == "too_short" for fit in failing_bullets)
-        awkward = sum(fit.status == "awkward_wrap" for fit in failing_bullets)
-        bullet_objective = (
-            f" Fix {len(failing_bullets)} bullet-width violations ({too_short} single-line "
-            f"too short, {awkward} awkward multi-line wrap). Every revised bullet's final line "
-            f"must use at least {failing_bullets[0].gate_ratio:.1%} of the available text width. "
-            "Do not alter bullets that already pass unless merging a failing bullet into one of "
-            "them is necessary."
-        )
-    underfilled = any(violation.code == "page_underfilled" for violation in report.violations)
-    if not underfilled:
-        return (
-            "Resolve every hard violation in the report while preserving grounded content and "
-            "JD coverage." + bullet_objective
-        )
-
-    approximate_lines = max(
-        1,
-        math.ceil(report.underfill_mm / DEFAULT_RESUME_LAYOUT_PROFILE.body.line_height_mm),
-    )
-    overflow_policy = (
-        "Crossing naturally onto a second page is acceptable; do not delete distinct grounded "
-        "content after the first page reaches the target."
-        if constraint.allows_overflow
-        else "The result must still remain within the explicit one-page hard limit."
-    )
-    return (
-        f"The current draft is short by {report.underfill_mm:.1f} mm, approximately "
-        f"{approximate_lines} body-text lines. Add at least that much useful, grounded detail in "
-        "this revision by exhausting unused source facts and deepening existing bullets with "
-        "source-supported context, scope, action, method, workflow, collaboration, constraint, "
-        f"deliverable, or result details. {overflow_policy}" + bullet_objective
-    )
-
-
-def _bullet_revision_targets(report: LayoutReport) -> str:
-    lines: list[str] = []
-    for fit in report.bullet_fits:
-        if fit.status not in {"too_short", "awkward_wrap"}:
-            continue
-        action = (
-            "expand from unused facts in the same source item, or merge with a related bullet"
-            if fit.status == "too_short"
-            else "rephrase or shorten so the final wrapped line reaches the threshold"
-        )
-        lines.append(
-            f"- bullet_id={fit.bullet_id}; item_id={fit.item_id}; status={fit.status}; "
-            f"lines={fit.line_count}; final_line={fit.last_line_ratio:.1%}; "
-            f"required>={fit.gate_ratio:.1%}; action={action}"
-        )
-    return "\n".join(lines) or "- No bullet-width violations"
-
-
-async def layout_revision_node(state: ResumeGenerationState) -> dict[str, object]:
+async def layout_revision_node(
+    state: ResumeGenerationState, config: RunnableConfig | None = None
+) -> dict[str, object]:
     variants = state.get("variants") or []
     current = variants[0].get("structured") if variants else state.get("resume_structure")
     if not isinstance(current, dict):
         return {}
     report = LayoutReport.model_validate(state.get("layout_report") or {})
-    constraint = LayoutConstraint.model_validate(
-        state.get("layout_constraint") or LayoutConstraint().model_dump()
-    )
-    revision_objective = _layout_revision_objective(report, constraint)
     experiences = state.get("relevant_experiences") or []
+    targets = _local_repair_targets(
+        current,
+        report,
+        experiences,
+        state.get("content_budget") or {},
+    )
+    services = services_from_config(config)
+    layout_service = services.resume_layout if services is not None else None
+    if not targets or layout_service is None:
+        return {
+            "layout_revision_iteration": state.get("layout_revision_iteration", 0) + 1,
+            "local_repair_status": "unavailable",
+        }
     writer = get_optional_stream_writer()
     if writer is not None:
-        if any(violation.code == "page_underfilled" for violation in report.violations):
-            emit_thinking(writer, "正在从已有经历中补充高价值事实，使版面达到一页的 90%…")
-        else:
-            emit_thinking(writer, "正在压缩低信息密度内容并优化换行…")
+        emit_thinking(writer, "正在批量修复未通过尾行门槛的要点…")
     provider = get_provider()
-    revised: _LlmResumeStructure = await provider.chat_structured(
+    repaired = await provider.chat_structured(
         [
             {
                 "role": "system",
                 "content": (
-                    "You revise a structured resume only to fix the supplied deterministic "
-                    "layout violations. Preserve all grounded facts and existing JD coverage. "
-                    "Never invent facts, truncate text, use ellipses, or add a summary. For "
-                    "long/awkward bullets: remove repetition, merge synonymous phrasing, and "
-                    "preserve action, object, method, and grounded result. For short bullets: "
-                    "expand only from the source experience; otherwise merge it with a related "
-                    "bullet or remove a low-value duplicate. Only when a single-line bullet is "
-                    "a key grounded fact that cannot be expanded or merged, set "
-                    "layout_exception=unfixable_grounded_short. Never use this exception for a "
-                    "multi-line bullet. Treat 66.7% as the exact final-line threshold. "
-                    "Narrative prose must not end with a Chinese or English full stop. For "
-                    "one-page overflow, remove lowest-JD-value redundant bullets/items first, "
-                    "while keeping all education entries and at least one work and project item "
-                    "when sourced. For page_underfilled, increase printable-height usage to at "
-                    f"least {report.minimum_page_usage_ratio:.0%} by adding unused, distinct, "
-                    "high-value facts from the supplied source experiences, adding relevant "
-                    "sourced items, or expanding bullets with sourced scope, method, scenario, "
-                    "technology, or result details. Never repeat facts or add generic filler."
+                    "Repair only the supplied failing resume bullets in one batch. Return one "
+                    "repair entry for every bullet_id and no other IDs. Provide at most three "
+                    "grounded alternatives per bullet. Use only its source experience and "
+                    "allowed fact IDs. Preserve matched JD requirement IDs exactly. Never add "
+                    "numbers, facts, employers, dates, technologies, or claims absent from the "
+                    "target. Do not return a resume, section, item, or any passing bullet. Do not "
+                    "end narrative text with an English or Chinese full stop."
                 ),
             },
             {
                 "role": "user",
-                "content": (
-                    "REVISION OBJECTIVE:\n"
-                    + revision_objective
-                    + "\n\nACTIONABLE BULLET TARGETS:\n"
-                    + _bullet_revision_targets(report)
-                    + "\n\nLAYOUT REPORT:\n"
-                    + json.dumps(report.model_dump(), ensure_ascii=False, indent=2)
-                    + "\n\nCURRENT STRUCTURE:\n"
-                    + json.dumps(current, ensure_ascii=False, indent=2)
-                    + "\n\nSOURCE EXPERIENCES (only ground truth):\n"
-                    + _format_experiences_for_prompt(experiences)
-                    + "\n\nCONTENT BUDGET:\n"
-                    + json.dumps(state.get("content_budget") or {}, ensure_ascii=False, indent=2)
-                ),
+                "content": "LOCAL BULLET REPAIR TARGETS:\n"
+                + json.dumps(targets, ensure_ascii=False, indent=2),
             },
         ],
-        _LlmResumeStructure,
+        BulletRepairBatch,
         temperature=0.1,
     )
-    structured = _assign_structure_ids(
-        revised,
-        fallback_contact=(
-            current.get("contact") if isinstance(current.get("contact"), dict) else None
-        ),
-        previous_structured=current,
+    structured = ResumeBulletRepairService(layout_service).apply_batch(
+        current,
+        report,
+        repaired,
+        experiences=experiences,
+        content_budget=state.get("content_budget") or {},
     )
-    _copy_source_metadata(structured, experiences)
-    _remove_unsourced_numeric_bullets(structured, experiences)
+    common = {
+        "layout_revision_iteration": state.get("layout_revision_iteration", 0) + 1,
+        "local_repair_call_count": state.get("local_repair_call_count", 0) + 1,
+        "generation_call_count": state.get("generation_call_count", 0) + 1,
+        "layout_report": None,
+        "layout_status": None,
+    }
+    if structured is None:
+        return {**common, "local_repair_status": "rejected"}
     content = _render_structured_to_markdown(structured)
     updated_variants: list[dict[str, object]] = []
     for index, value in enumerate(variants):
@@ -872,11 +814,77 @@ async def layout_revision_node(state: ResumeGenerationState) -> dict[str, object
         "variants": updated_variants,
         "resume_structure": structured,
         "resume_candidate_pool": structured,
-        "layout_revision_iteration": state.get("layout_revision_iteration", 0) + 1,
-        "generation_call_count": state.get("generation_call_count", 0) + 1,
-        "layout_report": None,
-        "layout_status": None,
+        **common,
+        "local_repair_status": "applied",
     }
+
+
+def _local_repair_targets(
+    structured: dict[str, object],
+    report: LayoutReport,
+    experiences: list[dict[str, object]],
+    content_budget: dict[str, object],
+) -> list[dict[str, object]]:
+    failing = {
+        fit.bullet_id: fit
+        for fit in report.bullet_fits
+        if fit.status in {"too_short", "awkward_wrap"}
+    }
+    sources = {
+        str(experience.get("id")): experience for experience in experiences if experience.get("id")
+    }
+    raw_budget_experiences = content_budget.get("experiences")
+    budget_experiences = (
+        raw_budget_experiences if isinstance(raw_budget_experiences, list) else []
+    )
+    budget_facts = {
+        str(experience.get("experience_id")): experience.get("facts") or []
+        for experience in budget_experiences
+        if isinstance(experience, dict) and experience.get("experience_id")
+    }
+    targets: list[dict[str, object]] = []
+    raw_sections = structured.get("sections")
+    sections = raw_sections if isinstance(raw_sections, list) else []
+    for section in sections:
+        if not isinstance(section, dict):
+            continue
+        for item in section.get("items") or []:
+            if not isinstance(item, dict):
+                continue
+            source_id = str(item.get("source_experience_id") or "")
+            source = sources.get(source_id)
+            if source is None:
+                continue
+            for bullet in item.get("bullets") or []:
+                if not isinstance(bullet, dict):
+                    continue
+                bullet_id = str(bullet.get("id") or "")
+                fit = failing.get(bullet_id)
+                if fit is None:
+                    continue
+                targets.append(
+                    {
+                        "bullet_id": bullet_id,
+                        "current_text": str(bullet.get("text") or ""),
+                        "status": fit.status,
+                        "line_count": fit.line_count,
+                        "last_line_ratio": fit.last_line_ratio,
+                        "required_ratio": fit.gate_ratio,
+                        "language": str(structured.get("language") or "zh-CN"),
+                        "source_fact_ids": bullet.get("source_fact_ids") or [],
+                        "matched_jd_requirement_ids": (
+                            bullet.get("matched_jd_requirement_ids") or []
+                        ),
+                        "source_experience": {
+                            "id": source_id,
+                            "content": source.get("content"),
+                            "claims": source.get("claims") or [],
+                            "tags": source.get("tags") or [],
+                        },
+                        "allowed_facts": budget_facts.get(source_id, []),
+                    }
+                )
+    return targets
 
 
 def _check_experience_composition(
@@ -1573,8 +1581,13 @@ async def quality_gate_node(state: ResumeGenerationState) -> dict[str, object]:
         state.get("layout_constraint") or LayoutConstraint().model_dump()
     )
     usage = report.pages[0].usage_ratio if report.pages else 0.0
-    is_underfilled = usage < constraint.minimum_page_usage_ratio
-    if report.page_count != 1 or usage > constraint.maximum_page_usage_ratio:
+    is_underfilled = constraint.targets_one_page and usage < constraint.minimum_page_usage_ratio
+    page_count_invalid = report.page_count < 1 or (
+        constraint.max_pages is not None and report.page_count > constraint.max_pages
+    )
+    has_overflow = report.overflow_mm > 0 or any(page.overflow_mm > 0 for page in report.pages)
+    usage_over_max = constraint.targets_one_page and usage > constraint.maximum_page_usage_ratio
+    if page_count_invalid or has_overflow or usage_over_max:
         return {
             "quality_status": "failed",
             "quality_issues": [
@@ -1624,24 +1637,25 @@ async def quality_gate_node(state: ResumeGenerationState) -> dict[str, object]:
         for issue in review.get("issues") or ["Self-review still requires revision."]:
             issues.append({"code": "self_review_unresolved", "message": str(issue)})
 
-    profile_mismatch_is_fatal = (
-        report.status == "profile_mismatch" and settings.resume_layout_hard_gate_enabled
-    )
-    if profile_mismatch_is_fatal or review_failed:
+    if (
+        report.status == "profile_mismatch"
+        or review_failed
+        or is_underfilled
+        or hard_layout
+        or coverage_regressions
+    ):
         quality_status = "failed"
-    elif is_underfilled or hard_layout or coverage_regressions:
-        quality_status = "needs_user_decision"
     elif not settings.resume_layout_hard_gate_enabled:
         issues.append(
             {
-                "code": "layout_calibration_pending",
+                "code": "browser_verification_required",
                 "message": (
-                    "Browser calibration is pending; the estimated layout cannot be "
-                    "silently treated as a hard quality pass."
+                    "Browser layout verification is required before this candidate can be "
+                    "persisted or reviewed."
                 ),
             }
         )
-        quality_status = "needs_user_decision"
+        quality_status = "failed"
     else:
         quality_status = "passed"
     return {"quality_status": quality_status, "quality_issues": issues}
@@ -1651,8 +1665,6 @@ def quality_gate_route(state: ResumeGenerationState) -> str:
     status = state.get("quality_status")
     if status == "passed":
         return "passed"
-    if status == "needs_user_decision":
-        return "needs_user_decision"
     return "failed"
 
 
@@ -1687,6 +1699,8 @@ async def persist_resume_draft_node(
     services = services_from_config(config)
     if services is None:
         return {}
+    if state.get("quality_status") != "passed":
+        raise RuntimeError("Refusing to persist a resume that did not pass quality")
 
     workspace = dict(state.get("workspace", {}))
     resume_id_value = workspace.get("resume_id")
@@ -1701,50 +1715,79 @@ async def persist_resume_draft_node(
         if isinstance(raw_jd, str) and raw_jd.strip():
             try:
                 thread_id_val = state.get("thread_id", "")
-                jd_record = await services.jd.create_or_update_from_raw_text(
-                    state.get("user_id", ""),
-                    raw_jd,
-                    source_thread_id=thread_id_val if isinstance(thread_id_val, str) else None,
-                )
+                with observation_span(
+                    "persistence_calls",
+                    "resume.jd_promote",
+                    attributes={"read_write": "write"},
+                ):
+                    jd_record = await services.jd.create_or_update_from_raw_text(
+                        state.get("user_id", ""),
+                        raw_jd,
+                        source_thread_id=(
+                            thread_id_val if isinstance(thread_id_val, str) else None
+                        ),
+                    )
                 jd_id = jd_record.id
                 workspace["jd_id"] = jd_id
             except Exception as exc:  # noqa: BLE001
                 logger.warning("Failed to promote raw_jd_text to jd_records: %s", exc)
 
     if not resume_id:
-        resume = await services.resume.create_resume(
-            state.get("user_id", ""),
-            "AI Generated Resume",
-            jd_id=jd_id,
-        )
+        with observation_span(
+            "persistence_calls",
+            "resume.create",
+            attributes={"read_write": "write"},
+        ):
+            resume = await services.resume.create_resume(
+                state.get("user_id", ""),
+                "AI Generated Resume",
+                jd_id=jd_id,
+            )
         resume_id = resume.id
         workspace["resume_id"] = resume.id
     else:
         # Workspace IDs originate at the client boundary. Re-check ownership at
         # the write boundary so no variant can be attached to another user.
-        await services.resume.get_resume(state.get("user_id", ""), resume_id)
+        with observation_span(
+            "persistence_calls",
+            "resume.ownership_check",
+            attributes={"read_write": "read"},
+        ):
+            await services.resume.get_resume(state.get("user_id", ""), resume_id)
 
-    saved_variants: list[dict[str, object]] = []
-    for variant in state.get("variants", []):
-        title = variant.get("title")
-        content = variant.get("content")
-        structured = variant.get("structured")
+    variants = state.get("variants") or []
+    if len(variants) != 1:
+        raise RuntimeError("Refusing to persist anything other than one resume variant")
+    variant = variants[0]
+    title = variant.get("title")
+    content = variant.get("content")
+    structured = variant.get("structured")
+    with observation_span(
+        "persistence_calls",
+        "resume.variant_insert",
+        attributes={"read_write": "write"},
+    ):
         saved = await services.resume.save_variant(
             resume_id,
             ResumeVariantCreate.model_validate(
                 {
                     "jd_id": jd_id,
-                    "title": title if isinstance(title, str) and title else "AI Generated Variant",
+                    "title": (
+                        title if isinstance(title, str) and title else "AI Generated Variant"
+                    ),
                     "content": content if isinstance(content, str) else "",
                     "structured": structured if isinstance(structured, dict) else None,
                     "score": variant.get("score", {}),
                     "evidence_summary": variant.get("evidence_summary", []),
                     "risk_summary": variant.get("risk_summary", []),
                     "missing_info": variant.get("missing_info", []),
+                    "gate_status": "passed",
+                    "quality_issues": state.get("quality_issues", []),
+                    "quality_gate_version": "resume-quality-gate-v1",
                 }
             ),
         )
-        saved_variants.append(saved.model_dump(mode="json"))
+    saved_variants = [saved.model_dump(mode="json")]
 
     # Persist workspace ids so future turns don't lose them even if client omits them.
     snapshot_delta: dict[str, object] = {}
@@ -1759,43 +1802,39 @@ async def persist_resume_draft_node(
         thread_id_val = state.get("thread_id", "")
         if thread_repo is not None and isinstance(thread_id_val, str) and thread_id_val:
             try:
-                await thread_repo.update_workspace_snapshot(thread_id_val, snapshot_delta)
+                with observation_span(
+                    "persistence_calls",
+                    "resume.workspace_snapshot_update",
+                    attributes={"read_write": "write"},
+                ):
+                    await thread_repo.update_workspace_snapshot(thread_id_val, snapshot_delta)
             except Exception as exc:  # noqa: BLE001
                 logger.warning("Failed to persist workspace snapshot: %s", exc)
 
-    return {"workspace": workspace, "variants": saved_variants}
-
-
-async def persist_decision_candidate_node(
-    state: ResumeGenerationState, config: RunnableConfig | None = None
-) -> dict[str, object]:
-    issues = state.get("quality_issues") or []
-    variants: list[dict[str, object]] = []
-    for value in state.get("variants", []):
-        variant = dict(value)
-        structured = variant.get("structured")
-        if isinstance(structured, dict):
-            structured = dict(structured)
-            structured["quality_status"] = "needs_user_decision"
-            structured["quality_issues"] = issues
-            variant["structured"] = structured
-        risks = list(variant.get("risk_summary") or [])
-        risks.extend(
-            {
-                "type": "layout_quality_exception",
-                "text": str(issue.get("message") or issue.get("code") or "Unresolved layout issue"),
-                "severity": "medium",
-            }
-            for issue in issues
-            if isinstance(issue, dict)
+    recorder = current_recorder()
+    if recorder is not None:
+        first_variant = saved_variants[0] if saved_variants else {}
+        variant_id = first_variant.get("id")
+        structured = first_variant.get("structured")
+        recorder.bind_result(
+            resume_id=resume_id,
+            variant_id=variant_id if isinstance(variant_id, str) else None,
+            structured=structured if isinstance(structured, dict) else None,
+            payload_snapshot=(
+                structured
+                if settings.resume_observability_capture_payloads and isinstance(structured, dict)
+                else None
+            ),
+            layout_report=state.get("layout_report"),
+            quality_result={
+                "quality_status": state.get("quality_status"),
+                "fact_error_count": len(state.get("fact_mismatches") or []),
+                "coverage_regression_count": len(
+                    (state.get("coverage_report") or {}).get("regressions", [])
+                ),
+            },
         )
-        variant["risk_summary"] = risks
-        variants.append(variant)
-    working_state = dict(state)
-    working_state["variants"] = variants
-    result = await persist_resume_draft_node(cast("ResumeGenerationState", working_state), config)
-    result["quality_status"] = "needs_user_decision"
-    return result
+    return {"workspace": workspace, "variants": saved_variants}
 
 
 async def output_failure_node(state: ResumeGenerationState) -> dict[str, object]:
@@ -1975,6 +2014,12 @@ async def output_node(
     state: ResumeGenerationState, config: RunnableConfig | None = None
 ) -> dict[str, object]:
     """Prepare interrupt payload and halt graph for user review."""
+    if state.get("quality_status") != "passed":
+        return {
+            "assistant_message": "简历未通过质量门禁，未保存或进入审阅。",
+            "interrupt_payload": None,
+            "resume_user_action": "complete",
+        }
     from langgraph.types import interrupt
 
     variants = state.get("variants", [])
@@ -1989,19 +2034,11 @@ async def output_node(
         "application_package_review" if is_application_package else "resume_review"
     )
     resume_object = variants[0] if variants else None
-    unresolved = state.get("quality_issues") or []
-    decision_suffix = ""
-    if state.get("quality_status") == "needs_user_decision" and unresolved:
-        decision_suffix = " 当前候选仍有需你明确决定的问题：" + "；".join(
-            str(issue.get("message") or issue.get("code"))
-            for issue in unresolved
-            if isinstance(issue, dict)
-        )
     message = (
         f"已生成 {len(package_deliverables)} 项附加投递材料和一份针对性简历，请检查后确认。"
         if is_application_package
         else "简历已生成，请审阅后确认或提出修改意见。"
-    ) + decision_suffix
+    )
 
     buffered_events: list[dict[str, object]] = []
     writer = get_optional_stream_writer() or buffered_events.append
@@ -2168,7 +2205,6 @@ class _LlmBullet(BaseModel):
     text: str
     matched_jd_requirement_ids: list[str] = Field(default_factory=list)
     source_fact_ids: list[str] = Field(default_factory=list)
-    layout_exception: Literal["unfixable_grounded_short"] | None = None
 
 
 class _LlmSectionItem(BaseModel):
@@ -2301,7 +2337,6 @@ def _assign_structure_ids(
                         "text": b.text,
                         "matched_jd_requirement_ids": list(b.matched_jd_requirement_ids),
                         "source_fact_ids": list(b.source_fact_ids),
-                        "layout_exception": b.layout_exception,
                     }
                 )
 

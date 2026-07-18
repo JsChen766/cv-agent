@@ -9,7 +9,6 @@ import pytest
 
 from app.tools.base import ServiceContainer
 
-
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 
@@ -19,6 +18,10 @@ def _make_jd(jd_id: str = "jd-1") -> SimpleNamespace:
 
 def _make_resume(resume_id: str = "resume-1") -> SimpleNamespace:
     return SimpleNamespace(id=resume_id, title="AI Generated Resume")
+
+
+def _single_variant() -> list[dict[str, object]]:
+    return [{"id": "draft-1", "title": "Draft", "content": "# Resume"}]
 
 
 def _make_services(
@@ -76,16 +79,20 @@ async def test_merged_workspace_never_drops_snapshot_key_when_client_is_silent()
     mock_pool = MagicMock()
     snapshot = {"resume_id": "resume-1", "jd_id": "jd-1"}
 
-    with patch.object(
-        PostgresThreadRepository, "get_workspace_snapshot", AsyncMock(return_value=snapshot)
-    ):
-        # build_workspace validates ids — patch it to pass through client_ws unchanged
-        with patch(
+    # build_workspace validates ids — patch it to pass through client_ws unchanged
+    with (
+        patch.object(
+            PostgresThreadRepository,
+            "get_workspace_snapshot",
+            AsyncMock(return_value=snapshot),
+        ),
+        patch(
             "app.api.copilot.workspace_builder.build_workspace",
             AsyncMock(return_value={}),  # client sends nothing
-        ):
-            cs = ClientState()  # no activeResumeId, no activeJdId
-            result = await _merged_workspace(cs, "user-1", "thread-1", pool=mock_pool)
+        ),
+    ):
+        cs = ClientState()  # no activeResumeId, no activeJdId
+        result = await _merged_workspace(cs, "user-1", "thread-1", pool=mock_pool)
 
     assert result["resume_id"] == "resume-1"
     assert result["jd_id"] == "jd-1"
@@ -100,15 +107,17 @@ async def test_merged_workspace_client_override_wins_over_snapshot() -> None:
     mock_pool = MagicMock()
     snapshot = {"resume_id": "resume-old"}
 
-    with patch.object(
-        PostgresThreadRepository, "get_workspace_snapshot", AsyncMock(return_value=snapshot)
-    ):
-        with patch(
+    with (
+        patch.object(
+            PostgresThreadRepository, "get_workspace_snapshot", AsyncMock(return_value=snapshot)
+        ),
+        patch(
             "app.api.copilot.workspace_builder.build_workspace",
             AsyncMock(return_value={"resume_id": "resume-new"}),
-        ):
-            cs = ClientState(activeResumeId="resume-new")
-            result = await _merged_workspace(cs, "user-1", "thread-1", pool=mock_pool)
+        ),
+    ):
+        cs = ClientState(activeResumeId="resume-new")
+        result = await _merged_workspace(cs, "user-1", "thread-1", pool=mock_pool)
 
     assert result["resume_id"] == "resume-new"
 
@@ -121,17 +130,19 @@ async def test_merged_workspace_snapshot_failure_is_non_fatal() -> None:
 
     mock_pool = MagicMock()
 
-    with patch.object(
-        PostgresThreadRepository,
-        "get_workspace_snapshot",
-        AsyncMock(side_effect=RuntimeError("db down")),
-    ):
-        with patch(
+    with (
+        patch.object(
+            PostgresThreadRepository,
+            "get_workspace_snapshot",
+            AsyncMock(side_effect=RuntimeError("db down")),
+        ),
+        patch(
             "app.api.copilot.workspace_builder.build_workspace",
             AsyncMock(return_value={"jd_id": "jd-1"}),
-        ):
-            cs = ClientState(activeJdId="jd-1")
-            result = await _merged_workspace(cs, "user-1", "thread-1", pool=mock_pool)
+        ),
+    ):
+        cs = ClientState(activeJdId="jd-1")
+        result = await _merged_workspace(cs, "user-1", "thread-1", pool=mock_pool)
 
     assert result["jd_id"] == "jd-1"
 
@@ -156,7 +167,8 @@ async def test_persist_resume_draft_promotes_raw_jd_text_to_jd_records() -> None
         "thread_id": "thread-1",
         "workspace": {},  # no jd_id
         "extracted_params": {"raw_jd_text": "Python backend role description"},
-        "variants": [],
+        "variants": _single_variant(),
+        "quality_status": "passed",
     }
     # Pass mock thread_repo directly in configurable — mirrors how production wires it
     config = {"configurable": {"services": services, "thread_repo": mock_thread_repo}}
@@ -187,7 +199,8 @@ async def test_persist_resume_draft_writes_resume_id_to_snapshot() -> None:
         "thread_id": "thread-1",
         "workspace": {"jd_id": "jd-1"},  # no resume_id
         "extracted_params": {},
-        "variants": [],
+        "variants": _single_variant(),
+        "quality_status": "passed",
     }
     config = {"configurable": {"services": services, "thread_repo": mock_thread_repo}}
 
@@ -212,13 +225,32 @@ async def test_persist_resume_draft_does_not_promote_raw_jd_when_jd_id_exists() 
         "thread_id": "thread-1",
         "workspace": {"jd_id": "jd-existing"},
         "extracted_params": {"raw_jd_text": "Some raw JD"},
-        "variants": [],
+        "variants": _single_variant(),
+        "quality_status": "passed",
     }
     config = {"configurable": {"services": services, "thread_repo": mock_thread_repo}}
 
     await persist_resume_draft_node(state, config)
 
     services.jd.create_or_update_from_raw_text.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_persist_resume_draft_rejects_multiple_variants() -> None:
+    from app.graphs.resume.nodes import persist_resume_draft_node
+
+    services = _make_services()
+    state: dict[str, object] = {
+        "user_id": "user-1",
+        "workspace": {"resume_id": "resume-1", "jd_id": "jd-1"},
+        "quality_status": "passed",
+        "variants": [*_single_variant(), {"id": "draft-2", "content": "# Other"}],
+    }
+
+    with pytest.raises(RuntimeError, match="one resume variant"):
+        await persist_resume_draft_node(state, {"configurable": {"services": services}})
+
+    services.resume.save_variant.assert_not_awaited()
 
 
 # ── PostgresThreadRepository unit tests ───────────────────────────────────────
@@ -289,9 +321,7 @@ def test_heuristic_route_does_not_extract_raw_jd_text_when_jd_already_active() -
     """When jd_id is in workspace, skip raw_jd_text extraction."""
     from app.graphs.router import _heuristic_route
 
-    short_jd_msg = (
-        "根据以下岗位帮我生成简历: Python后端3年+，FastAPI，PostgreSQL，微服务经验。"
-    )
+    short_jd_msg = "根据以下岗位帮我生成简历: Python后端3年+，FastAPI，PostgreSQL，微服务经验。"
 
     result = _heuristic_route(short_jd_msg, {}, has_active_jd=True)
 
@@ -309,7 +339,10 @@ def test_heuristic_route_does_not_extract_raw_jd_text_for_very_short_messages() 
     result = _heuristic_route(short_msg, {}, has_active_jd=False)
 
     # Either no match or matched but without raw_jd_text
-    if result is not None and result.target_subgraph in {"resume_generation", "application_package"}:
+    if result is not None and result.target_subgraph in {
+        "resume_generation",
+        "application_package",
+    }:
         assert "raw_jd_text" not in result.extracted_params
 
 

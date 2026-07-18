@@ -87,6 +87,7 @@ async def test_resume_review_feedback_routes_back_to_generation(monkeypatch) -> 
             "workspace": {},
             "pending_sse_events": [],
             "review_iteration": 2,
+            "quality_status": "passed",
         }
     )
 

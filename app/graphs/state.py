@@ -11,6 +11,8 @@ class MainState(TypedDict, total=False):
     # Identity
     thread_id: str
     user_id: str
+    observability_run_id: str | None
+    parent_run_id: str | None
 
     # Conversation
     messages: list[MessageDict]

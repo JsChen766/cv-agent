@@ -1,0 +1,6 @@
+{
+  "caseId": "tail_ratio_at_gate",
+  "reason": "P0 synthetic fixture has no font-loaded print observation; collect during P4",
+  "status": "pending",
+  "surface": "print"
+}
