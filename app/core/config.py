@@ -94,6 +94,13 @@ class Settings(BaseSettings):
     resume_layout_compiler_enabled: bool = True
     resume_layout_compiler_beam_width: int = Field(default=256, ge=32, le=2048)
     resume_layout_compiler_exact_candidate_limit: int = Field(default=32, ge=8, le=128)
+    # V2 deterministic evidence, coverage and layout quality gate. A repairable
+    # run may make exactly one bounded local model request before recompiling.
+    resume_quality_gate_enabled: bool = True
+    resume_must_have_coverage_threshold: float = Field(default=0.80, ge=0.0, le=1.0)
+    resume_quality_max_repair_bullets: int = Field(default=3, ge=1, le=10)
+    resume_quality_local_repair_deadline_seconds: float = Field(default=15.0, gt=0.0, le=30.0)
+    resume_quality_local_repair_max_calls: int = Field(default=1, ge=1, le=1)
     # Generate independent experience bullet pools concurrently, then assemble
     # one deterministic resume. Smaller structured calls are substantially more
     # reliable on OpenAI-compatible providers than one monolithic resume JSON.

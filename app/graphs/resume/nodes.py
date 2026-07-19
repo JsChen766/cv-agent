@@ -25,7 +25,7 @@ from app.core.events import AgentInterruptEvent
 from app.core.observability import current_recorder, observation_span
 from app.domain.resume.candidates.models import CandidateBullet, CandidatePool
 from app.domain.resume.candidates.service import CandidatePoolService
-from app.domain.resume.compiler.models import CandidateMeasurement
+from app.domain.resume.compiler.models import CandidateMeasurement, CompiledResume
 from app.domain.resume.compiler.service import ResumeLayoutCompiler
 from app.domain.resume.content_budget import build_resume_content_budget
 from app.domain.resume.content_style import normalize_resume_narrative_punctuation
@@ -43,6 +43,9 @@ from app.domain.resume.observability_models import BrowserLayoutObservationInput
 from app.domain.resume.planning.models import ResumePlan
 from app.domain.resume.planning.projection import project_resume_plan
 from app.domain.resume.planning.service import ResumePlanService
+from app.domain.resume.quality.models import QualityIssue, QualityValidationReport
+from app.domain.resume.quality.repair import ResumeLocalCandidateRepairService
+from app.domain.resume.quality.service import ResumeQualityGateService
 from app.domain.resume.render import render_structured_to_markdown
 from app.domain.resume.repair_models import BulletRepairBatch
 from app.domain.resume.repair_service import ResumeBulletRepairService
@@ -59,6 +62,7 @@ from app.graphs.streaming import (
 from app.providers.base import LLMProvider
 from app.providers.factory import get_provider
 from app.providers.resume_batch import ResumeBatchWriter
+from app.providers.resume_repair import ResumeLocalRepairWriter
 from app.tools.actions import capabilities as action_capabilities
 from app.tools.actions.models import VariantInput
 
@@ -453,6 +457,15 @@ async def batch_candidate_generation_node(
         "candidate_measurements": [],
         "layout_compilation_diagnostics": None,
         "selected_candidate_ids": [],
+        "quality_validation_status": None,
+        "quality_validation_report": None,
+        "grounding_report": None,
+        "quality_local_repair_status": None,
+        "quality_local_repair_call_count": 0,
+        "quality_local_repair_provider_attempts": 0,
+        "quality_local_repair_protocol": None,
+        "quality_local_repair_error_category": None,
+        "quality_local_repair_duration_ms": None,
         "variants": [variant],
         "resume_structure": structured,
         "resume_candidate_pool": structured,
@@ -640,7 +653,9 @@ async def layout_compile_node(
 
 
 def layout_compile_route(state: ResumeGenerationState) -> str:
-    return "fact_check" if state.get("layout_compilation_status") == "compiled" else "failed"
+    if state.get("layout_compilation_status") != "compiled":
+        return "failed"
+    return "quality_validate" if settings.resume_quality_gate_enabled else "fact_check"
 
 
 def _layout_compilation_failure(reason: str) -> dict[str, object]:
@@ -672,6 +687,242 @@ def _browser_layout_scale(state: ResumeGenerationState) -> float:
     if not isinstance(backend_usage, (int, float)) or backend_usage <= 0:
         return 1.0
     return min(1.25, max(0.75, (float(used) / float(available)) / float(backend_usage)))
+
+
+# ── 1.484375. Deterministic evidence-first quality gate ─────────────────────
+
+
+async def deterministic_quality_gate_node(
+    state: ResumeGenerationState,
+) -> dict[str, object]:
+    raw_plan = state.get("resume_plan")
+    raw_retrieval = state.get("fact_retrieval_result")
+    raw_candidates = state.get("resume_candidate_bullets")
+    raw_compiled = state.get("compiled_resume")
+    if (
+        not isinstance(raw_plan, dict)
+        or not isinstance(raw_retrieval, dict)
+        or not isinstance(raw_candidates, list)
+        or not isinstance(raw_compiled, dict)
+    ):
+        return _quality_validation_failure("quality_validation_inputs_unavailable")
+    try:
+        plan = ResumePlan.model_validate(raw_plan)
+        retrieval = HybridRetrievalResult.model_validate(raw_retrieval)
+        candidates = tuple(CandidateBullet.model_validate(value) for value in raw_candidates)
+        compiled = CompiledResume.model_validate(raw_compiled)
+        constraint = LayoutConstraint.model_validate(
+            state.get("layout_constraint") or _layout_constraint_from_state(state).model_dump()
+        )
+    except ValidationError as exc:
+        logger.warning("Quality validation input validation failed: %s", exc)
+        return _quality_validation_failure("invalid_quality_validation_inputs")
+
+    writer = get_optional_stream_writer()
+    if writer is not None:
+        emit_thinking(writer, "正在执行事实、岗位覆盖与单页质量硬门禁…")
+    started_at = time.perf_counter()
+    report = ResumeQualityGateService().validate(
+        plan,
+        retrieval,
+        candidates,
+        compiled,
+        constraint,
+        must_have_threshold=settings.resume_must_have_coverage_threshold,
+        max_repair_bullets=settings.resume_quality_max_repair_bullets,
+    )
+    duration_ms = round((time.perf_counter() - started_at) * 1000, 2)
+    logger.info(
+        "Resume deterministic quality validation completed",
+        extra={
+            "status": report.status,
+            "issue_count": len(report.issues),
+            "grounded_bullets": report.grounding.grounded_bullets,
+            "must_have_coverage_ratio": report.coverage.must_have_coverage_ratio,
+            "page_usage_ratio": report.page_usage_ratio,
+            "repairable_bullets": len(report.repairable_bullet_ids),
+            "duration_ms": duration_ms,
+        },
+    )
+    issue_payloads = [value.model_dump(mode="json") for value in report.issues]
+    quality_status = "passed" if report.status == "passed" else None
+    if report.status == "failed":
+        quality_status = "failed"
+    return {
+        "quality_validation_status": report.status,
+        "quality_validation_report": report.model_dump(mode="json"),
+        "grounding_report": report.grounding.model_dump(mode="json"),
+        "coverage_report": report.coverage.model_dump(mode="json"),
+        "uncovered_jd_requirement_ids": list(report.coverage.uncovered_must_have_requirement_ids),
+        "quality_status": quality_status,
+        "quality_issues": issue_payloads,
+    }
+
+
+def deterministic_quality_gate_route(state: ResumeGenerationState) -> str:
+    status = state.get("quality_validation_status")
+    if status == "passed":
+        return "passed"
+    if (
+        status == "repairable"
+        and state.get("quality_local_repair_call_count", 0)
+        < settings.resume_quality_local_repair_max_calls
+    ):
+        return "repair"
+    return "failed"
+
+
+async def local_candidate_repair_node(
+    state: ResumeGenerationState,
+    config: RunnableConfig | None = None,
+) -> dict[str, object]:
+    raw_quality = state.get("quality_validation_report")
+    raw_plan = state.get("resume_plan")
+    raw_retrieval = state.get("fact_retrieval_result")
+    raw_candidates = state.get("resume_candidate_bullets")
+    raw_compiled = state.get("compiled_resume")
+    services = services_from_config(config)
+    layout = services.resume_layout if services is not None else None
+    if (
+        not isinstance(raw_quality, dict)
+        or not isinstance(raw_plan, dict)
+        or not isinstance(raw_retrieval, dict)
+        or not isinstance(raw_candidates, list)
+        or not isinstance(raw_compiled, dict)
+        or layout is None
+    ):
+        return _local_candidate_repair_failure(
+            state,
+            "local_candidate_repair_inputs_unavailable",
+        )
+    if (
+        state.get("quality_local_repair_call_count", 0)
+        >= settings.resume_quality_local_repair_max_calls
+    ):
+        return _local_candidate_repair_failure(state, "local_candidate_repair_budget_exhausted")
+    try:
+        quality = QualityValidationReport.model_validate(raw_quality)
+        plan = ResumePlan.model_validate(raw_plan)
+        retrieval = HybridRetrievalResult.model_validate(raw_retrieval)
+        candidates = tuple(CandidateBullet.model_validate(value) for value in raw_candidates)
+        compiled = CompiledResume.model_validate(raw_compiled)
+    except ValidationError as exc:
+        logger.warning("Local candidate repair input validation failed: %s", exc)
+        return _local_candidate_repair_failure(state, "invalid_local_candidate_repair_inputs")
+    if quality.status != "repairable" or not quality.repairable_bullet_ids:
+        return _local_candidate_repair_failure(state, "quality_report_not_repairable")
+
+    writer = get_optional_stream_writer()
+    if writer is not None:
+        emit_thinking(writer, "正在一次性批量修复未通过门禁的局部要点…")
+    language = str(compiled.structured_resume.get("language") or "zh-CN")
+    started_at = time.perf_counter()
+    write_result = await ResumeLocalRepairWriter(get_provider()).write(
+        quality,
+        candidates,
+        retrieval,
+        compiled,
+        language=language,
+        deadline_seconds=settings.resume_quality_local_repair_deadline_seconds,
+    )
+    duration_ms = round((time.perf_counter() - started_at) * 1000, 2)
+    common: dict[str, object] = {
+        "quality_local_repair_call_count": state.get("quality_local_repair_call_count", 0) + 1,
+        "quality_local_repair_provider_attempts": state.get(
+            "quality_local_repair_provider_attempts", 0
+        )
+        + write_result.attempts,
+        "quality_local_repair_protocol": write_result.protocol,
+        "quality_local_repair_error_category": write_result.error_category,
+        "quality_local_repair_duration_ms": duration_ms,
+        "generation_call_count": state.get("generation_call_count", 0) + write_result.attempts,
+    }
+    if write_result.draft is None:
+        return {
+            **common,
+            "quality_local_repair_status": "failed",
+            "quality_validation_status": "failed",
+            "quality_status": "failed",
+            "quality_issues": [
+                {
+                    "code": "local_candidate_repair_provider_failed",
+                    "message": write_result.error_category or "Local repair returned no result.",
+                }
+            ],
+        }
+    active_layout = layout.with_profile(STANDARD_RESUME_TEMPLATE.profile)
+    repaired = ResumeLocalCandidateRepairService(active_layout).apply(
+        plan,
+        retrieval,
+        candidates,
+        compiled.selected_candidate_ids,
+        quality.repairable_bullet_ids,
+        write_result.draft,
+        language=language,
+    )
+    if repaired.status != "applied":
+        return {
+            **common,
+            "quality_local_repair_status": "failed",
+            "quality_validation_status": "failed",
+            "quality_status": "failed",
+            "quality_issues": [
+                {
+                    "code": "local_candidate_repair_rejected",
+                    "message": ", ".join(repaired.rejection_reasons),
+                }
+            ],
+        }
+    logger.info(
+        "Resume local candidate repair completed",
+        extra={
+            "provider_attempts": write_result.attempts,
+            "repair_targets": len(quality.repairable_bullet_ids),
+            "added_candidates": len(repaired.added_candidate_ids),
+            "duration_ms": duration_ms,
+        },
+    )
+    return {
+        **common,
+        "quality_local_repair_status": "applied",
+        "resume_candidate_bullets": [
+            value.model_dump(mode="json") for value in repaired.candidates
+        ],
+        "layout_compilation_status": None,
+        "compiled_resume": None,
+        "selected_candidate_ids": [],
+        "quality_validation_status": None,
+        "quality_validation_report": None,
+        "grounding_report": None,
+        "quality_status": None,
+        "quality_issues": [],
+        "browser_verification_status": None,
+    }
+
+
+def local_candidate_repair_route(state: ResumeGenerationState) -> str:
+    return "layout_compile" if state.get("quality_local_repair_status") == "applied" else "failed"
+
+
+def _quality_validation_failure(reason: str) -> dict[str, object]:
+    return {
+        "quality_validation_status": "failed",
+        "quality_status": "failed",
+        "quality_issues": [{"code": "quality_validation_failed", "message": reason}],
+    }
+
+
+def _local_candidate_repair_failure(
+    state: ResumeGenerationState,
+    reason: str,
+) -> dict[str, object]:
+    return {
+        "quality_local_repair_status": "failed",
+        "quality_validation_status": "failed",
+        "quality_status": "failed",
+        "quality_issues": [{"code": "local_candidate_repair_failed", "message": reason}],
+        "quality_local_repair_call_count": state.get("quality_local_repair_call_count", 0),
+    }
 
 
 # ── 1.5. Experience Selection ────────────────────────────────────────────────
@@ -2731,8 +2982,66 @@ async def browser_layout_gate_node(
             observation,
             repairable_bullet_ids,
         )
+        can_quality_repair = (
+            settings.resume_quality_gate_enabled
+            and settings.resume_layout_compiler_enabled
+            and state.get("layout_compilation_status") == "compiled"
+            and violation_codes == {"bullet_tail"}
+            and bool(repairable_bullet_ids)
+            and repaired_report is not None
+            and isinstance(state.get("quality_validation_report"), dict)
+            and isinstance(state.get("compiled_resume"), dict)
+            and state.get("quality_local_repair_call_count", 0)
+            < settings.resume_quality_local_repair_max_calls
+        )
+        if can_quality_repair:
+            try:
+                quality_report = QualityValidationReport.model_validate(
+                    state.get("quality_validation_report")
+                )
+            except ValidationError:
+                quality_report = None
+            if quality_report is not None:
+                browser_issues = tuple(
+                    QualityIssue(
+                        code="bullet_too_short",
+                        message="Browser DOM measured a bullet tail below the required ratio.",
+                        scope="bullet",
+                        repairable=True,
+                        bullet_id=bullet_id,
+                    )
+                    for bullet_id in sorted(repairable_bullet_ids)
+                )
+                updated_quality = quality_report.model_copy(
+                    update={
+                        "status": "repairable",
+                        "issues": browser_issues,
+                        "repairable_bullet_ids": tuple(sorted(repairable_bullet_ids)),
+                    }
+                )
+                compiled_payload = dict(cast("dict[str, object]", state["compiled_resume"]))
+                compiled_payload["layout_report"] = repaired_report
+                await services.resume.set_variant_quality(
+                    state.get("user_id", ""), variant_id, "needs_revision", issues
+                )
+                return {
+                    **common,
+                    "layout_report": repaired_report,
+                    "compiled_resume": compiled_payload,
+                    "quality_validation_report": updated_quality.model_dump(mode="json"),
+                    "quality_validation_status": "repairable",
+                    "browser_verification_status": "quality_repair",
+                    "quality_status": None,
+                    "quality_issues": issues,
+                }
+        is_v2_quality_path = (
+            settings.resume_quality_gate_enabled
+            and settings.resume_layout_compiler_enabled
+            and state.get("layout_compilation_status") == "compiled"
+        )
         can_repair = (
-            violation_codes == {"bullet_tail"}
+            not is_v2_quality_path
+            and violation_codes == {"bullet_tail"}
             and bool(repairable_bullet_ids)
             and repaired_report is not None
             and state.get("layout_revision_iteration", 0) < settings.max_layout_revision_iterations
@@ -2819,6 +3128,8 @@ def browser_layout_gate_route(state: ResumeGenerationState) -> str:
         return "passed"
     if status == "repair":
         return "repair"
+    if status == "quality_repair":
+        return "quality_repair"
     if status == "recompile":
         return "recompile"
     return "failed"
@@ -3146,6 +3457,15 @@ async def content_gap_node(
         "candidate_measurements": [],
         "layout_compilation_diagnostics": None,
         "selected_candidate_ids": [],
+        "quality_validation_status": None,
+        "quality_validation_report": None,
+        "grounding_report": None,
+        "quality_local_repair_status": None,
+        "quality_local_repair_call_count": 0,
+        "quality_local_repair_provider_attempts": 0,
+        "quality_local_repair_protocol": None,
+        "quality_local_repair_error_category": None,
+        "quality_local_repair_duration_ms": None,
         "evidence_pack": None,
         "resume_context_ready": False,
         "content_gap_interaction_count": state.get("content_gap_interaction_count", 0) + 1,

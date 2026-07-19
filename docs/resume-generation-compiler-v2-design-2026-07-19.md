@@ -721,6 +721,45 @@ maximize
 
 应删除泛化的“Self-Review → 全文重写 → 再次排版”循环。
 
+### 7.8.1 阶段 H 实施完成记录（2026-07-19）
+
+**状态：已完成。** V2 最终链路已经从阶段 G 编译结果直接进入确定性的 evidence-first 质量门禁；只有不超过 3 条、且全部属于 bullet-local 的问题才允许进行一次有界模型修复。修复结果不会直接覆盖最终简历，而是重新变成 grounded `CandidateBullet`，重新执行阶段 G 编译和完整阶段 H 审计。V2 不再进入旧的全文 Self-Review 或整份 draft 重写循环。
+
+已完成内容：
+
+1. 在 `app/domain/resume/quality/` 建立纯领域质量切片，新增 `QualityIssue`、`GroundingReport`、`RequirementCoverageReport`、`QualityValidationReport`、局部修复 draft/result 模型、`ResumeQualityGateService` 和 `ResumeLocalCandidateRepairService`；领域模块不依赖 LangGraph、FastAPI、数据库、infra 或具体 Provider；
+2. 质量门禁以当前 `ResumePlan + HybridRetrievalResult + CandidateBullet + CompiledResume + LayoutConstraint` 为唯一权威输入，核对 plan version、最终 candidate IDs、结构化 bullet payload、selected fact 集和最终结构之间的一致性；输入缺失、错属或前后不一致时 fail closed；
+3. 每条最终 bullet 必须包含非空 `source_fact_ids`，fact 必须存在于当前检索快照、属于当前 `ResumePlan`、属于对应经历，且 `source_revision_id` 必须等于该经历的 current revision；同一 fact 被多个最终 bullet 使用时产生全局硬失败；
+4. 工作、项目和教育 item 的 title、organization、role、start/end date 与权威经历元数据逐项比较；日期比较兼容既有按月展示契约（`YYYY-MM` 与同月 `YYYY-MM-DD` 等价），无 `source_experience_id` 的联系方式和技能固定块不会被误判为 FactBank 经历；
+5. bullet 数字必须逐项来自其引用 facts；技术名称使用规范化、常见技术词表、Requirement keywords、FactRecord technologies 和别名映射进行确定性识别，检测到的技术必须在引用 fact 的 `source_text` 或 technologies 中得到支持；
+6. requirement coverage 不再直接相信模型标签，而是取最终 bullet 声明与 `ResumePlan.fact_requirement_map` 的证据交集；must-have 使用权重计算覆盖率，默认硬阈值为 `80%`，精确 `80%` 通过，低于阈值 fail closed；
+7. 最终布局再次硬校验单页、`85%–98%`、无 overflow、无 `page_limit_exceeded`、无 forced block split、无 profile/font mismatch、无悬空标题；同时检查 bullet 测量缺失、尾行、异常换行、过短、重复文本和结尾句号，以及“页面欠填但仍有未使用 planned facts”的不变量；
+8. 质量问题分为 bullet/item/global 和 repairable/non-repairable。只有所有问题都属于数字、技术、尾行、换行、长度、重复文本或结尾标点等 bullet-local 类别，且失败 bullet 数不超过默认 `3` 条时，状态才为 `repairable`；元数据、revision、重复 fact、coverage、页面结构和全局不变量问题不会调用模型；
+9. 新增 `ResumeLocalRepairWriter`，一次请求批量携带全部失败 bullet、原文、引用 facts、固定 requirement IDs、当前行数、尾行比例和目标比例；生产 Provider 使用 `chat_structured_bounded(deadline=15s, max_attempts=1)`，超时、协议错误、schema 错误或不完整结果后不进行第二次物理请求；
+10. 局部修复领域服务要求 source facts 和 requirement IDs 与原候选完全一致，拒绝新增数字、技术和结尾句号，并用真实字体测量筛除仍未通过尾行门槛的修复文本；整个修复 batch 原子应用，任一目标没有合法候选时全部拒绝；
+11. 合法修复文本生成稳定的 transient candidate IDs，替换失败候选后回到 `ResumeLayoutCompiler`；随后重新执行完整质量门禁。第二次验证仍失败、Provider 失败或一次修复预算已经消耗时直接进入 `output_failure`，不会重新生成整份简历；
+12. Resume Graph 的 V2 主路径调整为 `batch_candidate_generation → layout_compile → deterministic_quality_gate → persist`，repair 分支为 `deterministic_quality_gate → local_candidate_repair → layout_compile`；旧 `fact_check → coverage_check → self_review → quality_gate` 仅保留给 V1 兼容路径；
+13. 浏览器 density 失败继续最多回编译一次；浏览器 bullet tail 失败使用同一个阶段 H 局部修复预算，第一次可进入 candidate repair，预算耗尽后不会落回 V1 `layout_revision` 再产生第二次模型调用；
+14. 阶段 H 联调将编译器在同等 evidence/coverage 下的可读性优先级前移，使已有候选中的尾行合格版本优先于仅更接近目标高度的失败版本；页面 `85%–98%` 仍是进入精确结果集合的硬条件；
+15. 新增 `scripts/benchmark_resume_quality_gate.py`，执行真实 Pillow/FreeType 字体编译后的 grounding、coverage、metadata、数字、技术、重复和版面完整审计；本阶段不新增数据库表、迁移或 API 契约。
+
+新增主要配置：
+
+- `resume_quality_gate_enabled`，默认开启；
+- `resume_must_have_coverage_threshold`，默认 `0.80`；
+- `resume_quality_max_repair_bullets`，默认 `3`；
+- `resume_quality_local_repair_deadline_seconds`，默认 `15.0s`；
+- `resume_quality_local_repair_max_calls`，固定且最多为 `1`。
+
+实测与验证结果：
+
+- 阶段 H 定向测试覆盖 source fact 存在性/经历归属/current revision、结构与 candidate 一致性、重复 fact、组织与日期、无来源数字和技术、must-have `80%` 边界、单页版面、尾行、一次 Provider 预算、原子候选修复、Graph 路由、浏览器 repair/density 预算和架构边界；定向回归为 `44 passed`；
+- 真实字体 `100 groups × 3 variants × 10 experiences` 压力场景从 300 个版本中选择 44 条，最终单页使用率 `97.65%`，44 条全部 grounded，must-have coverage `100%`，质量问题 `0`；50 次确定性审计中位数 `4.10ms`、最大 `5.60ms`；
+- 在上述真实字体场景中向一条已选 bullet 注入无来源 `Kubernetes` 和 `9999%` 后，门禁稳定识别为单条 repairable 失败；使用原事实生成 transient candidate、重新编译并再次审计后恢复为 `passed`，完整“编译→失败审计→候选修复→重新编译→通过审计”测试约 `1.78s`；
+- 典型 `30 groups × 3 variants × 5 experiences` 合成候选池在真实字体下仍有 10 条 awkward tail；默认最多修复 3 条的门禁按设计 fail closed，而不是发起大范围模型重写。该样例同时验证“少量局部修复”限制不会被绕过；
+- 阶段 H 变更目标 Ruff 检查通过；配置、compiler、quality、Provider、Graph、State 和基准脚本共 11 个生产源码目标的 mypy strict 检查通过；Graph 可成功编译，架构依赖边界保持不变；
+- 仓库全量 unit 回归为 `409 passed, 8 failed`；仓库全量回归为 `486 passed, 3 skipped, 54 failed`。失败数量和类别与阶段 G 基线一致：46 个为本机未连接 Supabase 时鉴权依赖返回 `500/502`，其余 8 个为既有 V1 bullet 门槛/optimizer、旧局部修复、旧并行生成排序和前端模板清单差异；阶段 H 没有新增失败类别。
+
 ### 7.9 阶段 I：补充经历后的增量重算
 
 收到用户补充后：

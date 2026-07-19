@@ -16,6 +16,8 @@ from app.graphs.resume.nodes import (
     context_assembly_node,
     cot_planning_node,
     coverage_check_node,
+    deterministic_quality_gate_node,
+    deterministic_quality_gate_route,
     draft_generation_node,
     experience_selection_node,
     fact_check_node,
@@ -24,6 +26,8 @@ from app.graphs.resume.nodes import (
     layout_measure_node,
     layout_revision_node,
     layout_route,
+    local_candidate_repair_node,
+    local_candidate_repair_route,
     material_sufficiency_node,
     material_sufficiency_route,
     output_failure_node,
@@ -44,6 +48,8 @@ from app.graphs.tracing import traced_node
 RESUME_NODE_DEFINITIONS = {
     "batch_candidate_generation": batch_candidate_generation_node,
     "layout_compile": layout_compile_node,
+    "deterministic_quality_gate": deterministic_quality_gate_node,
+    "local_candidate_repair": local_candidate_repair_node,
     "context_assembly": context_assembly_node,
     "material_sufficiency": material_sufficiency_node,
     "resume_planning": resume_planning_node,
@@ -114,6 +120,24 @@ def build_resume_subgraph() -> StateGraph[ResumeGenerationState]:
         layout_compile_route,
         {
             "fact_check": "fact_check",
+            "quality_validate": "deterministic_quality_gate",
+            "failed": "output_failure",
+        },
+    )
+    builder.add_conditional_edges(
+        "deterministic_quality_gate",
+        deterministic_quality_gate_route,
+        {
+            "passed": "persist_draft",
+            "repair": "local_candidate_repair",
+            "failed": "output_failure",
+        },
+    )
+    builder.add_conditional_edges(
+        "local_candidate_repair",
+        local_candidate_repair_route,
+        {
+            "layout_compile": "layout_compile",
             "failed": "output_failure",
         },
     )
@@ -154,6 +178,7 @@ def build_resume_subgraph() -> StateGraph[ResumeGenerationState]:
         {
             "passed": "output",
             "repair": "layout_revision",
+            "quality_repair": "local_candidate_repair",
             "recompile": "layout_compile",
             "failed": "output_failure",
         },

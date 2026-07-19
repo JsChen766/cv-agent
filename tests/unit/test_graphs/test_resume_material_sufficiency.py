@@ -19,6 +19,7 @@ from app.graphs.resume.nodes import (
     batch_candidate_generation_route,
     content_gap_node,
     content_gap_route,
+    deterministic_quality_gate_node,
     layout_compile_node,
     layout_compile_route,
     material_sufficiency_node,
@@ -300,7 +301,7 @@ async def test_v2_layout_compiler_consumes_complete_candidate_pool(
     )
 
     assert compiled["layout_compilation_status"] == "compiled"
-    assert layout_compile_route(compiled) == "fact_check"
+    assert layout_compile_route(compiled) == "quality_validate"
     report = compiled["layout_report"]
     assert report["page_count"] == 1
     assert report["overflow_mm"] == 0
@@ -308,6 +309,21 @@ async def test_v2_layout_compiler_consumes_complete_candidate_pool(
     selected = compiled["compiled_resume"]
     assert len(selected["selected_fact_ids"]) == len(set(selected["selected_fact_ids"]))
     assert compiled["selected_candidate_ids"]
+
+    validated = await deterministic_quality_gate_node(
+        {
+            **planned,
+            **generated,
+            **compiled,
+            "fact_retrieval_result": retrieval,
+            "resume_candidate_bullets": candidates,
+        }
+    )
+    assert validated["grounding_report"]["ungrounded_bullets"] == 0
+    assert validated["coverage_report"]["must_have_coverage_ratio"] == 1.0
+    assert {value["code"] for value in validated["quality_issues"]}.issubset(
+        {"bullet_too_short", "bullet_awkward_wrap"}
+    )
 
 
 async def test_batch_failure_uses_grounded_fallback_after_two_attempt_budget(

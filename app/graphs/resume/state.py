@@ -37,6 +37,15 @@ class ResumeGenerationState(MainState, total=False):
     candidate_measurements: list[dict[str, Any]]
     layout_compilation_diagnostics: dict[str, Any] | None
     selected_candidate_ids: list[str]
+    quality_validation_status: str | None
+    quality_validation_report: dict[str, Any] | None
+    grounding_report: dict[str, Any] | None
+    quality_local_repair_status: str | None
+    quality_local_repair_call_count: int
+    quality_local_repair_provider_attempts: int
+    quality_local_repair_protocol: str | None
+    quality_local_repair_error_category: str | None
+    quality_local_repair_duration_ms: float | None
     user_preferences: list[dict[str, Any]]
     user_profile: dict[str, Any] | None
     resume_context_ready: bool

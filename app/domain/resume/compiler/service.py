@@ -587,9 +587,9 @@ class ResumeLayoutCompiler:
         return (
             -len(state.requirement_ids),
             -round(state.value_score, 6),
-            abs(predicted - target_height),
             -len(state.experience_ids),
             -round(state.readability_score, 6),
+            abs(predicted - target_height),
             tuple(value.candidate.bullet_id for value in state.selected),
         )
 
@@ -616,8 +616,8 @@ class ResumeLayoutCompiler:
             -round(coverage, 6),
             -round(state.value_score, 6),
             -len(state.experience_ids),
-            abs(predicted - constraint.target_page_usage_ratio),
             -round(state.readability_score, 6),
+            abs(predicted - constraint.target_page_usage_ratio),
             tuple(value.candidate.bullet_id for value in state.selected),
         )
 
@@ -645,8 +645,8 @@ class ResumeLayoutCompiler:
             -round(coverage, 6),
             -round(state.value_score, 6),
             -len(state.experience_ids),
-            abs(predicted_browser_usage - constraint.target_page_usage_ratio),
             tail_failures,
+            abs(predicted_browser_usage - constraint.target_page_usage_ratio),
             round(tuning_penalty, 6),
             tuple(value.candidate.bullet_id for value in state.selected),
         )
