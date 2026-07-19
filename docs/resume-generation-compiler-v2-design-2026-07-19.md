@@ -664,6 +664,40 @@ maximize
 - 调整间距只能在安全区间内进行，不能用超大空白伪装内容充足；
 - 浏览器真实测量结果是最终版面事实来源。
 
+### 7.7.1 阶段 G 实施完成记录（2026-07-19）
+
+**状态：已完成。** V2 主路径已从阶段 F 的完整长短候选池进入确定性的高度约束版面编译器；旧 `ResumeLayoutOptimizer` 只保留给关闭功能开关后的 V1 兼容路径，不再参与 V2 候选选型。编译结果只有同时满足后端真实字体测量和浏览器预测区间时才可进入事实门禁，浏览器实际结果不一致时最多回编译一次，并继续以浏览器实际测量作为最终事实来源。
+
+已完成内容：
+
+1. 在 `app/domain/resume/compiler/` 建立纯领域版面编译切片，新增 `CandidateMeasurement`、`CompilationAction`、`LayoutCompilationDiagnostics`、`CompiledResume` 和 `LayoutCompilationResult`；该模块不依赖 FastAPI、LangGraph、数据库、infra 或具体 Provider；
+2. 每个候选长短版本只进行一次真实字体测量并缓存行数、高度、尾行比例和 fit 状态；缓存键包含 bullet ID、模板 ID、layout profile hash、语言和字体 checksum，浏览器回编译及同输入重放会安全命中缓存；
+3. 编译前确定性测量联系方式、教育、技能等固定结构，以及 narrative section heading 和逐经历 item 的固定开销；教育等非 narrative section 始终从 scaffold 原样保留，不参与正文删选；
+4. 使用默认 `beam_width=256` 的有界 beam search，在“每个 candidate group 最多选一个版本、source fact 不重复、工作/项目 section 硬保留、页面估算高度有界”的约束下搜索；目标顺序覆盖 requirement coverage、事实和岗位价值、经历多样性、目标使用率距离及可读性，并使用稳定 bullet ID 打破并列；
+5. beam 为不同估算高度和候选数量保留分层前沿，精确复测预算也按高度分层取样，避免所有预算都消耗在同一高度的高价值状态而漏掉“少一条或换短版即可满足 98%”的边界解；
+6. 最终候选使用 `ResumeLayoutService` 做精确分页，硬要求单页、无 overflow、无 `page_limit_exceeded`、无 forced block split，且后端使用率与按最近浏览器比例预测的使用率都处于 `85%–98%`；不满足任一硬条件即 fail closed，不会输出近似合格结果；
+7. 页面不足时搜索动作只包含加入候选、选择更长版本和安全视觉扩展；页面超出或完整候选池本身超过单页时才记录选择短版或移除最低边际价值候选。安全调参仅有三个固定档位，最大为正文 `1.025×`、section/item/bullet 间距 `1.10×`，且修复了同一调参被后端重复应用的问题；
+8. 编译器会用全部 group 的最长 grounded 版本和全部安全调参计算候选池最大可支持高度。最大池仍低于后端或浏览器最低区间时返回 `underfilled` 并明确记录候选池已耗尽；存在足够高度但没有合法组合时返回 `infeasible`。两种情况都不会回退到整份重写，也不会把仍有未使用合格事实的欠填误判为 `resume_content_gap`；
+9. Resume Graph 新增 `layout_compile` 节点和状态字段，V2 路径调整为 `batch_candidate_generation → layout_compile → fact_check`；编译结果保存选中 candidate/group/fact IDs、完整结构、精确 `LayoutReport`、调参、动作和诊断，输入 plan/candidate/scaffold 不一致时显式 `layout_compilation_failed`；
+10. V2 编译固定使用 `resume-standard` 单页合同，禁止通过切换稀疏模板放宽 `85%–98%` 硬区间；V1 旧 draft、layout measurement 和 optimizer 路由保持不变；
+11. 浏览器 observability 会优先读取结构中版本化的 `layout_target_band`。实际使用率 `<85%`、`>98%`、多页或 overflow 都变为需要修订的密度违规；V2 第一次浏览器密度失败会把实际/后端比例反馈给编译器重新组合，第二次仍失败则显式失败，禁止进入全文 self-review 或局部 bullet 改写；
+12. 新增 `scripts/benchmark_resume_layout_compiler.py`，使用真实 Pillow/FreeType 字体执行候选测量、固定开销测量、beam 搜索和精确分页；本阶段不新增数据库表、迁移或 API 契约，也未提前实现阶段 H 的 evidence audit 和单次局部模型修复。
+
+新增主要配置：
+
+- `resume_layout_compiler_enabled`，默认开启；
+- `resume_layout_compiler_beam_width`，默认 `256`，允许 `32–2048`；
+- `resume_layout_compiler_exact_candidate_limit`，默认 `32`，允许 `8–128`。
+
+实测与验证结果：
+
+- 阶段 G 编译器、浏览器边界、Graph 路由、阶段 F 串联和架构边界定向测试为 `38 passed`；覆盖每组只选一个版本、fact 唯一、工作/项目/教育保留、单页 `85%–98%`、测量缓存重放、真实候选池不足、浏览器比例只回编译一次且第二次密度失败不进入 bullet 修复、plan/candidate 不一致 fail closed、浏览器 `84.9%/85%/98%/98.1%` 边界，以及 V2 不调用旧 optimizer；
+- 领域层和 Graph 扩大回归为 `217 passed, 7 failed`；仓库全量 unit 测试为 `391 passed, 8 failed`；仓库全量测试为 `468 passed, 3 skipped, 54 failed`。54 个失败与阶段 F 基线数量和类别一致：46 个为本机未连接 Supabase 时鉴权依赖先返回 `500/502`，其余 8 个为既有 bullet 门槛/旧 optimizer、局部修复、旧并行生成排序和前端模板清单差异；阶段 G 没有新增失败类别；
+- 典型真实字体基准为 `30 groups × 3 variants × 5 experiences`、20 次编译：冷启动 `327.30 ms`，热运行中位数 `204.13 ms`，最大 `327.30 ms`；选择 30 条候选，最终单页使用率 `90.02%`，搜索展开 18,821 个状态，第二次起 90 个候选测量全部命中缓存；
+- 压力真实字体基准为 `100 groups × 3 variants × 10 experiences`、10 次编译：冷启动 `808.16 ms`，热运行中位数 `442.11 ms`，最大 `808.16 ms`；从 300 个版本中选择 44 条，最终单页使用率 `97.65%`，搜索展开 35,999 个状态，第二次起 300 个候选测量全部命中缓存；
+- 额外边界实测 `60 groups × 3 variants × 8 experiences` 可稳定选择 46 条并得到 `97.47%` 使用率，验证分层 beam 可以找到原先被同高度状态遮蔽的“少一条”合法解；
+- 阶段 G 变更目标 Ruff 检查通过；配置、compiler、observability、Graph 和 State 共 8 个生产源码目标的 mypy strict 检查通过；`git diff --check` 通过，架构依赖边界保持不变。
+
 ### 7.8 阶段 H：确定性质量门禁和局部修复
 
 最终结果必须通过：

@@ -89,6 +89,11 @@ class Settings(BaseSettings):
     resume_batch_generation_deadline_seconds: float = Field(default=45.0, gt=0.0, le=60.0)
     resume_batch_generation_max_attempts: int = Field(default=2, ge=1, le=2)
     resume_candidate_pool_max_ratio: float = Field(default=1.35, ge=1.0, le=2.0)
+    # V2 deterministic layout compiler. The legacy optimizer remains available
+    # only for the V1 draft path while rollout is reversible.
+    resume_layout_compiler_enabled: bool = True
+    resume_layout_compiler_beam_width: int = Field(default=256, ge=32, le=2048)
+    resume_layout_compiler_exact_candidate_limit: int = Field(default=32, ge=8, le=128)
     # Generate independent experience bullet pools concurrently, then assemble
     # one deterministic resume. Smaller structured calls are substantially more
     # reliable on OpenAI-compatible providers than one monolithic resume JSON.

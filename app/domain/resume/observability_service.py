@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from app.core.errors import NotFoundError, ValidationError
 from app.core.types import generate_id
-from app.domain.resume.layout_templates import get_resume_template
+from app.domain.resume.layout_templates import ResumeTemplateDefinition, get_resume_template
 from app.domain.resume.observability_models import (
     BrowserBulletMetric,
     BrowserLayoutObservationCreate,
@@ -30,9 +30,7 @@ class ResumeObservabilityService:
     async def finish_run(self, data: ResumeGenerationRunFinish) -> bool:
         return await self._repository.finish_run(data)
 
-    async def get_run_for_user(
-        self, user_id: str, run_id: str
-    ) -> ResumeGenerationRunRecord | None:
+    async def get_run_for_user(self, user_id: str, run_id: str) -> ResumeGenerationRunRecord | None:
         return await self._repository.get_run_for_user(user_id, run_id)
 
     async def save_layout_observation(
@@ -62,9 +60,7 @@ class ResumeObservabilityService:
                 line_count=bullet.line_count,
                 last_line_width_px=bullet.last_line_width_px,
                 available_line_width_px=bullet.available_line_width_px,
-                last_line_ratio=(
-                    bullet.last_line_width_px / bullet.available_line_width_px
-                ),
+                last_line_ratio=(bullet.last_line_width_px / bullet.available_line_width_px),
             ).model_dump(mode="json")
             for bullet in observation.bullets
         ]
@@ -175,6 +171,7 @@ class ResumeObservabilityService:
             )
 
         template = get_resume_template(expected_template_id)
+        minimum_usage, maximum_usage = _layout_band(structured, template)
         usage = observation.used_height_px / observation.available_height_px
         if observation.page_count != 1:
             violations.append(
@@ -190,14 +187,14 @@ class ResumeObservabilityService:
                     message="Browser rendering overflows the A4 content box.",
                 )
             )
-        if usage < template.minimum_page_usage_ratio:
+        if usage < minimum_usage:
             violations.append(
                 BrowserLayoutViolation(
                     code="underfilled",
                     message="Browser page usage is below the template minimum.",
                 )
             )
-        if usage > template.maximum_page_usage_ratio:
+        if usage > maximum_usage:
             violations.append(
                 BrowserLayoutViolation(
                     code="overfilled",
@@ -221,8 +218,9 @@ class ResumeObservabilityService:
         status: BrowserLayoutVerificationStatus
         if not violations:
             status = "passed"
-        elif repairable_bullet_ids and all(
-            violation.code == "bullet_tail" for violation in violations
+        elif all(
+            violation.code in {"bullet_tail", "underfilled", "overfilled", "multi_page", "overflow"}
+            for violation in violations
         ):
             status = "needs_revision"
         else:
@@ -233,6 +231,25 @@ class ResumeObservabilityService:
             violations=violations,
             repairable_bullet_ids=repairable_bullet_ids,
         )
+
+
+def _layout_band(
+    structured: dict[str, object], template: ResumeTemplateDefinition
+) -> tuple[float, float]:
+    raw = structured.get("layout_target_band")
+    if isinstance(raw, dict):
+        minimum = raw.get("minimum")
+        maximum = raw.get("maximum")
+        if (
+            isinstance(minimum, (int, float))
+            and isinstance(maximum, (int, float))
+            and 0.0 <= float(minimum) <= float(maximum) <= 1.0
+        ):
+            return float(minimum), float(maximum)
+    return (
+        float(template.minimum_page_usage_ratio),
+        float(template.maximum_page_usage_ratio),
+    )
 
 
 def _structured_bullet_ids(structured: dict[str, object]) -> set[str]:
@@ -258,9 +275,7 @@ def _structured_bullet_ids(structured: dict[str, object]) -> set[str]:
     return result
 
 
-def _required_font_families(
-    structured: dict[str, object], template_id: str
-) -> set[str]:
+def _required_font_families(structured: dict[str, object], template_id: str) -> set[str]:
     template = get_resume_template(template_id)
     text = _rendered_string_content(structured)
     required: set[str] = set()

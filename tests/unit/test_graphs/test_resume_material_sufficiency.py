@@ -19,6 +19,8 @@ from app.graphs.resume.nodes import (
     batch_candidate_generation_route,
     content_gap_node,
     content_gap_route,
+    layout_compile_node,
+    layout_compile_route,
     material_sufficiency_node,
     material_sufficiency_route,
     resume_planning_node,
@@ -239,7 +241,7 @@ async def test_v2_generation_uses_one_complete_batch_call(
 
     assert provider.calls == 1
     assert result["candidate_generation_status"] == "ready"
-    assert batch_candidate_generation_route(result) == "layout_measure"
+    assert batch_candidate_generation_route(result) == "layout_compile"
     assert result["generation_strategy"] == "single_batch_candidate_pool"
     assert result["full_generation_call_count"] == 1
     diagnostics = result["candidate_generation_diagnostics"]
@@ -252,6 +254,60 @@ async def test_v2_generation_uses_one_complete_batch_call(
         for fact_id in value["source_fact_ids"]
     }
     assert candidate_fact_ids == plan_fact_ids
+
+
+async def test_v2_layout_compiler_consumes_complete_candidate_pool(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    retrieval = _retrieval(60)
+    assessed = await material_sufficiency_node(
+        {"fact_retrieval_result": retrieval, "user_profile": {"full_name": "测试用户"}},
+        _config(),
+    )
+    planned = await resume_planning_node(
+        {**assessed, "fact_retrieval_result": retrieval},
+        _config(),
+    )
+    monkeypatch.setattr("app.graphs.resume.nodes.get_provider", lambda: _BatchProvider())
+    generated = await batch_candidate_generation_node(
+        {
+            **planned,
+            "fact_retrieval_result": retrieval,
+            "user_profile": {"full_name": "测试用户"},
+            "pending_sse_events": [],
+        },
+        _config(),
+    )
+    candidates = generated["resume_candidate_bullets"]
+    for candidate in candidates:
+        multiplier = {"short": 1, "medium": 2, "long": 3}[candidate["length_variant"]]
+        candidate["text"] = "，".join([candidate["text"]] * multiplier)
+
+    def legacy_optimizer_must_not_run(*args: object, **kwargs: object) -> None:
+        raise AssertionError("V2 compiler must not call ResumeLayoutOptimizer")
+
+    monkeypatch.setattr(
+        "app.graphs.resume.nodes.ResumeLayoutOptimizer.optimize",
+        legacy_optimizer_must_not_run,
+    )
+    compiled = await layout_compile_node(
+        {
+            **planned,
+            **generated,
+            "resume_candidate_bullets": candidates,
+        },
+        _config(),
+    )
+
+    assert compiled["layout_compilation_status"] == "compiled"
+    assert layout_compile_route(compiled) == "fact_check"
+    report = compiled["layout_report"]
+    assert report["page_count"] == 1
+    assert report["overflow_mm"] == 0
+    assert 0.85 <= report["pages"][0]["usage_ratio"] <= 0.98
+    selected = compiled["compiled_resume"]
+    assert len(selected["selected_fact_ids"]) == len(set(selected["selected_fact_ids"]))
+    assert compiled["selected_candidate_ids"]
 
 
 async def test_batch_failure_uses_grounded_fallback_after_two_attempt_budget(

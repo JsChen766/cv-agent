@@ -19,6 +19,8 @@ from app.graphs.resume.nodes import (
     draft_generation_node,
     experience_selection_node,
     fact_check_node,
+    layout_compile_node,
+    layout_compile_route,
     layout_measure_node,
     layout_revision_node,
     layout_route,
@@ -41,6 +43,7 @@ from app.graphs.tracing import traced_node
 
 RESUME_NODE_DEFINITIONS = {
     "batch_candidate_generation": batch_candidate_generation_node,
+    "layout_compile": layout_compile_node,
     "context_assembly": context_assembly_node,
     "material_sufficiency": material_sufficiency_node,
     "resume_planning": resume_planning_node,
@@ -101,7 +104,16 @@ def build_resume_subgraph() -> StateGraph[ResumeGenerationState]:
         "batch_candidate_generation",
         batch_candidate_generation_route,
         {
+            "layout_compile": "layout_compile",
             "layout_measure": "layout_measure",
+            "failed": "output_failure",
+        },
+    )
+    builder.add_conditional_edges(
+        "layout_compile",
+        layout_compile_route,
+        {
+            "fact_check": "fact_check",
             "failed": "output_failure",
         },
     )
@@ -142,6 +154,7 @@ def build_resume_subgraph() -> StateGraph[ResumeGenerationState]:
         {
             "passed": "output",
             "repair": "layout_revision",
+            "recompile": "layout_compile",
             "failed": "output_failure",
         },
     )

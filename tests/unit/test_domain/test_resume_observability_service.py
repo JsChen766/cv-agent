@@ -173,9 +173,7 @@ def _structured() -> dict[str, object]:
                     {
                         "id": "item-1",
                         "title": "后端工程师",
-                        "bullets": [
-                            {"id": "bullet-1", "text": "负责平台服务开发"}
-                        ],
+                        "bullets": [{"id": "bullet-1", "text": "负责平台服务开发"}],
                     }
                 ],
             }
@@ -232,6 +230,53 @@ async def test_browser_verification_returns_only_tail_failures_as_repairable() -
     assert result.status == "needs_revision"
     assert result.repairable_bullet_ids == ["bullet-1"]
     assert [violation.code for violation in result.violations] == ["bullet_tail"]
+
+
+@pytest.mark.parametrize(
+    ("usage", "expected_status", "expected_code"),
+    [
+        (0.849, "needs_revision", "underfilled"),
+        (0.85, "passed", None),
+        (0.98, "passed", None),
+        (0.981, "needs_revision", "overfilled"),
+    ],
+)
+async def test_v2_browser_gate_uses_compiled_85_to_98_band(
+    usage: float,
+    expected_status: str,
+    expected_code: str | None,
+) -> None:
+    service = ResumeObservabilityService(FakeRepository())
+    structured = _structured()
+    structured["layout_target_band"] = {
+        "minimum": 0.85,
+        "target": 0.90,
+        "maximum": 0.98,
+    }
+
+    result = await service.verify_layout_observation(
+        user_id="user-1",
+        resume_id="resume-1",
+        variant_id="variant-1",
+        structured=structured,
+        observation=_observation(
+            used_height_px=usage * 1000,
+            available_height_px=1000,
+            loaded_font_families=["SimSun"],
+            bullets=[
+                BrowserBulletMeasurement(
+                    bullet_id="bullet-1",
+                    line_count=2,
+                    last_line_width_px=210,
+                    available_line_width_px=300,
+                )
+            ],
+        ),
+    )
+
+    assert result.status == expected_status
+    codes = {value.code for value in result.violations}
+    assert (expected_code in codes) if expected_code else not codes
 
 
 async def test_browser_verification_rejects_stale_candidate_ids() -> None:

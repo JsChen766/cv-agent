@@ -160,17 +160,13 @@ async def test_browser_gate_promotes_only_server_verified_variant(
         resume=resume,
         resume_observability=_ObservabilityService(verification),
     )
-    monkeypatch.setattr(
-        "app.graphs.resume.nodes.settings.resume_layout_hard_gate_enabled", True
-    )
+    monkeypatch.setattr("app.graphs.resume.nodes.settings.resume_layout_hard_gate_enabled", True)
     monkeypatch.setattr(
         "langgraph.types.interrupt",
         lambda payload: {"action": "verify_layout", "observation": _observation()},
     )
 
-    result = await browser_layout_gate_node(
-        _state(), {"configurable": {"services": services}}
-    )
+    result = await browser_layout_gate_node(_state(), {"configurable": {"services": services}})
 
     assert browser_layout_gate_route(result) == "passed"
     assert resume.statuses == ["passed"]
@@ -197,9 +193,7 @@ async def test_browser_gate_routes_tail_only_failure_to_local_repair(
         resume=resume,
         resume_observability=_ObservabilityService(verification),
     )
-    monkeypatch.setattr(
-        "app.graphs.resume.nodes.settings.resume_layout_hard_gate_enabled", True
-    )
+    monkeypatch.setattr("app.graphs.resume.nodes.settings.resume_layout_hard_gate_enabled", True)
     monkeypatch.setattr(
         "langgraph.types.interrupt",
         lambda payload: {"action": "verify_layout", "observation": _observation()},
@@ -232,10 +226,88 @@ async def test_browser_gate_routes_tail_only_failure_to_local_repair(
         "status": "pass",
     }
 
-    result = await browser_layout_gate_node(
-        state, {"configurable": {"services": services}}
-    )
+    result = await browser_layout_gate_node(state, {"configurable": {"services": services}})
 
     assert browser_layout_gate_route(result) == "repair"
     assert resume.statuses == ["needs_revision"]
     assert result["layout_report"]["bullet_fits"][0]["status"] == "too_short"
+
+
+async def test_v2_browser_density_failure_routes_once_to_layout_recompile(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    verification = BrowserLayoutVerificationResult(
+        status="needs_revision",
+        observation=_saved_observation(page_usage_ratio=0.82),
+        violations=[
+            BrowserLayoutViolation(
+                code="underfilled",
+                message="Below compiled density band",
+            )
+        ],
+    )
+    resume = _ResumeService()
+    services = ServiceContainer.model_construct(
+        resume=resume,
+        resume_observability=_ObservabilityService(verification),
+    )
+    monkeypatch.setattr("app.graphs.resume.nodes.settings.resume_layout_hard_gate_enabled", True)
+    monkeypatch.setattr("app.graphs.resume.nodes.settings.resume_layout_compiler_enabled", True)
+    monkeypatch.setattr(
+        "langgraph.types.interrupt",
+        lambda payload: {"action": "verify_layout", "observation": _observation()},
+    )
+    state = _state()
+    state.update(
+        {
+            "layout_compilation_status": "compiled",
+            "resume_candidate_bullets": [{"bullet_id": "candidate-1"}],
+            "browser_verification_iteration": 0,
+        }
+    )
+
+    result = await browser_layout_gate_node(state, {"configurable": {"services": services}})
+
+    assert browser_layout_gate_route(result) == "recompile"
+    assert resume.statuses == ["needs_revision"]
+    assert result["browser_verification_status"] == "recompile"
+
+
+async def test_v2_second_browser_density_failure_fails_without_bullet_repair(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    verification = BrowserLayoutVerificationResult(
+        status="needs_revision",
+        observation=_saved_observation(page_usage_ratio=0.82),
+        violations=[
+            BrowserLayoutViolation(
+                code="underfilled",
+                message="Below compiled density band",
+            )
+        ],
+    )
+    resume = _ResumeService()
+    services = ServiceContainer.model_construct(
+        resume=resume,
+        resume_observability=_ObservabilityService(verification),
+    )
+    monkeypatch.setattr("app.graphs.resume.nodes.settings.resume_layout_hard_gate_enabled", True)
+    monkeypatch.setattr("app.graphs.resume.nodes.settings.resume_layout_compiler_enabled", True)
+    monkeypatch.setattr(
+        "langgraph.types.interrupt",
+        lambda payload: {"action": "verify_layout", "observation": _observation()},
+    )
+    state = _state()
+    state.update(
+        {
+            "layout_compilation_status": "compiled",
+            "resume_candidate_bullets": [{"bullet_id": "candidate-1"}],
+            "browser_verification_iteration": 1,
+        }
+    )
+
+    result = await browser_layout_gate_node(state, {"configurable": {"services": services}})
+
+    assert browser_layout_gate_route(result) == "failed"
+    assert resume.statuses == ["failed"]
+    assert result["browser_verification_status"] == "failed"

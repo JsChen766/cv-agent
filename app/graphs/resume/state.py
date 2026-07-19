@@ -32,6 +32,11 @@ class ResumeGenerationState(MainState, total=False):
     resume_candidate_bullets: list[dict[str, Any]]
     candidate_generation_diagnostics: dict[str, Any] | None
     full_generation_call_count: int
+    layout_compilation_status: str | None
+    compiled_resume: dict[str, Any] | None
+    candidate_measurements: list[dict[str, Any]]
+    layout_compilation_diagnostics: dict[str, Any] | None
+    selected_candidate_ids: list[str]
     user_preferences: list[dict[str, Any]]
     user_profile: dict[str, Any] | None
     resume_context_ready: bool

@@ -14,6 +14,7 @@ import re
 import time
 import uuid
 from collections.abc import Mapping
+from copy import deepcopy
 from typing import Literal, cast
 
 from langchain_core.runnables import RunnableConfig
@@ -24,6 +25,8 @@ from app.core.events import AgentInterruptEvent
 from app.core.observability import current_recorder, observation_span
 from app.domain.resume.candidates.models import CandidateBullet, CandidatePool
 from app.domain.resume.candidates.service import CandidatePoolService
+from app.domain.resume.compiler.models import CandidateMeasurement
+from app.domain.resume.compiler.service import ResumeLayoutCompiler
 from app.domain.resume.content_budget import build_resume_content_budget
 from app.domain.resume.content_style import normalize_resume_narrative_punctuation
 from app.domain.resume.layout_models import LayoutConstraint, LayoutReport, LayoutViolation
@@ -445,6 +448,11 @@ async def batch_candidate_generation_node(
         "candidate_generation_status": "ready",
         "resume_candidate_bullets": [value.model_dump(mode="json") for value in pool.candidates],
         "candidate_generation_diagnostics": pool.diagnostics.model_dump(mode="json"),
+        "layout_compilation_status": None,
+        "compiled_resume": None,
+        "candidate_measurements": [],
+        "layout_compilation_diagnostics": None,
+        "selected_candidate_ids": [],
         "variants": [variant],
         "resume_structure": structured,
         "resume_candidate_pool": structured,
@@ -459,11 +467,17 @@ async def batch_candidate_generation_node(
         "quality_status": None,
         "quality_issues": [],
         "generation_strategy": "single_batch_candidate_pool",
+        "browser_layout_observation": None,
+        "browser_layout_violations": [],
+        "browser_verification_iteration": 0,
+        "browser_verification_status": None,
     }
 
 
 def batch_candidate_generation_route(state: ResumeGenerationState) -> str:
-    return "layout_measure" if state.get("candidate_generation_status") == "ready" else "failed"
+    if state.get("candidate_generation_status") != "ready":
+        return "failed"
+    return "layout_compile" if settings.resume_layout_compiler_enabled else "layout_measure"
 
 
 def _batch_candidate_failure(reason: str) -> dict[str, object]:
@@ -472,6 +486,192 @@ def _batch_candidate_failure(reason: str) -> dict[str, object]:
         "quality_status": "failed",
         "quality_issues": [{"code": "batch_candidate_generation_failed", "message": reason}],
     }
+
+
+# ── 1.46875. Height-constrained layout compilation ──────────────────────────
+
+
+async def layout_compile_node(
+    state: ResumeGenerationState,
+    config: RunnableConfig | None = None,
+) -> dict[str, object]:
+    raw_plan = state.get("resume_plan")
+    raw_candidates = state.get("resume_candidate_bullets")
+    raw_scaffold = state.get("resume_candidate_pool")
+    services = services_from_config(config)
+    layout = services.resume_layout if services is not None else None
+    if (
+        not isinstance(raw_plan, dict)
+        or not isinstance(raw_candidates, list)
+        or not isinstance(raw_scaffold, dict)
+        or layout is None
+    ):
+        return _layout_compilation_failure("layout_compilation_inputs_unavailable")
+    try:
+        plan = ResumePlan.model_validate(raw_plan)
+        candidates = tuple(CandidateBullet.model_validate(value) for value in raw_candidates)
+        constraint = LayoutConstraint.model_validate(
+            state.get("layout_constraint") or _layout_constraint_from_state(state).model_dump()
+        )
+        seed_measurements = tuple(
+            CandidateMeasurement.model_validate(value)
+            for value in state.get("candidate_measurements") or []
+        )
+    except ValidationError as exc:
+        logger.warning("Layout compiler input validation failed: %s", exc)
+        return _layout_compilation_failure("invalid_layout_compilation_inputs")
+    if not candidates:
+        return _layout_compilation_failure("layout_candidate_pool_empty")
+
+    writer = get_optional_stream_writer()
+    if writer is not None:
+        emit_thinking(writer, "正在按 A4 高度约束编译最优候选组合…")
+    template = STANDARD_RESUME_TEMPLATE
+    active_layout = layout.with_profile(template.profile)
+    scaffold = deepcopy(raw_scaffold)
+    scaffold["layout_template_id"] = template.template_id
+    scaffold["layout_profile_version"] = template.profile.version
+    scaffold["layout_profile_hash"] = template.profile.profile_hash
+    language = str(scaffold.get("language") or "zh-CN")
+    browser_scale = _browser_layout_scale(state)
+    started_at = time.perf_counter()
+    result = ResumeLayoutCompiler(
+        active_layout,
+        beam_width=settings.resume_layout_compiler_beam_width,
+        exact_candidate_limit=settings.resume_layout_compiler_exact_candidate_limit,
+        seed_measurements=seed_measurements,
+    ).compile(
+        plan,
+        candidates,
+        scaffold,
+        constraint,
+        template_id=template.template_id,
+        language=language,
+        browser_scale=browser_scale,
+    )
+    duration_ms = round((time.perf_counter() - started_at) * 1000, 2)
+    logger.info(
+        "Resume layout compilation completed",
+        extra={
+            "status": result.status,
+            "selected_candidates": result.diagnostics.selected_candidates,
+            "expanded_states": result.diagnostics.expanded_states,
+            "exact_layout_calls": result.diagnostics.exact_layout_calls,
+            "usage_ratio": result.diagnostics.final_usage_ratio,
+            "browser_scale": result.diagnostics.browser_scale,
+            "duration_ms": duration_ms,
+        },
+    )
+    common: dict[str, object] = {
+        "layout_compilation_status": result.status,
+        "candidate_measurements": [value.model_dump(mode="json") for value in result.measurements],
+        "layout_compilation_diagnostics": result.diagnostics.model_dump(mode="json"),
+    }
+    compiled = result.compiled_resume
+    if compiled is None:
+        return {
+            **common,
+            "quality_status": "failed",
+            "quality_issues": [
+                {
+                    "code": "layout_compilation_failed",
+                    "message": ", ".join(result.failure_reasons),
+                }
+            ],
+        }
+
+    structured = compiled.structured_resume
+    content = _render_structured_to_markdown(structured)
+    variants = state.get("variants") or []
+    updated_variants: list[dict[str, object]] = []
+    for index, raw_variant in enumerate(variants):
+        variant = dict(raw_variant)
+        if index == 0:
+            variant["structured"] = structured
+            variant["content"] = content
+        updated_variants.append(variant)
+    if not updated_variants:
+        updated_variants = [
+            {
+                "id": f"resume-draft-{uuid.uuid4()}",
+                "title": _derive_resume_title(state, structured),
+                "content": content,
+                "structured": structured,
+            }
+        ]
+    report = compiled.layout_report
+    coverage_ids = list(
+        dict.fromkeys(
+            requirement_id
+            for candidate in candidates
+            if candidate.bullet_id in compiled.selected_candidate_ids
+            for requirement_id in candidate.covered_requirement_ids
+        )
+    )
+    recorder = current_recorder()
+    if recorder is not None:
+        recorder.bind_result(
+            structured=structured,
+            payload_snapshot=(
+                structured if settings.resume_observability_capture_payloads else None
+            ),
+            layout_report=report.model_dump(mode="json"),
+        )
+    return {
+        **common,
+        "layout_compilation_status": "compiled",
+        "compiled_resume": compiled.model_dump(mode="json"),
+        "selected_candidate_ids": list(compiled.selected_candidate_ids),
+        "variants": updated_variants,
+        "resume_structure": structured,
+        "layout_report": report.model_dump(mode="json"),
+        "layout_status": report.status,
+        "layout_fit_status": "fit",
+        "maximum_candidate_usage_ratio": result.diagnostics.maximum_candidate_usage_ratio,
+        "layout_profile_version": report.profile_version,
+        "layout_profile_hash": report.profile_hash,
+        "layout_template_id": template.template_id,
+        "layout_constraint": constraint.model_dump(mode="json"),
+        "coverage_before_layout": coverage_ids,
+        "browser_verification_status": None,
+        "quality_status": None,
+        "quality_issues": [],
+    }
+
+
+def layout_compile_route(state: ResumeGenerationState) -> str:
+    return "fact_check" if state.get("layout_compilation_status") == "compiled" else "failed"
+
+
+def _layout_compilation_failure(reason: str) -> dict[str, object]:
+    return {
+        "layout_compilation_status": "infeasible",
+        "quality_status": "failed",
+        "quality_issues": [{"code": "layout_compilation_failed", "message": reason}],
+    }
+
+
+def _browser_layout_scale(state: ResumeGenerationState) -> float:
+    observation = state.get("browser_layout_observation")
+    report = state.get("layout_report")
+    if not isinstance(observation, dict) or not isinstance(report, dict):
+        return 1.0
+    used = observation.get("used_height_px")
+    available = observation.get("available_height_px")
+    pages = report.get("pages")
+    if (
+        not isinstance(used, (int, float))
+        or not isinstance(available, (int, float))
+        or available <= 0
+        or not isinstance(pages, list)
+        or not pages
+        or not isinstance(pages[0], dict)
+    ):
+        return 1.0
+    backend_usage = pages[0].get("usage_ratio")
+    if not isinstance(backend_usage, (int, float)) or backend_usage <= 0:
+        return 1.0
+    return min(1.25, max(0.75, (float(used) / float(available)) / float(backend_usage)))
 
 
 # ── 1.5. Experience Selection ────────────────────────────────────────────────
@@ -2504,13 +2704,37 @@ async def browser_layout_gate_node(
         }
 
     if verification.status == "needs_revision":
+        violation_codes = {value.code for value in verification.violations}
+        density_codes = {"underfilled", "overfilled", "multi_page", "overflow"}
+        recompilable_codes = density_codes | {"bullet_tail"}
+        can_recompile = (
+            settings.resume_layout_compiler_enabled
+            and state.get("layout_compilation_status") == "compiled"
+            and bool(violation_codes & density_codes)
+            and violation_codes.issubset(recompilable_codes)
+            and iteration < 2
+            and bool(state.get("resume_candidate_bullets"))
+        )
+        if can_recompile:
+            await services.resume.set_variant_quality(
+                state.get("user_id", ""), variant_id, "needs_revision", issues
+            )
+            return {
+                **common,
+                "browser_verification_status": "recompile",
+                "quality_status": None,
+                "quality_issues": issues,
+            }
+        repairable_bullet_ids = set(verification.repairable_bullet_ids)
         repaired_report = _browser_repair_report(
             state.get("layout_report"),
             observation,
-            set(verification.repairable_bullet_ids),
+            repairable_bullet_ids,
         )
         can_repair = (
-            repaired_report is not None
+            violation_codes == {"bullet_tail"}
+            and bool(repairable_bullet_ids)
+            and repaired_report is not None
             and state.get("layout_revision_iteration", 0) < settings.max_layout_revision_iterations
             and state.get("local_repair_call_count", 0) < settings.max_resume_local_repair_calls
         )
@@ -2595,6 +2819,8 @@ def browser_layout_gate_route(state: ResumeGenerationState) -> str:
         return "passed"
     if status == "repair":
         return "repair"
+    if status == "recompile":
+        return "recompile"
     return "failed"
 
 
@@ -2915,6 +3141,11 @@ async def content_gap_node(
         "resume_candidate_bullets": [],
         "candidate_generation_diagnostics": None,
         "full_generation_call_count": 0,
+        "layout_compilation_status": None,
+        "compiled_resume": None,
+        "candidate_measurements": [],
+        "layout_compilation_diagnostics": None,
+        "selected_candidate_ids": [],
         "evidence_pack": None,
         "resume_context_ready": False,
         "content_gap_interaction_count": state.get("content_gap_interaction_count", 0) + 1,
