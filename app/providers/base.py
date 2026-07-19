@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncIterator, Callable, Sequence
+from dataclasses import dataclass
 from typing import Any, Literal, NamedTuple, Protocol
 
 from pydantic import BaseModel, Field
@@ -40,6 +41,28 @@ class TokenUsage(NamedTuple):
     output_tokens: int | None
     total_tokens: int | None
     available: bool
+
+
+@dataclass(frozen=True, slots=True)
+class StructuredCallResult:
+    value: Any
+    attempts: int
+    protocol: str | None = None
+
+
+class StructuredCallBudgetError(Exception):
+    def __init__(
+        self,
+        message: str,
+        *,
+        attempts: int,
+        protocol: str | None,
+        error_category: str,
+    ) -> None:
+        super().__init__(message)
+        self.attempts = attempts
+        self.protocol = protocol
+        self.error_category = error_category
 
 
 def token_usage_from_message(message: Any) -> TokenUsage:
@@ -138,6 +161,16 @@ class LLMProvider(Protocol):
         *,
         temperature: float = 0.2,
     ) -> Any: ...
+
+    async def chat_structured_bounded(
+        self,
+        messages: list[dict[str, str]],
+        schema: type,
+        *,
+        temperature: float = 0.2,
+        deadline_seconds: float,
+        max_attempts: int,
+    ) -> StructuredCallResult: ...
 
     async def chat_with_tools(
         self,

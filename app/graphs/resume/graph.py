@@ -7,6 +7,8 @@ from typing import Any, Protocol
 from langgraph.graph import END, START, StateGraph
 
 from app.graphs.resume.nodes import (
+    batch_candidate_generation_node,
+    batch_candidate_generation_route,
     browser_layout_gate_node,
     browser_layout_gate_route,
     content_gap_node,
@@ -38,6 +40,7 @@ from app.graphs.resume.state import ResumeGenerationState
 from app.graphs.tracing import traced_node
 
 RESUME_NODE_DEFINITIONS = {
+    "batch_candidate_generation": batch_candidate_generation_node,
     "context_assembly": context_assembly_node,
     "material_sufficiency": material_sufficiency_node,
     "resume_planning": resume_planning_node,
@@ -89,7 +92,16 @@ def build_resume_subgraph() -> StateGraph[ResumeGenerationState]:
         "resume_planning",
         resume_planning_route,
         {
+            "batch_generation": "batch_candidate_generation",
             "draft_generation": "draft_generation",
+            "failed": "output_failure",
+        },
+    )
+    builder.add_conditional_edges(
+        "batch_candidate_generation",
+        batch_candidate_generation_route,
+        {
+            "layout_measure": "layout_measure",
             "failed": "output_failure",
         },
     )
@@ -147,7 +159,11 @@ def build_resume_subgraph() -> StateGraph[ResumeGenerationState]:
     builder.add_conditional_edges(
         "output",
         output_route,
-        {"revision": "draft_generation", "end": END},
+        {
+            "batch_generation": "batch_candidate_generation",
+            "revision": "draft_generation",
+            "end": END,
+        },
     )
 
     return builder

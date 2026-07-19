@@ -594,6 +594,43 @@ maximize
 
 必须移除“Provider 多次重试 × structured 协议回退 × 业务外层多次重试”的乘法组合。Provider 能力应缓存，业务层使用统一 deadline 和单一重试预算。
 
+### 7.6.1 阶段 F 实施完成记录（2026-07-19）
+
+**状态：已完成。** V2 正常生成路径现已从权威 `ResumePlan` 直接进入一次 structured batch 写作，模型只负责生成带事实引用的正文 bullet 候选；联系方式、教育、技能和结构元数据仍由后端确定性组装。批量调用失败、超时或返回部分非法分组时，系统使用原始 FactRecord 补齐或生成确定性可用初稿，不会回退到逐经历调用或整份简历重写。
+
+已完成内容：
+
+1. 在 `app/domain/resume/candidates/` 建立纯领域候选池切片，新增 `CandidateBatchDraft`、`CandidateBullet`、`CandidatePool` 和生成诊断模型；每个候选保存稳定 ID、所属经历、source fact IDs、covered requirement IDs、质量分、长短版本、真实测量行数和预计高度；
+2. `CandidatePoolService` 对模型结果执行强制结构校验：fact 必须来自当前 `ResumePlan`、必须属于声明经历、同一 fact 不得跨组复用、requirement 只能取自权威 fact-to-requirement 映射；非法分组被拒绝并记录诊断，模型遗漏的计划 facts 由确定性模板逐项补齐；
+3. 短、中、长版本作为同一个 candidate group 的内部排版候选，所有版本共享完全相同的 source fact IDs 和 requirement IDs；候选 ID 使用稳定哈希生成，相同输入可确定性重放；
+4. 候选生成后立即复用真实 `ResumeLayoutService` 测量每个版本的行数和高度，并按每组可支持的最长合法版本计算逻辑候选池容量；目标下限沿用 `resume_candidate_pool_target_ratio=1.20`，新增上限 `1.35`，低于或高于区间时产生结构化告警而不丢失已 grounded 的可用内容；
+5. 新增 `ResumeBatchWriter`，单次请求完整携带 `ResumePlan`、全部选中 FactRecords、fact-to-requirement 映射、逐经历高度预算、目标候选行数、语言、语气、候选池区间和严格 grounding 规则；模型不得自行选择经历或 facts，也不得为长版本发明数字、技术、组织、日期、范围、结果或职责；
+6. OpenAI-format 和 Anthropic-format Provider 新增统一的 `chat_structured_bounded` 能力：正常路径共享一个总 deadline 和一个物理请求计数器，structured 协议降级与传输失败均消耗同一预算，不再调用既有嵌套 transport retry；成功协议继续缓存供后续调用优先使用；
+7. 完整批量写作默认总 deadline 为 `45s`、最多 `2` 次物理请求，即一次正常调用加一次重试；超时、协议耗尽、schema 校验失败和 Provider 错误均返回实际 attempts、协议和错误类别，随后立即进入确定性 fallback；
+8. Resume Graph 新增 `batch_candidate_generation` 节点。阶段 E 规划成功且功能开启时只进入该节点一次，随后进入现有布局测量兼容链路；状态中独立保存完整 `resume_candidate_bullets`、候选诊断和完整写作物理调用数，旧逐经历并行生成仅保留在关闭功能开关时的兼容路径；
+9. V2 候选已就绪后，现有 self-review 路由不再触发全文再次生成；显式用户修订会重新执行一次受同一预算约束的 batch 调用。阶段 G 的候选组合优化、阶段 H 的局部 bullet 修复和最终 evidence audit 仍保持后续阶段边界，本阶段未提前实现；
+10. 联系方式、教育和技能不进入模型写作输入的可编辑范围。为兼容当前布局链路，后端从候选组确定性选择一个可测量版本组装临时单结构；完整长短候选仍单独保留，等待阶段 G 在高度约束下统一选型；
+11. 阶段 E 审核发现并修复一个高优先级剪枝缺陷：旧逻辑仅按高度、是否包含工作/项目和 requirement 数量合并状态，可能把“当前分数略低但后续可复用经历固定开销”的可行状态错误剪掉。新剪枝键保留精确 experience 集、requirement 集和规范化事实集，并新增已知可达到 `85%` 页面下限的回归场景；
+12. 本阶段不新增数据库表或迁移，也未改变 API 契约。
+13. 阶段 F 审核进一步修复三项正确性缺陷：无来源数字现在会在 CandidatePool 层按实际引用的 FactRecord 拒绝，避免阶段 G 重新选中仅在临时结构中被过滤的非法长短版本；批量 Writer 不再用同长度外层 timeout 与 Provider 的共享 deadline 竞争，deadline 边界仍能保留真实物理调用次数；Anthropic bounded structured 调用补齐空解析重试和完整调用观测。
+
+新增主要配置：
+
+- `resume_batch_generation_enabled`，默认开启；
+- `resume_batch_generation_deadline_seconds`，默认 `45.0`，最大允许 `60.0`；
+- `resume_batch_generation_max_attempts`，默认且最多 `2`；
+- `resume_candidate_pool_max_ratio`，默认 `1.35`；
+- 既有 `resume_candidate_pool_target_ratio` 继续作为下限，默认 `1.20`。
+
+实测与验证结果：
+
+- 阶段 E 剪枝回归、阶段 F 候选领域服务、批量 Graph 路由、Provider 统一预算和架构边界定向测试为 `36 passed`；覆盖一次正常完整写作、两次失败后 fallback、所有计划 facts 进入候选、非法 grounding 与无来源数字拒绝、遗漏事实补齐、稳定 ID、`1.20–1.35` 容量口径、OpenAI/Anthropic 统一物理调用观测、协议降级共享两次预算、`max_attempts=1` 不越界、总 deadline 超时和 V2 禁止全文 self-review；
+- 仓库全量 unit 测试为 `379 passed, 8 failed`；仓库全量测试为 `456 passed, 3 skipped, 54 failed`。54 个失败与阶段 E 实施前基线数量和类别一致：46 个为本机未连接 Supabase 时鉴权依赖先返回 `500/502`，其余 8 个为既有 bullet 门槛/布局修复、局部修复、旧并行生成排序和前端模板清单差异；阶段 F 没有新增失败类别；
+- 新增 `scripts/benchmark_resume_batch_candidates.py`，使用真实 Pillow/FreeType 字体测量候选。典型规模 `30 facts × 5 experiences`、20 次执行生成 90 个长短候选，逻辑候选池比例 `1.2000`，模型草稿校验和测量中位数 `1.17 ms`、最大 `34.82 ms`，确定性 fallback 中位数 `0.39 ms`、最大 `0.51 ms`；
+- 压力规模 `100 facts × 10 experiences`、10 次执行生成 300 个长短候选，逻辑候选池比例 `1.2000`，模型草稿校验和测量中位数 `4.10 ms`、最大 `112.57 ms`，fallback 中位数 `1.40 ms`、最大 `1.63 ms`；这些数据只衡量 Provider 返回后的领域校验和真实字体测量，网络模型调用仍由 `45s` 总 deadline 单独约束；
+- 阶段 E 剪枝修复后重新执行真实规划基准：典型规模 `250 facts × 30 experiences`，10 次规划中位数 `185.76 ms`、最大 `195.83 ms`，阶段 D+E 合计中位数 `190.54 ms`、含冷启动最大 `378.69 ms`，仍满足 `<200ms` 常规和 `<500ms` 冷启动预算；压力规模 `1000 facts × 80 experiences`，5 次规划中位数 `336.59 ms`、最大 `597.01 ms`，合计中位数 `384.09 ms`、最大 `1008.89 ms`，beam width 始终为 `128`；
+- 阶段 F 变更文件 Ruff 检查通过；候选领域、规划、Graph、Provider 和配置共 12 个生产源码目标的 mypy strict 检查通过；架构依赖边界保持不变。
+
 ### 7.7 阶段 G：高度约束的版面编译
 
 版面服务对每条候选及其长短版本进行一次测量并缓存：

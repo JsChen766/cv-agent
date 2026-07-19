@@ -22,6 +22,8 @@ from pydantic import BaseModel, Field, JsonValue, ValidationError
 from app.core.config import settings
 from app.core.events import AgentInterruptEvent
 from app.core.observability import current_recorder, observation_span
+from app.domain.resume.candidates.models import CandidateBullet, CandidatePool
+from app.domain.resume.candidates.service import CandidatePoolService
 from app.domain.resume.content_budget import build_resume_content_budget
 from app.domain.resume.content_style import normalize_resume_narrative_punctuation
 from app.domain.resume.layout_models import LayoutConstraint, LayoutReport, LayoutViolation
@@ -35,6 +37,7 @@ from app.domain.resume.layout_templates import (
 )
 from app.domain.resume.models import ResumeVariantCreate
 from app.domain.resume.observability_models import BrowserLayoutObservationInput
+from app.domain.resume.planning.models import ResumePlan
 from app.domain.resume.planning.projection import project_resume_plan
 from app.domain.resume.planning.service import ResumePlanService
 from app.domain.resume.render import render_structured_to_markdown
@@ -52,6 +55,7 @@ from app.graphs.streaming import (
 )
 from app.providers.base import LLMProvider
 from app.providers.factory import get_provider
+from app.providers.resume_batch import ResumeBatchWriter
 from app.tools.actions import capabilities as action_capabilities
 from app.tools.actions.models import VariantInput
 
@@ -318,7 +322,9 @@ async def resume_planning_node(
 
 
 def resume_planning_route(state: ResumeGenerationState) -> str:
-    return "draft_generation" if state.get("resume_plan_status") == "ready" else "failed"
+    if state.get("resume_plan_status") != "ready":
+        return "failed"
+    return "batch_generation" if settings.resume_batch_generation_enabled else "draft_generation"
 
 
 def _resume_plan_failure(reason: str) -> dict[str, object]:
@@ -327,6 +333,144 @@ def _resume_plan_failure(reason: str) -> dict[str, object]:
         "resume_plan_status": "infeasible",
         "quality_status": "failed",
         "quality_issues": [{"code": "resume_plan_infeasible", "message": reason}],
+    }
+
+
+# ── 1.4375. Single batch candidate generation ────────────────────────────────
+
+
+async def batch_candidate_generation_node(
+    state: ResumeGenerationState,
+    config: RunnableConfig | None = None,
+) -> dict[str, object]:
+    """Write all planned narrative candidates in one bounded provider call."""
+    raw_plan = state.get("resume_plan")
+    raw_retrieval = state.get("fact_retrieval_result")
+    services = services_from_config(config)
+    layout = services.resume_layout if services is not None else None
+    if not isinstance(raw_plan, dict) or not isinstance(raw_retrieval, dict) or layout is None:
+        return _batch_candidate_failure("batch_candidate_inputs_unavailable")
+    try:
+        plan = ResumePlan.model_validate(raw_plan)
+        retrieval = HybridRetrievalResult.model_validate(raw_retrieval)
+    except ValidationError as exc:
+        logger.warning("Batch candidate input validation failed: %s", exc)
+        return _batch_candidate_failure("invalid_batch_candidate_inputs")
+
+    profile = state.get("user_profile") or {}
+    language = _requested_resume_language(state, profile)
+    matching_plan = state.get("matching_plan") or {}
+    tone = str(matching_plan.get("tone") or "professional")
+    writer = get_optional_stream_writer()
+    buffered_events: list[dict[str, object]] = []
+    event_writer = writer or buffered_events.append
+    emit_thinking(event_writer, "正在一次性生成全部经历的证据化候选要点…")
+    started_at = time.perf_counter()
+    write_result = await ResumeBatchWriter(get_provider()).write(
+        plan,
+        retrieval,
+        language=language,
+        tone=tone,
+        candidate_pool_target_ratio=settings.resume_candidate_pool_target_ratio,
+        candidate_pool_max_ratio=settings.resume_candidate_pool_max_ratio,
+        deadline_seconds=settings.resume_batch_generation_deadline_seconds,
+        max_attempts=settings.resume_batch_generation_max_attempts,
+        revision_instruction=(
+            str(state.get("revision_instruction")) if state.get("revision_instruction") else None
+        ),
+    )
+    pool = CandidatePoolService(layout).build(
+        plan,
+        retrieval,
+        write_result.draft,
+        language=language,
+        candidate_pool_target_ratio=settings.resume_candidate_pool_target_ratio,
+        candidate_pool_max_ratio=settings.resume_candidate_pool_max_ratio,
+        physical_attempts=write_result.attempts,
+        provider_protocol=write_result.protocol,
+        provider_error_category=write_result.error_category,
+    )
+    if not pool.candidates:
+        return _batch_candidate_failure("candidate_pool_empty")
+
+    experiences = state.get("selected_experiences") or []
+    profile_contact = _extract_contact_from_profile(profile)
+    llm_structure = _candidate_pool_to_structure(
+        pool,
+        experiences,
+        language=language,
+        fallback_contact=profile_contact,
+    )
+    structured = _assign_structure_ids(
+        llm_structure,
+        fallback_contact=profile_contact,
+        previous_structured=state.get("previous_structured") or state.get("resume_structure"),
+    )
+    _copy_source_metadata(structured, experiences)
+    _remove_unsourced_numeric_bullets(structured, experiences)
+    content = _render_structured_to_markdown(structured)
+    evidence_pack = state.get("evidence_pack") or {}
+    raw_coverage = evidence_pack.get("coverage_ratio")
+    coverage_score = float(raw_coverage) if isinstance(raw_coverage, (int, float)) else 0.0
+    variant = {
+        "id": f"resume-draft-{uuid.uuid4()}",
+        "title": _derive_resume_title(state, structured),
+        "content": content,
+        "structured": structured,
+        "score": {
+            "overall": 0.0,
+            "relevance": 0.0,
+            "clarity": 0.0,
+            "evidence_strength": coverage_score,
+            "quantified_impact": 0.0,
+        },
+        "evidence_summary": _evidence_summary(evidence_pack),
+        "risk_summary": [],
+        "missing_info": [],
+    }
+    coverage_before = _grounded_coverage_ids(structured, matching_plan, evidence_pack)
+    duration_ms = round((time.perf_counter() - started_at) * 1000, 2)
+    logger.info(
+        "Batch candidate generation completed",
+        extra={
+            "physical_attempts": write_result.attempts,
+            "candidate_count": len(pool.candidates),
+            "fallback_groups": pool.diagnostics.fallback_groups,
+            "logical_pool_ratio": pool.diagnostics.logical_pool_ratio,
+            "duration_ms": duration_ms,
+        },
+    )
+    existing_events = list(state.get("pending_sse_events", []))
+    return {
+        "candidate_generation_status": "ready",
+        "resume_candidate_bullets": [value.model_dump(mode="json") for value in pool.candidates],
+        "candidate_generation_diagnostics": pool.diagnostics.model_dump(mode="json"),
+        "variants": [variant],
+        "resume_structure": structured,
+        "resume_candidate_pool": structured,
+        "pending_sse_events": [*existing_events, *buffered_events],
+        "coverage_before_layout": coverage_before,
+        "generation_call_count": state.get("generation_call_count", 0) + write_result.attempts,
+        "full_generation_call_count": state.get("full_generation_call_count", 0)
+        + write_result.attempts,
+        "layout_profile_version": layout.profile.version,
+        "layout_profile_hash": layout.profile.profile_hash,
+        "layout_template_id": STANDARD_RESUME_TEMPLATE.template_id,
+        "quality_status": None,
+        "quality_issues": [],
+        "generation_strategy": "single_batch_candidate_pool",
+    }
+
+
+def batch_candidate_generation_route(state: ResumeGenerationState) -> str:
+    return "layout_measure" if state.get("candidate_generation_status") == "ready" else "failed"
+
+
+def _batch_candidate_failure(reason: str) -> dict[str, object]:
+    return {
+        "candidate_generation_status": "failed",
+        "quality_status": "failed",
+        "quality_issues": [{"code": "batch_candidate_generation_failed", "message": reason}],
     }
 
 
@@ -2767,6 +2911,10 @@ async def content_gap_node(
         "resume_plan": None,
         "resume_plan_status": None,
         "resume_plan_diagnostics": None,
+        "candidate_generation_status": None,
+        "resume_candidate_bullets": [],
+        "candidate_generation_diagnostics": None,
+        "full_generation_call_count": 0,
         "evidence_pack": None,
         "resume_context_ready": False,
         "content_gap_interaction_count": state.get("content_gap_interaction_count", 0) + 1,
@@ -2916,6 +3064,9 @@ async def output_node(
         "generation_call_count": 0
         if user_revision_instruction
         else state.get("generation_call_count", 0),
+        "full_generation_call_count": 0
+        if user_revision_instruction
+        else state.get("full_generation_call_count", 0),
         "coverage_before_layout": []
         if user_revision_instruction
         else state.get("coverage_before_layout", []),
@@ -2943,6 +3094,11 @@ def review_route(state: ResumeGenerationState) -> str:
     review = state.get("review_result") or {}
     iteration = state.get("review_iteration", 0)
 
+    # V2 never rewrites the complete candidate pool from an internal self-review.
+    # Deterministic failure is handled by the quality gate; phase H owns local repair.
+    if state.get("candidate_generation_status") == "ready":
+        return "quality_gate"
+
     if (
         review.get("verdict") == "needs_revision"
         and iteration < settings.max_self_review_iterations
@@ -2953,7 +3109,11 @@ def review_route(state: ResumeGenerationState) -> str:
 
 
 def output_route(state: ResumeGenerationState) -> str:
-    return "revision" if state.get("resume_user_action") == "revise" else "end"
+    if state.get("resume_user_action") != "revise":
+        return "end"
+    if settings.resume_batch_generation_enabled and state.get("resume_plan_status") == "ready":
+        return "batch_generation"
+    return "revision"
 
 
 def content_gap_route(state: ResumeGenerationState) -> str:
@@ -3013,6 +3173,82 @@ class _LlmResumeStructure(BaseModel):
 class _LlmExperienceDraft(BaseModel):
     source_experience_id: str
     bullets: list[_LlmBullet] = Field(default_factory=list)
+
+
+def _candidate_pool_to_structure(
+    pool: CandidatePool,
+    experiences: list[dict[str, object]],
+    *,
+    language: str,
+    fallback_contact: dict[str, object] | None,
+) -> _LlmResumeStructure:
+    priority = {"long": 2, "medium": 1, "short": 0}
+    chosen_by_group: dict[str, CandidateBullet] = {}
+    for candidate in pool.candidates:
+        current = chosen_by_group.get(candidate.candidate_group_id)
+        if current is None or priority[candidate.length_variant] > priority[current.length_variant]:
+            chosen_by_group[candidate.candidate_group_id] = candidate
+    bullets_by_experience: dict[str, list[_LlmBullet]] = {}
+    for candidate in chosen_by_group.values():
+        bullets_by_experience.setdefault(candidate.experience_id, []).append(
+            _LlmBullet(
+                text=candidate.text,
+                matched_jd_requirement_ids=list(candidate.covered_requirement_ids),
+                source_fact_ids=list(candidate.source_fact_ids),
+            )
+        )
+
+    sections: dict[str, list[_LlmSectionItem]] = {
+        "education": [],
+        "experience": [],
+        "project": [],
+        "other": [],
+    }
+    for experience in _sort_experiences_by_recency(experiences):
+        source_id = str(experience.get("id") or "")
+        category = str(experience.get("category") or "other")
+        section_type = {
+            "work": "experience",
+            "project": "project",
+            "education": "education",
+        }.get(category, "other")
+        bullets = bullets_by_experience.get(source_id, [])
+        if category != "education" and not bullets:
+            continue
+        raw_text = str(experience.get("content") or "").strip() if category == "education" else None
+        sections[section_type].append(
+            _LlmSectionItem(
+                title=_optional_string(experience.get("title")),
+                organization=_optional_string(experience.get("organization")),
+                role=_optional_string(experience.get("role")),
+                location=_optional_string(experience.get("location")),
+                start_date=_optional_string(experience.get("start_date")),
+                end_date=_optional_string(experience.get("end_date")),
+                source_experience_id=source_id,
+                bullets=bullets,
+                raw_text=raw_text or None,
+            )
+        )
+    llm_sections = [
+        _LlmSection(type=cast("_SectionType", section_type), items=items)
+        for section_type, items in sections.items()
+        if items
+    ]
+    skill_values: set[str] = set()
+    for experience in experiences:
+        raw_tags = experience.get("tags")
+        tags = raw_tags if isinstance(raw_tags, list) else []
+        skill_values.update(str(tag).strip() for tag in tags if str(tag).strip())
+    skills = sorted(skill_values, key=str.casefold)
+    if skills:
+        llm_sections.append(
+            _LlmSection(
+                type="skills",
+                items=[_LlmSectionItem(raw_text=" · ".join(skills))],
+            )
+        )
+    contact = _LlmContact.model_validate(fallback_contact) if fallback_contact else None
+    return _LlmResumeStructure(language=language, contact=contact, sections=llm_sections)
 
 
 _EXPERIENCE_DRAFT_SYSTEM_PROMPT = """\
@@ -3161,15 +3397,15 @@ async def _generate_resume_by_experience(
             {"role": "system", "content": _EXPERIENCE_DRAFT_SYSTEM_PROMPT},
             {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
         ]
-        _use_fast_path = hasattr(provider, "chat_json")
+        fast_chat = getattr(provider, "chat_json", None)
 
         max_attempts = 3
         result: _LlmExperienceDraft | None = None
         for attempt in range(max_attempts):
             try:
                 async with semaphore:
-                    if _use_fast_path:
-                        result = await provider.chat_json(
+                    if callable(fast_chat):
+                        result = await fast_chat(
                             messages,
                             _LlmExperienceDraft,
                             temperature=0.2,

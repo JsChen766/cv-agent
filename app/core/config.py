@@ -83,6 +83,12 @@ class Settings(BaseSettings):
     resume_target_page_usage_ratio: float = Field(default=0.90, ge=0.0, le=1.0)
     resume_max_page_usage_ratio: float = Field(default=0.98, ge=0.0, le=1.0)
     resume_candidate_pool_target_ratio: float = Field(default=1.20, ge=1.0)
+    # V2 batch writing uses one request in the normal path and shares one retry
+    # budget across transport failures and structured-protocol fallback.
+    resume_batch_generation_enabled: bool = True
+    resume_batch_generation_deadline_seconds: float = Field(default=45.0, gt=0.0, le=60.0)
+    resume_batch_generation_max_attempts: int = Field(default=2, ge=1, le=2)
+    resume_candidate_pool_max_ratio: float = Field(default=1.35, ge=1.0, le=2.0)
     # Generate independent experience bullet pools concurrently, then assemble
     # one deterministic resume. Smaller structured calls are substantially more
     # reliable on OpenAI-compatible providers than one monolithic resume JSON.

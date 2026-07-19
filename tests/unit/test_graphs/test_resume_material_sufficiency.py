@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import date
 
 import pytest
@@ -14,15 +15,69 @@ from app.domain.resume.retrieval.models import (
     RetrievalRequirement,
 )
 from app.graphs.resume.nodes import (
+    batch_candidate_generation_node,
+    batch_candidate_generation_route,
     content_gap_node,
     content_gap_route,
     material_sufficiency_node,
     material_sufficiency_route,
     resume_planning_node,
     resume_planning_route,
+    review_route,
 )
 from app.infra.layout import PillowFontMetrics
+from app.providers.base import StructuredCallBudgetError, StructuredCallResult
 from app.tools.base import ServiceContainer
+
+
+class _BatchProvider:
+    def __init__(self, *, fail: bool = False) -> None:
+        self.fail = fail
+        self.calls = 0
+
+    async def chat_structured_bounded(
+        self,
+        messages: list[dict[str, str]],
+        schema: type,
+        **kwargs: object,
+    ) -> StructuredCallResult:
+        self.calls += 1
+        if self.fail:
+            raise StructuredCallBudgetError(
+                "provider timeout",
+                attempts=2,
+                protocol="test_json_schema",
+                error_category="TimeoutError",
+            )
+        payload = json.loads(messages[1]["content"])
+        facts = {value["fact_id"]: value for value in payload["facts"]}
+        groups = [
+            {
+                "experience_id": facts[fact_id]["experience_id"],
+                "source_fact_ids": [fact_id],
+                "covered_requirement_ids": facts[fact_id]["matched_requirement_ids"],
+                "variants": [
+                    {
+                        "length_variant": "short",
+                        "text": facts[fact_id]["source_text"],
+                    },
+                    {
+                        "length_variant": "medium",
+                        "text": facts[fact_id]["source_text"],
+                    },
+                    {
+                        "length_variant": "long",
+                        "text": facts[fact_id]["source_text"],
+                    },
+                ],
+            }
+            for fact_id in payload["selected_fact_ids"]
+        ]
+        return StructuredCallResult(
+            value=schema.model_validate({"groups": groups}),
+            attempts=1,
+            protocol="test_json_schema",
+        )
 
 
 def _retrieval(fact_count: int) -> dict[str, object]:
@@ -141,7 +196,7 @@ async def test_resume_planning_node_is_the_only_v2_budget_authority() -> None:
     )
 
     assert result["resume_plan_status"] == "ready"
-    assert resume_planning_route(result) == "draft_generation"
+    assert resume_planning_route(result) == "batch_generation"
     assert result["experience_selection_result"]["selection_reason"] == (
         "projected_from_resume_plan"
     )
@@ -152,6 +207,99 @@ async def test_resume_planning_node_is_the_only_v2_budget_authority() -> None:
         for fact in experience["facts"]
     }
     assert budget_fact_ids == plan_fact_ids
+
+
+async def test_v2_generation_uses_one_complete_batch_call(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    retrieval = _retrieval(60)
+    assessed = await material_sufficiency_node(
+        {
+            "fact_retrieval_result": retrieval,
+            "user_profile": {"full_name": "测试用户"},
+        },
+        _config(),
+    )
+    planned = await resume_planning_node(
+        {**assessed, "fact_retrieval_result": retrieval},
+        _config(),
+    )
+    provider = _BatchProvider()
+    monkeypatch.setattr("app.graphs.resume.nodes.get_provider", lambda: provider)
+
+    result = await batch_candidate_generation_node(
+        {
+            **planned,
+            "fact_retrieval_result": retrieval,
+            "user_profile": {"full_name": "测试用户"},
+            "pending_sse_events": [],
+        },
+        _config(),
+    )
+
+    assert provider.calls == 1
+    assert result["candidate_generation_status"] == "ready"
+    assert batch_candidate_generation_route(result) == "layout_measure"
+    assert result["generation_strategy"] == "single_batch_candidate_pool"
+    assert result["full_generation_call_count"] == 1
+    diagnostics = result["candidate_generation_diagnostics"]
+    assert diagnostics["physical_attempts"] == 1
+    assert diagnostics["generation_source"] == "model"
+    plan_fact_ids = set(planned["resume_plan"]["selected_fact_ids"])
+    candidate_fact_ids = {
+        fact_id
+        for value in result["resume_candidate_bullets"]
+        for fact_id in value["source_fact_ids"]
+    }
+    assert candidate_fact_ids == plan_fact_ids
+
+
+async def test_batch_failure_uses_grounded_fallback_after_two_attempt_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    retrieval = _retrieval(60)
+    assessed = await material_sufficiency_node(
+        {"fact_retrieval_result": retrieval, "user_profile": {"full_name": "测试用户"}},
+        _config(),
+    )
+    planned = await resume_planning_node(
+        {**assessed, "fact_retrieval_result": retrieval},
+        _config(),
+    )
+    provider = _BatchProvider(fail=True)
+    monkeypatch.setattr("app.graphs.resume.nodes.get_provider", lambda: provider)
+
+    result = await batch_candidate_generation_node(
+        {
+            **planned,
+            "fact_retrieval_result": retrieval,
+            "user_profile": {"full_name": "测试用户"},
+            "pending_sse_events": [],
+        },
+        _config(),
+    )
+
+    assert provider.calls == 1
+    assert result["candidate_generation_status"] == "ready"
+    assert result["full_generation_call_count"] == 2
+    diagnostics = result["candidate_generation_diagnostics"]
+    assert diagnostics["physical_attempts"] == 2
+    assert diagnostics["generation_source"] == "deterministic_fallback"
+    assert diagnostics["provider_error_category"] == "TimeoutError"
+
+
+def test_v2_self_review_never_routes_to_complete_regeneration() -> None:
+    assert (
+        review_route(
+            {
+                "candidate_generation_status": "ready",
+                "review_result": {"verdict": "needs_revision"},
+                "review_iteration": 0,
+                "generation_call_count": 1,
+            }
+        )
+        == "quality_gate"
+    )
 
 
 async def test_incomplete_retrieval_metadata_fails_without_content_gap() -> None:

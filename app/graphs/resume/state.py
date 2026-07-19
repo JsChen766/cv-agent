@@ -28,6 +28,10 @@ class ResumeGenerationState(MainState, total=False):
     resume_plan: dict[str, Any] | None
     resume_plan_status: str | None
     resume_plan_diagnostics: dict[str, Any] | None
+    candidate_generation_status: str | None
+    resume_candidate_bullets: list[dict[str, Any]]
+    candidate_generation_diagnostics: dict[str, Any] | None
+    full_generation_call_count: int
     user_preferences: list[dict[str, Any]]
     user_profile: dict[str, Any] | None
     resume_context_ready: bool

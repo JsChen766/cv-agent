@@ -386,3 +386,128 @@ def test_optimizer_frontier_expands_past_near_duplicates_to_find_feasible_facts(
     assert result.plan is not None
     assert any(int(value.removeprefix("fact-")) >= 40 for value in result.plan.selected_fact_ids)
     assert result.diagnostics.optimizer_facts > 40
+
+
+def test_pruning_preserves_lower_scoring_state_with_reusable_experience_overhead() -> None:
+    """A same-height state can be the only one compatible with a later fact."""
+    experiences = (
+        _experience("work-a", "work", 2024),
+        _experience("work-b", "work", 2023),
+    )
+    facts = (
+        _fact(
+            0,
+            "work-a",
+            score=0.9,
+            requirement_id="req-backend",
+            text="Designed payment reconciliation engine",
+        ),
+        _fact(
+            1,
+            "work-b",
+            score=0.7,
+            requirement_id="req-backend",
+            text="Implemented warehouse ingestion pipeline",
+        ),
+        _fact(
+            2,
+            "work-b",
+            score=0.4,
+            requirement_id="req-backend",
+            text="Optimized customer analytics queries",
+        ),
+    )
+    requirement = RetrievalRequirement(
+        requirement_id="req-backend",
+        description="Backend engineering",
+        category="responsibility",
+        keywords=("backend",),
+        importance="must_have",
+        weight=1.0,
+    )
+    retrieval = HybridRetrievalResult(
+        requirements=(requirement,),
+        experiences=experiences,
+        facts=facts,
+        selected_fact_ids=tuple(value.fact_id for value in facts),
+        diagnostics=RetrievalDiagnostics(
+            total_experiences=2,
+            total_facts=3,
+            selected_facts=3,
+            ready_facts=3,
+            fallback_facts=0,
+            ranking_version="test",
+        ),
+    )
+    height_by_fact = {"fact-0": 40.0, "fact-1": 25.0, "fact-2": 20.0}
+    estimates = tuple(
+        FactHeightEstimate(
+            fact_id=fact.fact_id,
+            experience_id=fact.experience_id,
+            source_revision_id=fact.source_revision_id,
+            qualified=True,
+            estimated_lines=1,
+            estimated_height_mm=height_by_fact[fact.fact_id],
+            matched_requirement_ids=fact.matched_requirement_ids,
+        )
+        for fact in facts
+    )
+    sufficiency = MaterialSufficiencyReport(
+        status="sufficient",
+        sufficiency_version="test",
+        profile_version="test",
+        profile_hash="hash",
+        page_available_height_mm=100.0,
+        minimum_usage_ratio=0.85,
+        minimum_required_height_mm=85.0,
+        fixed_height=FixedHeightBreakdown(
+            contact_height_mm=10.0,
+            education_height_mm=0.0,
+            skills_height_mm=10.0,
+            total_height_mm=20.0,
+        ),
+        narrative_section_overheads_mm={"work": 5.0},
+        narrative_experience_estimates=(
+            NarrativeExperienceHeightEstimate(
+                experience_id="work-a",
+                category="work",
+                overhead_height_mm=0.0,
+                qualified_fact_height_mm=40.0,
+                total_supported_height_mm=40.0,
+            ),
+            NarrativeExperienceHeightEstimate(
+                experience_id="work-b",
+                category="work",
+                overhead_height_mm=15.0,
+                qualified_fact_height_mm=45.0,
+                total_supported_height_mm=60.0,
+            ),
+        ),
+        narrative_overhead_height_mm=20.0,
+        qualified_fact_height_mm=85.0,
+        global_supported_height_mm=125.0,
+        supported_usage_ratio=1.25,
+        missing_height_mm=0.0,
+        approximate_missing_lines=0,
+        total_experiences=2,
+        total_facts=3,
+        qualified_facts=3,
+        excluded_facts=0,
+        covered_requirement_ids=("req-backend",),
+        fact_estimates=estimates,
+    )
+
+    result = ResumePlanService(beam_width=8, max_optimizer_facts=16).build(
+        retrieval,
+        sufficiency,
+        minimum_usage_ratio=0.85,
+        target_usage_ratio=0.9,
+        maximum_usage_ratio=0.98,
+        line_height_mm=5.0,
+        candidate_pool_target_ratio=1.2,
+    )
+
+    assert result.status == "ready"
+    assert result.plan is not None
+    assert result.plan.selected_fact_ids == ("fact-1", "fact-2")
+    assert result.plan.estimated_usage_ratio == 0.85

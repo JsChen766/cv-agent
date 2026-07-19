@@ -8,6 +8,7 @@ Set LLM_BASE_URL to point at a non-OpenAI endpoint.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from collections.abc import AsyncIterator, Sequence
@@ -24,6 +25,8 @@ from app.core.errors import ExternalServiceError
 from app.core.observability import observation_span, sanitize_attributes
 from app.providers.base import (
     ChatResult,
+    StructuredCallBudgetError,
+    StructuredCallResult,
     TokenCallback,
     ToolCall,
     ToolDefinition,
@@ -32,7 +35,11 @@ from app.providers.base import (
     token_usage_from_message,
     visible_token_chunks,
 )
-from app.providers.retry import RetryStats, run_with_transport_retries
+from app.providers.retry import (
+    RetryStats,
+    is_retryable_transport_error,
+    run_with_transport_retries,
+)
 from app.providers.tool_schema import to_openai_tool
 
 logger = logging.getLogger(__name__)
@@ -77,9 +84,7 @@ class OpenAIFormatProvider:
         self._embedding_model = embedding_model or settings.embedding_model
         self._embed = OpenAIEmbeddings(
             model=self._embedding_model,
-            api_key=(
-                SecretStr(resolved_embedding_api_key) if resolved_embedding_api_key else None
-            ),
+            api_key=(SecretStr(resolved_embedding_api_key) if resolved_embedding_api_key else None),
             base_url=embedding_base_url or settings.embedding_base_url or self._base_url,
             timeout=60,
             max_retries=0,
@@ -111,6 +116,7 @@ class OpenAIFormatProvider:
             llm = llm.bind(max_tokens=max_tokens)
 
         if stream:
+
             async def _stream() -> AsyncIterator[str]:
                 stats = RetryStats()
                 emitted = False
@@ -137,6 +143,7 @@ class OpenAIFormatProvider:
                         _update_span(span, stats=stats)
                 except Exception as exc:
                     raise ExternalServiceError(f"LLM streaming call failed: {exc}") from exc
+
             return _stream()
 
         stats = RetryStats()
@@ -212,13 +219,15 @@ class OpenAIFormatProvider:
                     protocol_stats = RetryStats()
                     try:
                         if method == "json_prompt":
-                            parsed, raw_message, repaired = (
-                                await self._chat_structured_via_json_prompt(
-                                    normalized_messages,
-                                    schema,
-                                    temperature=temperature,
-                                    retry_stats=protocol_stats,
-                                )
+                            (
+                                parsed,
+                                raw_message,
+                                repaired,
+                            ) = await self._chat_structured_via_json_prompt(
+                                normalized_messages,
+                                schema,
+                                temperature=temperature,
+                                retry_stats=protocol_stats,
                             )
                         else:
                             structured_llm = _structured_with_raw(bound, schema, method)
@@ -235,7 +244,9 @@ class OpenAIFormatProvider:
                         first_error = first_error or exc
                         logger.warning(
                             "chat_structured protocol %s failed for %s: %s",
-                            method, schema_name, exc,
+                            method,
+                            schema_name,
+                            exc,
                         )
                         protocol_attempts.append(
                             {
@@ -285,6 +296,111 @@ class OpenAIFormatProvider:
         except Exception as exc:
             raise ExternalServiceError(f"Structured LLM call failed: {exc}") from exc
 
+    async def chat_structured_bounded(
+        self,
+        messages: list[dict[str, str]],
+        schema: type,
+        *,
+        temperature: float = 0.2,
+        deadline_seconds: float,
+        max_attempts: int,
+    ) -> StructuredCallResult:
+        """Structured call with one deadline and one shared physical-request budget."""
+        normalized_messages = _ensure_json_mode_prompt(messages)
+        lc_messages = _to_lc_messages(normalized_messages)
+        bound = self._llm.bind(temperature=temperature)
+        protocols = _structured_protocol_order(
+            self._structured_protocol,
+            supports_json_schema=self._json_schema_supported,
+        )
+        protocol_index = 0
+        attempts = 0
+        first_error: Exception | None = None
+        last_protocol: str | None = None
+        schema_name = getattr(schema, "__name__", str(schema))
+        try:
+            async with asyncio.timeout(deadline_seconds):
+                with observation_span(
+                    "llm_calls",
+                    "chat_structured_bounded",
+                    attributes={
+                        **_llm_attributes(self, mode="structured_bounded"),
+                        "schema_name": schema_name,
+                        "max_physical_attempts": max_attempts,
+                        "deadline_seconds": deadline_seconds,
+                    },
+                ) as span:
+                    while attempts < max_attempts:
+                        method = protocols[min(protocol_index, len(protocols) - 1)]
+                        last_protocol = method
+                        attempts += 1
+                        raw_message: Any | None = None
+                        try:
+                            if method == "json_prompt":
+                                fallback_messages = _json_prompt_messages(
+                                    normalized_messages,
+                                    schema,
+                                )
+                                raw_message = await self._llm.bind(temperature=temperature).ainvoke(
+                                    _to_lc_messages(fallback_messages)
+                                )
+                                parsed, repaired = _parse_structured_text(
+                                    text_from_content(raw_message.content),
+                                    schema,
+                                )
+                            else:
+                                structured_llm = _structured_with_raw(bound, schema, method)
+                                raw_result = await _invoke(structured_llm, lc_messages)
+                                parsed, raw_message, repaired = _unwrap_structured_result(
+                                    raw_result,
+                                    schema,
+                                )
+                        except asyncio.CancelledError:
+                            raise
+                        except Exception as exc:
+                            first_error = first_error or exc
+                            if not is_retryable_transport_error(exc):
+                                protocol_index += 1
+                            continue
+                        self._structured_protocol = method
+                        _update_span(
+                            span,
+                            stats=RetryStats(
+                                attempts=attempts,
+                                retries=max(0, attempts - 1),
+                            ),
+                            message=raw_message,
+                            protocol=method,
+                            protocol_attempts=[
+                                {
+                                    "protocol": method,
+                                    "status": "completed",
+                                    "physical_attempts": attempts,
+                                    "repaired": repaired,
+                                }
+                            ],
+                        )
+                        return StructuredCallResult(
+                            value=parsed,
+                            attempts=attempts,
+                            protocol=method,
+                        )
+        except TimeoutError as exc:
+            raise StructuredCallBudgetError(
+                "Structured LLM call exceeded its shared deadline.",
+                attempts=attempts,
+                protocol=last_protocol,
+                error_category="TimeoutError",
+            ) from exc
+        raise StructuredCallBudgetError(
+            "Structured LLM call exhausted its physical request budget.",
+            attempts=attempts,
+            protocol=last_protocol,
+            error_category=(
+                first_error.__class__.__name__ if first_error is not None else "UnknownError"
+            ),
+        ) from first_error
+
     async def _chat_structured_via_json_prompt(
         self,
         messages: list[dict[str, str]],
@@ -293,21 +409,7 @@ class OpenAIFormatProvider:
         temperature: float,
         retry_stats: RetryStats,
     ) -> tuple[Any, Any, bool]:
-        schema_json = "{}"
-        if hasattr(schema, "model_json_schema"):
-            schema_json = json.dumps(schema.model_json_schema(), ensure_ascii=False)
-
-        fallback_messages = [
-            {
-                "role": "system",
-                "content": (
-                    "Return only valid JSON. Do not wrap it in markdown. "
-                    "The JSON must match this schema:\n"
-                    f"{schema_json}"
-                ),
-            },
-            *messages,
-        ]
+        fallback_messages = _json_prompt_messages(messages, schema)
         # No max_tokens cap: a full resume JSON with multiple experiences easily
         # exceeds 2k tokens; letting the vendor default apply avoids truncation.
         llm = self._llm.bind(temperature=temperature)
@@ -321,7 +423,6 @@ class OpenAIFormatProvider:
             schema,
         )
         return parsed, raw_message, repaired
-
 
     async def chat_json(
         self,
@@ -483,17 +584,13 @@ class OpenAIFormatProvider:
                     message = chunk if message is None else message + chunk
                 _update_span(span, stats=RetryStats(attempts=1), message=message)
                 return (
-                    _chat_result_from_ai_message(message)
-                    if message is not None
-                    else ChatResult()
+                    _chat_result_from_ai_message(message) if message is not None else ChatResult()
                 )
         except Exception as e:
             raise ExternalServiceError(f"LLM tool streaming call failed: {e}") from e
 
 
-def _llm_attributes(
-    provider: OpenAIFormatProvider, *, mode: str
-) -> dict[str, object]:
+def _llm_attributes(provider: OpenAIFormatProvider, *, mode: str) -> dict[str, object]:
     return {
         "provider": "openai_format",
         "model": getattr(provider, "_model", "unknown"),
@@ -652,8 +749,7 @@ def _ensure_json_mode_prompt(messages: list[dict[str, str]]) -> list[dict[str, s
     for message in normalized:
         if message.get("role") == "system":
             message["content"] = (
-                f"{message.get('content', '')}\n\n"
-                "Return the answer as a valid JSON object."
+                f"{message.get('content', '')}\n\nReturn the answer as a valid JSON object."
             )
             return normalized
 
@@ -678,6 +774,26 @@ def _structured_protocol_order(
     if preferred is None or preferred not in supported:
         return supported
     return (preferred, *(method for method in supported if method != preferred))
+
+
+def _json_prompt_messages(
+    messages: list[dict[str, str]],
+    schema: type,
+) -> list[dict[str, str]]:
+    schema_json = "{}"
+    if hasattr(schema, "model_json_schema"):
+        schema_json = json.dumps(schema.model_json_schema(), ensure_ascii=False)
+    return [
+        {
+            "role": "system",
+            "content": (
+                "Return only valid JSON. Do not wrap it in markdown. "
+                "The JSON must match this schema:\n"
+                f"{schema_json}"
+            ),
+        },
+        *messages,
+    ]
 
 
 def _endpoint_supports_json_schema(base_url: str | None) -> bool:

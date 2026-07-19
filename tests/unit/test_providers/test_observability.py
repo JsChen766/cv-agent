@@ -6,10 +6,12 @@ import time
 from types import ModuleType
 from typing import Any
 
+import pytest
 from langchain_core.messages import AIMessage
 from pydantic import BaseModel
 
 from app.core.observability import TraceRecorder
+from app.providers.anthropic_format import AnthropicFormatProvider
 from app.providers.local_embedding import LocalEmbeddingProvider
 from app.providers.openai_format import (
     OpenAIFormatProvider,
@@ -86,6 +88,54 @@ class FakeMalformedBound:
         return FakeMalformedStructuredInvocation(self.calls)
 
 
+class FakeSlowInvocation:
+    async def ainvoke(self, messages: list[Any]) -> dict[str, object]:
+        await asyncio.sleep(1.0)
+        return {"parsed": StructuredResult(value=7), "raw": None, "parsing_error": None}
+
+
+class FakeSlowBound:
+    def bind(self, **kwargs: Any) -> FakeSlowBound:
+        return self
+
+    def with_structured_output(
+        self, schema: type, *, method: str, include_raw: bool = False
+    ) -> FakeSlowInvocation:
+        return FakeSlowInvocation()
+
+
+class FakeAnthropicInvocation:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def ainvoke(self, messages: list[Any]) -> dict[str, object]:
+        self.calls += 1
+        if self.calls == 1:
+            return {"parsed": None, "raw": None, "parsing_error": None}
+        raw = AIMessage(
+            content='{"value": 7}',
+            usage_metadata={"input_tokens": 8, "output_tokens": 4, "total_tokens": 12},
+        )
+        return {
+            "parsed": StructuredResult(value=7),
+            "raw": raw,
+            "parsing_error": None,
+        }
+
+
+class FakeAnthropicBound:
+    def __init__(self) -> None:
+        self.invocation = FakeAnthropicInvocation()
+
+    def bind(self, **kwargs: Any) -> FakeAnthropicBound:
+        return self
+
+    def with_structured_output(
+        self, schema: type, *, include_raw: bool = False
+    ) -> FakeAnthropicInvocation:
+        return self.invocation
+
+
 def _recorder() -> TraceRecorder:
     return TraceRecorder(
         run_id="rgrun-provider",
@@ -142,6 +192,96 @@ async def test_structured_protocol_success_is_cached_for_later_calls() -> None:
     assert calls[1]["protocol_attempt_count"] == 1
     assert calls[1]["physical_request_count"] == 1
     assert calls[1]["protocol"] == "json_schema"
+
+
+async def test_bounded_structured_call_shares_two_physical_attempts_across_protocols() -> None:
+    provider = OpenAIFormatProvider.__new__(OpenAIFormatProvider)
+    provider._model = "fake-model"
+    provider._llm = FakeBound()
+    provider._structured_protocol = None
+    provider._json_schema_supported = True
+
+    first = await provider.chat_structured_bounded(
+        [{"role": "system", "content": "Return JSON."}],
+        StructuredResult,
+        deadline_seconds=1.0,
+        max_attempts=2,
+    )
+    second = await provider.chat_structured_bounded(
+        [{"role": "system", "content": "Return JSON."}],
+        StructuredResult,
+        deadline_seconds=1.0,
+        max_attempts=2,
+    )
+
+    assert first.value == second.value == StructuredResult(value=7)
+    assert first.attempts == 2
+    assert first.protocol == "json_schema"
+    assert second.attempts == 1
+    assert provider._llm.calls == ["json_mode", "json_schema", "json_schema"]
+
+
+async def test_bounded_structured_call_never_exceeds_configured_physical_budget() -> None:
+    provider = OpenAIFormatProvider.__new__(OpenAIFormatProvider)
+    provider._model = "fake-model"
+    provider._llm = FakeBound()
+    provider._structured_protocol = None
+    provider._json_schema_supported = True
+
+    with pytest.raises(Exception, match="physical request budget") as captured:
+        await provider.chat_structured_bounded(
+            [{"role": "system", "content": "Return JSON."}],
+            StructuredResult,
+            deadline_seconds=1.0,
+            max_attempts=1,
+        )
+
+    assert provider._llm.calls == ["json_mode"]
+    assert captured.value.protocol == "json_mode"
+
+
+async def test_bounded_structured_call_enforces_one_total_deadline() -> None:
+    provider = OpenAIFormatProvider.__new__(OpenAIFormatProvider)
+    provider._model = "fake-model"
+    provider._llm = FakeSlowBound()
+    provider._structured_protocol = "json_mode"
+    provider._json_schema_supported = True
+
+    started = time.perf_counter()
+    with pytest.raises(Exception, match="shared deadline") as captured:
+        await provider.chat_structured_bounded(
+            [{"role": "system", "content": "Return JSON."}],
+            StructuredResult,
+            deadline_seconds=0.01,
+            max_attempts=2,
+        )
+
+    assert time.perf_counter() - started < 0.2
+    assert captured.value.attempts == 1
+
+
+async def test_anthropic_bounded_call_retries_empty_parse_and_records_attempts() -> None:
+    provider = AnthropicFormatProvider.__new__(AnthropicFormatProvider)
+    provider._model = "fake-model"
+    provider._llm = FakeAnthropicBound()
+    recorder = _recorder()
+
+    with recorder.activate(node="draft_generation"):
+        result = await provider.chat_structured_bounded(
+            [{"role": "system", "content": "Return JSON."}],
+            StructuredResult,
+            deadline_seconds=1.0,
+            max_attempts=2,
+        )
+
+    assert result.value == StructuredResult(value=7)
+    assert result.attempts == 2
+    calls = recorder.metrics()["llm_calls"]
+    assert len(calls) == 1
+    assert calls[0]["physical_request_count"] == 2
+    assert calls[0]["protocol_attempt_count"] == 2
+    assert calls[0]["input_tokens"] == 8
+    assert calls[0]["output_tokens"] == 4
 
 
 async def test_structured_invalid_json_is_repaired_without_protocol_fallback() -> None:

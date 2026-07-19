@@ -398,7 +398,15 @@ class ResumePlanService:
         requirement_weights: dict[str, float],
         line_height_mm: float,
     ) -> tuple[list[_BeamState], int]:
-        best_by_bucket: dict[tuple[int, bool, bool, int], _BeamState] = {}
+        best_by_bucket: dict[
+            tuple[
+                int,
+                frozenset[str],
+                frozenset[str],
+                frozenset[str],
+            ],
+            _BeamState,
+        ] = {}
         sort_keys: dict[_BeamState, tuple[float, float, tuple[str, ...]]] = {}
         for state in states:
             height_bucket = int(
@@ -407,9 +415,9 @@ class ResumePlanService:
             )
             key = (
                 height_bucket,
-                "work" in state.section_keys,
-                "project" in state.section_keys,
-                len(state.covered_requirement_ids),
+                state.experience_ids,
+                state.covered_requirement_ids,
+                state.normalized_sources,
             )
             state_sort_key = self._state_sort_key(
                 state,

@@ -4,6 +4,7 @@ Anthropic-format provider (Claude models).
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncIterator, Sequence
 from typing import Any, cast
 
@@ -15,6 +16,8 @@ from app.core.errors import ExternalServiceError
 from app.core.observability import observation_span, sanitize_attributes
 from app.providers.base import (
     ChatResult,
+    StructuredCallBudgetError,
+    StructuredCallResult,
     TokenCallback,
     ToolCall,
     ToolDefinition,
@@ -68,6 +71,7 @@ class AnthropicFormatProvider:
             llm = llm.bind(max_tokens=max_tokens)
 
         if stream:
+
             async def _stream() -> AsyncIterator[str]:
                 try:
                     with observation_span(
@@ -81,9 +85,8 @@ class AnthropicFormatProvider:
                                 yield part
                         _update_anthropic_span(span, RetryStats(attempts=1), None)
                 except Exception as exc:
-                    raise ExternalServiceError(
-                        f"Anthropic streaming call failed: {exc}"
-                    ) from exc
+                    raise ExternalServiceError(f"Anthropic streaming call failed: {exc}") from exc
+
             return _stream()
 
         stats = RetryStats()
@@ -111,7 +114,8 @@ class AnthropicFormatProvider:
         from langchain_core.messages import HumanMessage, SystemMessage
 
         lc_msgs = [
-            SystemMessage(content=m["content"]) if m["role"] == "system"
+            SystemMessage(content=m["content"])
+            if m["role"] == "system"
             else HumanMessage(content=m["content"])
             for m in messages
         ]
@@ -142,9 +146,97 @@ class AnthropicFormatProvider:
         except Exception as e:
             raise ExternalServiceError(f"Anthropic structured call failed: {e}") from e
 
+    async def chat_structured_bounded(
+        self,
+        messages: list[dict[str, str]],
+        schema: type,
+        *,
+        temperature: float = 0.2,
+        deadline_seconds: float,
+        max_attempts: int,
+    ) -> StructuredCallResult:
+        """Anthropic structured generation under one shared attempt/deadline budget."""
+        from langchain_core.messages import HumanMessage, SystemMessage
+
+        lc_messages = [
+            SystemMessage(content=value["content"])
+            if value["role"] == "system"
+            else HumanMessage(content=value["content"])
+            for value in messages
+        ]
+        bound = self._llm.bind(temperature=temperature)
+        try:
+            structured_llm = bound.with_structured_output(schema, include_raw=True)
+        except TypeError:
+            structured_llm = bound.with_structured_output(schema)
+        attempts = 0
+        first_error: Exception | None = None
+        with observation_span(
+            "llm_calls",
+            "chat_structured_bounded",
+            attributes={
+                **_anthropic_attributes(self, mode="structured_bounded"),
+                "schema_name": getattr(schema, "__name__", str(schema)),
+                "protocol": "anthropic_tool_schema",
+                "max_physical_attempts": max_attempts,
+                "deadline_seconds": deadline_seconds,
+            },
+        ) as span:
+            try:
+                async with asyncio.timeout(deadline_seconds):
+                    while attempts < max_attempts:
+                        attempts += 1
+                        try:
+                            result = await structured_llm.ainvoke(lc_messages)
+                            parsed, raw = _unwrap_anthropic_structured(result)
+                        except asyncio.CancelledError:
+                            raise
+                        except Exception as exc:
+                            first_error = first_error or exc
+                            continue
+                        _update_anthropic_span(
+                            span,
+                            RetryStats(attempts=attempts, retries=max(0, attempts - 1)),
+                            raw,
+                            protocol_attempt_count=attempts,
+                        )
+                        return StructuredCallResult(
+                            value=parsed,
+                            attempts=attempts,
+                            protocol="anthropic_tool_schema",
+                        )
+            except TimeoutError as exc:
+                _update_anthropic_span(
+                    span,
+                    RetryStats(attempts=attempts, retries=max(0, attempts - 1)),
+                    None,
+                    protocol_attempt_count=attempts,
+                )
+                raise StructuredCallBudgetError(
+                    "Anthropic structured call exceeded its shared deadline.",
+                    attempts=attempts,
+                    protocol="anthropic_tool_schema",
+                    error_category="TimeoutError",
+                ) from exc
+            _update_anthropic_span(
+                span,
+                RetryStats(attempts=attempts, retries=max(0, attempts - 1)),
+                None,
+                protocol_attempt_count=attempts,
+            )
+            raise StructuredCallBudgetError(
+                "Anthropic structured call exhausted its physical request budget.",
+                attempts=attempts,
+                protocol="anthropic_tool_schema",
+                error_category=(
+                    first_error.__class__.__name__ if first_error is not None else "UnknownError"
+                ),
+            ) from first_error
+
     async def embed(self, texts: list[str]) -> list[list[float]]:
         # Anthropic doesn't provide embeddings; use OpenAI format as fallback
         from app.providers.openai_format import OpenAIFormatProvider
+
         fallback = OpenAIFormatProvider()
         return await fallback.embed(texts)
 
@@ -216,17 +308,13 @@ class AnthropicFormatProvider:
                     message = chunk if message is None else message + chunk
                 _update_anthropic_span(span, RetryStats(attempts=1), message)
                 return (
-                    _chat_result_from_ai_message(message)
-                    if message is not None
-                    else ChatResult()
+                    _chat_result_from_ai_message(message) if message is not None else ChatResult()
                 )
         except Exception as e:
             raise ExternalServiceError(f"Anthropic tool streaming call failed: {e}") from e
 
 
-def _anthropic_attributes(
-    provider: AnthropicFormatProvider, *, mode: str
-) -> dict[str, object]:
+def _anthropic_attributes(provider: AnthropicFormatProvider, *, mode: str) -> dict[str, object]:
     return {
         "provider": "anthropic_format",
         "model": getattr(provider, "_model", "unknown"),
@@ -269,7 +357,10 @@ def _unwrap_anthropic_structured(result: Any) -> tuple[Any, Any | None]:
         parsing_error = result.get("parsing_error")
         if parsing_error is not None:
             raise parsing_error
-        return result.get("parsed"), result.get("raw")
+        parsed = result.get("parsed")
+        if parsed is None:
+            raise ValueError("Structured LLM response did not contain a parsed value")
+        return parsed, result.get("raw")
     return result, getattr(result, "raw", None)
 
 
