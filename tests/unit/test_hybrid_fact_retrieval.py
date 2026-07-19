@@ -112,6 +112,7 @@ async def test_hybrid_service_caches_requirements_and_projects_fact_ids() -> Non
     assert embedder.calls == 1
     assert repository.saved == 1
     assert first.retrieval_result.selected_fact_ids == ("fact-1",)
+    assert first.retrieval_result.experiences[0].experience_id == "exp-1"
     assert second.retrieval_result.diagnostics.requirement_embedding_cache_hits == 1
     assert first.experiences[0].claims[0].fact_id == "fact-1"
     assert first.evidence_pack.matches[0].matched_claims[0].experience_id == "exp-1"
@@ -149,3 +150,22 @@ async def test_pending_revision_uses_deterministic_fallback_with_diagnostics() -
         "Built Python APIs",
         "Reduced latency 30%",
     }
+
+
+async def test_empty_requirements_load_full_factbank_without_embedding_call() -> None:
+    repository = _Repository([_ready_bundle()])
+    embedder = _Embedder()
+    service = HybridFactRetrievalService(
+        repository,
+        embedder,
+        embedding_model="test-model",
+        max_candidates=10,
+        semantic_match_threshold=0.45,
+    )
+
+    result = await service.retrieve("user-1", [])
+
+    assert embedder.calls == 0
+    assert result.retrieval_result.diagnostics.total_facts == 1
+    assert result.retrieval_result.experiences[0].experience_id == "exp-1"
+    assert result.evidence_pack.total_requirements == 0

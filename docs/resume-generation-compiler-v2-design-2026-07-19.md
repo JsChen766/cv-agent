@@ -464,6 +464,41 @@ global_supported_height < minimum_required_height
 
 不能只检查当前已选中的两三条经历，因为选择结果本身可能有误。
 
+### 7.4.1 阶段 D 实施完成记录（2026-07-19）
+
+**状态：已完成。** 本次实施已将 `resume_content_gap` 从“生成和排版欠填后直接询问用户”改为“先证明完整 FactBank 的最大可支持高度确实不足”，并在阶段 C 全库事实检索之后、旧经历选择器之前增加确定性充足度门禁。
+
+已完成内容：
+
+1. 在 `app/domain/resume/sufficiency/` 建立纯领域充足度切片，包含 `MaterialSufficiencyReport`、固定高度明细、逐事实高度估算、资格/淘汰原因和版本化 `MaterialSufficiencyService`；该模块不依赖 FastAPI、LangGraph、数据库、具体 Provider 或 infra；
+2. 阶段 C 的 `HybridRetrievalResult` 新增完整 `RetrievalExperience` 元数据。阶段 D 遍历 `fact_retrieval_result.facts` 中的全部 facts，包括超过候选上限、`selected=false` 和此前会被经历级 Top-K 丢弃的事实，不使用 `selected_fact_ids` 作为充足度边界；
+3. 合格事实使用显式规则判定：命中 requirement、达到事实相关度阈值，或在语义和词法信号均不可用时达到证据强度阈值；空来源、教育 facts、缺失经历元数据和规范化重复事实会被排除，并为每个事实保留资格或淘汰原因；
+4. 高度估算复用现有 `ResumeLayoutService`、真实字体 checksum 和版本化 layout profile，确定性测量联系方式、全部教育经历、技能、分节标题、经历标题/日期/角色和固定间距；每个合格事实按真实 bullet 宽度测量行数，并以最多 3 行的忠实内容上限计入支持高度；
+5. 判定严格使用 `minimum_required_height = page_available_height × 0.85` 和 `global_supported_height = fixed_height + narrative_overhead + qualified_fact_height`。报告同时输出最低目标、固定高度分解、事实高度、全库最大支持高度、使用率、缺失毫米数、近似缺失行数、requirement 覆盖和全部 fact estimates；
+6. Resume Graph 新增 `material_sufficiency` 节点和条件分支，主路径调整为 `context_assembly → material_sufficiency → experience_selection`；只有报告为 `insufficient` 时才会在任何写作调用之前进入 `content_gap`；
+7. 对无 JD 场景也会额外读取完整 FactBank 并使用证据强度安全降级完成充足度判断，但继续保留原有最近经历作为写作兼容上下文；空 requirements 不调用 embedding Provider；
+8. 后置排版如果欠填、但全库报告显示素材足够，会产生 `sufficiency_invariant_violation` 并阻止补充询问；如果完整 FactBank 或布局测量不可用，也会显式失败并记录 `material_sufficiency_unavailable`，不会绕过门禁静默询问用户；
+9. 真正不足时，`resume_content_gap` 使用全库估算的 supported usage、缺失高度和缺失行数，并优先针对未覆盖 must-have requirements 生成定向问题；同一个 run 只允许一次正式补充交互，表单字段校验可以在该交互内重试；
+10. 用户补充后创建新 experience revision，并清空旧事实检索、EvidencePack、充足度报告、经历选择、匹配计划、内容预算和候选池；Graph 返回 `context_assembly`，使用新 revision 的 ready FactBank 或确定性 fallback 重新执行全库检索和充足度判断，禁止从补充前的派生快照继续生成；
+11. 新增 `scripts/benchmark_material_sufficiency.py`，使用真实字体测量完整执行阶段 D 算法；本阶段不新增数据库表或迁移，报告由 LangGraph state 保存，后续异步 Resume Run 持久化属于阶段 P4；
+12. 阶段边界保持不变：阶段 D 只证明素材是否足够并控制补充权限，不提前实现阶段 E 的统一 `ResumePlan`、阶段 F 的批量写作或阶段 G 的最终版面组合优化。
+
+新增主要配置：
+
+- `resume_material_sufficiency_enabled`，默认开启；
+- `resume_material_min_fact_score`，默认 `0.15`；
+- `resume_material_min_fact_strength`，默认 `0.25`；
+- `resume_material_max_fact_lines`，默认 `3`。
+
+实测与验证结果：
+
+- 阶段 D 新增领域与 Graph 测试覆盖：全库足够但仅两个 facts 被选中时禁止补充、真正不足时精确输出高度缺口、重复事实不重复计高、联系方式/教育/技能固定高度、相关度全零时的证据强度降级、后置欠填保护、单次定向追问和补充后全量失效重算；
+- 阶段 A/B/C/D 领域、RAG、Graph、上下文和架构边界定向回归为 `66 passed, 3 skipped`；3 个 skip 仅因为常规本地命令未设置 `TEST_DATABASE_URL`；
+- 在隔离的 `pgvector/pgvector:pg16` PostgreSQL 容器中完成 `0001 → 0020` 全量迁移，FactBank、RequirementMap 和事实检索集成测试 `3 passed`；事实检索端到端用例继续执行到阶段 D，验证 PostgreSQL FactRecord、Requirement embedding、混合检索和不足报告能够串联完成；测试容器完成后已停止并自动删除；
+- 真实字体冷测量基准：`250 facts × 30 experiences`，5 次中位数 `179.48 ms`、最大 `181.51 ms`，满足充足度判断 `< 200ms` 的典型规模预算；压力规模 `1000 facts × 80 experiences`，3 次中位数 `639.30 ms`、最大 `644.34 ms`；
+- 阶段 D 变更文件 Ruff 检查通过；新增生产代码和相关模块 mypy strict 检查通过。`app/graphs/resume/nodes.py` 全文件仍只命中阶段 C 已记录的既有 `LLMProvider.chat_json` 类型声明问题，与阶段 D 代码无关；
+- 仓库全量测试在临时 PostgreSQL 集成库开启时结果为 `437 passed, 54 failed`。54 个失败数量和类别与阶段 C 记录的既有基线完全一致，仍集中在未连接应用数据库时的 API 鉴权顺序、既有字体/模板契约、局部修复和生成排序预期；阶段 D 没有新增失败类别。
+
 ### 7.5 阶段 E：生成统一 ResumePlan
 
 使用带高度约束的有界 beam search 或多目标 knapsack 选择事实和经历。

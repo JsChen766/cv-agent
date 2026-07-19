@@ -38,6 +38,9 @@ from app.domain.resume.observability_models import BrowserLayoutObservationInput
 from app.domain.resume.render import render_structured_to_markdown
 from app.domain.resume.repair_models import BulletRepairBatch
 from app.domain.resume.repair_service import ResumeBulletRepairService
+from app.domain.resume.retrieval.models import HybridRetrievalResult
+from app.domain.resume.sufficiency.models import MaterialSufficiencyReport
+from app.domain.resume.sufficiency.service import MaterialSufficiencyService
 from app.graphs.resume.state import ResumeGenerationState
 from app.graphs.runtime import pool_from_config, services_from_config
 from app.graphs.streaming import (
@@ -98,6 +101,73 @@ async def context_assembly_node(
         }
 
 
+# ── 1.25. Full-FactBank material sufficiency ─────────────────────────────────
+
+
+async def material_sufficiency_node(
+    state: ResumeGenerationState, config: RunnableConfig | None = None
+) -> dict[str, object]:
+    """Prove whether the complete FactBank can support the minimum page height."""
+    if not settings.resume_material_sufficiency_enabled:
+        return {"material_sufficiency_status": "disabled"}
+    raw_retrieval = state.get("fact_retrieval_result")
+    services = services_from_config(config)
+    layout = services.resume_layout if services is not None else None
+    if not isinstance(raw_retrieval, dict) or layout is None:
+        logger.warning(
+            "Material sufficiency unavailable: retrieval=%s layout=%s",
+            isinstance(raw_retrieval, dict),
+            layout is not None,
+        )
+        return {"material_sufficiency_status": "unavailable"}
+
+    writer = get_optional_stream_writer()
+    if writer is not None:
+        emit_thinking(writer, "正在核算完整经历库可支持的简历高度…")
+    retrieval = HybridRetrievalResult.model_validate(raw_retrieval)
+    profile = state.get("user_profile") or {}
+    language = _normalize_resume_language(profile.get("preferred_language")) or "zh-CN"
+    constraint = _layout_constraint_from_state(state)
+    started_at = time.perf_counter()
+    report = MaterialSufficiencyService(
+        layout,
+        minimum_fact_score=settings.resume_material_min_fact_score,
+        minimum_fact_strength=settings.resume_material_min_fact_strength,
+        maximum_fact_lines=settings.resume_material_max_fact_lines,
+    ).assess(
+        retrieval,
+        user_profile=profile,
+        minimum_usage_ratio=constraint.minimum_page_usage_ratio,
+        language=language,
+    )
+    logger.info(
+        "Material sufficiency completed",
+        extra={
+            "status": report.status,
+            "total_experiences": report.total_experiences,
+            "total_facts": report.total_facts,
+            "qualified_facts": report.qualified_facts,
+            "global_supported_height_mm": report.global_supported_height_mm,
+            "minimum_required_height_mm": report.minimum_required_height_mm,
+            "missing_height_mm": report.missing_height_mm,
+            "duration_ms": round((time.perf_counter() - started_at) * 1000, 2),
+        },
+    )
+    return {
+        "material_sufficiency_report": report.model_dump(mode="json"),
+        "material_sufficiency_status": report.status,
+        "layout_constraint": constraint.model_dump(mode="json"),
+    }
+
+
+def material_sufficiency_route(state: ResumeGenerationState) -> str:
+    return (
+        "content_gap"
+        if state.get("material_sufficiency_status") == "insufficient"
+        else "experience_selection"
+    )
+
+
 # ── 1.5. Experience Selection ────────────────────────────────────────────────
 
 
@@ -123,10 +193,7 @@ async def experience_selection_node(
     )
 
     selected_ids = {s.experience_id for s in result.selected}
-    selected_experiences = [
-        exp for exp in experiences
-        if str(exp.get("id") or "") in selected_ids
-    ]
+    selected_experiences = [exp for exp in experiences if str(exp.get("id") or "") in selected_ids]
 
     return {
         "selected_experiences": selected_experiences,
@@ -154,7 +221,11 @@ class MatchingPlan(BaseModel):
 
 async def cot_planning_node(state: ResumeGenerationState) -> dict[str, object]:
     """Build a deterministic JD/evidence content budget without an LLM call."""
-    experiences = state.get("selected_experiences") or state.get("relevant_experiences") or state.get("assembled_experiences", [])
+    experiences = (
+        state.get("selected_experiences")
+        or state.get("relevant_experiences")
+        or state.get("assembled_experiences", [])
+    )
     writer = get_optional_stream_writer()
     if writer is not None:
         emit_thinking(writer, "正在计算岗位匹配度与一页简历内容预算…")
@@ -543,9 +614,7 @@ async def draft_generation_node(state: ResumeGenerationState) -> dict[str, objec
                 evidence_pack=evidence_pack,
                 language=preferred_lang,
                 fallback_contact=profile_contact,
-                revision_instruction=(
-                    str(revision_instruction) if revision_instruction else None
-                ),
+                revision_instruction=(str(revision_instruction) if revision_instruction else None),
             )
         except Exception:
             logger.exception("Parallel experience generation failed; falling back to whole resume")
@@ -560,7 +629,11 @@ async def draft_generation_node(state: ResumeGenerationState) -> dict[str, objec
             _LlmResumeStructure,
             temperature=0.2,
         )
-    logger.info("draft_generation_node LLM phase: %.1fs (strategy=%s)", time.time() - _draft_start, draft_strategy)
+    logger.info(
+        "draft_generation_node LLM phase: %.1fs (strategy=%s)",
+        time.time() - _draft_start,
+        draft_strategy,
+    )
     llm_structure = llm_structure.model_copy(update={"language": preferred_lang})
     previous_structured = state.get("previous_structured")
     structured = _assign_structure_ids(
@@ -799,9 +872,7 @@ async def layout_measure_node(
     fit_status = "fit"
     if not optimized.fits_target_band:
         fit_status = (
-            "underfilled"
-            if usage < active_constraint.minimum_page_usage_ratio
-            else "overfilled"
+            "underfilled" if usage < active_constraint.minimum_page_usage_ratio else "overfilled"
         )
     return {
         "variants": updated_variants,
@@ -979,9 +1050,7 @@ def _local_repair_targets(
         str(experience.get("id")): experience for experience in experiences if experience.get("id")
     }
     raw_budget_experiences = content_budget.get("experiences")
-    budget_experiences = (
-        raw_budget_experiences if isinstance(raw_budget_experiences, list) else []
-    )
+    budget_experiences = raw_budget_experiences if isinstance(raw_budget_experiences, list) else []
     budget_facts = {
         str(experience.get("experience_id")): experience.get("facts") or []
         for experience in budget_experiences
@@ -1928,9 +1997,7 @@ async def persist_resume_draft_node(
                     {
                         "jd_id": jd_id,
                         "title": (
-                            title
-                            if isinstance(title, str) and title
-                            else "AI Generated Variant"
+                            title if isinstance(title, str) and title else "AI Generated Variant"
                         ),
                         "content": content if isinstance(content, str) else "",
                         "structured": structured if isinstance(structured, dict) else None,
@@ -2047,9 +2114,7 @@ async def browser_layout_gate_node(
 
     interrupt_id = str(uuid.uuid4())
     surface = (
-        "application_package"
-        if state.get("target_subgraph") == "application_package"
-        else "review"
+        "application_package" if state.get("target_subgraph") == "application_package" else "review"
     )
     payload = {
         "interrupt_id": interrupt_id,
@@ -2104,9 +2169,7 @@ async def browser_layout_gate_node(
             "browser_verification_status": "failed",
         }
     if observation.run_id is None and state.get("observability_run_id"):
-        observation = observation.model_copy(
-            update={"run_id": state.get("observability_run_id")}
-        )
+        observation = observation.model_copy(update={"run_id": state.get("observability_run_id")})
 
     verification = await services.resume_observability.verify_layout_observation(
         user_id=state.get("user_id", ""),
@@ -2142,10 +2205,8 @@ async def browser_layout_gate_node(
         )
         can_repair = (
             repaired_report is not None
-            and state.get("layout_revision_iteration", 0)
-            < settings.max_layout_revision_iterations
-            and state.get("local_repair_call_count", 0)
-            < settings.max_resume_local_repair_calls
+            and state.get("layout_revision_iteration", 0) < settings.max_layout_revision_iterations
+            and state.get("local_repair_call_count", 0) < settings.max_resume_local_repair_calls
         )
         if can_repair:
             await services.resume.set_variant_quality(
@@ -2194,9 +2255,7 @@ def _browser_repair_report(
             fit.model_copy(
                 update={
                     "line_count": metric.line_count,
-                    "last_line_ratio": (
-                        metric.last_line_width_px / metric.available_line_width_px
-                    ),
+                    "last_line_ratio": (metric.last_line_width_px / metric.available_line_width_px),
                     "status": "too_short",
                     "recommendation": "rephrase",
                 }
@@ -2205,9 +2264,7 @@ def _browser_repair_report(
     if found != failed_bullet_ids:
         return None
     retained = [
-        violation
-        for violation in report.violations
-        if violation.bullet_id not in failed_bullet_ids
+        violation for violation in report.violations if violation.bullet_id not in failed_bullet_ids
     ]
     retained.extend(
         LayoutViolation(
@@ -2256,37 +2313,104 @@ async def output_failure_node(state: ResumeGenerationState) -> dict[str, object]
 async def content_gap_node(
     state: ResumeGenerationState, config: RunnableConfig | None = None
 ) -> dict[str, object]:
-    """Ask for grounded source detail when no 80%-95% candidate can be assembled."""
+    """Ask once for grounded detail only after the complete FactBank is proven insufficient."""
     from langgraph.types import interrupt
 
-    report_raw = state.get("layout_report") or {}
-    report = LayoutReport.model_validate(report_raw)
+    sufficiency_raw = state.get("material_sufficiency_report")
+    sufficiency = (
+        MaterialSufficiencyReport.model_validate(sufficiency_raw)
+        if isinstance(sufficiency_raw, dict)
+        else None
+    )
+    if (
+        settings.resume_material_sufficiency_enabled
+        and state.get("material_sufficiency_status") == "unavailable"
+    ):
+        return {
+            "assistant_message": "无法核验完整经历库的素材充足度，已阻止未经证明的补充请求。",
+            "quality_status": "failed",
+            "quality_issues": [
+                {
+                    "code": "material_sufficiency_unavailable",
+                    "message": "The complete FactBank sufficiency gate could not be evaluated.",
+                }
+            ],
+            "resume_user_action": "failed",
+            "interrupt_payload": None,
+        }
+    if sufficiency is not None and sufficiency.status == "sufficient":
+        logger.error(
+            "Blocked resume_content_gap because the complete FactBank is sufficient",
+            extra={
+                "global_supported_height_mm": sufficiency.global_supported_height_mm,
+                "minimum_required_height_mm": sufficiency.minimum_required_height_mm,
+            },
+        )
+        return {
+            "assistant_message": (
+                "完整经历库素材充足，但当前生成结果仍然欠填；已阻止错误的经历补充请求。"
+            ),
+            "quality_status": "failed",
+            "quality_issues": [
+                {
+                    "code": "sufficiency_invariant_violation",
+                    "message": (
+                        "Layout is underfilled while unused qualified FactBank material remains."
+                    ),
+                }
+            ],
+            "resume_user_action": "failed",
+            "interrupt_payload": None,
+        }
+
     constraint = LayoutConstraint.model_validate(
         state.get("layout_constraint") or LayoutConstraint().model_dump()
     )
-    usage = report.pages[0].usage_ratio if report.pages else 0.0
-    if (
-        report.page_count == 1
-        and constraint.minimum_page_usage_ratio <= usage <= constraint.maximum_page_usage_ratio
-    ):
-        logger.warning(
-            "Bypassing stale resume content-gap route for in-band layout usage %.1f%%",
-            usage * 100,
+    if sufficiency is not None:
+        usage = sufficiency.supported_usage_ratio
+        missing_mm = sufficiency.missing_height_mm
+        missing_lines = sufficiency.approximate_missing_lines
+    else:
+        report_raw = state.get("layout_report") or {}
+        report = LayoutReport.model_validate(report_raw)
+        usage = report.pages[0].usage_ratio if report.pages else 0.0
+        if (
+            report.page_count == 1
+            and constraint.minimum_page_usage_ratio <= usage <= constraint.maximum_page_usage_ratio
+        ):
+            logger.warning(
+                "Bypassing stale resume content-gap route for in-band layout usage %.1f%%",
+                usage * 100,
+            )
+            return {
+                "resume_user_action": "continue",
+                "interrupt_payload": None,
+            }
+        missing_mm = max(
+            0.0,
+            report.page_available_height_mm * constraint.minimum_page_usage_ratio
+            - (report.pages[0].used_height_mm if report.pages else 0.0),
         )
+        template = get_resume_template(state.get("layout_template_id"))
+        missing_lines = max(
+            0,
+            math.ceil(missing_mm / template.profile.body.line_height_mm),
+        )
+
+    if state.get("content_gap_interaction_count", 0) >= 1:
         return {
-            "resume_user_action": "continue",
+            "assistant_message": "补充内容重新评估后仍不足，本次生成不再重复请求补充。",
+            "quality_status": "failed",
+            "quality_issues": [
+                {
+                    "code": "material_still_insufficient_after_supplement",
+                    "message": "The single directed supplement did not close the material gap.",
+                }
+            ],
+            "resume_user_action": "failed",
             "interrupt_payload": None,
         }
-    missing_mm = max(
-        0.0,
-        report.page_available_height_mm * constraint.minimum_page_usage_ratio
-        - (report.pages[0].used_height_mm if report.pages else 0.0),
-    )
-    template = get_resume_template(state.get("layout_template_id"))
-    missing_lines = max(
-        0,
-        math.ceil(missing_mm / template.profile.body.line_height_mm),
-    )
+
     budgets = [
         value
         for value in (state.get("content_budget") or {}).get("experiences", [])
@@ -2298,16 +2422,55 @@ async def content_gap_node(
         for value in state.get("relevant_experiences") or []
         if isinstance(value, dict) and value.get("id")
     }
+    retrieval_experiences = (state.get("fact_retrieval_result") or {}).get("experiences") or []
+    for value in retrieval_experiences:
+        if not isinstance(value, dict) or not value.get("experience_id"):
+            continue
+        experience_id = str(value["experience_id"])
+        experience_by_id.setdefault(
+            experience_id,
+            {
+                "id": experience_id,
+                "title": value.get("title"),
+                "organization": value.get("organization"),
+                "role": value.get("role"),
+                "category": value.get("category"),
+                "content": value.get("content"),
+            },
+        )
+
+    requirement_by_id = {
+        str(value.get("id")): str(value.get("text") or value.get("id"))
+        for value in state.get("jd_requirements") or []
+        if isinstance(value, dict) and value.get("id")
+    }
+    missing_requirement_ids = list(
+        sufficiency.uncovered_must_have_requirement_ids if sufficiency is not None else ()
+    )
+    targeted_questions = [
+        f"请补充能直接证明“{requirement_by_id.get(value, value)}”的具体经历事实。"
+        for value in missing_requirement_ids[:3]
+    ]
     suggestions: list[dict[str, object]] = []
-    for value in budgets[:3]:
-        experience_id = str(value.get("experience_id") or "")
+    suggestion_sources: list[tuple[str, float]] = [
+        (str(value.get("experience_id") or ""), float(value.get("jd_match_score") or 0.0))
+        for value in budgets
+    ]
+    if not suggestion_sources:
+        suggestion_sources = [
+            (experience_id, 0.0)
+            for experience_id, value in experience_by_id.items()
+            if value.get("category") != "education"
+        ]
+    for experience_id, match_score in suggestion_sources[:3]:
         experience = experience_by_id.get(experience_id, {})
         suggestions.append(
             {
                 "experience_id": experience_id,
                 "title": str(experience.get("title") or experience_id),
-                "jd_match_score": float(value.get("jd_match_score") or 0.0),
-                "questions": [
+                "jd_match_score": match_score,
+                "questions": targeted_questions
+                or [
                     "你具体负责了哪些模块、流程或交付物？",
                     "使用了哪些技术、方法或工具？",
                     "遇到了什么约束或难点，你如何解决？",
@@ -2329,6 +2492,7 @@ async def content_gap_node(
         "target_usage_ratio": constraint.minimum_page_usage_ratio,
         "missing_height_mm": round(missing_mm, 2),
         "approximate_missing_lines": missing_lines,
+        "missing_requirement_ids": missing_requirement_ids,
         "suggestions": suggestions,
         "action_options": [
             {
@@ -2372,9 +2536,14 @@ async def content_gap_node(
                 "interrupt_payload": None,
             }
 
+    source_experiences = [
+        dict(value) for value in state.get("relevant_experiences") or [] if isinstance(value, dict)
+    ]
+    if not any(str(value.get("id")) == experience_id for value in source_experiences):
+        source_experiences.append(dict(experience_by_id[experience_id]))
     updated_experiences: list[dict[str, object]] = []
     combined_content = ""
-    for value in state.get("relevant_experiences") or []:
+    for value in source_experiences:
         experience = dict(value)
         if str(experience.get("id")) == experience_id:
             combined_content = (
@@ -2406,7 +2575,13 @@ async def content_gap_node(
         "experience_selection_result": None,
         "matching_plan": None,
         "content_budget": None,
-        "resume_user_action": "revise",
+        "fact_retrieval_result": None,
+        "material_sufficiency_report": None,
+        "material_sufficiency_status": None,
+        "evidence_pack": None,
+        "resume_context_ready": False,
+        "content_gap_interaction_count": state.get("content_gap_interaction_count", 0) + 1,
+        "resume_user_action": "reload",
         "revision_instruction": "Use the newly supplied grounded experience facts.",
         "layout_revision_iteration": 0,
         "generation_call_count": 0,
@@ -2594,10 +2769,12 @@ def output_route(state: ResumeGenerationState) -> str:
 
 def content_gap_route(state: ResumeGenerationState) -> str:
     action = state.get("resume_user_action")
-    if action == "revise":
-        return "revision"
+    if action == "reload":
+        return "reload"
     if action == "continue":
         return "fact_check"
+    if action == "failed":
+        return "failed"
     return "end"
 
 
@@ -2704,8 +2881,7 @@ async def _generate_resume_by_experience(
 
     if budgeted_ids:
         narrative = [
-            value for value in narrative_candidates
-            if str(value.get("id") or "") in budgeted_ids
+            value for value in narrative_candidates if str(value.get("id") or "") in budgeted_ids
         ][: settings.resume_parallel_max_experiences]
     else:
         narrative = narrative_candidates[: settings.resume_parallel_max_experiences]
@@ -2789,9 +2965,7 @@ async def _generate_resume_by_experience(
             payload["revision_instruction"] = revision_instruction
 
         valid_req_ids = {
-            str(r.get("id") or "")
-            for r in relevant_reqs
-            if isinstance(r, dict) and r.get("id")
+            str(r.get("id") or "") for r in relevant_reqs if isinstance(r, dict) and r.get("id")
         }
 
         messages = [
@@ -2807,19 +2981,27 @@ async def _generate_resume_by_experience(
                 async with semaphore:
                     if _use_fast_path:
                         result = await provider.chat_json(
-                            messages, _LlmExperienceDraft, temperature=0.2,
+                            messages,
+                            _LlmExperienceDraft,
+                            temperature=0.2,
                         )
                     else:
                         result = await provider.chat_structured(
-                            messages, _LlmExperienceDraft, temperature=0.2,
+                            messages,
+                            _LlmExperienceDraft,
+                            temperature=0.2,
                         )
                 break
             except Exception as exc:
                 if attempt < max_attempts - 1:
-                    wait = 5.0 * (2 ** attempt)
+                    wait = 5.0 * (2**attempt)
                     logger.warning(
                         "Experience draft attempt %d/%d failed for %s (%s); retrying in %.0fs",
-                        attempt + 1, max_attempts, source_id, type(exc).__name__, wait,
+                        attempt + 1,
+                        max_attempts,
+                        source_id,
+                        type(exc).__name__,
+                        wait,
                     )
                     await asyncio.sleep(wait)
                 else:
@@ -2834,15 +3016,11 @@ async def _generate_resume_by_experience(
             return grounded_fallback()
         sanitized_bullets: list[_LlmBullet] = []
         for bullet in result.bullets:
-            fact_ids = [
-                value for value in bullet.source_fact_ids if value in allowed_fact_ids
-            ]
+            fact_ids = [value for value in bullet.source_fact_ids if value in allowed_fact_ids]
             if not fact_ids:
                 continue
             requirement_ids = [
-                value
-                for value in bullet.matched_jd_requirement_ids
-                if value in valid_req_ids
+                value for value in bullet.matched_jd_requirement_ids if value in valid_req_ids
             ]
             sanitized_bullets.append(
                 bullet.model_copy(
@@ -2853,9 +3031,18 @@ async def _generate_resume_by_experience(
                 )
             )
         if not sanitized_bullets:
-            logger.info("generate_one %s: %.1fs (fallback - no valid bullets)", source_id, time.time() - _gen_start)
+            logger.info(
+                "generate_one %s: %.1fs (fallback - no valid bullets)",
+                source_id,
+                time.time() - _gen_start,
+            )
             return grounded_fallback()
-        logger.info("generate_one %s: %.1fs (%d bullets)", source_id, time.time() - _gen_start, len(sanitized_bullets))
+        logger.info(
+            "generate_one %s: %.1fs (%d bullets)",
+            source_id,
+            time.time() - _gen_start,
+            len(sanitized_bullets),
+        )
         return _LlmExperienceDraft(
             source_experience_id=source_id,
             bullets=sanitized_bullets,
@@ -2863,7 +3050,9 @@ async def _generate_resume_by_experience(
 
     _gather_start = time.time()
     raw_drafts = await asyncio.gather(*(generate_one(value) for value in narrative))
-    logger.info("All %d experience drafts completed in %.1fs", len(narrative), time.time() - _gather_start)
+    logger.info(
+        "All %d experience drafts completed in %.1fs", len(narrative), time.time() - _gather_start
+    )
     drafts = [_deduplicate_bullets(d) for d in raw_drafts]
     sections: dict[str, list[_LlmSectionItem]] = {
         "education": [],

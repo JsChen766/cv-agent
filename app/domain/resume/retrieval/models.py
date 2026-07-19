@@ -50,6 +50,21 @@ class ExperienceFactBundle(BaseModel):
     facts: tuple[RetrievalFact, ...] = ()
 
 
+class RetrievalExperience(BaseModel):
+    experience_id: str
+    revision_id: str
+    revision_hash: str
+    title: str
+    organization: str | None = None
+    role: str | None = None
+    category: str
+    start_date: date | None = None
+    end_date: date | None = None
+    tags: tuple[str, ...] = ()
+    content: str
+    factbank_status: str
+
+
 class FactScoreBreakdown(BaseModel):
     semantic_similarity: float = Field(ge=0.0, le=1.0)
     lexical_technology_match: float = Field(ge=0.0, le=1.0)
@@ -89,6 +104,7 @@ class RetrievalDiagnostics(BaseModel):
 
 class HybridRetrievalResult(BaseModel):
     requirements: tuple[RetrievalRequirement, ...]
+    experiences: tuple[RetrievalExperience, ...] = ()
     facts: tuple[RankedFact, ...]
     selected_fact_ids: tuple[str, ...]
     diagnostics: RetrievalDiagnostics

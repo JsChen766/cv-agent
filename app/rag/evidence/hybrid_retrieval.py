@@ -17,6 +17,7 @@ from app.domain.resume.retrieval.models import (
     ExperienceFactBundle,
     HybridRetrievalResult,
     RankedFact,
+    RetrievalExperience,
     RetrievalFact,
     RetrievalRequirement,
 )
@@ -85,6 +86,9 @@ class HybridFactRetrievalService:
                 }
             )
             result = result.model_copy(update={"diagnostics": diagnostics})
+        result = result.model_copy(
+            update={"experiences": tuple(_to_retrieval_experience(value) for value in bundles)}
+        )
         if result.diagnostics.warnings:
             logger.warning(
                 "Hybrid fact retrieval degraded",
@@ -230,6 +234,23 @@ def _all_facts_with_fallback(bundles: list[ExperienceFactBundle]) -> list[Retrie
             for value in fallback
         )
     return facts
+
+
+def _to_retrieval_experience(bundle: ExperienceFactBundle) -> RetrievalExperience:
+    return RetrievalExperience(
+        experience_id=bundle.experience_id,
+        revision_id=bundle.revision_id,
+        revision_hash=bundle.revision_hash,
+        title=bundle.title,
+        organization=bundle.organization,
+        role=bundle.role,
+        category=bundle.category,
+        start_date=bundle.start_date,
+        end_date=bundle.end_date,
+        tags=bundle.tags,
+        content=bundle.content,
+        factbank_status=bundle.factbank_status,
+    )
 
 
 def _semantic_scores(

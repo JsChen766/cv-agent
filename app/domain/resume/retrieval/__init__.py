@@ -4,6 +4,7 @@ from app.domain.resume.retrieval.models import (
     HybridRetrievalResult,
     RankedFact,
     RetrievalDiagnostics,
+    RetrievalExperience,
     RetrievalFact,
     RetrievalRequirement,
 )
@@ -16,6 +17,7 @@ __all__ = [
     "RANKING_VERSION",
     "RankedFact",
     "RetrievalDiagnostics",
+    "RetrievalExperience",
     "RetrievalFact",
     "RetrievalRequirement",
     "rank_facts",

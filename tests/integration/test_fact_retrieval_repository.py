@@ -11,9 +11,12 @@ import pytest
 from app.domain.jd.models import JdRequirement
 from app.domain.resume.factbank.models import FactDraft
 from app.domain.resume.factbank.service import build_fact_records, compute_revision_hash
+from app.domain.resume.layout_service import ResumeLayoutService
+from app.domain.resume.sufficiency.service import MaterialSufficiencyService
 from app.infra.db.repositories.experience_repo import PostgresExperienceRepository
 from app.infra.db.repositories.fact_retrieval_repo import PostgresFactRetrievalRepository
 from app.infra.db.repositories.factbank_repo import PostgresFactBankRepository
+from app.infra.layout import PillowFontMetrics
 from app.rag.evidence.hybrid_retrieval import build_hybrid_fact_retrieval_service
 
 pytestmark = pytest.mark.skipif(
@@ -164,6 +167,16 @@ async def test_full_current_fact_read_and_requirement_embedding_cache() -> None:
         assert first.retrieval_result.selected_fact_ids == (facts[0].fact_id,)
         assert first.evidence_pack.coverage_ratio == 1.0
         assert second.retrieval_result.diagnostics.requirement_embedding_cache_hits == 1
+
+        sufficiency = MaterialSufficiencyService(ResumeLayoutService(PillowFontMetrics())).assess(
+            first.retrieval_result,
+            user_profile={"full_name": "Integration User", "email": "user@example.com"},
+            minimum_usage_ratio=0.85,
+        )
+        assert sufficiency.total_facts == 1
+        assert sufficiency.qualified_facts == 1
+        assert sufficiency.status == "insufficient"
+        assert sufficiency.missing_height_mm > 0
     finally:
         async with pool.acquire() as conn:
             await conn.execute("DELETE FROM users WHERE id = $1", user_id)

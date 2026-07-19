@@ -20,6 +20,8 @@ from app.graphs.resume.nodes import (
     layout_measure_node,
     layout_revision_node,
     layout_route,
+    material_sufficiency_node,
+    material_sufficiency_route,
     output_failure_node,
     output_node,
     output_route,
@@ -35,6 +37,7 @@ from app.graphs.tracing import traced_node
 
 RESUME_NODE_DEFINITIONS = {
     "context_assembly": context_assembly_node,
+    "material_sufficiency": material_sufficiency_node,
     "experience_selection": experience_selection_node,
     "cot_planning": cot_planning_node,
     "draft_generation": draft_generation_node,
@@ -68,7 +71,15 @@ def build_resume_subgraph() -> StateGraph[ResumeGenerationState]:
     add_traced_resume_nodes(builder)
 
     builder.add_edge(START, "context_assembly")
-    builder.add_edge("context_assembly", "experience_selection")
+    builder.add_edge("context_assembly", "material_sufficiency")
+    builder.add_conditional_edges(
+        "material_sufficiency",
+        material_sufficiency_route,
+        {
+            "experience_selection": "experience_selection",
+            "content_gap": "content_gap",
+        },
+    )
     builder.add_edge("experience_selection", "cot_planning")
     builder.add_edge("cot_planning", "draft_generation")
     builder.add_edge("draft_generation", "layout_measure")
@@ -113,7 +124,12 @@ def build_resume_subgraph() -> StateGraph[ResumeGenerationState]:
     builder.add_conditional_edges(
         "content_gap",
         content_gap_route,
-        {"revision": "experience_selection", "fact_check": "fact_check", "end": END},
+        {
+            "reload": "context_assembly",
+            "fact_check": "fact_check",
+            "failed": "output_failure",
+            "end": END,
+        },
     )
     builder.add_conditional_edges(
         "output",

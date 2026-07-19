@@ -22,6 +22,9 @@ class ResumeGenerationState(MainState, total=False):
     guideline_instructions: list[str]
     evidence_pack: dict[str, Any] | None
     fact_retrieval_result: dict[str, Any] | None
+    material_sufficiency_report: dict[str, Any] | None
+    material_sufficiency_status: str | None
+    content_gap_interaction_count: int
     user_preferences: list[dict[str, Any]]
     user_profile: dict[str, Any] | None
     resume_context_ready: bool

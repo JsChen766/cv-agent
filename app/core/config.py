@@ -56,6 +56,13 @@ class Settings(BaseSettings):
     resume_fact_retrieval_max_candidates: int = Field(default=40, ge=1, le=500)
     resume_fact_semantic_match_threshold: float = Field(default=0.45, ge=0.0, le=1.0)
 
+    # V2 full-FactBank material sufficiency gate. This gate runs before any
+    # resume_content_gap interrupt and never invokes an LLM.
+    resume_material_sufficiency_enabled: bool = True
+    resume_material_min_fact_score: float = Field(default=0.15, ge=0.0, le=1.0)
+    resume_material_min_fact_strength: float = Field(default=0.25, ge=0.0, le=1.0)
+    resume_material_max_fact_lines: int = Field(default=3, ge=1, le=6)
+
     # RAG
     evidence_similarity_threshold: float = 0.65
     preference_dedup_threshold: float = 0.85

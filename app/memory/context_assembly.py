@@ -225,6 +225,23 @@ async def _fetch_experience_context(
             jd_retrieved = await rag.retrieve_recent(user_id, top_k=15)
             evidence_pack = None
             education = await rag.retrieve_by_category(user_id, "education")
+            if (
+                settings.resume_hybrid_fact_retrieval_enabled
+                and settings.resume_material_sufficiency_enabled
+            ):
+                from app.providers.factory import get_embedding_provider
+                from app.rag.evidence.hybrid_retrieval import (
+                    build_hybrid_fact_retrieval_service,
+                )
+
+                full_factbank = await build_hybrid_fact_retrieval_service(
+                    pool,
+                    get_embedding_provider(),
+                    embedding_model=settings.embedding_model,
+                    max_candidates=settings.resume_fact_retrieval_max_candidates,
+                    semantic_match_threshold=settings.resume_fact_semantic_match_threshold,
+                ).retrieve(user_id, [])
+                fact_retrieval_result = full_factbank.retrieval_result.model_dump(mode="json")
 
         merged: dict[str, ExperienceWithClaims] = {}
         for experience in jd_retrieved:
