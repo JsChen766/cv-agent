@@ -9,6 +9,7 @@ Set LLM_BASE_URL to point at a non-OpenAI endpoint.
 from __future__ import annotations
 
 import json
+import logging
 from collections.abc import AsyncIterator, Sequence
 from functools import partial
 from typing import Any, cast
@@ -34,6 +35,8 @@ from app.providers.base import (
 from app.providers.retry import RetryStats, run_with_transport_retries
 from app.providers.tool_schema import to_openai_tool
 
+logger = logging.getLogger(__name__)
+
 
 class OpenAIFormatProvider:
     def __init__(
@@ -52,15 +55,20 @@ class OpenAIFormatProvider:
         # protocol. Remember the last successful mode so subsequent logical calls
         # do not repeat the compatibility ladder. A later failure still falls back
         # through the remaining modes and refreshes the cached capability.
-        self._structured_protocol: str | None = None
         self._json_schema_supported = _endpoint_supports_json_schema(self._base_url)
+        # DeepSeek supports json_object but LangChain's with_structured_output
+        # json_mode path often fails Pydantic validation, wasting a full API round
+        # trip before falling back to json_prompt. Skip straight to json_prompt.
+        self._structured_protocol: str | None = (
+            "json_prompt" if not self._json_schema_supported else None
+        )
 
         self._llm = ChatOpenAI(
             model=self._model,
             api_key=SecretStr(self._api_key) if self._api_key else None,
             base_url=self._base_url,
             streaming=False,
-            timeout=60,
+            timeout=120,
             max_retries=0,
         )
         resolved_embedding_api_key = (
@@ -225,6 +233,10 @@ class OpenAIFormatProvider:
                             )
                     except Exception as exc:
                         first_error = first_error or exc
+                        logger.warning(
+                            "chat_structured protocol %s failed for %s: %s",
+                            method, schema_name, exc,
+                        )
                         protocol_attempts.append(
                             {
                                 "protocol": method,
@@ -310,6 +322,50 @@ class OpenAIFormatProvider:
         )
         return parsed, raw_message, repaired
 
+
+    async def chat_json(
+        self,
+        messages: list[dict[str, str]],
+        schema: type,
+        *,
+        temperature: float = 0.2,
+    ) -> Any:
+        """Lightweight structured output: json_object response_format + manual parse.
+
+        Skips the protocol ladder entirely. The caller is responsible for
+        including output-format instructions in the prompt. Faster than
+        ``chat_structured`` because it makes exactly one HTTP call with
+        server-side JSON enforcement.
+        """
+        stats = RetryStats()
+        try:
+            with observation_span(
+                "llm_calls",
+                "chat_json",
+                attributes={
+                    **_llm_attributes(self, mode="json"),
+                    "schema_name": getattr(schema, "__name__", str(schema)),
+                },
+            ) as span:
+                llm = self._llm.bind(
+                    temperature=temperature,
+                    response_format={"type": "json_object"},
+                )
+                raw_message = await run_with_transport_retries(
+                    lambda: llm.ainvoke(_to_lc_messages(messages)),
+                    max_retries=settings.llm_max_transport_retries,
+                    stats=stats,
+                )
+                parsed, repaired = _parse_structured_text(
+                    text_from_content(raw_message.content),
+                    schema,
+                )
+                _update_span(span, stats=stats, message=raw_message, protocol="json_object")
+                return parsed
+        except ExternalServiceError:
+            raise
+        except Exception as exc:
+            raise ExternalServiceError(f"JSON LLM call failed: {exc}") from exc
 
     @staticmethod
     def _extract_json_object(text: str) -> str:

@@ -15,6 +15,7 @@ from app.graphs.resume.nodes import (
     cot_planning_node,
     coverage_check_node,
     draft_generation_node,
+    experience_selection_node,
     fact_check_node,
     layout_measure_node,
     layout_revision_node,
@@ -34,6 +35,7 @@ from app.graphs.tracing import traced_node
 
 RESUME_NODE_DEFINITIONS = {
     "context_assembly": context_assembly_node,
+    "experience_selection": experience_selection_node,
     "cot_planning": cot_planning_node,
     "draft_generation": draft_generation_node,
     "layout_measure": layout_measure_node,
@@ -66,7 +68,8 @@ def build_resume_subgraph() -> StateGraph[ResumeGenerationState]:
     add_traced_resume_nodes(builder)
 
     builder.add_edge(START, "context_assembly")
-    builder.add_edge("context_assembly", "cot_planning")
+    builder.add_edge("context_assembly", "experience_selection")
+    builder.add_edge("experience_selection", "cot_planning")
     builder.add_edge("cot_planning", "draft_generation")
     builder.add_edge("draft_generation", "layout_measure")
     builder.add_conditional_edges(

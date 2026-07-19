@@ -25,6 +25,10 @@ class ResumeGenerationState(MainState, total=False):
     user_profile: dict[str, Any] | None
     resume_context_ready: bool
 
+    # Experience selection
+    selected_experiences: list[dict[str, Any]]
+    experience_selection_result: dict[str, Any] | None
+
     # Planning
     matching_plan: dict[str, Any] | None
     generation_strategy: str | None

@@ -35,21 +35,26 @@ class Settings(BaseSettings):
     preference_dedup_threshold: float = 0.85
     context_token_budget: int = 16000
     max_self_review_iterations: int = 1
-    max_layout_revision_iterations: int = 1
-    max_resume_generation_calls: int = 2
-    max_resume_local_repair_calls: int = Field(default=1, ge=0, le=1)
-    resume_layout_hard_gate_enabled: bool = False
-    resume_min_page_usage_ratio: float = Field(default=0.80, ge=0.0, le=1.0)
-    resume_target_page_usage_ratio: float = Field(default=0.88, ge=0.0, le=1.0)
-    resume_max_page_usage_ratio: float = Field(default=0.95, ge=0.0, le=1.0)
+    max_layout_revision_iterations: int = 3
+    max_resume_generation_calls: int = 5
+    max_resume_local_repair_calls: int = Field(default=3, ge=0, le=5)
+    resume_layout_hard_gate_enabled: bool = True
+    resume_min_page_usage_ratio: float = Field(default=0.85, ge=0.0, le=1.0)
+    resume_target_page_usage_ratio: float = Field(default=0.90, ge=0.0, le=1.0)
+    resume_max_page_usage_ratio: float = Field(default=0.98, ge=0.0, le=1.0)
     resume_candidate_pool_target_ratio: float = Field(default=1.20, ge=1.0)
     # Generate independent experience bullet pools concurrently, then assemble
     # one deterministic resume. Smaller structured calls are substantially more
     # reliable on OpenAI-compatible providers than one monolithic resume JSON.
     resume_parallel_generation_enabled: bool = True
-    resume_generation_max_concurrency: int = Field(default=3, ge=1, le=4)
+    resume_generation_max_concurrency: int = Field(default=3, ge=1, le=8)
     resume_parallel_min_experiences: int = Field(default=2, ge=2, le=4)
-    resume_parallel_max_experiences: int = Field(default=4, ge=2, le=8)
+    resume_parallel_max_experiences: int = Field(default=6, ge=2, le=10)
+
+    # Experience selection
+    resume_max_narrative_experiences: int = Field(default=5, ge=2, le=8)
+    resume_min_experience_score: float = Field(default=0.15, ge=0.0, le=1.0)
+    resume_target_total_bullets: int = Field(default=26, ge=10, le=40)
     # Enable only when the frontend preview/print renderer supports resume-sparse-v1.
     resume_sparse_template_enabled: bool = False
 

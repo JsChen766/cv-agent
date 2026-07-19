@@ -11,6 +11,7 @@ import json
 import logging
 import math
 import re
+import time
 import uuid
 from collections.abc import Mapping
 from typing import Literal, cast
@@ -96,6 +97,42 @@ async def context_assembly_node(
         }
 
 
+# ── 1.5. Experience Selection ────────────────────────────────────────────────
+
+
+async def experience_selection_node(
+    state: ResumeGenerationState,
+) -> dict[str, object]:
+    """Deterministic scoring and selection of experiences for resume inclusion."""
+    from app.domain.resume.experience_selector import select_experiences
+
+    experiences = state.get("relevant_experiences") or []
+    evidence_pack = state.get("evidence_pack") or {}
+
+    writer = get_optional_stream_writer()
+    if writer is not None:
+        emit_thinking(writer, "正在筛选与岗位最匹配的经历…")
+
+    result = select_experiences(
+        experiences,
+        evidence_pack,
+        max_narrative_experiences=settings.resume_max_narrative_experiences,
+        min_composite_score=settings.resume_min_experience_score,
+        target_total_bullets=settings.resume_target_total_bullets,
+    )
+
+    selected_ids = {s.experience_id for s in result.selected}
+    selected_experiences = [
+        exp for exp in experiences
+        if str(exp.get("id") or "") in selected_ids
+    ]
+
+    return {
+        "selected_experiences": selected_experiences,
+        "experience_selection_result": result.model_dump(mode="json"),
+    }
+
+
 # ── 2. CoT Planning ───────────────────────────────────────────────────────────
 
 
@@ -116,7 +153,7 @@ class MatchingPlan(BaseModel):
 
 async def cot_planning_node(state: ResumeGenerationState) -> dict[str, object]:
     """Build a deterministic JD/evidence content budget without an LLM call."""
-    experiences = state.get("relevant_experiences") or state.get("assembled_experiences", [])
+    experiences = state.get("selected_experiences") or state.get("relevant_experiences") or state.get("assembled_experiences", [])
     writer = get_optional_stream_writer()
     if writer is not None:
         emit_thinking(writer, "正在计算岗位匹配度与一页简历内容预算…")
@@ -339,7 +376,8 @@ async def draft_generation_node(state: ResumeGenerationState) -> dict[str, objec
     jd_text = state.get("jd_text") or ""
     jd_requirements = state.get("jd_requirements") or []
     experiences = (
-        state.get("relevant_experiences")
+        state.get("selected_experiences")
+        or state.get("relevant_experiences")
         or state.get("assembled_experiences")
         or []
     )
@@ -491,6 +529,7 @@ async def draft_generation_node(state: ResumeGenerationState) -> dict[str, objec
     writer = get_optional_stream_writer() or buffered_events.append
     emit_thinking(writer, "正在生成并组织简历内容…")
 
+    _draft_start = time.time()
     llm_structure: _LlmResumeStructure | None = None
     draft_strategy = "whole_resume"
     if settings.resume_parallel_generation_enabled:
@@ -500,6 +539,7 @@ async def draft_generation_node(state: ResumeGenerationState) -> dict[str, objec
                 experiences=experiences,
                 content_budget=content_budget,
                 jd_requirements=jd_requirements,
+                evidence_pack=evidence_pack,
                 language=preferred_lang,
                 fallback_contact=profile_contact,
                 revision_instruction=(
@@ -519,6 +559,7 @@ async def draft_generation_node(state: ResumeGenerationState) -> dict[str, objec
             _LlmResumeStructure,
             temperature=0.2,
         )
+    logger.info("draft_generation_node LLM phase: %.1fs (strategy=%s)", time.time() - _draft_start, draft_strategy)
     llm_structure = llm_structure.model_copy(update={"language": preferred_lang})
     previous_structured = state.get("previous_structured")
     structured = _assign_structure_ids(
@@ -628,7 +669,7 @@ You MUST return a single JSON object matching the response schema — no prose o
 8. For each bullet, set `source_fact_ids` to the distinct labeled source facts used to write it. Every id must belong to the same `source_experience_id`. Do not reuse the exact same fact combination merely to pad the page.
 9. Order bullet candidates within each item from highest to lowest value: direct JD evidence first, then quantified results, ownership/action/method, and finally supporting context. The backend may trim candidates from the tail.
 10. Narrative prose MUST NOT end with a Chinese or English full stop (`。`, `．`, `.`). Internal dots in decimals, versions, URLs, and email addresses are allowed.
-11. Draft every bullet for the fixed A4 text width: a single-line bullet must occupy at least 66.7% of its line; if a bullet wraps, its FINAL line must also occupy at least 66.7%. Prefer one information-dense line. As a rough drafting heuristic, Chinese bullets are usually about 36–52 full-width character equivalents and English bullets about 80–115 characters. If a grounded fact is shorter, combine it with a related fact from the same source item instead of emitting a fragment. If a bullet would leave a short second line, either shorten it back to one line or add source-supported detail so the second line reaches two thirds. These ranges are heuristics, never permission to invent facts or add filler. Do not emit `layout_exception` in the initial draft.
+11. Draft every bullet for the fixed A4 text width: a single-line bullet must occupy at least 69.67% of its line; if a bullet wraps, its FINAL line must also occupy at least 69.67%. Prefer one information-dense line. As a rough drafting heuristic, Chinese bullets are usually about 36–52 full-width character equivalents and English bullets about 80–115 characters. If a grounded fact is shorter, combine it with a related fact from the same source item instead of emitting a fragment. If a bullet would leave a short second line, either shorten it back to one line or add source-supported detail so the second line reaches two thirds. These ranges are heuristics, never permission to invent facts or add filler. Do not emit `layout_exception` in the initial draft.
 
 ## Section order and content
 
@@ -815,6 +856,8 @@ def layout_route(state: ResumeGenerationState) -> str:
     )
     if status == "needs_revision" and can_revise:
         return "revision"
+    if hard_codes and hard_codes.issubset(repairable_codes):
+        return "fact_check"
     return "failed"
 
 
@@ -1595,7 +1638,7 @@ async def self_review_node(state: ResumeGenerationState) -> dict[str, object]:
 
     composition_gap = _check_experience_composition(
         variants[0].get("structured") or state.get("resume_structure"),
-        state.get("relevant_experiences") or [],
+        state.get("selected_experiences") or state.get("relevant_experiences") or [],
     )
     if composition_gap:
         return {
@@ -2199,6 +2242,7 @@ async def output_failure_node(state: ResumeGenerationState) -> dict[str, object]
         if isinstance(issue, dict)
     )
     return {
+        "quality_status": state.get("quality_status") or "failed",
         "assistant_message": (
             "简历生成未通过事实与质量检查，未保存为可接受候选。"
             + (f" 未解决问题：{details}" if details else "")
@@ -2598,17 +2642,41 @@ class _LlmExperienceDraft(BaseModel):
     bullets: list[_LlmBullet] = Field(default_factory=list)
 
 
+_EXPERIENCE_DRAFT_SYSTEM_PROMPT = """\
+You are an expert resume bullet-point writer.
+
+Write a candidate bullet pool for exactly ONE resume experience.
+Return a JSON object: {"source_experience_id": "<id>", "bullets": [{"text": "...", "source_fact_ids": [...], "matched_jd_requirement_ids": [...]}]}
+
+## Rules
+
+1. Use ONLY supplied source facts (allowed_facts). Every source_fact_id must come from the allowed list.
+2. Preserve numbers, percentages, metrics, and named technologies VERBATIM.
+3. Do NOT upgrade descriptions ("熟悉"→"精通", "参与"→"主导") beyond what the source states.
+4. Do NOT end bullets with a full stop (。．.).
+5. source_experience_id must equal the supplied id exactly.
+6. matched_jd_requirement_ids: only ids from relevant_jd_requirements. Use [] if no match.
+7. Each bullet: ONE information-dense line, 36–52 full-width chars (Chinese) or 80–115 chars (English). Combine short facts.
+8. Order: JD evidence first → quantified results → ownership → context. No synonym repetition.
+"""
+
+
 async def _generate_resume_by_experience(
     provider: LLMProvider,
     *,
     experiences: list[dict[str, object]],
     content_budget: dict[str, object],
     jd_requirements: list[dict[str, object]],
+    evidence_pack: dict[str, object],
     language: str,
     fallback_contact: dict[str, object] | None,
     revision_instruction: str | None,
 ) -> _LlmResumeStructure | None:
-    """Fan out narrative writing by experience and assemble one grounded draft."""
+    """Fan out narrative writing by experience and assemble one grounded draft.
+
+    Each parallel call receives only its own source facts and the JD requirements
+    it can actually address, keeping prompts small and focused.
+    """
     raw_budgets = content_budget.get("experiences")
     budgets = raw_budgets if isinstance(raw_budgets, list) else []
     budget_by_id = {
@@ -2616,47 +2684,36 @@ async def _generate_resume_by_experience(
         for value in budgets
         if isinstance(value, dict) and value.get("experience_id")
     }
-    ranked_budget_ids = [
-        str(value.get("experience_id"))
-        for value in sorted(
-            (value for value in budgets if isinstance(value, dict)),
-            key=lambda value: float(value.get("jd_match_score") or 0.0),
-            reverse=True,
-        )
-        if value.get("experience_id")
-        and int(value.get("target_candidate_bullets") or 0) > 0
-    ]
+
+    budgeted_ids = set(budget_by_id.keys())
     narrative_candidates = [
         value
         for value in _sort_experiences_by_recency(experiences)
         if str(value.get("category") or "other") != "education"
         and (value.get("content") or value.get("claims"))
     ]
-    candidate_ids = {str(value.get("id") or "") for value in narrative_candidates}
-    selected_ranked_ids = [value for value in ranked_budget_ids if value in candidate_ids]
-    selected_ranked_ids.extend(
-        str(value.get("id") or "")
-        for value in narrative_candidates
-        if str(value.get("id") or "") not in selected_ranked_ids
-    )
-    selected_ranked_ids = selected_ranked_ids[: settings.resume_parallel_max_experiences]
-    selected_ids = set(selected_ranked_ids)
-    narrative = [
-        value
-        for value in narrative_candidates
-        if str(value.get("id") or "") in selected_ids
-    ]
-    if len(narrative) < settings.resume_parallel_min_experiences:
+    if len(narrative_candidates) < settings.resume_parallel_min_experiences:
         return None
 
-    valid_requirement_ids = {
-        str(value.get("id") or f"req-{index + 1}")
-        for index, value in enumerate(jd_requirements)
-        if isinstance(value, dict)
+    if budgeted_ids:
+        narrative = [
+            value for value in narrative_candidates
+            if str(value.get("id") or "") in budgeted_ids
+        ][: settings.resume_parallel_max_experiences]
+    else:
+        narrative = narrative_candidates[: settings.resume_parallel_max_experiences]
+
+    req_by_id = {
+        str(r.get("id") or f"req-{i + 1}"): r
+        for i, r in enumerate(jd_requirements)
+        if isinstance(r, dict)
     }
+    exp_req_map = _build_experience_requirement_map(evidence_pack, req_by_id)
+
     semaphore = asyncio.Semaphore(settings.resume_generation_max_concurrency)
 
     async def generate_one(experience: dict[str, object]) -> _LlmExperienceDraft:
+        _gen_start = time.time()
         source_id = str(experience.get("id") or "")
         budget = budget_by_id.get(source_id, {})
         raw_allowed_facts = budget.get("facts") or _fallback_source_facts(experience)
@@ -2667,27 +2724,40 @@ async def _generate_resume_by_experience(
             if isinstance(value, dict) and value.get("id")
         }
 
+        relevant_reqs = exp_req_map.get(source_id, list(jd_requirements))
+
         def grounded_fallback() -> _LlmExperienceDraft:
             target_count = max(
-                1,
-                min(int(budget.get("target_candidate_bullets") or 3), 3),
+                2,
+                min(int(budget.get("target_candidate_bullets") or 4), 6),
             )
-            fallback_bullets: list[_LlmBullet] = []
+            cleaned: list[tuple[str, str]] = []
             for value in allowed_facts:
                 if not isinstance(value, dict) or not value.get("id") or not value.get("text"):
                     continue
-                text = str(value["text"]).strip().rstrip("。. ")
-                if not text:
-                    continue
+                text = str(value["text"]).strip().rstrip("。．. ")
+                text = text.lstrip("- •·")
+                if text:
+                    cleaned.append((str(value["id"]), text))
+
+            fallback_bullets: list[_LlmBullet] = []
+            i = 0
+            while i < len(cleaned) and len(fallback_bullets) < target_count:
+                fact_id, text = cleaned[i]
+                fact_ids = [fact_id]
+                i += 1
+                while len(text) < 35 and i < len(cleaned):
+                    next_id, next_text = cleaned[i]
+                    text = f"{text}；{next_text}"
+                    fact_ids.append(next_id)
+                    i += 1
                 fallback_bullets.append(
                     _LlmBullet(
                         text=text,
-                        source_fact_ids=[str(value["id"])],
+                        source_fact_ids=fact_ids,
                         matched_jd_requirement_ids=[],
                     )
                 )
-                if len(fallback_bullets) >= target_count:
-                    break
             return _LlmExperienceDraft(
                 source_experience_id=source_id,
                 bullets=fallback_bullets,
@@ -2702,45 +2772,59 @@ async def _generate_resume_by_experience(
                 "role": experience.get("role"),
                 "content": experience.get("content"),
                 "claims": experience.get("claims") or [],
-                "tags": experience.get("tags") or [],
             },
             "allowed_facts": allowed_facts,
             "target_candidate_bullets": budget.get("target_candidate_bullets") or 4,
-            "jd_requirements": jd_requirements,
+            "relevant_jd_requirements": relevant_reqs,
             "language": language,
-            "revision_instruction": revision_instruction,
         }
-        try:
-            async with semaphore:
-                result: _LlmExperienceDraft = await provider.chat_structured(
-                    [
-                        {
-                            "role": "system",
-                            "content": (
-                                "Return JSON only. Write a candidate bullet pool for exactly one "
-                                "resume experience. Use only the supplied source and allowed fact "
-                                "IDs. Preserve every number and named technology verbatim. Each "
-                                "source_fact_id must be allowed, each matched_jd_requirement_id must "
-                                "come from the supplied JD list, and source_experience_id must equal "
-                                "the supplied id. Produce distinct grounded angles, ordered by value. "
-                                "Do not end bullets with a Chinese or English full stop. Aim for "
-                                "36-52 full-width characters in Chinese or 80-115 characters in "
-                                "English when the evidence supports that length; never add filler."
-                            ),
-                        },
-                        {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
-                    ],
-                    _LlmExperienceDraft,
-                    temperature=0.2,
-                )
-        except Exception as exc:
-            logger.warning(
-                "Experience draft generation failed for %s; using grounded fallback (%s)",
-                source_id,
-                type(exc).__name__,
-            )
-            return grounded_fallback()
+        if revision_instruction:
+            payload["revision_instruction"] = revision_instruction
 
+        valid_req_ids = {
+            str(r.get("id") or "")
+            for r in relevant_reqs
+            if isinstance(r, dict) and r.get("id")
+        }
+
+        messages = [
+            {"role": "system", "content": _EXPERIENCE_DRAFT_SYSTEM_PROMPT},
+            {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
+        ]
+        _use_fast_path = hasattr(provider, "chat_json")
+
+        max_attempts = 3
+        result: _LlmExperienceDraft | None = None
+        for attempt in range(max_attempts):
+            try:
+                async with semaphore:
+                    if _use_fast_path:
+                        result = await provider.chat_json(
+                            messages, _LlmExperienceDraft, temperature=0.2,
+                        )
+                    else:
+                        result = await provider.chat_structured(
+                            messages, _LlmExperienceDraft, temperature=0.2,
+                        )
+                break
+            except Exception as exc:
+                if attempt < max_attempts - 1:
+                    wait = 5.0 * (2 ** attempt)
+                    logger.warning(
+                        "Experience draft attempt %d/%d failed for %s (%s); retrying in %.0fs",
+                        attempt + 1, max_attempts, source_id, type(exc).__name__, wait,
+                    )
+                    await asyncio.sleep(wait)
+                else:
+                    logger.warning(
+                        "Experience draft generation failed for %s; using grounded fallback (%s)",
+                        source_id,
+                        type(exc).__name__,
+                    )
+                    return grounded_fallback()
+
+        if result is None:
+            return grounded_fallback()
         sanitized_bullets: list[_LlmBullet] = []
         for bullet in result.bullets:
             fact_ids = [
@@ -2751,7 +2835,7 @@ async def _generate_resume_by_experience(
             requirement_ids = [
                 value
                 for value in bullet.matched_jd_requirement_ids
-                if value in valid_requirement_ids
+                if value in valid_req_ids
             ]
             sanitized_bullets.append(
                 bullet.model_copy(
@@ -2762,13 +2846,18 @@ async def _generate_resume_by_experience(
                 )
             )
         if not sanitized_bullets:
+            logger.info("generate_one %s: %.1fs (fallback - no valid bullets)", source_id, time.time() - _gen_start)
             return grounded_fallback()
+        logger.info("generate_one %s: %.1fs (%d bullets)", source_id, time.time() - _gen_start, len(sanitized_bullets))
         return _LlmExperienceDraft(
             source_experience_id=source_id,
             bullets=sanitized_bullets,
         )
 
-    drafts = await asyncio.gather(*(generate_one(value) for value in narrative))
+    _gather_start = time.time()
+    raw_drafts = await asyncio.gather(*(generate_one(value) for value in narrative))
+    logger.info("All %d experience drafts completed in %.1fs", len(narrative), time.time() - _gather_start)
+    drafts = [_deduplicate_bullets(d) for d in raw_drafts]
     sections: dict[str, list[_LlmSectionItem]] = {
         "education": [],
         "experience": [],
@@ -2822,6 +2911,62 @@ async def _generate_resume_by_experience(
         )
     contact = _LlmContact.model_validate(fallback_contact) if fallback_contact else None
     return _LlmResumeStructure(language=language, contact=contact, sections=llm_sections)
+
+
+def _deduplicate_bullets(draft: _LlmExperienceDraft) -> _LlmExperienceDraft:
+    """Remove duplicate bullets using character trigram Jaccard similarity.
+
+    Two bullets are duplicates if their trigram Jaccard similarity exceeds 0.45.
+    Keeps the longer one.
+    """
+    if len(draft.bullets) <= 1:
+        return draft
+
+    def _trigrams(text: str) -> set[str]:
+        norm = "".join(text.lower().split())
+        return {norm[i : i + 3] for i in range(max(0, len(norm) - 2))}
+
+    def _jaccard(a: set[str], b: set[str]) -> float:
+        if not a or not b:
+            return 0.0
+        return len(a & b) / len(a | b)
+
+    bullet_grams = [_trigrams(b.text) for b in draft.bullets]
+    kept_indices: list[int] = []
+
+    for i, bullet in enumerate(draft.bullets):
+        is_dup = False
+        for j_pos, j in enumerate(kept_indices):
+            if _jaccard(bullet_grams[i], bullet_grams[j]) > 0.45:
+                if len(bullet.text) > len(draft.bullets[j].text):
+                    kept_indices[j_pos] = i
+                is_dup = True
+                break
+        if not is_dup:
+            kept_indices.append(i)
+
+    return _LlmExperienceDraft(
+        source_experience_id=draft.source_experience_id,
+        bullets=[draft.bullets[i] for i in kept_indices],
+    )
+
+
+def _build_experience_requirement_map(
+    evidence_pack: dict[str, object],
+    req_by_id: dict[str, dict[str, object]],
+) -> dict[str, list[dict[str, object]]]:
+    """Map experience_id -> list of JD requirements it can address via evidence claims.
+
+    Returns an empty dict when ownership cannot be determined, which causes the
+    caller to fall back to giving each experience all JD requirements.
+    """
+    matches = evidence_pack.get("matches")
+    if not isinstance(matches, list) or not matches:
+        return {}
+    # Evidence pack currently stores matched claim text without the source
+    # experience id. Until that's added, return empty so each experience
+    # receives all evidence-backed requirements as candidates.
+    return {}
 
 
 def _fallback_source_facts(experience: dict[str, object]) -> list[dict[str, str]]:

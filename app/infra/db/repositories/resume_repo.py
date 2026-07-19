@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import builtins
+import json
 import uuid
 from typing import Any, cast
 
@@ -251,14 +252,14 @@ class PostgresResumeRepository:
                 data.jd_id,
                 data.title,
                 data.content,
-                data.structured,
-                data.score.model_dump(mode="json"),
-                [e.model_dump(mode="json") for e in data.evidence_summary],
-                [r.model_dump(mode="json") for r in data.risk_summary],
-                data.missing_info,
+                json.dumps(data.structured, ensure_ascii=False) if data.structured else None,
+                json.dumps(data.score.model_dump(mode="json"), ensure_ascii=False),
+                json.dumps([e.model_dump(mode="json") for e in data.evidence_summary], ensure_ascii=False),
+                json.dumps([r.model_dump(mode="json") for r in data.risk_summary], ensure_ascii=False),
+                json.dumps(data.missing_info or [], ensure_ascii=False),
                 data.parent_variant_id,
                 data.gate_status,
-                data.quality_issues,
+                json.dumps(data.quality_issues or [], ensure_ascii=False),
                 data.quality_gate_version,
             )
         if row is None:

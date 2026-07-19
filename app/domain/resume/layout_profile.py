@@ -41,8 +41,8 @@ class BulletLayout(BaseModel):
     marker_width_mm: float = 2.0
     indent_mm: float = 0.3
     gap_mm: float = 1.5
-    target_ratio: float = 0.667
-    gate_ratio: float = 0.667
+    target_ratio: float = 0.6967
+    gate_ratio: float = 0.6967
 
 
 class BlockPaginationRules(BaseModel):
