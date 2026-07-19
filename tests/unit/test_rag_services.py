@@ -58,6 +58,36 @@ async def test_evidence_pack_scores_and_projects_matching_claims(monkeypatch) ->
     assert pack.matches[0].matched_claims[0].text == "Built Python APIs"
 
 
+def test_pending_revision_uses_deterministic_claim_fallback() -> None:
+    row = {
+        "id": "exp-1",
+        "revision_id": "rev-1",
+        "title": "Backend Engineer",
+        "organization": "Example",
+        "role": "Engineer",
+        "category": "work",
+        "start_date": None,
+        "end_date": None,
+        "tags": [],
+        "content": "- Built Python APIs\n- Reduced latency 30%",
+        "claims": None,
+        "revision_hash": None,
+        "factbank_status": "pending",
+        "relevance_score": 0.0,
+    }
+
+    first = EvidenceRagService._to_experience(row)  # type: ignore[arg-type]
+    second = EvidenceRagService._to_experience(row)  # type: ignore[arg-type]
+
+    assert [claim.text for claim in first.claims] == [
+        "Built Python APIs",
+        "Reduced latency 30%",
+    ]
+    assert all(claim.fact_id for claim in first.claims)
+    assert [claim.fact_id for claim in first.claims] == [claim.fact_id for claim in second.claims]
+    assert first.claims_indexed is False
+
+
 class _GuidelineConnection:
     def __init__(self) -> None:
         self.query = ""

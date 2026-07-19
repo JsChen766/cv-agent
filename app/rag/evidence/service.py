@@ -7,7 +7,6 @@ an EvidencePack mapping requirements → supporting claims.
 
 from __future__ import annotations
 
-import asyncio
 import json
 from typing import Any
 
@@ -16,9 +15,12 @@ import asyncpg
 from app.core.config import settings
 from app.core.observability import observation_span, sanitize_attributes
 from app.domain.jd.models import JdRequirement
+from app.domain.resume.factbank.service import (
+    compute_revision_hash,
+    deterministic_fallback_facts,
+)
 from app.infra.db.helpers import column_is_vector
 from app.providers.factory import get_embedding_provider
-from app.rag.evidence.claim_extractor import extract_claims
 from app.rag.evidence.models import Claim, EvidenceMatch, EvidencePack, ExperienceWithClaims
 
 
@@ -72,11 +74,12 @@ class EvidenceRagService:
         ) as span:
             async with self._pool.acquire() as conn:
                 rows = await conn.fetch(
-                """
+                    """
                 SELECT
                     e.id, e.title, e.organization, e.role, e.category,
                     e.start_date, e.end_date, e.tags,
                     er.id AS revision_id, er.content, er.claims,
+                    er.revision_hash, er.factbank_status,
                     1 - (e.embedding <=> $1::vector) AS relevance_score
                 FROM experiences e
                 JOIN experience_revisions er ON er.id = e.current_revision_id
@@ -86,8 +89,8 @@ class EvidenceRagService:
                 ORDER BY e.embedding <=> $1::vector
                 LIMIT $3
                 """,
-                vec_str,
-                user_id,
+                    vec_str,
+                    user_id,
                     top_k,
                 )
             _set_rows(span, len(rows))
@@ -95,7 +98,11 @@ class EvidenceRagService:
         if not rows:
             return await self.retrieve_recent(user_id, top_k=top_k)
         experiences = [self._to_experience(row) for row in rows]
-        return experiences
+        unready = await self._retrieve_unready(user_id)
+        merged = {experience.experience_id: experience for experience in experiences}
+        for experience in unready:
+            merged.setdefault(experience.experience_id, experience)
+        return list(merged.values())
 
     async def retrieve_recent(self, user_id: str, *, top_k: int = 5) -> list[ExperienceWithClaims]:
         with observation_span(
@@ -105,10 +112,11 @@ class EvidenceRagService:
         ) as span:
             async with self._pool.acquire() as conn:
                 rows = await conn.fetch(
-                """
+                    """
                 SELECT e.id, e.title, e.organization, e.role, e.category,
                        e.start_date, e.end_date, e.tags,
                        er.id AS revision_id, er.content, er.claims,
+                       er.revision_hash, er.factbank_status,
                        0.0 AS relevance_score
                 FROM experiences e
                 JOIN experience_revisions er ON er.id = e.current_revision_id
@@ -116,7 +124,7 @@ class EvidenceRagService:
                 ORDER BY e.updated_at DESC
                 LIMIT $2
                 """,
-                user_id,
+                    user_id,
                     top_k,
                 )
             _set_rows(span, len(rows))
@@ -136,10 +144,11 @@ class EvidenceRagService:
         ) as span:
             async with self._pool.acquire() as conn:
                 rows = await conn.fetch(
-                """
+                    """
                 SELECT e.id, e.title, e.organization, e.role, e.category,
                        e.start_date, e.end_date, e.tags,
                        er.id AS revision_id, er.content, er.claims,
+                       er.revision_hash, er.factbank_status,
                        0.0 AS relevance_score
                 FROM experiences e
                 JOIN experience_revisions er ON er.id = e.current_revision_id
@@ -147,7 +156,7 @@ class EvidenceRagService:
                 ORDER BY COALESCE(e.end_date, e.start_date) DESC NULLS LAST,
                          e.updated_at DESC
                 """,
-                user_id,
+                    user_id,
                     category,
                 )
             _set_rows(span, len(rows))
@@ -161,6 +170,27 @@ class EvidenceRagService:
         if isinstance(raw_claims, str):
             raw_claims = json.loads(raw_claims)
         claims = [Claim.model_validate(claim) for claim in (raw_claims or [])]
+        factbank_status = str(row.get("factbank_status") or "pending")
+        if not claims and factbank_status != "ready":
+            claims_indexed = False
+            revision_hash = str(
+                row.get("revision_hash") or compute_revision_hash(str(row["content"]))
+            )
+            fallback_facts = deterministic_fallback_facts(
+                experience_id=str(row["id"]),
+                revision_id=str(row["revision_id"]),
+                revision_hash=revision_hash,
+                content=str(row["content"]),
+            )
+            claims = [
+                Claim(
+                    fact_id=fact.fact_id,
+                    text=fact.source_text,
+                    category="responsibility",
+                    is_quantified=bool(fact.metrics),
+                )
+                for fact in fallback_facts
+            ]
         raw_tags = row.get("tags")
         if isinstance(raw_tags, str):
             raw_tags = json.loads(raw_tags)
@@ -185,36 +215,29 @@ class EvidenceRagService:
             content=row["content"],
             claims=claims,
             claims_indexed=claims_indexed,
+            factbank_status=factbank_status,
             relevance_score=float(row["relevance_score"] or 0.0),
         )
 
-    async def _hydrate_missing_claims(self, experiences: list[ExperienceWithClaims]) -> None:
-        missing = [experience for experience in experiences if not experience.claims_indexed]
-        if not missing:
-            return
-        extracted = await asyncio.gather(
-            *(extract_claims(experience.content) for experience in missing),
-            return_exceptions=True,
-        )
-        with observation_span(
-            "database_calls",
-            "evidence.claims_hydration",
-            attributes={"read_write": "write", "row_count": len(missing)},
-        ):
-            async with self._pool.acquire() as conn:
-                for experience, result in zip(missing, extracted, strict=True):
-                    if isinstance(result, asyncio.CancelledError):
-                        raise result
-                    if isinstance(result, BaseException):
-                        continue
-                    experience.claims = result
-                    experience.claims_indexed = True
-                    if experience.revision_id:
-                        await conn.execute(
-                            "UPDATE experience_revisions SET claims=$1::jsonb WHERE id=$2",
-                            json.dumps([claim.model_dump(mode="json") for claim in result]),
-                            experience.revision_id,
-                        )
+    async def _retrieve_unready(self, user_id: str) -> list[ExperienceWithClaims]:
+        """Include new current revisions before their asynchronous index is ready."""
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT e.id, e.title, e.organization, e.role, e.category,
+                       e.start_date, e.end_date, e.tags,
+                       er.id AS revision_id, er.content, er.claims,
+                       er.revision_hash, er.factbank_status,
+                       0.0 AS relevance_score
+                FROM experiences e
+                JOIN experience_revisions er ON er.id = e.current_revision_id
+                WHERE e.user_id = $1 AND e.status = 'active'
+                  AND er.factbank_status <> 'ready'
+                ORDER BY e.updated_at DESC
+                """,
+                user_id,
+            )
+        return [self._to_experience(row) for row in rows]
 
     async def build_evidence_pack(
         self,

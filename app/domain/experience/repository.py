@@ -62,6 +62,7 @@ class ExperienceRepository(Protocol):
         experience_id: str,
         content: str,
         source: str,
+        revision_hash: str,
     ) -> ExperienceRevision: ...
 
     # ── Import Jobs ───────────────────────────────────────────────────────────
@@ -75,10 +76,6 @@ class ExperienceRepository(Protocol):
         self, candidates: builtins.list[ImportCandidateCreate]
     ) -> builtins.list[ImportCandidate]: ...
 
-    async def get_candidate(
-        self, user_id: str, candidate_id: str
-    ) -> ImportCandidate | None: ...
+    async def get_candidate(self, user_id: str, candidate_id: str) -> ImportCandidate | None: ...
 
-    async def update_candidate_status(
-        self, candidate_id: str, status: str
-    ) -> ImportCandidate: ...
+    async def update_candidate_status(self, candidate_id: str, status: str) -> ImportCandidate: ...

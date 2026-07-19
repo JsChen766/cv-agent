@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Literal
+
 from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import JSONResponse
 from pydantic import Field
@@ -18,6 +20,9 @@ class JdRequirementBody(StrictRequestModel):
     text: str = Field(min_length=1)
     category: str = Field(default="skill", min_length=1)
     importance: JdRequirementImportance = "medium"
+    keywords: tuple[str, ...] = ()
+    weight: float | None = Field(default=None, ge=0.0, le=1.0)
+    v2_importance: Literal["must_have", "preferred", "optional"] | None = None
 
     def to_draft(self) -> JdRequirementDraft:
         return JdRequirementDraft(
@@ -25,6 +30,9 @@ class JdRequirementBody(StrictRequestModel):
             text=self.text,
             category=self.category,
             importance=self.importance,
+            keywords=self.keywords,
+            weight=self.weight,
+            v2_importance=self.v2_importance,
         )
 
 
@@ -63,7 +71,7 @@ async def create_jd(
         raw_text=body.raw_text,
         company=body.company,
         target_role=body.target_role,
-        requirements=[r.to_draft() for r in body.requirements],
+        requirements=[r.to_draft() for r in body.requirements] if body.requirements else None,
     )
     return ok(_serialize(jd), request, status_code=201)
 
@@ -103,9 +111,15 @@ def _serialize(jd: JdRecord) -> dict[str, object]:
                 "text": r.text,
                 "category": r.category,
                 "importance": r.importance,
+                "keywords": list(r.keywords),
+                "weight": r.weight,
+                "v2Importance": r.v2_importance,
             }
             for r in jd.requirements
         ],
+        "jdHash": jd.jd_hash,
+        "requirementMapId": jd.requirement_map_id,
+        "requirementsOrigin": jd.requirements_origin,
         "sourceThreadId": jd.source_thread_id,
         "createdAt": jd.created_at.isoformat(),
         "updatedAt": jd.updated_at.isoformat(),

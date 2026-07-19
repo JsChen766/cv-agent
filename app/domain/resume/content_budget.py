@@ -113,9 +113,24 @@ def _source_facts(experience_id: str, value: dict[str, Any]) -> list[SourceFact]
             unique.append(fact)
             seen.add(normalized)
     return [
-        SourceFact(id=f"{experience_id}-fact-{index}", text=text)
+        SourceFact(
+            id=_fact_id_for_text(value, text, index, experience_id),
+            text=text,
+        )
         for index, text in enumerate(unique, start=1)
     ]
+
+
+def _fact_id_for_text(value: dict[str, Any], text: str, index: int, experience_id: str) -> str:
+    normalized = _normalize_fact(text)
+    for claim in value.get("claims") or []:
+        if (
+            isinstance(claim, dict)
+            and _normalize_fact(str(claim.get("text") or "")) == normalized
+            and claim.get("fact_id")
+        ):
+            return str(claim["fact_id"])
+    return f"{experience_id}-fact-{index}"
 
 
 def _normalize_fact(value: str) -> str:

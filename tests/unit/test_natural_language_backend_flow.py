@@ -10,6 +10,11 @@ from langgraph.graph import END, START, StateGraph
 from pydantic import BaseModel
 
 from app.domain.jd.models import JdRecord, JdRequirement
+from app.domain.jd.requirement_map.models import (
+    Requirement,
+    RequirementMap,
+    RequirementMapResolution,
+)
 from app.domain.resume.models import (
     Resume,
     ResumeItem,
@@ -48,6 +53,41 @@ class _FakeJdService:
     def __init__(self) -> None:
         self.created: JdRecord | None = None
 
+    async def analyze_raw_text(
+        self,
+        user_id: str,
+        raw_text: str,
+    ) -> RequirementMapResolution:
+        now = datetime.now(UTC)
+        return RequirementMapResolution(
+            requirement_map=RequirementMap(
+                requirement_map_id="rmap-1",
+                user_id=user_id,
+                jd_hash="hash-1",
+                normalization_version="norm-v1",
+                schema_version="schema-v1",
+                parser_version="parser-v1",
+                parser_model="test-model",
+                title="高级后端工程师",
+                company="Acme",
+                target_role="Backend Engineer",
+                requirements=(
+                    Requirement(
+                        requirement_id="req-python",
+                        description="Python backend development",
+                        category="technology",
+                        keywords=("Python",),
+                        importance="must_have",
+                        weight=1.0,
+                    ),
+                ),
+                created_at=now,
+                updated_at=now,
+            ),
+            cache_hit=False,
+            normalized_length=len(raw_text),
+        )
+
     async def create_jd(
         self,
         user_id: str,
@@ -58,6 +98,9 @@ class _FakeJdService:
         target_role: str | None = None,
         requirements: list[Any] | None = None,
         source_thread_id: str | None = None,
+        jd_hash: str | None = None,
+        requirement_map_id: str | None = None,
+        requirements_origin: str | None = None,
     ) -> JdRecord:
         now = datetime.now(UTC)
         record = JdRecord(
@@ -73,6 +116,9 @@ class _FakeJdService:
                 )
                 for req in (requirements or [])
             ],
+            jd_hash=jd_hash,
+            requirement_map_id=requirement_map_id,
+            requirements_origin=requirements_origin or "legacy",
             source_thread_id=source_thread_id,
             created_at=now,
             updated_at=now,
@@ -87,8 +133,6 @@ async def test_jd_graph_persists_saved_jd_and_returns_workspace(
     """parse_requirements_node extracts requirements; jd_persist_node writes to DB when confirmed."""
     service = _FakeJdService()
     services = ServiceContainer.model_construct(jd=service)
-    monkeypatch.setattr("app.graphs.jd.nodes.get_provider", lambda: _FakeJdProvider())
-
     # Step 1: parse_requirements_node only extracts, does NOT persist
     parse_result = await parse_requirements_node(
         {

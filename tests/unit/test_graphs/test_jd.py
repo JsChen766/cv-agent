@@ -32,10 +32,48 @@ def _make_jd_record(jd_id: str = "jd-1", title: str = "Backend Engineer") -> Any
 
 
 def _make_services(jd_record: Any) -> Any:
+    from datetime import UTC
+
+    from app.domain.jd.requirement_map.models import (
+        Requirement,
+        RequirementMap,
+        RequirementMapResolution,
+    )
     from app.tools.base import ServiceContainer
 
     jd_service = MagicMock()
     jd_service.create_jd = AsyncMock(return_value=jd_record)
+    now = datetime.now(UTC)
+    jd_service.analyze_raw_text = AsyncMock(
+        return_value=RequirementMapResolution(
+            requirement_map=RequirementMap(
+                requirement_map_id="rmap-1",
+                user_id="user-1",
+                jd_hash="hash-1",
+                normalization_version="norm-v1",
+                schema_version="schema-v1",
+                parser_version="parser-v1",
+                parser_model="test-model",
+                title="Backend Engineer",
+                company="Acme",
+                target_role="Engineer",
+                requirements=(
+                    Requirement(
+                        requirement_id="req-api",
+                        description="Build APIs",
+                        category="responsibility",
+                        keywords=("API",),
+                        importance="must_have",
+                        weight=0.85,
+                    ),
+                ),
+                created_at=now,
+                updated_at=now,
+            ),
+            cache_hit=False,
+            normalized_length=10,
+        )
+    )
     return ServiceContainer.model_construct(
         experience=object(),
         jd=jd_service,
@@ -113,19 +151,9 @@ async def test_jd_confirm_node_accepts_edited_candidate_without_confirmed_flag(
     assert result["jd_candidate"]["title"] == "Senior Backend Engineer"
 
 
-async def test_jd_subgraph_resume_preserves_confirmation_and_persists(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+async def test_jd_subgraph_resume_preserves_confirmation_and_persists() -> None:
     """Exercise the real graph schema so JD-only state cannot be silently dropped."""
 
-    class Provider:
-        async def chat_structured(self, messages: Any, response_model: Any, **kwargs: Any) -> Any:
-            fields = getattr(response_model, "model_fields", {})
-            if "requirements" in fields:
-                return response_model(requirements=[])
-            return response_model(title="Backend Engineer", company="Acme", target_role="Engineer")
-
-    monkeypatch.setattr("app.graphs.jd.nodes.get_provider", lambda: Provider())
     services = _make_services(_make_jd_record())
     graph = build_jd_subgraph().compile(checkpointer=MemorySaver())
     config: dict[str, Any] = {

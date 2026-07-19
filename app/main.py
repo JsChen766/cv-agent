@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
+from typing import Any
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -34,20 +35,58 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     from app.infra.files.parser import warm_file_parsers
 
     if settings.environment == "production":
-        if (
-            len(settings.secret_key) < 32
-            or settings.secret_key.startswith("change-me-in-production")
+        if len(settings.secret_key) < 32 or settings.secret_key.startswith(
+            "change-me-in-production"
         ):
             raise RuntimeError("SECRET_KEY must be configured for production")
         if "*" in settings.cors_origins:
             raise RuntimeError("Wildcard CORS origins are not allowed with credentials")
 
+    factbank_worker: Any | None = None
     try:
-        await create_pool()
+        pool = await create_pool()
     except Exception as e:
         if settings.environment == "production":
             raise RuntimeError("Database pool is required in production") from e
         logger.warning("DB pool init failed (running without DB): %s", e)
+    else:
+        if settings.factbank_worker_enabled:
+            try:
+                from app.infra.db.repositories.factbank_repo import (
+                    PostgresFactBankRepository,
+                )
+                from app.providers.factory import get_embedding_provider, get_provider
+                from app.rag.evidence.fact_extractor import StructuredFactExtractor
+                from app.rag.evidence.factbank_processor import FactBankProcessor
+                from app.rag.evidence.factbank_worker import FactBankWorker
+
+                factbank_repository = PostgresFactBankRepository(pool)
+                factbank_processor = FactBankProcessor(
+                    factbank_repository,
+                    StructuredFactExtractor(get_provider()),
+                    get_embedding_provider(),
+                    schema_version=settings.factbank_schema_version,
+                    extractor_version=settings.factbank_extractor_version,
+                    embedding_model=settings.embedding_model,
+                    extraction_deadline_seconds=settings.factbank_extraction_deadline_seconds,
+                )
+                factbank_worker = FactBankWorker(
+                    factbank_repository,
+                    factbank_processor,
+                    schema_version=settings.factbank_schema_version,
+                    extractor_version=settings.factbank_extractor_version,
+                    embedding_model=settings.embedding_model,
+                    concurrency=settings.factbank_worker_concurrency,
+                    poll_interval_seconds=settings.factbank_poll_interval_seconds,
+                    lease_seconds=settings.factbank_lease_seconds,
+                    max_attempts=settings.factbank_max_attempts,
+                    legacy_backfill_batch_size=settings.factbank_legacy_backfill_batch_size,
+                )
+                factbank_worker.start()
+            except Exception as e:
+                if settings.environment == "production":
+                    raise RuntimeError("FactBank worker is required in production") from e
+                logger.warning("FactBank worker init failed: %s", e)
     try:
         await create_checkpointer()
     except Exception as e:
@@ -62,6 +101,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         logger.warning("File parser warm-up failed (parsing may be unavailable): %s", e)
     yield
     # Shutdown
+    if factbank_worker is not None:
+        await factbank_worker.stop()
     await close_checkpointer()
     await close_pool()
 

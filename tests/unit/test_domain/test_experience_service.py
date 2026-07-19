@@ -93,30 +93,34 @@ async def test_create_experience_calls_add_revision(svc, repo):
     repo.add_revision.assert_called_once()
 
 
-async def test_create_experience_indexes_durable_revision(repo):
+async def test_create_experience_enqueues_revision_without_running_an_indexer(repo):
     exp = _make_exp()
     rev = _make_rev()
     repo.create.return_value = exp
     repo.add_revision.return_value = rev
-    indexer = MagicMock()
-    indexer.index = AsyncMock()
-    service = ExperienceService(repo, indexer)
+    service = ExperienceService(repo)
 
     await service.create_experience(
         "user-1", category="work", title="Engineer", content="# measurable impact"
     )
 
-    indexer.index.assert_awaited_once_with(exp.id, rev.id, "# measurable impact")
+    revision_id, experience_id, content, source, revision_hash = repo.add_revision.call_args.args
+    assert revision_id.startswith("rev-")
+    assert experience_id.startswith("exp-")
+    assert (experience_id, content, source) == (
+        repo.create.call_args.args[0],
+        "# measurable impact",
+        "manual",
+    )
+    assert revision_hash.startswith("sha256:")
 
 
-async def test_create_experience_keeps_write_when_optional_indexing_fails(repo):
+async def test_create_experience_has_no_provider_or_indexer_dependency(repo):
     exp = _make_exp()
     rev = _make_rev()
     repo.create.return_value = exp
     repo.add_revision.return_value = rev
-    indexer = MagicMock()
-    indexer.index = AsyncMock(side_effect=RuntimeError("embedding unavailable"))
-    service = ExperienceService(repo, indexer)
+    service = ExperienceService(repo)
 
     result = await service.create_experience(
         "user-1", category="work", title="Engineer", content="# content"

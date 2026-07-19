@@ -7,16 +7,15 @@ from langchain_core.runnables import RunnableConfig
 from langgraph.types import interrupt
 
 from app.domain.jd.models import JdRequirementDraft, JdRequirementImportance
+from app.domain.jd.requirement_map.models import Requirement, RequirementImportance
+from app.domain.jd.service import requirements_fingerprint
 from app.graphs.jd.state import JdState
 from app.graphs.runtime import services_from_config
 from app.graphs.streaming import emit_thinking, get_optional_stream_writer
-from app.providers.factory import get_provider
 
 
 async def extract_jd_node(state: JdState) -> dict[str, Any]:
-    """Extract title/company/target_role from user message. Does NOT persist."""
-    from pydantic import BaseModel
-
+    """Locate the complete JD text without invoking a provider."""
     messages = state.get("messages", [])
     extracted = state.get("extracted_params", {})
 
@@ -40,36 +39,13 @@ async def extract_jd_node(state: JdState) -> dict[str, Any]:
             "assistant_message": "I couldn't find a JD to save. Please paste the job description."
         }
 
-    provider = get_provider()
-
-    class JdInfo(BaseModel):
-        title: str
-        company: str | None = None
-        target_role: str | None = None
-
-    writer = get_optional_stream_writer()
-    if writer is not None:
-        emit_thinking(writer, "正在识别职位名称、公司和目标岗位…")
-
-    jd_info = await provider.chat_structured(
-        [
-            {
-                "role": "system",
-                "content": "Extract the job title, company name, and target role from this job description. If not present, return None.",
-            },
-            {"role": "user", "content": raw_text[:3000]},
-        ],
-        JdInfo,
-        temperature=0.1,
-    )
-
     return {
         "extracted_params": {
             **extracted,
             "raw_text": raw_text,
-            "title": jd_info.title if jd_info else (title or "Job Description"),
-            "company": jd_info.company if jd_info else company,
-            "target_role": jd_info.target_role if jd_info else target_role,
+            "title": title or "Job Description",
+            "company": company,
+            "target_role": target_role,
         }
     }
 
@@ -77,62 +53,40 @@ async def extract_jd_node(state: JdState) -> dict[str, Any]:
 async def parse_requirements_node(
     state: JdState, config: RunnableConfig | None = None
 ) -> dict[str, Any]:
-    """Parse JD requirements from raw text. Stores in extracted_params; does NOT persist."""
-    from pydantic import BaseModel
-
+    """Resolve the cached RequirementMap or perform one structured parse."""
     extracted = state.get("extracted_params", {})
     raw_text_value = extracted.get("raw_text", "")
     raw_text = raw_text_value if isinstance(raw_text_value, str) else ""
     if not raw_text:
         return {}
 
-    provider = get_provider()
-
-    class Requirement(BaseModel):
-        text: str
-        category: str = "skill"
-        importance: str = "medium"
-
-    class RequirementList(BaseModel):
-        requirements: list[Requirement]
-
     writer = get_optional_stream_writer()
     if writer is not None:
         emit_thinking(writer, "正在提取并整理岗位要求…")
 
-    result = await provider.chat_structured(
-        [
-            {
-                "role": "system",
-                "content": (
-                    "Extract job requirements from this JD. For each requirement:\n"
-                    "- text: the requirement statement\n"
-                    "- category: 'must_have', 'nice_to_have', 'skill', or 'experience'\n"
-                    "- importance: 'high', 'medium', or 'low'"
-                ),
-            },
-            {"role": "user", "content": raw_text[:4000]},
-        ],
-        RequirementList,
-        temperature=0.1,
-    )
-
-    reqs: list[dict[str, str]] = []
-    if result:
-        reqs = [
-            {
-                "id": str(uuid.uuid4()),
-                "text": r.text,
-                "category": r.category,
-                "importance": r.importance,
-            }
-            for r in result.requirements
-        ]
+    services = services_from_config(config)
+    if services is None:
+        return {
+            "assistant_message": "JD 服务不可用，无法解析岗位要求。",
+        }
+    resolution = await services.jd.analyze_raw_text(state.get("user_id", ""), raw_text)
+    requirement_map = resolution.requirement_map
+    reqs = [_legacy_requirement(item) for item in requirement_map.requirements]
     if writer is not None:
-        emit_thinking(writer, f"已整理 {len(reqs)} 条岗位要求，准备确认…")
+        cache_note = "（已复用缓存）" if resolution.cache_hit else ""
+        emit_thinking(writer, f"已整理 {len(reqs)} 条岗位要求{cache_note}，准备确认…")
 
     return {
-        "extracted_params": {**extracted, "requirements": reqs},
+        "extracted_params": {
+            **extracted,
+            "title": requirement_map.title or extracted.get("title") or "Job Description",
+            "company": requirement_map.company or extracted.get("company"),
+            "target_role": requirement_map.target_role or extracted.get("target_role"),
+            "requirements": reqs,
+            "jd_hash": requirement_map.jd_hash,
+            "requirement_map_id": requirement_map.requirement_map_id,
+            "requirements_fingerprint": requirements_fingerprint(reqs),
+        },
     }
 
 
@@ -154,6 +108,9 @@ async def jd_confirm_node(state: JdState) -> dict[str, Any]:
         "target_role": target_role_value if isinstance(target_role_value, str) else None,
         "raw_text": raw_text_value if isinstance(raw_text_value, str) else "",
         "requirements": reqs_value if isinstance(reqs_value, list) else [],
+        "jd_hash": extracted.get("jd_hash"),
+        "requirement_map_id": extracted.get("requirement_map_id"),
+        "requirements_fingerprint": extracted.get("requirements_fingerprint"),
     }
 
     interrupt_payload: AgentInterruptEvent = {
@@ -259,6 +216,13 @@ async def jd_persist_node(state: JdState, config: RunnableConfig | None = None) 
                 importance=_normalize_importance(
                     str(r.get("importance", "medium")) if isinstance(r, dict) else "medium"
                 ),
+                keywords=tuple(str(value) for value in r.get("keywords") or [])
+                if isinstance(r, dict)
+                else (),
+                weight=_optional_weight(r.get("weight")) if isinstance(r, dict) else None,
+                v2_importance=_normalize_v2_importance(r.get("v2_importance"))
+                if isinstance(r, dict)
+                else None,
             )
             for r in reqs_raw
             if r
@@ -276,6 +240,16 @@ async def jd_persist_node(state: JdState, config: RunnableConfig | None = None) 
         target_role=str(candidate["target_role"]) if candidate.get("target_role") else None,
         requirements=reqs,
         source_thread_id=source_thread_id,
+        jd_hash=str(candidate["jd_hash"]) if candidate.get("jd_hash") else None,
+        requirement_map_id=(
+            str(candidate["requirement_map_id"]) if candidate.get("requirement_map_id") else None
+        ),
+        requirements_origin=(
+            "parsed"
+            if candidate.get("requirements_fingerprint")
+            == requirements_fingerprint([item.model_dump(mode="json") for item in reqs])
+            else "manual"
+        ),
     )
 
     workspace = dict(state.get("workspace", {}))
@@ -306,3 +280,44 @@ def _normalize_importance(value: str) -> JdRequirementImportance:
     if value == "low":
         return "low"
     return "medium"
+
+
+def _normalize_v2_importance(value: object) -> RequirementImportance | None:
+    if value in {"must_have", "preferred", "optional"}:
+        if value == "must_have":
+            return "must_have"
+        if value == "optional":
+            return "optional"
+        return "preferred"
+    return None
+
+
+def _optional_weight(value: object) -> float | None:
+    if isinstance(value, int | float) and 0.0 <= float(value) <= 1.0:
+        return float(value)
+    return None
+
+
+def _legacy_requirement(requirement: Requirement) -> dict[str, Any]:
+    if requirement.importance == "must_have":
+        importance = "high"
+    elif requirement.importance == "optional":
+        importance = "low"
+    else:
+        importance = "medium"
+    category = {
+        "qualification": "experience",
+        "responsibility": "experience",
+        "technology": "skill",
+        "domain": "domain",
+        "soft_skill": "skill",
+    }[requirement.category]
+    return {
+        "id": requirement.requirement_id,
+        "text": requirement.description,
+        "category": category,
+        "importance": importance,
+        "keywords": list(requirement.keywords),
+        "weight": requirement.weight,
+        "v2_importance": requirement.importance,
+    }

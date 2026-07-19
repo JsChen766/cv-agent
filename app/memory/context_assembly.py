@@ -99,7 +99,9 @@ async def assemble_context(
     jd_id = jd_id_value if isinstance(jd_id_value, str) and jd_id_value else None
 
     if services is None:
-        logger.warning("Context assembly skipped owned data because domain services are unavailable")
+        logger.warning(
+            "Context assembly skipped owned data because domain services are unavailable"
+        )
         guidelines = await _fetch_guidelines(state, pool)
         return _trim_context(
             AssembledContext(None, [], guidelines, [], None, None),
@@ -138,23 +140,19 @@ async def assemble_context(
     return _trim_context(context, budget)
 
 
-async def _fetch_jd(
-    services: ServiceContainer, user_id: str, jd_id: str | None
-) -> JdRecord | None:
+async def _fetch_jd(services: ServiceContainer, user_id: str, jd_id: str | None) -> JdRecord | None:
     if jd_id is None:
         return None
     # JdService performs the ownership check. Never trust workspace IDs directly.
     with observation_span(
         "database_calls", "context.jd", attributes={"read_write": "read"}
     ) as span:
-        result = await services.jd.get_jd(user_id, jd_id)
+        result = await services.jd.ensure_requirement_map(user_id, jd_id)
         _set_row_count(span, 1 if result is not None else 0)
         return result
 
 
-async def _fetch_profile(
-    services: ServiceContainer, user_id: str
-) -> dict[str, object] | None:
+async def _fetch_profile(services: ServiceContainer, user_id: str) -> dict[str, object] | None:
     with observation_span(
         "database_calls", "context.profile", attributes={"read_write": "read"}
     ) as span:
@@ -163,9 +161,7 @@ async def _fetch_profile(
         return profile.model_dump(mode="json", exclude_none=True)
 
 
-async def _fetch_preferences(
-    services: ServiceContainer, user_id: str
-) -> list[dict[str, object]]:
+async def _fetch_preferences(services: ServiceContainer, user_id: str) -> list[dict[str, object]]:
     with observation_span(
         "database_calls", "context.preferences", attributes={"read_write": "read"}
     ) as span:
@@ -207,8 +203,8 @@ async def _fetch_experience_context(
             jd_retrieved = await rag.retrieve_recent(user_id, top_k=15)
             evidence_pack = None
 
-    # Education is not JD-filtered: every education entry must always be available to
-    # the resume generator, regardless of similarity ranking.
+        # Education is not JD-filtered: every education entry must always be available to
+        # the resume generator, regardless of similarity ranking.
         education = await rag.retrieve_by_category(user_id, "education")
 
         merged: dict[str, ExperienceWithClaims] = {}
@@ -231,6 +227,7 @@ async def _fetch_experience_context(
                     "tags": experience.tags,
                     "content": experience.content,
                     "claims": [claim.model_dump(mode="json") for claim in experience.claims],
+                    "factbank_status": experience.factbank_status,
                     "relevance_score": experience.relevance_score,
                 }
             )

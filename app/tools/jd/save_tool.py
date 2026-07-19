@@ -34,7 +34,7 @@ class SaveJdTool:
         return ToolResult(
             status="success",
             data={"id": jd.id, "title": jd.title},
-            message=f"JD '{jd.title}' saved. Requirements will be extracted automatically.",
+            message=f"JD '{jd.title}' saved with {len(jd.requirements)} parsed requirements.",
         )
 
 

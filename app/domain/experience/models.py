@@ -11,13 +11,16 @@ from app.core.types import (
     ImportJobStatus,
     ImportSource,
 )
+from app.domain.resume.factbank.models import FactBankStatus
 
 
 class ExperienceRevision(BaseModel):
     id: str
     experience_id: str
-    content: str           # markdown
-    source: str            # "manual" | "ai_generated" | "file_import"
+    content: str  # markdown
+    source: str  # "manual" | "ai_generated" | "file_import"
+    revision_hash: str | None = None
+    factbank_status: FactBankStatus = "pending"
     created_at: datetime
 
 
@@ -87,7 +90,7 @@ class ImportCandidate(BaseModel):
     organization: str | None = None
     role: str | None = None
     location: str | None = None
-    content: str       # markdown
+    content: str  # markdown
     status: ImportCandidateStatus = "pending"
     created_at: datetime
     updated_at: datetime

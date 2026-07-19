@@ -30,6 +30,26 @@ class Settings(BaseSettings):
     embedding_dimensions: int = 512
     embedding_local_files_only: bool = False
 
+    # Revision-aware FactBank. PostgreSQL stores the durable queue state, so no
+    # external broker is required and pending work survives process restarts.
+    factbank_worker_enabled: bool = True
+    factbank_worker_concurrency: int = Field(default=2, ge=1, le=8)
+    factbank_poll_interval_seconds: float = Field(default=1.0, gt=0)
+    factbank_lease_seconds: float = Field(default=90.0, gt=5)
+    factbank_max_attempts: int = Field(default=5, ge=1, le=20)
+    factbank_extraction_deadline_seconds: float = Field(default=30.0, gt=0)
+    factbank_schema_version: str = "factbank-v1"
+    factbank_extractor_version: str = "atomic-facts-v1"
+    factbank_legacy_backfill_batch_size: int = Field(default=25, ge=0, le=500)
+
+    # Versioned, tenant-scoped JD RequirementMap cache. A cache miss performs
+    # exactly one domain-specific structured parse under this shared deadline.
+    jd_requirement_normalization_version: str = "jd-normalization-v1"
+    jd_requirement_schema_version: str = "requirement-map-v1"
+    jd_requirement_parser_version: str = "jd-requirements-v1"
+    jd_requirement_parse_deadline_seconds: float = Field(default=10.0, gt=0)
+    jd_requirement_max_normalized_chars: int = Field(default=50000, ge=1000, le=200000)
+
     # RAG
     evidence_similarity_threshold: float = 0.65
     preference_dedup_threshold: float = 0.85

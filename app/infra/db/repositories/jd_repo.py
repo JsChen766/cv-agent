@@ -7,7 +7,13 @@ from hashlib import sha1
 
 import asyncpg
 
-from app.domain.jd.models import JdRecord, JdRequirement, JdRequirementImportance
+from app.domain.jd.models import (
+    JdRecord,
+    JdRequirement,
+    JdRequirementImportance,
+    JdRequirementsOrigin,
+)
+from app.domain.jd.requirement_map.models import RequirementImportance
 from app.infra.db.helpers import parse_jsonb
 
 
@@ -76,13 +82,17 @@ class PostgresJdRepository:
         target_role: str | None = None,
         requirements: builtins.list[JdRequirement] | None = None,
         source_thread_id: str | None = None,
+        jd_hash: str | None = None,
+        requirement_map_id: str | None = None,
+        requirements_origin: str = "legacy",
     ) -> JdRecord:
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(
                 """
                 INSERT INTO jd_records
-                    (id, user_id, title, company, target_role, raw_text, requirements, source_thread_id)
-                VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb,$8)
+                    (id, user_id, title, company, target_role, raw_text, requirements,
+                     source_thread_id, jd_hash, requirement_map_id, requirements_origin)
+                VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb,$8,$9,$10,$11)
                 RETURNING *
                 """,
                 jd_id,
@@ -93,6 +103,9 @@ class PostgresJdRepository:
                 raw_text,
                 json.dumps([r.model_dump(mode="json") for r in (requirements or [])]),
                 source_thread_id,
+                jd_hash,
+                requirement_map_id,
+                requirements_origin,
             )
         if row is None:
             raise RuntimeError("Failed to create JD")
@@ -105,7 +118,10 @@ class PostgresJdRepository:
             row = await conn.fetchrow(
                 """
                 UPDATE jd_records
-                SET requirements=$1::jsonb, updated_at=NOW()
+                SET requirements=$1::jsonb,
+                    requirements_origin='manual',
+                    requirement_map_id=NULL,
+                    updated_at=NOW()
                 WHERE id=$2
                 RETURNING *
                 """,
@@ -114,6 +130,44 @@ class PostgresJdRepository:
             )
         if row is None:
             raise RuntimeError(f"Failed to update JD requirements: {jd_id}")
+        return self._to_jd(row)
+
+    async def update_analysis(
+        self,
+        jd_id: str,
+        *,
+        title: str,
+        company: str | None,
+        target_role: str | None,
+        requirements: builtins.list[JdRequirement],
+        jd_hash: str,
+        requirement_map_id: str,
+    ) -> JdRecord:
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                UPDATE jd_records
+                SET title=$1,
+                    company=$2,
+                    target_role=$3,
+                    requirements=$4::jsonb,
+                    jd_hash=$5,
+                    requirement_map_id=$6,
+                    requirements_origin='parsed',
+                    updated_at=NOW()
+                WHERE id=$7
+                RETURNING *
+                """,
+                title,
+                company,
+                target_role,
+                json.dumps([item.model_dump(mode="json") for item in requirements]),
+                jd_hash,
+                requirement_map_id,
+                jd_id,
+            )
+        if row is None:
+            raise RuntimeError(f"Failed to update JD analysis: {jd_id}")
         return self._to_jd(row)
 
     async def delete(self, user_id: str, jd_id: str) -> None:
@@ -125,8 +179,17 @@ class PostgresJdRepository:
         raw_reqs = parse_jsonb(row["requirements"]) or []
         requirements = [_to_requirement(r, idx) for idx, r in enumerate(raw_reqs)]
         source_thread_id: str | None = None
+        jd_hash: str | None = None
+        requirement_map_id: str | None = None
+        requirements_origin: JdRequirementsOrigin = "legacy"
         with contextlib.suppress(KeyError, IndexError):
             source_thread_id = row["source_thread_id"]
+        with contextlib.suppress(KeyError, IndexError):
+            jd_hash = row["jd_hash"]
+        with contextlib.suppress(KeyError, IndexError):
+            requirement_map_id = row["requirement_map_id"]
+        with contextlib.suppress(KeyError, IndexError):
+            requirements_origin = _requirements_origin(row["requirements_origin"])
         return JdRecord(
             id=row["id"],
             user_id=row["user_id"],
@@ -135,6 +198,9 @@ class PostgresJdRepository:
             target_role=row["target_role"],
             raw_text=row["raw_text"],
             requirements=requirements,
+            jd_hash=jd_hash,
+            requirement_map_id=requirement_map_id,
+            requirements_origin=requirements_origin,
             source_thread_id=source_thread_id,
             created_at=row["created_at"],
             updated_at=row["updated_at"],
@@ -151,6 +217,9 @@ def _to_requirement(raw: object, index: int) -> JdRequirement:
         text=text,
         category=str(raw.get("category") or "skill"),
         importance=_importance(raw.get("importance")),
+        keywords=tuple(str(value) for value in raw.get("keywords") or []),
+        weight=_optional_weight(raw.get("weight")),
+        v2_importance=_v2_importance(raw.get("v2_importance")),
     )
 
 
@@ -161,3 +230,27 @@ def _importance(value: object) -> JdRequirementImportance:
         if value == "low":
             return "low"
     return "medium"
+
+
+def _optional_weight(value: object) -> float | None:
+    if isinstance(value, int | float) and 0.0 <= float(value) <= 1.0:
+        return float(value)
+    return None
+
+
+def _v2_importance(value: object) -> RequirementImportance | None:
+    if value in {"must_have", "preferred", "optional"}:
+        if value == "must_have":
+            return "must_have"
+        if value == "optional":
+            return "optional"
+        return "preferred"
+    return None
+
+
+def _requirements_origin(value: object) -> JdRequirementsOrigin:
+    if value == "parsed":
+        return "parsed"
+    if value == "manual":
+        return "manual"
+    return "legacy"

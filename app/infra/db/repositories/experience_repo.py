@@ -84,7 +84,8 @@ class PostgresExperienceRepository:
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(
                 "SELECT * FROM experiences WHERE id = $1 AND user_id = $2",
-                experience_id, user_id,
+                experience_id,
+                user_id,
             )
             if not row:
                 return None
@@ -124,8 +125,15 @@ class PostgresExperienceRepository:
                 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb)
                 RETURNING *
                 """,
-                experience_id, user_id, category, title,
-                organization, role, location, start_date, end_date,
+                experience_id,
+                user_id,
+                category,
+                title,
+                organization,
+                role,
+                location,
+                start_date,
+                end_date,
                 json.dumps(tags or []),
             )
         if row is None:
@@ -134,12 +142,17 @@ class PostgresExperienceRepository:
 
     # ── Update ────────────────────────────────────────────────────────────────
 
-    async def update(
-        self, user_id: str, experience_id: str, patch: ExperiencePatch
-    ) -> Experience:
+    async def update(self, user_id: str, experience_id: str, patch: ExperiencePatch) -> Experience:
         allowed = {
-            "title", "organization", "role", "location", "category",
-            "start_date", "end_date", "tags", "current_revision_id",
+            "title",
+            "organization",
+            "role",
+            "location",
+            "category",
+            "start_date",
+            "end_date",
+            "tags",
+            "current_revision_id",
         }
         json_fields = {"tags"}
         set_parts: builtins.list[str] = []
@@ -165,7 +178,7 @@ class PostgresExperienceRepository:
         set_parts.append("updated_at = NOW()")
         values.extend([experience_id, user_id])
         sql = f"""
-            UPDATE experiences SET {', '.join(set_parts)}
+            UPDATE experiences SET {", ".join(set_parts)}
             WHERE id = ${idx} AND user_id = ${idx + 1}
             RETURNING *
         """
@@ -179,7 +192,8 @@ class PostgresExperienceRepository:
         async with self._pool.acquire() as conn:
             await conn.execute(
                 "UPDATE experiences SET status='archived', updated_at=NOW() WHERE id=$1 AND user_id=$2",
-                experience_id, user_id,
+                experience_id,
+                user_id,
             )
 
     # ── Revisions ─────────────────────────────────────────────────────────────
@@ -198,19 +212,26 @@ class PostgresExperienceRepository:
         experience_id: str,
         content: str,
         source: str,
+        revision_hash: str,
     ) -> ExperienceRevision:
         async with self._pool.acquire() as conn, conn.transaction():
             row = await conn.fetchrow(
                 """
-                    INSERT INTO experience_revisions (id, experience_id, content, source)
-                    VALUES ($1, $2, $3, $4)
+                    INSERT INTO experience_revisions
+                        (id, experience_id, content, source, revision_hash, factbank_status)
+                    VALUES ($1, $2, $3, $4, $5, 'pending')
                     RETURNING *
                     """,
-                revision_id, experience_id, content, source,
+                revision_id,
+                experience_id,
+                content,
+                source,
+                revision_hash,
             )
             await conn.execute(
                 "UPDATE experiences SET current_revision_id=$1, updated_at=NOW() WHERE id=$2",
-                revision_id, experience_id,
+                revision_id,
+                experience_id,
             )
         if row is None:
             raise RuntimeError("Failed to create experience revision")
@@ -224,7 +245,10 @@ class PostgresExperienceRepository:
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(
                 "INSERT INTO import_jobs (id, user_id, source, file_id) VALUES ($1,$2,$3,$4) RETURNING *",
-                job_id, user_id, source, file_id,
+                job_id,
+                user_id,
+                source,
+                file_id,
             )
         if row is None:
             raise RuntimeError("Failed to create import job")
@@ -234,7 +258,8 @@ class PostgresExperienceRepository:
         async with self._pool.acquire() as conn:
             await conn.execute(
                 "UPDATE import_jobs SET status=$1, updated_at=NOW() WHERE id=$2",
-                status, job_id,
+                status,
+                job_id,
             )
 
     async def create_candidates(
@@ -258,23 +283,21 @@ class PostgresExperienceRepository:
             )
         return [self._to_candidate(r) for r in rows]
 
-    async def get_candidate(
-        self, user_id: str, candidate_id: str
-    ) -> ImportCandidate | None:
+    async def get_candidate(self, user_id: str, candidate_id: str) -> ImportCandidate | None:
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(
                 "SELECT * FROM import_candidates WHERE id=$1 AND user_id=$2",
-                candidate_id, user_id,
+                candidate_id,
+                user_id,
             )
         return self._to_candidate(row) if row else None
 
-    async def update_candidate_status(
-        self, candidate_id: str, status: str
-    ) -> ImportCandidate:
+    async def update_candidate_status(self, candidate_id: str, status: str) -> ImportCandidate:
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(
                 "UPDATE import_candidates SET status=$1, updated_at=NOW() WHERE id=$2 RETURNING *",
-                status, candidate_id,
+                status,
+                candidate_id,
             )
         if row is None:
             raise RuntimeError(f"Failed to update import candidate: {candidate_id}")
@@ -308,6 +331,8 @@ class PostgresExperienceRepository:
             experience_id=row["experience_id"],
             content=row["content"],
             source=row["source"],
+            revision_hash=row.get("revision_hash"),
+            factbank_status=row.get("factbank_status", "pending"),
             created_at=row["created_at"],
         )
 

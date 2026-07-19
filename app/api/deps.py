@@ -22,13 +22,15 @@ from app.infra.db.repositories.artifact_repo import PostgresArtifactRepository
 from app.infra.db.repositories.experience_repo import PostgresExperienceRepository
 from app.infra.db.repositories.jd_repo import PostgresJdRepository
 from app.infra.db.repositories.preference_repo import PostgresPreferenceRepository
+from app.infra.db.repositories.requirement_map_repo import PostgresRequirementMapRepository
 from app.infra.db.repositories.resume_observability_repo import (
     PostgresResumeObservabilityRepository,
 )
 from app.infra.db.repositories.resume_repo import PostgresResumeRepository
 from app.infra.db.repositories.user_repo import PostgresUserRepository
 from app.infra.layout import PillowFontMetrics
-from app.rag.evidence.indexer import EvidenceExperienceIndexer
+from app.providers.factory import get_provider
+from app.rag.requirements.parser import StructuredRequirementMapParser
 from app.tools.base import ServiceContainer
 
 # ── Pool ──────────────────────────────────────────────────────────────────────
@@ -51,15 +53,30 @@ def _require_pool(pool: asyncpg.Pool | None) -> asyncpg.Pool:
     return pool
 
 
+def _build_jd_service(pool: asyncpg.Pool) -> JdService:
+    from app.domain.jd.requirement_map.service import RequirementMapService
+
+    requirement_maps = RequirementMapService(
+        PostgresRequirementMapRepository(pool),
+        StructuredRequirementMapParser(get_provider()),
+        normalization_version=settings.jd_requirement_normalization_version,
+        schema_version=settings.jd_requirement_schema_version,
+        parser_version=settings.jd_requirement_parser_version,
+        parser_model=settings.llm_model,
+        deadline_seconds=settings.jd_requirement_parse_deadline_seconds,
+        max_normalized_chars=settings.jd_requirement_max_normalized_chars,
+    )
+    return JdService(PostgresJdRepository(pool), requirement_maps)
+
+
 def build_service_container(pool: asyncpg.Pool | None) -> ServiceContainer:
     checked_pool = _require_pool(pool)
     resume_layout = ResumeLayoutService(PillowFontMetrics())
     return ServiceContainer(
         experience=ExperienceService(
             PostgresExperienceRepository(checked_pool),
-            EvidenceExperienceIndexer(checked_pool),
         ),
-        jd=JdService(PostgresJdRepository(checked_pool)),
+        jd=_build_jd_service(checked_pool),
         resume=ResumeService(PostgresResumeRepository(checked_pool), resume_layout),
         artifact=ArtifactService(PostgresArtifactRepository(checked_pool)),
         preference=PreferenceService(PostgresPreferenceRepository(checked_pool)),
@@ -81,12 +98,11 @@ async def get_experience_service(
     checked_pool = _require_pool(pool)
     return ExperienceService(
         PostgresExperienceRepository(checked_pool),
-        EvidenceExperienceIndexer(checked_pool),
     )
 
 
 async def get_jd_service(pool: asyncpg.Pool | None = Depends(pool_dep)) -> JdService:
-    return JdService(PostgresJdRepository(_require_pool(pool)))
+    return _build_jd_service(_require_pool(pool))
 
 
 async def get_resume_service(pool: asyncpg.Pool | None = Depends(pool_dep)) -> ResumeService:
@@ -99,9 +115,7 @@ async def get_resume_service(pool: asyncpg.Pool | None = Depends(pool_dep)) -> R
 async def get_resume_observability_service(
     pool: asyncpg.Pool | None = Depends(pool_dep),
 ) -> ResumeObservabilityService:
-    return ResumeObservabilityService(
-        PostgresResumeObservabilityRepository(_require_pool(pool))
-    )
+    return ResumeObservabilityService(PostgresResumeObservabilityRepository(_require_pool(pool)))
 
 
 async def get_artifact_service(pool: asyncpg.Pool | None = Depends(pool_dep)) -> ArtifactService:

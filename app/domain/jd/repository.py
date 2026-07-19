@@ -30,10 +30,25 @@ class JdRepository(Protocol):
         target_role: str | None = None,
         requirements: builtins.list[JdRequirement] | None = None,
         source_thread_id: str | None = None,
+        jd_hash: str | None = None,
+        requirement_map_id: str | None = None,
+        requirements_origin: str = "legacy",
     ) -> JdRecord: ...
 
     async def update_requirements(
         self, jd_id: str, requirements: builtins.list[JdRequirement]
+    ) -> JdRecord: ...
+
+    async def update_analysis(
+        self,
+        jd_id: str,
+        *,
+        title: str,
+        company: str | None,
+        target_role: str | None,
+        requirements: builtins.list[JdRequirement],
+        jd_hash: str,
+        requirement_map_id: str,
     ) -> JdRecord: ...
 
     async def delete(self, user_id: str, jd_id: str) -> None: ...

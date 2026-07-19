@@ -25,6 +25,7 @@ router = APIRouter(tags=["experiences"])
 
 # ── Request bodies ────────────────────────────────────────────────────────────
 
+
 class CreateExperienceBody(StrictRequestModel):
     category: ExperienceCategory
     title: str = Field(min_length=1)
@@ -90,6 +91,7 @@ class ImportTextBody(StrictRequestModel):
 
 
 # ── Routes ────────────────────────────────────────────────────────────────────
+
 
 @router.get("/product/experiences")
 async def list_experiences(
@@ -190,6 +192,7 @@ async def add_revision(
 
 # ── Import ────────────────────────────────────────────────────────────────────
 
+
 @router.post("/product/import/text", status_code=201)
 async def import_from_text(
     body: ImportTextBody,
@@ -240,6 +243,7 @@ async def reject_candidate(
 
 # ── Serialisers ───────────────────────────────────────────────────────────────
 
+
 def _serialize_exp(exp: Experience) -> dict[str, object]:
     data: dict[str, object] = {
         "id": exp.id,
@@ -267,6 +271,8 @@ def _serialize_rev(rev: ExperienceRevision) -> dict[str, object]:
         "experienceId": rev.experience_id,
         "content": rev.content,
         "source": rev.source,
+        "revisionHash": rev.revision_hash,
+        "factBankStatus": rev.factbank_status,
         "createdAt": rev.created_at.isoformat(),
     }
 
