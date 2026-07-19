@@ -6,7 +6,11 @@ from typing import Any
 from langchain_core.runnables import RunnableConfig
 from langgraph.types import interrupt
 
-from app.domain.jd.models import JdRequirementDraft, JdRequirementImportance
+from app.domain.jd.models import (
+    JdRequirementDraft,
+    JdRequirementImportance,
+    JdRequirementV2Category,
+)
 from app.domain.jd.requirement_map.models import Requirement, RequirementImportance
 from app.domain.jd.service import requirements_fingerprint
 from app.graphs.jd.state import JdState
@@ -223,6 +227,9 @@ async def jd_persist_node(state: JdState, config: RunnableConfig | None = None) 
                 v2_importance=_normalize_v2_importance(r.get("v2_importance"))
                 if isinstance(r, dict)
                 else None,
+                v2_category=_normalize_v2_category(r.get("v2_category"))
+                if isinstance(r, dict)
+                else None,
             )
             for r in reqs_raw
             if r
@@ -298,6 +305,20 @@ def _optional_weight(value: object) -> float | None:
     return None
 
 
+def _normalize_v2_category(value: object) -> JdRequirementV2Category | None:
+    if value == "qualification":
+        return "qualification"
+    if value == "responsibility":
+        return "responsibility"
+    if value == "technology":
+        return "technology"
+    if value == "domain":
+        return "domain"
+    if value == "soft_skill":
+        return "soft_skill"
+    return None
+
+
 def _legacy_requirement(requirement: Requirement) -> dict[str, Any]:
     if requirement.importance == "must_have":
         importance = "high"
@@ -320,4 +341,5 @@ def _legacy_requirement(requirement: Requirement) -> dict[str, Any]:
         "keywords": list(requirement.keywords),
         "weight": requirement.weight,
         "v2_importance": requirement.importance,
+        "v2_category": requirement.category,
     }

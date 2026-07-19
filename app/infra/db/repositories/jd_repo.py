@@ -12,6 +12,7 @@ from app.domain.jd.models import (
     JdRequirement,
     JdRequirementImportance,
     JdRequirementsOrigin,
+    JdRequirementV2Category,
 )
 from app.domain.jd.requirement_map.models import RequirementImportance
 from app.infra.db.helpers import parse_jsonb
@@ -220,6 +221,7 @@ def _to_requirement(raw: object, index: int) -> JdRequirement:
         keywords=tuple(str(value) for value in raw.get("keywords") or []),
         weight=_optional_weight(raw.get("weight")),
         v2_importance=_v2_importance(raw.get("v2_importance")),
+        v2_category=_v2_category(raw.get("v2_category")),
     )
 
 
@@ -245,6 +247,20 @@ def _v2_importance(value: object) -> RequirementImportance | None:
         if value == "optional":
             return "optional"
         return "preferred"
+    return None
+
+
+def _v2_category(value: object) -> JdRequirementV2Category | None:
+    if value == "qualification":
+        return "qualification"
+    if value == "responsibility":
+        return "responsibility"
+    if value == "technology":
+        return "technology"
+    if value == "domain":
+        return "domain"
+    if value == "soft_skill":
+        return "soft_skill"
     return None
 
 

@@ -7,6 +7,13 @@ from pydantic import BaseModel, Field
 
 JdRequirementImportance = Literal["high", "medium", "low"]
 JdRequirementsOrigin = Literal["parsed", "manual", "legacy"]
+JdRequirementV2Category = Literal[
+    "qualification",
+    "responsibility",
+    "technology",
+    "domain",
+    "soft_skill",
+]
 
 
 class JdRequirement(BaseModel):
@@ -17,6 +24,7 @@ class JdRequirement(BaseModel):
     keywords: tuple[str, ...] = ()
     weight: float | None = Field(default=None, ge=0.0, le=1.0)
     v2_importance: Literal["must_have", "preferred", "optional"] | None = None
+    v2_category: JdRequirementV2Category | None = None
 
 
 class JdRequirementDraft(BaseModel):
@@ -27,6 +35,7 @@ class JdRequirementDraft(BaseModel):
     keywords: tuple[str, ...] = ()
     weight: float | None = Field(default=None, ge=0.0, le=1.0)
     v2_importance: Literal["must_have", "preferred", "optional"] | None = None
+    v2_category: JdRequirementV2Category | None = None
 
 
 class JdRecord(BaseModel):

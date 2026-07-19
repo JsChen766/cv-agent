@@ -21,6 +21,7 @@ class ResumeGenerationState(MainState, total=False):
     relevant_experiences: list[dict[str, Any]]
     guideline_instructions: list[str]
     evidence_pack: dict[str, Any] | None
+    fact_retrieval_result: dict[str, Any] | None
     user_preferences: list[dict[str, Any]]
     user_profile: dict[str, Any] | None
     resume_context_ready: bool

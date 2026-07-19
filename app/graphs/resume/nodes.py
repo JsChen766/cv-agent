@@ -87,6 +87,7 @@ async def context_assembly_node(
             "user_preferences": ctx.preferences,
             "user_profile": ctx.user_profile,
             "evidence_pack": ctx.evidence_pack.model_dump() if ctx.evidence_pack else None,
+            "fact_retrieval_result": ctx.fact_retrieval_result,
             "resume_context_ready": True,
         }
     except RuntimeError:

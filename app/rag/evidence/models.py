@@ -5,6 +5,7 @@ from pydantic import BaseModel, Field
 
 class Claim(BaseModel):
     fact_id: str | None = None
+    experience_id: str | None = None
     text: str
     category: str = "achievement"  # "achievement" | "skill" | "responsibility" | "metric"
     is_quantified: bool = False

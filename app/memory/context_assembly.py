@@ -35,6 +35,7 @@ class AssembledContext:
         user_profile: dict[str, object] | None,
         evidence_pack: EvidencePack | None,
         jd_requirements: list[dict[str, object]] | None = None,
+        fact_retrieval_result: dict[str, object] | None = None,
     ) -> None:
         self.jd_text = jd_text
         self.jd_requirements = jd_requirements or []
@@ -43,6 +44,7 @@ class AssembledContext:
         self.preferences = preferences
         self.user_profile = user_profile
         self.evidence_pack = evidence_pack
+        self.fact_retrieval_result = fact_retrieval_result
 
     def to_prompt_block(self) -> str:
         parts: list[str] = []
@@ -123,7 +125,7 @@ async def assemble_context(
         experience_task,
         guideline_task,
     )
-    experiences, evidence_pack = experience_context
+    experiences, evidence_pack, fact_retrieval_result = experience_context
     context = AssembledContext(
         jd_text=jd.raw_text if jd is not None else None,
         jd_requirements=(
@@ -136,6 +138,7 @@ async def assemble_context(
         preferences=preferences,
         user_profile=profile,
         evidence_pack=evidence_pack,
+        fact_retrieval_result=fact_retrieval_result,
     )
     return _trim_context(context, budget)
 
@@ -183,7 +186,7 @@ async def _fetch_experience_context(
     pool: asyncpg.Pool,
     user_id: str,
     jd_task: asyncio.Task[JdRecord | None],
-) -> tuple[list[dict[str, object]], EvidencePack | None]:
+) -> tuple[list[dict[str, object]], EvidencePack | None, dict[str, object] | None]:
     from app.rag.evidence.service import EvidenceRagService
 
     with observation_span(
@@ -193,19 +196,35 @@ async def _fetch_experience_context(
     ) as span:
         jd = await jd_task
         rag = EvidenceRagService(pool)
-        if jd is not None and jd.requirements:
+        fact_retrieval_result: dict[str, object] | None = None
+        if jd is not None and jd.requirements and settings.resume_hybrid_fact_retrieval_enabled:
+            from app.providers.factory import get_embedding_provider
+            from app.rag.evidence.hybrid_retrieval import (
+                build_hybrid_fact_retrieval_service,
+            )
+
+            hybrid = await build_hybrid_fact_retrieval_service(
+                pool,
+                get_embedding_provider(),
+                embedding_model=settings.embedding_model,
+                max_candidates=settings.resume_fact_retrieval_max_candidates,
+                semantic_match_threshold=settings.resume_fact_semantic_match_threshold,
+            ).retrieve(user_id, jd.requirements)
+            jd_retrieved = hybrid.experiences
+            evidence_pack = hybrid.evidence_pack
+            fact_retrieval_result = hybrid.retrieval_result.model_dump(mode="json")
+            education = []
+        elif jd is not None and jd.requirements:
             # Wide retrieval: pull 20 nearest work/project/other by JD similarity so we can
             # keep every experience that is even tangentially related. Cheap page-length
             # trimming happens in the resume generator, not here.
             jd_retrieved = await rag.retrieve_for_jd(jd.requirements, user_id, top_k=20)
             evidence_pack = await rag.build_evidence_pack(jd.requirements, jd_retrieved)
+            education = await rag.retrieve_by_category(user_id, "education")
         else:
             jd_retrieved = await rag.retrieve_recent(user_id, top_k=15)
             evidence_pack = None
-
-        # Education is not JD-filtered: every education entry must always be available to
-        # the resume generator, regardless of similarity ranking.
-        education = await rag.retrieve_by_category(user_id, "education")
+            education = await rag.retrieve_by_category(user_id, "education")
 
         merged: dict[str, ExperienceWithClaims] = {}
         for experience in jd_retrieved:
@@ -232,7 +251,7 @@ async def _fetch_experience_context(
                 }
             )
         _set_row_count(span, len(experiences))
-        return experiences, evidence_pack
+        return experiences, evidence_pack, fact_retrieval_result
 
 
 async def _fetch_guidelines(state: ThreadState, pool: asyncpg.Pool) -> list[str]:

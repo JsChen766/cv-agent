@@ -405,6 +405,41 @@ marginal_value(fact) =
 
 任何一项关键相关度字段异常全为 `0` 时，系统必须记录告警，不能静默退化为纯 recency 排序。
 
+### 7.3.1 阶段 C 实施完成记录（2026-07-19）
+
+状态：已完成。
+
+实施内容：
+
+1. 新增独立的事实级检索领域切片，包含完整 FactBank 输入、Requirement 输入、逐事实评分明细、选择结果和检索诊断模型；领域层保持无框架、无数据库依赖；
+2. 严格实现 `0.40 semantic + 0.25 lexical + 0.20 uncovered gain + 0.10 evidence strength + 0.05 recency` 的基础评分，并使用等价 MMR 边际选择实现新增 requirement 覆盖、新增技术覆盖、语义重复惩罚和重复来源惩罚；
+3. 检索前通过单次查询读取用户全部当前经历版本及其全部 facts，不再先对整段经历做 Top-K 淘汰；教育经历仍保留在兼容上下文中；
+4. 新增 Requirement embedding 持久化缓存迁移 `0020_requirement_embeddings`，缓存身份包含租户、requirements fingerprint、requirement ID 和 embedding model，Requirement 文本变化通过 `text_hash` 自动失效；缺失向量使用一次批量调用补齐；
+5. 新增 Hybrid Fact Retrieval Service，将 RequirementMap、完整 FactBank、向量相似度、词法/技术别名匹配和领域排序串联，并把选中事实投影回现有 `ExperienceWithClaims` 与 `EvidencePack` 契约；投影保留稳定的 `fact_id`、`experience_id` 和来源 revision；
+6. 对非 `ready` 或空 FactBank 的当前经历采用与阶段 A 相同的确定性句子级 fallback，显式标记 `deterministic_fallback`，不静默丢失素材；
+7. 每个候选 fact 均输出五项子分数、命中的 requirement IDs、选择或淘汰原因以及降级来源。语义、词法或未覆盖要求增益全为 `0` 时产生结构化告警；当语义和词法相关度同时不可用时禁用 recency，避免退化为纯时间排序；
+8. Context Assembly 在存在 JD RequirementMap 且功能开关启用时使用新检索路径，并将完整 `fact_retrieval_result` 写入 Resume Graph State；旧版整段经历检索保留在关闭开关时的兼容路径；无 JD 场景保持原有最近经历路径；
+9. 保留 RequirementMap 的 V2 category 字段贯穿 Graph、领域模型、API 兼容投影和 PostgreSQL repository，事实检索优先使用 V2 category；
+10. 对 MMR 热路径预计算词元、向量归一化和已选集合最大相似度，并使用 Python 3.12 `math.sumprod`，避免候选规模增加时重复计算完整相似度矩阵。
+
+新增主要配置：
+
+- `resume_hybrid_fact_retrieval_enabled`，默认开启；
+- `resume_fact_retrieval_max_candidates`，默认 `40`；
+- `resume_fact_semantic_match_threshold`，默认 `0.45`。
+
+实测与验证结果：
+
+- 阶段 C 新增领域和 Hybrid Service 单元测试 `7 passed`；阶段 A/B/C 相关定向回归测试 `26 passed`；
+- 新增测试覆盖“更旧但高度匹配的事实胜过最近弱匹配事实”、互补覆盖优先于重复素材、全零相关度告警及 recency 禁用、所有 facts 均有评分和原因、以前会被经历级 Top-K 丢弃的较早经历仍参与全库评估、Requirement embedding 缓存命中、稳定 fact/experience ID 投影和 pending revision fallback；
+- 在独立 `pgvector/pgvector:pg16` PostgreSQL 容器中完成 `0001 → 0020` 全量迁移、`0020 → 0019 → 0020` downgrade/upgrade 往返验证；阶段 A/B/C PostgreSQL 集成测试 `3 passed`，阶段 C repository 与 Hybrid Service 端到端测试 `1 passed`；
+- PostgreSQL 实测覆盖完整当前 FactBank 读取、512 维 pgvector、Requirement 文本哈希失效、首次批量生成 embedding 及第二次检索缓存命中；两次检索中 embedding provider 仅调用一次；
+- 纯领域排序基准（不含数据库和 embedding 网络耗时）：`250 facts × 20 requirements × 512 dimensions`，10 次中位数 `94.72 ms`、最大 `116.20 ms`；`1000 facts × 20 requirements × 512 dimensions`，3 次中位数 `401.62 ms`、最大 `424.16 ms`；
+- 阶段 C 变更文件 Ruff 检查通过；阶段 C 新增生产代码 mypy strict 检查通过。全量 changed-source 检查仅命中 `app/graphs/resume/nodes.py` 中既有 `LLMProvider.chat_json` 类型声明问题，与本阶段的一行状态透传修改无关；
+- 仓库全量测试结果为 `423 passed, 3 skipped, 54 failed`。54 个失败与阶段 A/B 执行时的既有基线类别一致，仍集中在未连接应用数据库时 API 鉴权顺序返回 `500/502`，以及既有简历字体、版面模板、局部修复和生成排序预期；阶段 C 没有新增失败类别。
+
+阶段边界：本阶段只负责全库事实检索、排序、诊断和兼容投影；全库素材高度充足度、一次性补充询问、ResumePlan、版面收敛与证据审计仍分别属于阶段 D、E、F、G、H，未在阶段 C 提前实现。
+
 ### 7.4 阶段 D：全库素材充足度判断
 
 在询问用户补充经历之前，必须先估算整个 FactBank 的可用内容高度。

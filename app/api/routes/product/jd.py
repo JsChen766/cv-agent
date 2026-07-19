@@ -23,6 +23,9 @@ class JdRequirementBody(StrictRequestModel):
     keywords: tuple[str, ...] = ()
     weight: float | None = Field(default=None, ge=0.0, le=1.0)
     v2_importance: Literal["must_have", "preferred", "optional"] | None = None
+    v2_category: (
+        Literal["qualification", "responsibility", "technology", "domain", "soft_skill"] | None
+    ) = None
 
     def to_draft(self) -> JdRequirementDraft:
         return JdRequirementDraft(
@@ -33,6 +36,7 @@ class JdRequirementBody(StrictRequestModel):
             keywords=self.keywords,
             weight=self.weight,
             v2_importance=self.v2_importance,
+            v2_category=self.v2_category,
         )
 
 
@@ -114,6 +118,7 @@ def _serialize(jd: JdRecord) -> dict[str, object]:
                 "keywords": list(r.keywords),
                 "weight": r.weight,
                 "v2Importance": r.v2_importance,
+                "v2Category": r.v2_category,
             }
             for r in jd.requirements
         ],

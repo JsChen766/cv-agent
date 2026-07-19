@@ -170,6 +170,7 @@ class JdService:
                 keywords=req.keywords,
                 weight=req.weight,
                 v2_importance=req.v2_importance,
+                v2_category=req.v2_category,
             )
             for req in requirements
         ]
@@ -198,6 +199,7 @@ class JdService:
             keywords=requirement.keywords,
             weight=requirement.weight,
             v2_importance=requirement.importance,
+            v2_category=requirement.category,
         )
 
 

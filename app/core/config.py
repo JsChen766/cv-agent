@@ -50,6 +50,12 @@ class Settings(BaseSettings):
     jd_requirement_parse_deadline_seconds: float = Field(default=10.0, gt=0)
     jd_requirement_max_normalized_chars: int = Field(default=50000, ge=1000, le=200000)
 
+    # V2 fact-level hybrid retrieval. Every current FactRecord is scored before
+    # the result is projected back into the temporary V1 experience contract.
+    resume_hybrid_fact_retrieval_enabled: bool = True
+    resume_fact_retrieval_max_candidates: int = Field(default=40, ge=1, le=500)
+    resume_fact_semantic_match_threshold: float = Field(default=0.45, ge=0.0, le=1.0)
+
     # RAG
     evidence_similarity_threshold: float = 0.65
     preference_dedup_threshold: float = 0.85
