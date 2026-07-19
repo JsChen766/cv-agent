@@ -2399,6 +2399,12 @@ async def content_gap_node(
 
     return {
         "relevant_experiences": updated_experiences,
+        # These values are derived from relevant_experiences. Invalidate them so
+        # the resumed graph cannot regenerate from the pre-supplement snapshots.
+        "selected_experiences": [],
+        "experience_selection_result": None,
+        "matching_plan": None,
+        "content_budget": None,
         "resume_user_action": "revise",
         "revision_instruction": "Use the newly supplied grounded experience facts.",
         "layout_revision_iteration": 0,

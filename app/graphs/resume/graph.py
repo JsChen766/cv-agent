@@ -113,7 +113,7 @@ def build_resume_subgraph() -> StateGraph[ResumeGenerationState]:
     builder.add_conditional_edges(
         "content_gap",
         content_gap_route,
-        {"revision": "cot_planning", "fact_check": "fact_check", "end": END},
+        {"revision": "experience_selection", "fact_check": "fact_check", "end": END},
     )
     builder.add_conditional_edges(
         "output",
