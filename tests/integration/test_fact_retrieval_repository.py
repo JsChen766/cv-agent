@@ -177,6 +177,30 @@ async def test_full_current_fact_read_and_requirement_embedding_cache() -> None:
         assert sufficiency.qualified_facts == 1
         assert sufficiency.status == "insufficient"
         assert sufficiency.missing_height_mm > 0
+
+        revision_two = f"{revision_id}-2"
+        changed_content = content + " Added a grounded cache warm-up workflow."
+        await experiences.add_revision(
+            revision_two,
+            experience_id,
+            changed_content,
+            "copilot",
+            compute_revision_hash(changed_content),
+        )
+        current_after_revision = await retrieval.load_current_experience_facts(
+            user_id,
+            embedding_model="test-embedding",
+        )
+        assert len(current_after_revision) == 1
+        assert current_after_revision[0].revision_id == revision_two
+        assert current_after_revision[0].factbank_status == "pending"
+        assert current_after_revision[0].facts == ()
+        async with pool.acquire() as conn:
+            historical_fact_count = await conn.fetchval(
+                "SELECT COUNT(*) FROM fact_records WHERE source_revision_id = $1",
+                revision_id,
+            )
+        assert historical_fact_count == 1
     finally:
         async with pool.acquire() as conn:
             await conn.execute("DELETE FROM users WHERE id = $1", user_id)

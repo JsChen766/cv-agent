@@ -36,6 +36,15 @@ class CandidateBullet(BaseModel):
     length_variant: LengthVariant
 
 
+class CandidateReusePlan(BaseModel):
+    mode: Literal["full", "incremental"]
+    reusable_candidates: tuple[CandidateBullet, ...] = ()
+    generation_experience_ids: tuple[str, ...] = ()
+    generation_fact_ids: tuple[str, ...] = ()
+    invalidated_experience_ids: tuple[str, ...] = ()
+    invalidation_reasons: dict[str, tuple[str, ...]] = Field(default_factory=dict)
+
+
 class CandidateGenerationDiagnostics(BaseModel):
     requested_facts: int = Field(ge=0)
     model_groups: int = Field(ge=0)
@@ -48,6 +57,8 @@ class CandidateGenerationDiagnostics(BaseModel):
     target_candidate_lines: int = Field(ge=0)
     logical_pool_ratio: float = Field(ge=0.0)
     physical_attempts: int = Field(ge=0)
+    reused_candidate_count: int = Field(default=0, ge=0)
+    regenerated_experience_count: int = Field(default=0, ge=0)
     provider_protocol: str | None = None
     provider_error_category: str | None = None
     generation_source: Literal["model", "mixed", "deterministic_fallback"]

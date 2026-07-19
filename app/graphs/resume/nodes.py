@@ -23,8 +23,19 @@ from pydantic import BaseModel, Field, JsonValue, ValidationError
 from app.core.config import settings
 from app.core.events import AgentInterruptEvent
 from app.core.observability import current_recorder, observation_span
-from app.domain.resume.candidates.models import CandidateBullet, CandidatePool
-from app.domain.resume.candidates.service import CandidatePoolService
+from app.core.types import ExperienceCategory
+from app.domain.resume.candidates.models import (
+    CandidateBatchDraft,
+    CandidateBullet,
+    CandidateGroupDraft,
+    CandidatePool,
+    CandidateReusePlan,
+    CandidateTextVariantDraft,
+)
+from app.domain.resume.candidates.service import (
+    CandidatePoolService,
+    plan_incremental_candidate_reuse,
+)
 from app.domain.resume.compiler.models import CandidateMeasurement, CompiledResume
 from app.domain.resume.compiler.service import ResumeLayoutCompiler
 from app.domain.resume.content_budget import build_resume_content_budget
@@ -368,34 +379,67 @@ async def batch_candidate_generation_node(
     language = _requested_resume_language(state, profile)
     matching_plan = state.get("matching_plan") or {}
     tone = str(matching_plan.get("tone") or "professional")
+    reuse_plan = _candidate_reuse_plan_from_state(state, plan, retrieval)
+    generation_plan = _incremental_generation_plan(plan, reuse_plan)
     writer = get_optional_stream_writer()
     buffered_events: list[dict[str, object]] = []
     event_writer = writer or buffered_events.append
-    emit_thinking(event_writer, "正在一次性生成全部经历的证据化候选要点…")
+    if reuse_plan.mode == "incremental":
+        emit_thinking(event_writer, "正在复用未变化经历，只重写受 revision 影响的候选要点…")
+    else:
+        emit_thinking(event_writer, "正在一次性生成全部经历的证据化候选要点…")
     started_at = time.perf_counter()
-    write_result = await ResumeBatchWriter(get_provider()).write(
-        plan,
-        retrieval,
-        language=language,
-        tone=tone,
-        candidate_pool_target_ratio=settings.resume_candidate_pool_target_ratio,
-        candidate_pool_max_ratio=settings.resume_candidate_pool_max_ratio,
-        deadline_seconds=settings.resume_batch_generation_deadline_seconds,
-        max_attempts=settings.resume_batch_generation_max_attempts,
-        revision_instruction=(
-            str(state.get("revision_instruction")) if state.get("revision_instruction") else None
-        ),
+    if reuse_plan.generation_fact_ids:
+        write_result = await ResumeBatchWriter(get_provider()).write(
+            generation_plan,
+            retrieval,
+            language=language,
+            tone=tone,
+            candidate_pool_target_ratio=settings.resume_candidate_pool_target_ratio,
+            candidate_pool_max_ratio=settings.resume_candidate_pool_max_ratio,
+            deadline_seconds=settings.resume_batch_generation_deadline_seconds,
+            max_attempts=settings.resume_batch_generation_max_attempts,
+            revision_instruction=(
+                str(state.get("revision_instruction"))
+                if state.get("revision_instruction")
+                else None
+            ),
+        )
+        generated_draft = write_result.draft
+        physical_attempts = write_result.attempts
+        provider_protocol = write_result.protocol
+        provider_error_category = write_result.error_category
+    else:
+        generated_draft = CandidateBatchDraft(groups=())
+        physical_attempts = 0
+        provider_protocol = None
+        provider_error_category = None
+    combined_draft = CandidateBatchDraft(
+        groups=(
+            *_candidate_bullets_to_draft(reuse_plan.reusable_candidates).groups,
+            *(generated_draft.groups if generated_draft is not None else ()),
+        )
     )
     pool = CandidatePoolService(layout).build(
         plan,
         retrieval,
-        write_result.draft,
+        combined_draft,
         language=language,
         candidate_pool_target_ratio=settings.resume_candidate_pool_target_ratio,
         candidate_pool_max_ratio=settings.resume_candidate_pool_max_ratio,
-        physical_attempts=write_result.attempts,
-        provider_protocol=write_result.protocol,
-        provider_error_category=write_result.error_category,
+        physical_attempts=physical_attempts,
+        provider_protocol=provider_protocol,
+        provider_error_category=provider_error_category,
+    )
+    pool = pool.model_copy(
+        update={
+            "diagnostics": pool.diagnostics.model_copy(
+                update={
+                    "reused_candidate_count": len(reuse_plan.reusable_candidates),
+                    "regenerated_experience_count": len(reuse_plan.generation_experience_ids),
+                }
+            )
+        }
     )
     if not pool.candidates:
         return _batch_candidate_failure("candidate_pool_empty")
@@ -440,8 +484,10 @@ async def batch_candidate_generation_node(
     logger.info(
         "Batch candidate generation completed",
         extra={
-            "physical_attempts": write_result.attempts,
+            "physical_attempts": physical_attempts,
             "candidate_count": len(pool.candidates),
+            "reused_candidates": len(reuse_plan.reusable_candidates),
+            "regenerated_experiences": len(reuse_plan.generation_experience_ids),
             "fallback_groups": pool.diagnostics.fallback_groups,
             "logical_pool_ratio": pool.diagnostics.logical_pool_ratio,
             "duration_ms": duration_ms,
@@ -452,6 +498,10 @@ async def batch_candidate_generation_node(
         "candidate_generation_status": "ready",
         "resume_candidate_bullets": [value.model_dump(mode="json") for value in pool.candidates],
         "candidate_generation_diagnostics": pool.diagnostics.model_dump(mode="json"),
+        "candidate_reuse_diagnostics": reuse_plan.model_dump(
+            mode="json", exclude={"reusable_candidates"}
+        ),
+        "incremental_recalculation": None,
         "layout_compilation_status": None,
         "compiled_resume": None,
         "candidate_measurements": [],
@@ -460,6 +510,8 @@ async def batch_candidate_generation_node(
         "quality_validation_status": None,
         "quality_validation_report": None,
         "grounding_report": None,
+        "coverage_report": None,
+        "uncovered_jd_requirement_ids": [],
         "quality_local_repair_status": None,
         "quality_local_repair_call_count": 0,
         "quality_local_repair_provider_attempts": 0,
@@ -471,15 +523,21 @@ async def batch_candidate_generation_node(
         "resume_candidate_pool": structured,
         "pending_sse_events": [*existing_events, *buffered_events],
         "coverage_before_layout": coverage_before,
-        "generation_call_count": state.get("generation_call_count", 0) + write_result.attempts,
+        "generation_call_count": state.get("generation_call_count", 0) + physical_attempts,
         "full_generation_call_count": state.get("full_generation_call_count", 0)
-        + write_result.attempts,
+        + (physical_attempts if reuse_plan.mode == "full" else 0),
+        "incremental_generation_call_count": state.get("incremental_generation_call_count", 0)
+        + (physical_attempts if reuse_plan.mode == "incremental" else 0),
         "layout_profile_version": layout.profile.version,
         "layout_profile_hash": layout.profile.profile_hash,
         "layout_template_id": STANDARD_RESUME_TEMPLATE.template_id,
         "quality_status": None,
         "quality_issues": [],
-        "generation_strategy": "single_batch_candidate_pool",
+        "generation_strategy": (
+            "incremental_candidate_pool"
+            if reuse_plan.mode == "incremental"
+            else "single_batch_candidate_pool"
+        ),
         "browser_layout_observation": None,
         "browser_layout_violations": [],
         "browser_verification_iteration": 0,
@@ -499,6 +557,116 @@ def _batch_candidate_failure(reason: str) -> dict[str, object]:
         "quality_status": "failed",
         "quality_issues": [{"code": "batch_candidate_generation_failed", "message": reason}],
     }
+
+
+def _candidate_reuse_plan_from_state(
+    state: ResumeGenerationState,
+    plan: ResumePlan,
+    retrieval: HybridRetrievalResult,
+) -> CandidateReusePlan:
+    raw = state.get("incremental_recalculation")
+    if not isinstance(raw, dict):
+        return plan_incremental_candidate_reuse(None, None, (), plan, retrieval)
+    try:
+        previous_plan = ResumePlan.model_validate(raw.get("previous_resume_plan"))
+        previous_retrieval = HybridRetrievalResult.model_validate(
+            raw.get("previous_fact_retrieval_result")
+        )
+        previous_candidates = tuple(
+            CandidateBullet.model_validate(value)
+            for value in raw.get("previous_candidate_bullets") or []
+        )
+        invalidated_experience_ids = tuple(
+            str(value) for value in raw.get("affected_experience_ids") or [] if value
+        )
+    except ValidationError as exc:
+        logger.warning("Incremental candidate snapshot validation failed: %s", exc)
+        return plan_incremental_candidate_reuse(None, None, (), plan, retrieval)
+    return plan_incremental_candidate_reuse(
+        previous_plan,
+        previous_retrieval,
+        previous_candidates,
+        plan,
+        retrieval,
+        invalidated_experience_ids=invalidated_experience_ids,
+    )
+
+
+def _incremental_generation_plan(
+    plan: ResumePlan,
+    reuse: CandidateReusePlan,
+) -> ResumePlan:
+    if reuse.mode == "full":
+        return plan
+    generation_experience_ids = set(reuse.generation_experience_ids)
+    generation_fact_ids = set(reuse.generation_fact_ids)
+    selected_experience_ids = tuple(
+        value for value in plan.selected_experience_ids if value in generation_experience_ids
+    )
+    selected_fact_ids = tuple(
+        value for value in plan.selected_fact_ids if value in generation_fact_ids
+    )
+    total_height = sum(plan.experience_height_budgets_mm.values())
+    generation_height = sum(
+        plan.experience_height_budgets_mm.get(value, 0.0) for value in selected_experience_ids
+    )
+    target_lines = (
+        max(1, round(plan.target_candidate_lines * generation_height / total_height))
+        if selected_fact_ids and total_height > 0
+        else len(selected_fact_ids)
+    )
+    return plan.model_copy(
+        update={
+            "selected_experience_ids": selected_experience_ids,
+            "selected_fact_ids": selected_fact_ids,
+            "fact_requirement_map": {
+                fact_id: plan.fact_requirement_map.get(fact_id, ()) for fact_id in selected_fact_ids
+            },
+            "experience_height_budgets_mm": {
+                experience_id: plan.experience_height_budgets_mm[experience_id]
+                for experience_id in selected_experience_ids
+                if experience_id in plan.experience_height_budgets_mm
+            },
+            "target_candidate_lines": target_lines,
+            "selection_reasons": {
+                fact_id: plan.selection_reasons.get(fact_id, ()) for fact_id in selected_fact_ids
+            },
+        }
+    )
+
+
+def _candidate_bullets_to_draft(
+    candidates: tuple[CandidateBullet, ...],
+) -> CandidateBatchDraft:
+    grouped: dict[str, list[CandidateBullet]] = {}
+    for candidate in candidates:
+        grouped.setdefault(candidate.candidate_group_id, []).append(candidate)
+    groups: list[CandidateGroupDraft] = []
+    variant_order = {"short": 0, "medium": 1, "long": 2}
+    for group_id in sorted(grouped):
+        values = grouped[group_id]
+        first = values[0]
+        groups.append(
+            CandidateGroupDraft(
+                experience_id=first.experience_id,
+                source_fact_ids=first.source_fact_ids,
+                covered_requirement_ids=first.covered_requirement_ids,
+                variants=tuple(
+                    CandidateTextVariantDraft(
+                        length_variant=value.length_variant,
+                        text=value.text,
+                    )
+                    for value in sorted(
+                        values,
+                        key=lambda value: (
+                            variant_order[value.length_variant],
+                            value.bullet_id,
+                        ),
+                    )
+                ),
+            )
+        )
+    return CandidateBatchDraft(groups=tuple(groups))
 
 
 # ── 1.46875. Height-constrained layout compilation ──────────────────────────
@@ -3153,6 +3321,16 @@ async def output_failure_node(state: ResumeGenerationState) -> dict[str, object]
     }
 
 
+def _retrieval_revision_id(raw_retrieval: object, experience_id: str) -> str | None:
+    if not isinstance(raw_retrieval, dict):
+        return None
+    for value in raw_retrieval.get("experiences") or []:
+        if isinstance(value, dict) and str(value.get("experience_id") or "") == experience_id:
+            revision_id = value.get("revision_id")
+            return str(revision_id) if revision_id else None
+    return None
+
+
 async def content_gap_node(
     state: ResumeGenerationState, config: RunnableConfig | None = None
 ) -> dict[str, object]:
@@ -3356,20 +3534,28 @@ async def content_gap_node(
 
     while True:
         experience_id = str(resume_value.get("experience_id") or "")
+        raw_new_experience = resume_value.get("new_experience") or resume_value.get("experience")
+        new_experience = dict(raw_new_experience) if isinstance(raw_new_experience, dict) else {}
         supplemental = str(
             resume_value.get("content")
             or resume_value.get("additional_content")
             or resume_value.get("message")
+            or new_experience.get("content")
             or ""
         ).strip()
-        if experience_id and supplemental and experience_id in experience_by_id:
+        new_title = str(resume_value.get("title") or new_experience.get("title") or "").strip()
+        is_existing_supplement = bool(
+            experience_id and supplemental and experience_id in experience_by_id
+        )
+        is_new_experience = bool(not experience_id and supplemental and new_title)
+        if is_existing_supplement or is_new_experience:
             break
         resume_value = interrupt(
             {
                 **payload,
                 "interrupt_id": str(uuid.uuid4()),
-                "message": "请选择一段有效经历，并填写要补充的具体事实。",
-                "validation_error": "缺少有效的经历 ID 或具体事实。",
+                "message": "请选择已有经历并填写事实，或提供新经历标题和具体内容。",
+                "validation_error": "缺少有效经历 ID，或新经历缺少标题/具体事实。",
             }
         )
         if not isinstance(resume_value, dict) or resume_value.get("action") != "supplement":
@@ -3382,21 +3568,24 @@ async def content_gap_node(
     source_experiences = [
         dict(value) for value in state.get("relevant_experiences") or [] if isinstance(value, dict)
     ]
-    if not any(str(value.get("id")) == experience_id for value in source_experiences):
-        source_experiences.append(dict(experience_by_id[experience_id]))
     updated_experiences: list[dict[str, object]] = []
-    combined_content = ""
-    for value in source_experiences:
-        experience = dict(value)
-        if str(experience.get("id")) == experience_id:
-            combined_content = (
-                str(experience.get("content") or "").rstrip()
-                + "\n\n用户补充事实：\n"
-                + supplemental
-            )
-            experience["content"] = combined_content
-            experience["claims"] = []
-        updated_experiences.append(experience)
+    combined_content = supplemental
+    if is_existing_supplement:
+        if not any(str(value.get("id")) == experience_id for value in source_experiences):
+            source_experiences.append(dict(experience_by_id[experience_id]))
+        for value in source_experiences:
+            experience = dict(value)
+            if str(experience.get("id")) == experience_id:
+                combined_content = (
+                    str(experience.get("content") or "").rstrip()
+                    + "\n\n用户补充事实：\n"
+                    + supplemental
+                )
+                experience["content"] = combined_content
+                experience["claims"] = []
+            updated_experiences.append(experience)
+    else:
+        updated_experiences = source_experiences
 
     services = services_from_config(config)
     if services is None:
@@ -3412,13 +3601,74 @@ async def content_gap_node(
             "resume_user_action": "failed",
             "interrupt_payload": None,
         }
+    previous_revision_id = _retrieval_revision_id(state.get("fact_retrieval_result"), experience_id)
+    current_revision_id: str | None
     try:
-        await services.experience.add_revision(
-            state.get("user_id", ""),
-            experience_id,
-            combined_content,
-            source="copilot",
-        )
+        if is_existing_supplement:
+            revision = await services.experience.add_revision(
+                state.get("user_id", ""),
+                experience_id,
+                combined_content,
+                source="copilot",
+            )
+            current_revision_id = revision.id
+            affected_experience_id = experience_id
+            change_kind = "existing_experience_revision"
+        else:
+            raw_category = str(
+                resume_value.get("category") or new_experience.get("category") or "project"
+            )
+            category = cast(
+                ExperienceCategory,
+                raw_category
+                if raw_category in {"work", "project", "education", "volunteer", "other"}
+                else "project",
+            )
+            raw_tags = resume_value.get("tags") or new_experience.get("tags")
+            created = await services.experience.create_experience(
+                state.get("user_id", ""),
+                category=category,
+                title=new_title,
+                content=supplemental,
+                organization=_optional_string(
+                    resume_value.get("organization") or new_experience.get("organization")
+                ),
+                role=_optional_string(resume_value.get("role") or new_experience.get("role")),
+                location=_optional_string(
+                    resume_value.get("location") or new_experience.get("location")
+                ),
+                start_date=resume_value.get("start_date") or new_experience.get("start_date"),
+                end_date=resume_value.get("end_date") or new_experience.get("end_date"),
+                tags=(
+                    [str(value) for value in raw_tags if str(value).strip()]
+                    if isinstance(raw_tags, list)
+                    else None
+                ),
+                source="copilot",
+            )
+            affected_experience_id = created.id
+            current_revision_id = created.current_revision_id
+            change_kind = "new_experience"
+            updated_experiences.append(
+                {
+                    "id": created.id,
+                    "title": created.title,
+                    "organization": created.organization,
+                    "role": created.role,
+                    "location": created.location,
+                    "category": created.category,
+                    "start_date": (created.start_date.isoformat() if created.start_date else None),
+                    "end_date": created.end_date.isoformat() if created.end_date else None,
+                    "tags": created.tags,
+                    "content": supplemental,
+                    "claims": [],
+                    "factbank_status": (
+                        created.current_revision.factbank_status
+                        if created.current_revision is not None
+                        else "pending"
+                    ),
+                }
+            )
     except Exception as exc:  # noqa: BLE001
         logger.warning("Failed to persist resume content supplement: %s", exc)
         return {
@@ -3451,7 +3701,23 @@ async def content_gap_node(
         "candidate_generation_status": None,
         "resume_candidate_bullets": [],
         "candidate_generation_diagnostics": None,
-        "full_generation_call_count": 0,
+        "candidate_reuse_diagnostics": None,
+        "incremental_recalculation": {
+            "change_kind": change_kind,
+            "affected_experience_ids": [affected_experience_id],
+            "revision_changes": {
+                affected_experience_id: {
+                    "previous_revision_id": previous_revision_id,
+                    "current_revision_id": current_revision_id,
+                }
+            },
+            "previous_resume_plan": state.get("resume_plan"),
+            "previous_fact_retrieval_result": state.get("fact_retrieval_result"),
+            "previous_candidate_bullets": state.get("resume_candidate_bullets") or [],
+        },
+        "variants": [],
+        "previous_structured": state.get("resume_structure"),
+        "resume_structure": None,
         "layout_compilation_status": None,
         "compiled_resume": None,
         "candidate_measurements": [],
@@ -3460,6 +3726,10 @@ async def content_gap_node(
         "quality_validation_status": None,
         "quality_validation_report": None,
         "grounding_report": None,
+        "coverage_report": None,
+        "uncovered_jd_requirement_ids": [],
+        "quality_status": None,
+        "quality_issues": [],
         "quality_local_repair_status": None,
         "quality_local_repair_call_count": 0,
         "quality_local_repair_provider_attempts": 0,
@@ -3472,9 +3742,13 @@ async def content_gap_node(
         "resume_user_action": "reload",
         "revision_instruction": "Use the newly supplied grounded experience facts.",
         "layout_revision_iteration": 0,
-        "generation_call_count": 0,
         "resume_candidate_pool": None,
         "layout_report": None,
+        "browser_staged_variant_id": None,
+        "browser_layout_observation": None,
+        "browser_layout_violations": [],
+        "browser_verification_iteration": 0,
+        "browser_verification_status": None,
         "interrupt_payload": None,
     }
 

@@ -5,6 +5,7 @@ from datetime import date
 
 import pytest
 
+from app.domain.resume.candidates.service import CandidatePoolService
 from app.domain.resume.layout_service import ResumeLayoutService
 from app.domain.resume.retrieval.models import (
     FactScoreBreakdown,
@@ -31,6 +32,7 @@ from app.graphs.resume.nodes import (
 from app.infra.layout import PillowFontMetrics
 from app.providers.base import StructuredCallBudgetError, StructuredCallResult
 from app.tools.base import ServiceContainer
+from tests.unit.test_domain.test_resume_candidates import _two_experience_candidate_inputs
 
 
 class _BatchProvider:
@@ -81,6 +83,21 @@ class _BatchProvider:
             attempts=1,
             protocol="test_json_schema",
         )
+
+
+class _IncrementalBatchProvider(_BatchProvider):
+    def __init__(self) -> None:
+        super().__init__()
+        self.payloads: list[dict[str, object]] = []
+
+    async def chat_structured_bounded(
+        self,
+        messages: list[dict[str, str]],
+        schema: type,
+        **kwargs: object,
+    ) -> StructuredCallResult:
+        self.payloads.append(json.loads(messages[1]["content"]))
+        return await super().chat_structured_bounded(messages, schema, **kwargs)
 
 
 def _retrieval(fact_count: int) -> dict[str, object]:
@@ -255,6 +272,71 @@ async def test_v2_generation_uses_one_complete_batch_call(
         for fact_id in value["source_fact_ids"]
     }
     assert candidate_fact_ids == plan_fact_ids
+
+
+async def test_incremental_generation_reuses_unchanged_experience_candidates(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plan, retrieval = _two_experience_candidate_inputs()
+    layout = ResumeLayoutService(PillowFontMetrics())
+    previous_pool = CandidatePoolService(layout).build(
+        plan,
+        retrieval,
+        None,
+        language="zh-CN",
+        candidate_pool_target_ratio=1.2,
+        physical_attempts=0,
+        provider_protocol=None,
+    )
+    provider = _IncrementalBatchProvider()
+    monkeypatch.setattr("app.graphs.resume.nodes.get_provider", lambda: provider)
+    selected_experiences = [
+        {
+            "id": value.experience_id,
+            "title": value.title,
+            "organization": value.organization,
+            "role": value.role,
+            "category": value.category,
+            "start_date": value.start_date,
+            "end_date": value.end_date,
+            "tags": list(value.tags),
+            "content": value.content,
+        }
+        for value in retrieval.experiences
+    ]
+
+    result = await batch_candidate_generation_node(
+        {
+            "resume_plan": plan.model_dump(mode="json"),
+            "fact_retrieval_result": retrieval.model_dump(mode="json"),
+            "selected_experiences": selected_experiences,
+            "user_profile": {"full_name": "测试用户"},
+            "pending_sse_events": [],
+            "full_generation_call_count": 1,
+            "incremental_recalculation": {
+                "affected_experience_ids": ["exp-work"],
+                "previous_resume_plan": plan.model_dump(mode="json"),
+                "previous_fact_retrieval_result": retrieval.model_dump(mode="json"),
+                "previous_candidate_bullets": [
+                    value.model_dump(mode="json") for value in previous_pool.candidates
+                ],
+            },
+        },
+        {"configurable": {"services": ServiceContainer.model_construct(resume_layout=layout)}},
+    )
+
+    assert provider.calls == 1
+    assert provider.payloads[0]["selected_experience_ids"] == ["exp-work"]
+    assert set(provider.payloads[0]["selected_fact_ids"]) == {"fact-1", "fact-2"}
+    assert result["generation_strategy"] == "incremental_candidate_pool"
+    assert result["full_generation_call_count"] == 1
+    assert result["incremental_generation_call_count"] == 1
+    assert result["candidate_generation_diagnostics"]["reused_candidate_count"] == 1
+    assert result["candidate_generation_diagnostics"]["regenerated_experience_count"] == 1
+    assert {value["experience_id"] for value in result["resume_candidate_bullets"]} == {
+        "exp-work",
+        "exp-project",
+    }
 
 
 async def test_v2_layout_compiler_consumes_complete_candidate_pool(

@@ -782,6 +782,32 @@ maximize
 
 不应重新抽取未变化经历，也不应重新生成所有已经合格的 bullet。
 
+### 7.9.1 阶段 I 实施完成记录（2026-07-19）
+
+**状态：已完成。** 用户在材料不足中断点提交内容后，V2 链路会先确定性区分“已有经历补充”和“新增经历”，持久化新的 current revision，再从最新 revision 重新执行 FactBank 检索、事实排名和 ResumePlan。候选层按 revision、selected facts 和 requirement 映射做增量失效，只为受影响经历调用一次有界批量生成；未变化且仍满足当前计划的候选保持稳定 ID 并参与全局重排，随后重新执行完整的阶段 G 编译与阶段 H 质量门禁。
+
+已完成内容：
+
+1. `content_gap` 对带有有效 `experience_id + content` 的输入判定为已有经历补充，对不带 ID 但包含 `title + content` 的输入判定为新增经历；字段不足或 ID 无效时继续 interrupt，不会误写入或消耗补充机会；
+2. 已有经历通过 `ExperienceService.add_revision` 创建新 revision；新增经历通过 `ExperienceService.create_experience` 创建 experience 及首个 revision，并将标准化后的分类、组织、职位、地点、日期和 tags 带回上下文；持久化失败时 fail closed，不进入后续生成；
+3. revision 更新后保留上一轮 `ResumePlan`、`HybridRetrievalResult` 和 `CandidateBullet` 作为只读增量快照，同时立即清空当前事实选择、事实排名、计划、候选池、结构化 variants、CompiledResume、质量报告和浏览器验证状态，避免旧最终产物在恢复执行时被误用；
+4. FactBank 沿用既有 revision-scoped 模型：新 revision 初始为 `pending`，worker 只处理该 revision；检索只读取 experience 的 current revision。旧 FactRecords 和向量继续作为历史 revision 数据保留，但不会进入当前检索、排名或生成，因此不需要物理删除，也不会重新抽取未变化经历；
+5. 新增纯领域 `CandidateReusePlan` 和 `plan_incremental_candidate_reuse`。复用判定同时核对显式受影响经历、`revision_id`、当前/上一轮 `selected_fact_ids`、`fact_requirement_map` 和候选的 fact coverage；任何快照缺失、校验失败或映射变化都对对应经历 fail closed 到重新生成；
+6. 增量计划只包含需要重写的 experience/fact IDs、对应高度预算和 requirement 映射；`ResumeBatchWriter` 的模型输入不再携带未变化经历。没有待生成 fact 时模型调用次数为 `0`，有受影响经历时仍只进行一次有界 batch 调用；
+7. 未变化候选被转换回候选 draft，与新生成候选合并后统一交给 `CandidatePoolService`，使用最新完整 `ResumePlan + HybridRetrievalResult` 再验证、补足和排序；这保证复用不是直接信任旧结果，且最终版面仍可在全部经历之间全局取舍；
+8. Graph 新增 `incremental_recalculation`、`candidate_reuse_diagnostics` 和 `incremental_generation_call_count` 状态；诊断会报告 full/incremental 模式、复用候选数、重算经历/fact IDs、失效原因和物理模型调用次数，便于检查是否误触发全量生成；
+9. 增量候选完成后继续走既有 `layout_compile → deterministic_quality_gate`，不会绕过单页 `85%–98%`、grounding、current revision、must-have coverage、重复 fact、元数据和浏览器版面约束；阶段 I 未新增数据库表、迁移、API 契约或配置项；
+10. 阶段 H 复核中补齐两个 fail-closed 边界：同一 bullet 内重复声明相同 fact 会产生 `duplicate_source_fact_within_bullet`，经历 item 缺失 title/organization/role/date 元数据时不再因空值跳过比对。扩大回归和真实字体压力审计均通过，未发现阶段 H 主链路回归。
+
+实测与验证结果：
+
+- 阶段 I 的候选复用、已有经历补充、新经历创建、缓存失效、局部 Provider payload、调用计数及阶段 H 关联门禁定向回归为 `42 passed`；阶段 H Graph、浏览器布局和架构边界复核为 `28 passed`；
+- 本地 Docker PostgreSQL 已运行，Alembic 已升级到 `0020 (head)`；真实数据库 integration 测试验证：旧 revision 的 FactRecord 仍可历史追溯，但 experience 切换到新 pending revision 后，当前检索不会返回旧事实，测试为 `1 passed`；
+- 合成 `40 experiences × 3 facts` 的增量基准中，120 条候选复用 117 条，仅 1 段经历、3 个 facts 进入重算；候选失效分区中位数 `0.208ms`、最大 `0.512ms`；
+- 阶段 H 真实字体压力复核为 `100 groups × 3 variants × 10 experiences`，从 300 个版本中选择 44 条，页面使用率 `97.65%`、grounded `44/44`、must-have coverage `100%`、质量问题 `0`；50 次审计中位数 `5.198ms`、最大 `8.177ms`；
+- 仓库全量回归在本地 PostgreSQL 下为 `541 passed, 8 failed`；全量 unit 为 `415 passed, 8 failed`。8 个失败均为阶段 H 前已存在的 V1 bullet 阈值/optimizer、旧局部修复、旧并行生成排序和前端模板 manifest 差异，没有新增失败类别；
+- 阶段 I 变更目标 Ruff 检查通过；5 个生产源码目标的 mypy strict 检查通过；候选增量实现保持在 domain/graphs 边界内，未引入反向依赖。
+
 ## 8. API 与运行时模型
 
 ### 8.1 异步运行协议

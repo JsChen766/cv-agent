@@ -10,6 +10,7 @@ from app.domain.resume.candidates.models import (
     CandidateGenerationDiagnostics,
     CandidateGroupDraft,
     CandidatePool,
+    CandidateReusePlan,
     CandidateTextVariantDraft,
 )
 from app.domain.resume.layout_service import ResumeLayoutService
@@ -18,6 +19,130 @@ from app.domain.resume.retrieval.models import HybridRetrievalResult, RankedFact
 
 _VARIANT_ORDER = {"short": 0, "medium": 1, "long": 2}
 _NUMBER = re.compile(r"(?<!\d)\d+(?:[.,]\d+)?%?")
+
+
+def plan_incremental_candidate_reuse(
+    previous_plan: ResumePlan | None,
+    previous_retrieval: HybridRetrievalResult | None,
+    previous_candidates: tuple[CandidateBullet, ...],
+    current_plan: ResumePlan,
+    current_retrieval: HybridRetrievalResult,
+    *,
+    invalidated_experience_ids: tuple[str, ...] = (),
+) -> CandidateReusePlan:
+    """Partition candidates by revision, selected facts and requirement mapping."""
+    current_fact_by_id = {value.fact_id: value for value in current_retrieval.facts}
+    current_facts_by_experience = _selected_facts_by_experience(
+        current_plan,
+        current_fact_by_id,
+    )
+    narrative_experience_ids = tuple(
+        experience_id
+        for experience_id in current_plan.selected_experience_ids
+        if current_facts_by_experience.get(experience_id)
+    )
+    if previous_plan is None or previous_retrieval is None or not previous_candidates:
+        return CandidateReusePlan(
+            mode="full",
+            generation_experience_ids=narrative_experience_ids,
+            generation_fact_ids=tuple(
+                fact_id
+                for fact_id in current_plan.selected_fact_ids
+                if current_fact_by_id.get(fact_id) is not None
+            ),
+            invalidated_experience_ids=tuple(sorted(set(invalidated_experience_ids))),
+            invalidation_reasons={
+                experience_id: ("previous_candidate_snapshot_unavailable",)
+                for experience_id in narrative_experience_ids
+            },
+        )
+
+    previous_fact_by_id = {value.fact_id: value for value in previous_retrieval.facts}
+    previous_facts_by_experience = _selected_facts_by_experience(
+        previous_plan,
+        previous_fact_by_id,
+    )
+    previous_revision_by_experience = {
+        value.experience_id: value.revision_id for value in previous_retrieval.experiences
+    }
+    current_revision_by_experience = {
+        value.experience_id: value.revision_id for value in current_retrieval.experiences
+    }
+    candidates_by_experience: dict[str, list[CandidateBullet]] = {}
+    for candidate in previous_candidates:
+        candidates_by_experience.setdefault(candidate.experience_id, []).append(candidate)
+
+    explicitly_invalidated = set(invalidated_experience_ids)
+    reusable: list[CandidateBullet] = []
+    generation_experience_ids: list[str] = []
+    generation_fact_ids: list[str] = []
+    invalidation_reasons: dict[str, tuple[str, ...]] = {}
+    for experience_id in narrative_experience_ids:
+        current_fact_ids = current_facts_by_experience.get(experience_id, ())
+        previous_fact_ids = previous_facts_by_experience.get(experience_id, ())
+        reasons: list[str] = []
+        if experience_id in explicitly_invalidated:
+            reasons.append("experience_revision_invalidated")
+        if previous_revision_by_experience.get(experience_id) != current_revision_by_experience.get(
+            experience_id
+        ):
+            reasons.append("current_revision_changed")
+        if previous_fact_ids != current_fact_ids:
+            reasons.append("selected_fact_set_changed")
+        if any(
+            previous_plan.fact_requirement_map.get(fact_id, ())
+            != current_plan.fact_requirement_map.get(fact_id, ())
+            for fact_id in current_fact_ids
+        ):
+            reasons.append("fact_requirement_map_changed")
+
+        experience_candidates = candidates_by_experience.get(experience_id, [])
+        current_fact_set = set(current_fact_ids)
+        eligible_candidates = [
+            candidate
+            for candidate in experience_candidates
+            if candidate.source_fact_ids
+            and set(candidate.source_fact_ids).issubset(current_fact_set)
+            and all(
+                current_fact_by_id[fact_id].source_revision_id
+                == current_revision_by_experience.get(experience_id)
+                for fact_id in candidate.source_fact_ids
+                if fact_id in current_fact_by_id
+            )
+        ]
+        represented_fact_ids = {
+            fact_id for candidate in eligible_candidates for fact_id in candidate.source_fact_ids
+        }
+        if represented_fact_ids != current_fact_set:
+            reasons.append("candidate_fact_coverage_changed")
+
+        if reasons:
+            generation_experience_ids.append(experience_id)
+            generation_fact_ids.extend(current_fact_ids)
+            invalidation_reasons[experience_id] = tuple(dict.fromkeys(reasons))
+        else:
+            reusable.extend(eligible_candidates)
+
+    return CandidateReusePlan(
+        mode="incremental",
+        reusable_candidates=tuple(reusable),
+        generation_experience_ids=tuple(generation_experience_ids),
+        generation_fact_ids=tuple(generation_fact_ids),
+        invalidated_experience_ids=tuple(sorted(explicitly_invalidated)),
+        invalidation_reasons=invalidation_reasons,
+    )
+
+
+def _selected_facts_by_experience(
+    plan: ResumePlan,
+    fact_by_id: dict[str, RankedFact],
+) -> dict[str, tuple[str, ...]]:
+    result: dict[str, list[str]] = {}
+    for fact_id in plan.selected_fact_ids:
+        fact = fact_by_id.get(fact_id)
+        if fact is not None:
+            result.setdefault(fact.experience_id, []).append(fact_id)
+    return {key: tuple(value) for key, value in result.items()}
 
 
 class CandidatePoolService:

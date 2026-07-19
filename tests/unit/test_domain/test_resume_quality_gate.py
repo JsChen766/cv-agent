@@ -250,6 +250,16 @@ def test_quality_gate_fails_closed_on_metadata_mismatch() -> None:
     assert "metadata_organization_mismatch" in {value.code for value in report.issues}
 
 
+def test_quality_gate_fails_closed_when_source_metadata_is_omitted() -> None:
+    plan, retrieval, candidates, compiled, constraint = _fixture()
+    compiled.structured_resume["sections"][0]["items"][0].pop("title")
+
+    report = ResumeQualityGateService().validate(plan, retrieval, candidates, compiled, constraint)
+
+    assert report.status == "failed"
+    assert "metadata_title_mismatch" in {value.code for value in report.issues}
+
+
 def test_quality_gate_rejects_fact_from_stale_experience_revision() -> None:
     plan, retrieval, candidates, compiled, constraint = _fixture()
     retrieval = retrieval.model_copy(
@@ -339,6 +349,26 @@ def test_quality_gate_fails_when_two_final_bullets_reuse_one_source_fact() -> No
     assert report.status == "failed"
     assert report.grounding.duplicate_fact_ids == ("fact-1",)
     assert "duplicate_source_fact" in {value.code for value in report.issues}
+
+
+def test_quality_gate_fails_when_one_bullet_repeats_a_source_fact_id() -> None:
+    plan, retrieval, candidates, compiled, constraint = _fixture()
+    repeated = candidates[0].model_copy(update={"source_fact_ids": ("fact-1", "fact-1")})
+    compiled.structured_resume["sections"][0]["items"][0]["bullets"][0]["source_fact_ids"] = [
+        "fact-1",
+        "fact-1",
+    ]
+
+    report = ResumeQualityGateService().validate(
+        plan,
+        retrieval,
+        (repeated,),
+        compiled,
+        constraint,
+    )
+
+    assert report.status == "failed"
+    assert "duplicate_source_fact_within_bullet" in {value.code for value in report.issues}
 
 
 def test_local_candidate_repair_preserves_evidence_and_returns_transient_candidate() -> None:

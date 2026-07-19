@@ -194,6 +194,17 @@ class ResumeQualityGateService:
                 )
 
             fact_ids = tuple(dict.fromkeys(candidate.source_fact_ids))
+            if len(fact_ids) != len(candidate.source_fact_ids):
+                issues.append(
+                    QualityIssue(
+                        code="duplicate_source_fact_within_bullet",
+                        message="A bullet repeats the same source fact ID.",
+                        scope="bullet",
+                        bullet_id=candidate.bullet_id,
+                        experience_id=candidate.experience_id,
+                        fact_ids=candidate.source_fact_ids,
+                    )
+                )
             facts = [fact_by_id.get(value) for value in fact_ids]
             missing = {
                 fact_id for fact_id, fact in zip(fact_ids, facts, strict=True) if fact is None
@@ -559,7 +570,7 @@ def _metadata_issues(
             for field, source_field in field_map.items():
                 drafted = _metadata_value(item.get(field))
                 sourced = _metadata_value(getattr(source, source_field))
-                if drafted and not _metadata_matches(field, drafted, sourced):
+                if not _metadata_matches(field, drafted, sourced):
                     issues.append(
                         QualityIssue(
                             code=f"metadata_{field}_mismatch",

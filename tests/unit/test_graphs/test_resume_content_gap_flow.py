@@ -1,3 +1,5 @@
+from types import SimpleNamespace
+
 from langchain_core.runnables import RunnableConfig
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, StateGraph
@@ -16,13 +18,34 @@ class _ExperienceService:
     def __init__(self, *, fail: bool = False) -> None:
         self.fail = fail
         self.revisions: list[tuple[str, str, str]] = []
+        self.created: list[dict[str, object]] = []
 
     async def add_revision(
         self, user_id: str, experience_id: str, content: str, *, source: str
-    ) -> None:
+    ) -> SimpleNamespace:
         if self.fail:
             raise RuntimeError("database unavailable")
         self.revisions.append((user_id, experience_id, content))
+        return SimpleNamespace(id=f"rev-{len(self.revisions)}")
+
+    async def create_experience(self, user_id: str, **kwargs: object) -> SimpleNamespace:
+        if self.fail:
+            raise RuntimeError("database unavailable")
+        self.created.append({"user_id": user_id, **kwargs})
+        revision = SimpleNamespace(id=f"rev-new-{len(self.created)}", factbank_status="pending")
+        return SimpleNamespace(
+            id=f"exp-new-{len(self.created)}",
+            title=kwargs["title"],
+            organization=kwargs.get("organization"),
+            role=kwargs.get("role"),
+            location=kwargs.get("location"),
+            category=kwargs["category"],
+            start_date=None,
+            end_date=None,
+            tags=kwargs.get("tags") or [],
+            current_revision_id=revision.id,
+            current_revision=revision,
+        )
 
 
 def _config(thread_id: str, service: _ExperienceService | None = None) -> RunnableConfig:
@@ -167,6 +190,10 @@ async def test_content_gap_invalidates_derived_state_before_full_context_reload(
         "selected_experiences": [dict(old_experience)],
         "experience_selection_result": {"selection_reason": "stale"},
         "matching_plan": {"strategy": "stale"},
+        "variants": [{"id": "stale-variant"}],
+        "resume_structure": {"language": "zh-CN", "sections": []},
+        "compiled_resume": {"plan_version": "stale"},
+        "generation_call_count": 2,
     }
 
     await graph.ainvoke(state, config=config)
@@ -189,6 +216,13 @@ async def test_content_gap_invalidates_derived_state_before_full_context_reload(
     assert resumed["content_budget"] is None
     assert resumed["fact_retrieval_result"] is None
     assert resumed["material_sufficiency_report"] is None
+    assert resumed["variants"] == []
+    assert resumed["compiled_resume"] is None
+    assert resumed["resume_structure"] is None
+    assert resumed["previous_structured"] == {"language": "zh-CN", "sections": []}
+    assert resumed["generation_call_count"] == 2
+    assert resumed["incremental_recalculation"]["affected_experience_ids"] == ["exp-1"]
+    assert resumed["incremental_recalculation"]["change_kind"] == ("existing_experience_revision")
     assert "数据库迁移" in resumed["relevant_experiences"][0]["content"]
 
 
@@ -238,7 +272,7 @@ async def test_content_gap_reprompts_after_incomplete_supplement() -> None:
     payload = retried["__interrupt__"][0].value
 
     assert payload["type"] == "resume_content_gap"
-    assert payload["validation_error"] == "缺少有效的经历 ID 或具体事实。"
+    assert payload["validation_error"] == "缺少有效经历 ID，或新经历缺少标题/具体事实。"
     assert payload["interrupt_id"] != initial_payload["interrupt_id"]
 
     resumed = await graph.ainvoke(
@@ -293,6 +327,43 @@ async def test_content_gap_persistence_failure_does_not_reload_or_consume_intera
     assert result["quality_issues"][0]["code"] == "experience_revision_persist_failed"
     assert result.get("content_gap_interaction_count", 0) == 0
     assert result.get("resume_context_ready") is not False
+
+
+async def test_content_gap_classifies_and_persists_new_experience() -> None:
+    service = _ExperienceService()
+    builder = StateGraph(ResumeGenerationState)
+    builder.add_node("content_gap", content_gap_node)
+    builder.add_edge(START, "content_gap")
+    builder.add_edge("content_gap", END)
+    graph = builder.compile(checkpointer=MemorySaver())
+    config = _config("resume-content-gap-new-experience", service)
+    state: ResumeGenerationState = {
+        "user_id": "user-1",
+        "layout_report": _underfilled_report(),
+        "relevant_experiences": [],
+    }
+
+    await graph.ainvoke(state, config=config)
+    result = await graph.ainvoke(
+        Command(
+            resume={
+                "action": "supplement",
+                "new_experience": {
+                    "title": "智能检索项目",
+                    "category": "project",
+                    "content": "使用 Python 构建混合检索流程并完成离线评测。",
+                    "tags": ["Python"],
+                },
+            }
+        ),
+        config=config,
+    )
+
+    assert result["resume_user_action"] == "reload"
+    assert service.created[0]["category"] == "project"
+    assert result["incremental_recalculation"]["change_kind"] == "new_experience"
+    assert result["incremental_recalculation"]["affected_experience_ids"] == ["exp-new-1"]
+    assert result["relevant_experiences"][-1]["id"] == "exp-new-1"
 
 
 async def test_content_gap_bypasses_interrupt_for_in_band_layout() -> None:
