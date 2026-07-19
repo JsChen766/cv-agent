@@ -25,6 +25,14 @@ class FactHeightEstimate(BaseModel):
     degradation_sources: tuple[str, ...] = ()
 
 
+class NarrativeExperienceHeightEstimate(BaseModel):
+    experience_id: str
+    category: str
+    overhead_height_mm: float = Field(ge=0.0)
+    qualified_fact_height_mm: float = Field(ge=0.0)
+    total_supported_height_mm: float = Field(ge=0.0)
+
+
 class MaterialSufficiencyReport(BaseModel):
     status: Literal["sufficient", "insufficient"]
     sufficiency_version: str
@@ -34,6 +42,8 @@ class MaterialSufficiencyReport(BaseModel):
     minimum_usage_ratio: float = Field(ge=0.0, le=1.0)
     minimum_required_height_mm: float = Field(ge=0.0)
     fixed_height: FixedHeightBreakdown
+    narrative_section_overheads_mm: dict[str, float] = Field(default_factory=dict)
+    narrative_experience_estimates: tuple[NarrativeExperienceHeightEstimate, ...] = ()
     narrative_overhead_height_mm: float = Field(ge=0.0)
     qualified_fact_height_mm: float = Field(ge=0.0)
     global_supported_height_mm: float = Field(ge=0.0)

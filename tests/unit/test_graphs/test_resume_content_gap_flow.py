@@ -9,6 +9,25 @@ from app.graphs.resume.nodes import (
     fact_check_node,
 )
 from app.graphs.resume.state import ResumeGenerationState
+from app.tools.base import ServiceContainer
+
+
+class _ExperienceService:
+    def __init__(self, *, fail: bool = False) -> None:
+        self.fail = fail
+        self.revisions: list[tuple[str, str, str]] = []
+
+    async def add_revision(
+        self, user_id: str, experience_id: str, content: str, *, source: str
+    ) -> None:
+        if self.fail:
+            raise RuntimeError("database unavailable")
+        self.revisions.append((user_id, experience_id, content))
+
+
+def _config(thread_id: str, service: _ExperienceService | None = None) -> RunnableConfig:
+    services = ServiceContainer.model_construct(experience=service or _ExperienceService())
+    return {"configurable": {"thread_id": thread_id, "services": services}}
 
 
 def _underfilled_report() -> dict[str, object]:
@@ -48,7 +67,7 @@ async def test_content_gap_interrupt_reports_exact_deficit_and_accepts_supplemen
     builder.add_edge(START, "content_gap")
     builder.add_edge("content_gap", END)
     graph = builder.compile(checkpointer=MemorySaver())
-    config: RunnableConfig = {"configurable": {"thread_id": "resume-content-gap"}}
+    config = _config("resume-content-gap")
     state: ResumeGenerationState = {
         "user_id": "user-1",
         "layout_report": _underfilled_report(),
@@ -114,7 +133,7 @@ async def test_content_gap_invalidates_derived_state_before_full_context_reload(
         {"reload": END, "fact_check": END, "failed": END, "end": END},
     )
     graph = builder.compile(checkpointer=MemorySaver())
-    config: RunnableConfig = {"configurable": {"thread_id": "resume-content-gap-refresh"}}
+    config = _config("resume-content-gap-refresh")
     old_experience = {
         "id": "exp-1",
         "title": "数据分析实习生",
@@ -179,7 +198,7 @@ async def test_content_gap_reprompts_after_incomplete_supplement() -> None:
     builder.add_edge(START, "content_gap")
     builder.add_edge("content_gap", END)
     graph = builder.compile(checkpointer=MemorySaver())
-    config: RunnableConfig = {"configurable": {"thread_id": "resume-content-gap-retry"}}
+    config = _config("resume-content-gap-retry")
     state: ResumeGenerationState = {
         "user_id": "user-1",
         "layout_report": _underfilled_report(),
@@ -235,6 +254,45 @@ async def test_content_gap_reprompts_after_incomplete_supplement() -> None:
 
     assert resumed["resume_user_action"] == "reload"
     assert "缓存预热" in resumed["relevant_experiences"][0]["content"]
+
+
+async def test_content_gap_persistence_failure_does_not_reload_or_consume_interaction() -> None:
+    builder = StateGraph(ResumeGenerationState)
+    builder.add_node("content_gap", content_gap_node)
+    builder.add_edge(START, "content_gap")
+    builder.add_edge("content_gap", END)
+    graph = builder.compile(checkpointer=MemorySaver())
+    config = _config("resume-content-gap-persist-failure", _ExperienceService(fail=True))
+    state: ResumeGenerationState = {
+        "user_id": "user-1",
+        "layout_report": _underfilled_report(),
+        "relevant_experiences": [
+            {
+                "id": "exp-1",
+                "title": "后端开发实习",
+                "category": "work",
+                "content": "负责 API 开发。",
+                "claims": [],
+            }
+        ],
+    }
+
+    await graph.ainvoke(state, config=config)
+    result = await graph.ainvoke(
+        Command(
+            resume={
+                "action": "supplement",
+                "experience_id": "exp-1",
+                "content": "新增可验证事实",
+            }
+        ),
+        config=config,
+    )
+
+    assert result["resume_user_action"] == "failed"
+    assert result["quality_issues"][0]["code"] == "experience_revision_persist_failed"
+    assert result.get("content_gap_interaction_count", 0) == 0
+    assert result.get("resume_context_ready") is not False
 
 
 async def test_content_gap_bypasses_interrupt_for_in_band_layout() -> None:

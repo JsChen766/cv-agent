@@ -18,6 +18,8 @@ from app.graphs.resume.nodes import (
     content_gap_route,
     material_sufficiency_node,
     material_sufficiency_route,
+    resume_planning_node,
+    resume_planning_route,
 )
 from app.infra.layout import PillowFontMetrics
 from app.tools.base import ServiceContainer
@@ -43,7 +45,7 @@ def _retrieval(fact_count: int) -> dict[str, object]:
             experience_id="exp-1",
             source_revision_id="rev-1",
             source_text=(f"使用 Python 完成第 {index} 个独立模块的设计、开发、测试和交付"),
-            technologies=("Python",),
+            technologies=(f"Python-{index}",),
             selected=index < 2,
             score=FactScoreBreakdown(
                 semantic_similarity=0.9,
@@ -104,7 +106,7 @@ async def test_material_sufficiency_node_uses_all_retrieved_facts() -> None:
     report = result["material_sufficiency_report"]
     assert report["total_facts"] == 60
     assert report["qualified_facts"] == 60
-    assert material_sufficiency_route(result) == "experience_selection"
+    assert material_sufficiency_route(result) == "resume_planning"
 
 
 async def test_material_sufficiency_routes_true_shortage_to_content_gap() -> None:
@@ -118,6 +120,80 @@ async def test_material_sufficiency_routes_true_shortage_to_content_gap() -> Non
 
     assert result["material_sufficiency_status"] == "insufficient"
     assert material_sufficiency_route(result) == "content_gap"
+
+
+async def test_resume_planning_node_is_the_only_v2_budget_authority() -> None:
+    retrieval = _retrieval(60)
+    assessed = await material_sufficiency_node(
+        {
+            "fact_retrieval_result": retrieval,
+            "user_profile": {"full_name": "测试用户"},
+        },
+        _config(),
+    )
+
+    result = await resume_planning_node(
+        {
+            **assessed,
+            "fact_retrieval_result": retrieval,
+        },
+        _config(),
+    )
+
+    assert result["resume_plan_status"] == "ready"
+    assert resume_planning_route(result) == "draft_generation"
+    assert result["experience_selection_result"]["selection_reason"] == (
+        "projected_from_resume_plan"
+    )
+    plan_fact_ids = set(result["resume_plan"]["selected_fact_ids"])
+    budget_fact_ids = {
+        fact["id"]
+        for experience in result["content_budget"]["experiences"]
+        for fact in experience["facts"]
+    }
+    assert budget_fact_ids == plan_fact_ids
+
+
+async def test_incomplete_retrieval_metadata_fails_without_content_gap() -> None:
+    retrieval = _retrieval(2)
+    retrieval["experiences"] = []
+
+    result = await material_sufficiency_node(
+        {"fact_retrieval_result": retrieval},
+        _config(),
+    )
+
+    assert result["material_sufficiency_status"] == "unavailable"
+    assert result["quality_issues"][0]["code"] == "material_sufficiency_unavailable"
+    assert material_sufficiency_route(result) == "failed"
+
+
+async def test_truncated_fact_payload_fails_without_content_gap() -> None:
+    retrieval = _retrieval(2)
+    retrieval["facts"] = retrieval["facts"][:1]
+
+    result = await material_sufficiency_node(
+        {"fact_retrieval_result": retrieval},
+        _config(),
+    )
+
+    assert result["material_sufficiency_status"] == "unavailable"
+    assert result["quality_issues"][0]["message"] == "incomplete_retrieval_fact_payload"
+    assert material_sufficiency_route(result) == "failed"
+
+
+async def test_fact_revision_mismatch_fails_without_content_gap() -> None:
+    retrieval = _retrieval(2)
+    retrieval["facts"][0]["source_revision_id"] = "stale-revision"
+
+    result = await material_sufficiency_node(
+        {"fact_retrieval_result": retrieval},
+        _config(),
+    )
+
+    assert result["material_sufficiency_status"] == "unavailable"
+    assert result["quality_issues"][0]["message"] == "fact_revision_ownership_mismatch"
+    assert material_sufficiency_route(result) == "failed"
 
 
 async def test_content_gap_is_blocked_when_full_factbank_is_sufficient() -> None:

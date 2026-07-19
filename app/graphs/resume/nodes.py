@@ -35,6 +35,8 @@ from app.domain.resume.layout_templates import (
 )
 from app.domain.resume.models import ResumeVariantCreate
 from app.domain.resume.observability_models import BrowserLayoutObservationInput
+from app.domain.resume.planning.projection import project_resume_plan
+from app.domain.resume.planning.service import ResumePlanService
 from app.domain.resume.render import render_structured_to_markdown
 from app.domain.resume.repair_models import BulletRepairBatch
 from app.domain.resume.repair_service import ResumeBulletRepairService
@@ -119,27 +121,42 @@ async def material_sufficiency_node(
             isinstance(raw_retrieval, dict),
             layout is not None,
         )
-        return {"material_sufficiency_status": "unavailable"}
+        return _material_sufficiency_unavailable("fact_retrieval_or_layout_unavailable")
 
     writer = get_optional_stream_writer()
     if writer is not None:
         emit_thinking(writer, "正在核算完整经历库可支持的简历高度…")
-    retrieval = HybridRetrievalResult.model_validate(raw_retrieval)
+    try:
+        retrieval = HybridRetrievalResult.model_validate(raw_retrieval)
+    except ValidationError as exc:
+        logger.warning("Material sufficiency retrieval payload is invalid: %s", exc)
+        return _material_sufficiency_unavailable("invalid_fact_retrieval_result")
+    integrity_error = _retrieval_integrity_error(retrieval)
+    if integrity_error is not None:
+        logger.warning(
+            "Material sufficiency retrieval payload failed integrity checks: %s",
+            integrity_error,
+        )
+        return _material_sufficiency_unavailable(integrity_error)
     profile = state.get("user_profile") or {}
     language = _normalize_resume_language(profile.get("preferred_language")) or "zh-CN"
     constraint = _layout_constraint_from_state(state)
     started_at = time.perf_counter()
-    report = MaterialSufficiencyService(
-        layout,
-        minimum_fact_score=settings.resume_material_min_fact_score,
-        minimum_fact_strength=settings.resume_material_min_fact_strength,
-        maximum_fact_lines=settings.resume_material_max_fact_lines,
-    ).assess(
-        retrieval,
-        user_profile=profile,
-        minimum_usage_ratio=constraint.minimum_page_usage_ratio,
-        language=language,
-    )
+    try:
+        report = MaterialSufficiencyService(
+            layout,
+            minimum_fact_score=settings.resume_material_min_fact_score,
+            minimum_fact_strength=settings.resume_material_min_fact_strength,
+            maximum_fact_lines=settings.resume_material_max_fact_lines,
+        ).assess(
+            retrieval,
+            user_profile=profile,
+            minimum_usage_ratio=constraint.minimum_page_usage_ratio,
+            language=language,
+        )
+    except Exception:  # noqa: BLE001 -- a broken measurement must never allow a gap prompt
+        logger.exception("Material sufficiency measurement failed")
+        return _material_sufficiency_unavailable("layout_measurement_failed")
     logger.info(
         "Material sufficiency completed",
         extra={
@@ -161,11 +178,156 @@ async def material_sufficiency_node(
 
 
 def material_sufficiency_route(state: ResumeGenerationState) -> str:
-    return (
-        "content_gap"
-        if state.get("material_sufficiency_status") == "insufficient"
-        else "experience_selection"
+    status = state.get("material_sufficiency_status")
+    if status == "insufficient":
+        return "content_gap"
+    if status == "unavailable":
+        return "failed"
+    if status == "sufficient" and settings.resume_plan_enabled:
+        return "resume_planning"
+    return "experience_selection"
+
+
+def _material_sufficiency_unavailable(reason: str) -> dict[str, object]:
+    return {
+        "material_sufficiency_status": "unavailable",
+        "quality_status": "failed",
+        "quality_issues": [
+            {
+                "code": "material_sufficiency_unavailable",
+                "message": reason,
+            }
+        ],
+    }
+
+
+def _retrieval_integrity_error(retrieval: HybridRetrievalResult) -> str | None:
+    experience_ids = [value.experience_id for value in retrieval.experiences]
+    fact_ids = [value.fact_id for value in retrieval.facts]
+    requirement_ids = [value.requirement_id for value in retrieval.requirements]
+    if len(retrieval.experiences) != retrieval.diagnostics.total_experiences:
+        return "incomplete_retrieval_experience_metadata"
+    if len(retrieval.facts) != retrieval.diagnostics.total_facts:
+        return "incomplete_retrieval_fact_payload"
+    if len(experience_ids) != len(set(experience_ids)):
+        return "duplicate_retrieval_experience_id"
+    if len(fact_ids) != len(set(fact_ids)):
+        return "duplicate_retrieval_fact_id"
+    if len(requirement_ids) != len(set(requirement_ids)):
+        return "duplicate_retrieval_requirement_id"
+    experience_by_id = {value.experience_id: value for value in retrieval.experiences}
+    requirement_id_set = set(requirement_ids)
+    for fact in retrieval.facts:
+        experience = experience_by_id.get(fact.experience_id)
+        if experience is None:
+            return "incomplete_retrieval_experience_metadata"
+        if fact.source_revision_id != experience.revision_id:
+            return "fact_revision_ownership_mismatch"
+        if not set(fact.matched_requirement_ids).issubset(requirement_id_set):
+            return "fact_requirement_ownership_mismatch"
+    selected_fact_ids = set(retrieval.selected_fact_ids)
+    if len(selected_fact_ids) != len(retrieval.selected_fact_ids):
+        return "duplicate_selected_fact_id"
+    if not selected_fact_ids.issubset(set(fact_ids)):
+        return "selected_fact_missing_from_retrieval"
+    return None
+
+
+# ── 1.375. Authoritative ResumePlan ─────────────────────────────────────────
+
+
+async def resume_planning_node(
+    state: ResumeGenerationState, config: RunnableConfig | None = None
+) -> dict[str, object]:
+    raw_retrieval = state.get("fact_retrieval_result")
+    raw_sufficiency = state.get("material_sufficiency_report")
+    services = services_from_config(config)
+    layout = services.resume_layout if services is not None else None
+    if (
+        not isinstance(raw_retrieval, dict)
+        or not isinstance(raw_sufficiency, dict)
+        or layout is None
+    ):
+        return _resume_plan_failure("resume_plan_inputs_unavailable")
+    try:
+        retrieval = HybridRetrievalResult.model_validate(raw_retrieval)
+        sufficiency = MaterialSufficiencyReport.model_validate(raw_sufficiency)
+        constraint = LayoutConstraint.model_validate(
+            state.get("layout_constraint") or _layout_constraint_from_state(state).model_dump()
+        )
+    except ValidationError as exc:
+        logger.warning("ResumePlan input validation failed: %s", exc)
+        return _resume_plan_failure("invalid_resume_plan_inputs")
+
+    writer = get_optional_stream_writer()
+    if writer is not None:
+        emit_thinking(writer, "正在生成统一的事实选择与页面高度计划…")
+    started_at = time.perf_counter()
+    result = ResumePlanService(
+        beam_width=settings.resume_plan_beam_width,
+        max_optimizer_facts=settings.resume_plan_max_optimizer_facts,
+        near_duplicate_threshold=settings.resume_plan_near_duplicate_threshold,
+    ).build(
+        retrieval,
+        sufficiency,
+        minimum_usage_ratio=constraint.minimum_page_usage_ratio,
+        target_usage_ratio=constraint.target_page_usage_ratio,
+        maximum_usage_ratio=constraint.maximum_page_usage_ratio,
+        line_height_mm=layout.profile.body.line_height_mm,
+        candidate_pool_target_ratio=settings.resume_candidate_pool_target_ratio,
     )
+    duration_ms = round((time.perf_counter() - started_at) * 1000, 2)
+    logger.info(
+        "ResumePlan completed",
+        extra={
+            "status": result.status,
+            "considered_facts": result.diagnostics.considered_facts,
+            "qualified_facts": result.diagnostics.qualified_facts,
+            "expanded_states": result.diagnostics.expanded_states,
+            "pruned_states": result.diagnostics.pruned_states,
+            "duration_ms": duration_ms,
+        },
+    )
+    if result.plan is None:
+        return {
+            **_resume_plan_failure("resume_plan_infeasible"),
+            "resume_plan_status": result.status,
+            "resume_plan_diagnostics": result.diagnostics.model_dump(mode="json"),
+            "quality_issues": [
+                {
+                    "code": "resume_plan_infeasible",
+                    "message": ", ".join(result.failure_reasons),
+                }
+            ],
+        }
+    projection = project_resume_plan(
+        retrieval,
+        result.plan,
+        candidate_pool_target_ratio=settings.resume_candidate_pool_target_ratio,
+    )
+    return {
+        "resume_plan": result.plan.model_dump(mode="json"),
+        "resume_plan_status": "ready",
+        "resume_plan_diagnostics": result.diagnostics.model_dump(mode="json"),
+        **projection,
+        "layout_constraint": constraint.model_dump(mode="json"),
+        "layout_profile_version": layout.profile.version,
+        "layout_profile_hash": layout.profile.profile_hash,
+        "layout_template_id": STANDARD_RESUME_TEMPLATE.template_id,
+    }
+
+
+def resume_planning_route(state: ResumeGenerationState) -> str:
+    return "draft_generation" if state.get("resume_plan_status") == "ready" else "failed"
+
+
+def _resume_plan_failure(reason: str) -> dict[str, object]:
+    return {
+        "resume_plan": None,
+        "resume_plan_status": "infeasible",
+        "quality_status": "failed",
+        "quality_issues": [{"code": "resume_plan_infeasible", "message": reason}],
+    }
 
 
 # ── 1.5. Experience Selection ────────────────────────────────────────────────
@@ -2556,16 +2718,40 @@ async def content_gap_node(
         updated_experiences.append(experience)
 
     services = services_from_config(config)
-    if services is not None:
-        try:
-            await services.experience.add_revision(
-                state.get("user_id", ""),
-                experience_id,
-                combined_content,
-                source="copilot",
-            )
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("Failed to persist resume content supplement: %s", exc)
+    if services is None:
+        return {
+            "assistant_message": "补充内容暂时无法保存，请稍后重试。",
+            "quality_status": "failed",
+            "quality_issues": [
+                {
+                    "code": "experience_revision_service_unavailable",
+                    "message": "Experience revision service is unavailable.",
+                }
+            ],
+            "resume_user_action": "failed",
+            "interrupt_payload": None,
+        }
+    try:
+        await services.experience.add_revision(
+            state.get("user_id", ""),
+            experience_id,
+            combined_content,
+            source="copilot",
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Failed to persist resume content supplement: %s", exc)
+        return {
+            "assistant_message": "补充内容保存失败，未消耗本次补充机会，请稍后重试。",
+            "quality_status": "failed",
+            "quality_issues": [
+                {
+                    "code": "experience_revision_persist_failed",
+                    "message": "The supplemental experience revision was not persisted.",
+                }
+            ],
+            "resume_user_action": "failed",
+            "interrupt_payload": None,
+        }
 
     return {
         "relevant_experiences": updated_experiences,
@@ -2578,6 +2764,9 @@ async def content_gap_node(
         "fact_retrieval_result": None,
         "material_sufficiency_report": None,
         "material_sufficiency_status": None,
+        "resume_plan": None,
+        "resume_plan_status": None,
+        "resume_plan_diagnostics": None,
         "evidence_pack": None,
         "resume_context_ready": False,
         "content_gap_interaction_count": state.get("content_gap_interaction_count", 0) + 1,

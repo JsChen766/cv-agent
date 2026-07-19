@@ -25,6 +25,9 @@ class ResumeGenerationState(MainState, total=False):
     material_sufficiency_report: dict[str, Any] | None
     material_sufficiency_status: str | None
     content_gap_interaction_count: int
+    resume_plan: dict[str, Any] | None
+    resume_plan_status: str | None
+    resume_plan_diagnostics: dict[str, Any] | None
     user_preferences: list[dict[str, Any]]
     user_profile: dict[str, Any] | None
     resume_context_ready: bool

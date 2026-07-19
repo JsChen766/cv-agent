@@ -2,6 +2,7 @@ from app.domain.resume.sufficiency.models import (
     FactHeightEstimate,
     FixedHeightBreakdown,
     MaterialSufficiencyReport,
+    NarrativeExperienceHeightEstimate,
 )
 from app.domain.resume.sufficiency.service import (
     SUFFICIENCY_VERSION,
@@ -13,5 +14,6 @@ __all__ = [
     "FixedHeightBreakdown",
     "MaterialSufficiencyReport",
     "MaterialSufficiencyService",
+    "NarrativeExperienceHeightEstimate",
     "SUFFICIENCY_VERSION",
 ]

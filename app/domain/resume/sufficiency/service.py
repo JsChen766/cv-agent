@@ -15,6 +15,7 @@ from app.domain.resume.sufficiency.models import (
     FactHeightEstimate,
     FixedHeightBreakdown,
     MaterialSufficiencyReport,
+    NarrativeExperienceHeightEstimate,
 )
 
 SUFFICIENCY_VERSION = "full-factbank-height-v1"
@@ -103,25 +104,34 @@ class MaterialSufficiencyService:
             profile_version=self._layout.profile.version,
             profile_hash=self._layout.profile.profile_hash,
         )
-        overhead_structure = _supported_structure(
-            retrieval.experiences,
-            qualified_facts,
-            user_profile=user_profile,
-            language=language,
-            include_contact=True,
-            include_education=True,
-            include_skills=True,
-            narrative_experience_ids=narrative_experience_ids,
-            profile_version=self._layout.profile.version,
-            profile_hash=self._layout.profile.profile_hash,
-        )
-
         contact_height = self._measure_height(contact_structure)
         education_height = self._measure_height(education_structure)
         skills_height = self._measure_height(skills_structure)
         fixed_height = self._measure_height(fixed_structure)
-        overhead_height = self._measure_height(overhead_structure)
-        narrative_overhead = max(0.0, overhead_height - fixed_height)
+        section_overheads, experience_overheads = self._narrative_overheads(
+            retrieval.experiences,
+            narrative_experience_ids,
+            language,
+        )
+        fact_height_by_experience: dict[str, float] = defaultdict(float)
+        for estimate in estimates:
+            if estimate.qualified:
+                fact_height_by_experience[estimate.experience_id] += estimate.estimated_height_mm
+        narrative_estimates = tuple(
+            NarrativeExperienceHeightEstimate(
+                experience_id=experience_id,
+                category=experience_by_id[experience_id].category,
+                overhead_height_mm=round(overhead, 3),
+                qualified_fact_height_mm=round(
+                    fact_height_by_experience.get(experience_id, 0.0), 3
+                ),
+                total_supported_height_mm=round(
+                    overhead + fact_height_by_experience.get(experience_id, 0.0), 3
+                ),
+            )
+            for experience_id, overhead in sorted(experience_overheads.items())
+        )
+        narrative_overhead = sum(section_overheads.values()) + sum(experience_overheads.values())
         fact_height = sum(value.estimated_height_mm for value in estimates if value.qualified)
         supported_height = fixed_height + narrative_overhead + fact_height
         available_height = self._layout.profile.content_height_mm
@@ -168,6 +178,10 @@ class MaterialSufficiencyService:
                 skills_height_mm=round(skills_height, 3),
                 total_height_mm=round(fixed_height, 3),
             ),
+            narrative_section_overheads_mm={
+                key: round(value, 3) for key, value in sorted(section_overheads.items())
+            },
+            narrative_experience_estimates=narrative_estimates,
             narrative_overhead_height_mm=round(narrative_overhead, 3),
             qualified_fact_height_mm=round(fact_height, 3),
             global_supported_height_mm=round(supported_height, 3),
@@ -183,6 +197,56 @@ class MaterialSufficiencyService:
             fact_estimates=tuple(estimates),
             warnings=tuple(warnings),
         )
+
+    def _narrative_overheads(
+        self,
+        experiences: tuple[RetrievalExperience, ...],
+        experience_ids: set[str],
+        language: str,
+    ) -> tuple[dict[str, float], dict[str, float]]:
+        structure = _supported_structure(
+            experiences,
+            [],
+            user_profile=None,
+            language=language,
+            include_contact=False,
+            include_education=False,
+            include_skills=False,
+            narrative_experience_ids=experience_ids,
+            profile_version=self._layout.profile.version,
+            profile_hash=self._layout.profile.profile_hash,
+        )
+        report = self._layout.measure_resume_layout(
+            structure,
+            LayoutConstraint(
+                max_pages=None,
+                minimum_page_usage_ratio=0.0,
+                target_page_usage_ratio=0.0,
+                maximum_page_usage_ratio=1.0,
+            ),
+        )
+        section_key_by_id = {
+            "sufficiency-experience": "work",
+            "sufficiency-project": "project",
+            "sufficiency-other": "other",
+        }
+        experience_id_by_item = {
+            f"sufficiency-item-{experience_id}": experience_id for experience_id in experience_ids
+        }
+        section_overheads: dict[str, float] = defaultdict(float)
+        experience_overheads: dict[str, float] = defaultdict(float)
+        for page in report.pages:
+            for block in page.blocks:
+                if block.block_type == "section_heading":
+                    section_id = block.block_id.removesuffix(":heading")
+                    section_key = section_key_by_id.get(section_id)
+                    if section_key is not None:
+                        section_overheads[section_key] += block.height_mm
+                elif block.block_type == "item":
+                    experience_id = experience_id_by_item.get(block.block_id)
+                    if experience_id is not None:
+                        experience_overheads[experience_id] += block.height_mm
+        return section_overheads, experience_overheads
 
     def _estimate_facts(
         self,

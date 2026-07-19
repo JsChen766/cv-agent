@@ -528,6 +528,42 @@ maximize
 
 候选规模通常很小，有界 beam search 足以在毫秒级完成，无需引入重量级优化服务。
 
+### 7.5.1 阶段 E 实施完成记录（2026-07-19）
+
+**状态：已完成。** 本次实施新增了单一权威 `ResumePlan`，并将 V2 主路径从阶段 D 的全库素材充足度门禁直接连接到确定性的高度约束规划器；旧经历选择器、匹配计划和内容预算仅保留为关闭功能开关时的兼容路径，或由 `ResumePlan` 单向投影产生，不再反向参与 V2 决策。
+
+已完成内容：
+
+1. 在 `app/domain/resume/planning/` 建立纯领域规划切片，新增版本化 `ResumePlan`、`ResumePlanningResult`、`PlannerDiagnostics`、有界 beam search 服务和兼容投影；领域代码不依赖 FastAPI、LangGraph、数据库、infra 或具体 Provider；
+2. `ResumePlan` 完整保存 Requirement、最终 experience/fact IDs、fact-to-requirement 映射、section/experience 高度预算、候选池目标行数、最终页面目标、预计高度/使用率、目标函数得分和逐事实/经历选择或淘汰原因；
+3. 规划输入使用阶段 C 检索结果中的完整 facts 和阶段 D 的全部合格事实高度估算，不使用 `selected_fact_ids` 或旧经历级 Top-K 作为候选边界；所有检索 facts 均会出现在选择或淘汰诊断中；
+4. 阶段 D 报告补充逐 narrative section 和逐 experience 的真实固定开销。开销通过一次无 bullet 的真实布局测量读取 section heading 和 item block 高度，避免为每段经历执行一次额外布局调用；
+5. 搜索前沿确定性保留每个 section、requirement 和 experience 的最佳代表事实，并按可共同选择的非近重复事实继续补足页面可支持高度；默认以 40 个高价值事实为前沿目标，但硬约束代表项或近重复事实之后的独立事实可以安全扩展该目标，避免高分近重复素材、较早经历或项目因排序截断而永久遮蔽可行解；
+6. 目标函数实现 `JD relevance + requirement coverage + evidence strength + experience diversity + page fill utility - duplication penalty - fragmentation penalty`，权重固定并使用稳定 fact ID 完成确定性 tie-break；搜索按真实毫米高度分桶，以默认 `beam_width=128` 有界剪枝，并保留工作、项目及两者同时存在的高度锚点；
+7. 硬约束已覆盖 `85%–98%` 页面高度区间、同一 source fact 只使用一次、有合格工作事实时至少一段工作经历、有合格项目事实时至少一个项目、教育经历无条件保留，以及所有正文选择均来自合格且可追溯的 FactRecord；
+8. 同义重复防护使用规范化原文精确去重和稳定 Blake2b SimHash/技术集合相似度；超过阈值的近重复事实不能同时进入计划，被淘汰事实显式记录 `near_duplicate_of_selected_fact`，不允许通过同义改写填充页面；
+9. Resume Graph 新增 `resume_planning` 节点和条件边：`material_sufficiency=sufficient` 且功能开启时直接规划，成功后进入当前 draft generation，输入缺失、校验失败或没有满足全部硬约束的组合时显式进入 `output_failure`，不会回退到旧选择器或内容补充流程；
+10. 迁移期字段 `selected_experiences`、`experience_selection_result`、`matching_plan` 和 `content_budget` 均由 `ResumePlan` 单向投影；投影中的 fact IDs 与 `ResumePlan.selected_fact_ids` 精确一致，因此阶段 F 接管写作时可以移除这些临时契约而不改变规划结果；
+11. 阶段 D/E 审核发现的高优先级失败路径一并修复：完整 FactBank 经历或事实数量不完整、ID 重复、fact 与 revision/requirement 归属错误时显式失败而不误判内容不足；用户补充经历只有在新 revision 成功持久化后才失效旧派生状态和增加交互计数，持久化失败不会丢失当前 run 上下文；
+12. 本阶段不新增数据库表或迁移，也未提前实现阶段 F 的单次批量写作、阶段 G 的候选组合版面编译或后续证据审计。
+
+新增主要配置：
+
+- `resume_plan_enabled`，默认开启；
+- `resume_plan_beam_width`，默认 `128`；
+- `resume_plan_max_optimizer_facts`，默认前沿目标 `40`；
+- `resume_plan_near_duplicate_threshold`，默认 `0.92`。
+
+实测与验证结果：
+
+- 阶段 E 领域、Graph、阶段 D 失败路径回归和架构边界定向测试为 `24 passed`；覆盖页面高度区间、fact 唯一性、工作/项目/教育硬约束、较旧强证据优先、互补 requirement 覆盖、精确及近重复排除、近重复高分前沿之后继续召回独立可行事实、确定性重放、兼容投影唯一权威、截断/错属 FactBank 载荷禁止进入补充流程，以及 revision 持久化失败不失效状态；
+- 仓库全量 unit 测试为 `367 passed, 8 failed`。8 个失败与实施前基线数量和类别一致，仍为既有 bullet 门槛/布局修复、局部修复预算、并行生成排序和前端模板清单差异；阶段 E 没有新增失败类别；
+- 仓库全量测试为 `444 passed, 3 skipped, 54 failed`。3 个 skip 为未设置 `TEST_DATABASE_URL`；54 个失败与阶段 C/D 记录的基线类别一致，其中 46 个为本地应用数据库不可用时 API 鉴权前置依赖返回 `500/502`，其余 8 个即上述既有 unit 失败；
+- 真实 Pillow/FreeType 字体测量与规划组合基准：典型规模 `250 facts × 30 experiences`，10 次规划中位数 `156.94 ms`、最大 `167.75 ms`；阶段 D+E 合计中位数 `161.99 ms`、独立进程首次迭代在内最大 `345.46 ms`，满足 `<200ms` 常规和 `<500ms` 冷启动预算；最终选择 27 个 facts，预计页面使用率 `96.43%`；
+- 压力规模 `1000 facts × 80 experiences`，5 次规划中位数 `331.77 ms`、最大 `335.88 ms`，阶段 D+E 合计中位数 `346.78 ms`、最大 `1027.87 ms`，最终选择 30 个 facts、预计使用率 `97.98%`；该规模超出“候选通常很小”的常规预算假设，但仍保持有界、确定性和硬约束可行，结果作为后续性能观测基线保留；
+- 阶段 E 变更文件 Ruff 和 format 检查通过；新增领域、充足度扩展、State 和基准脚本 mypy strict 检查通过；架构边界测试 `4 passed`。`app/graphs/resume/nodes.py` 全文件仍只命中已记录的既有 `LLMProvider.chat_json` 类型声明问题，与本阶段规划代码无关；
+- 新增 `scripts/benchmark_resume_plan.py`，使用多种非重复职责语料、真实固定字体、完整阶段 D 高度测量和阶段 E 搜索执行典型/压力基准；人工同模板重复语料会按设计被近重复硬约束拒绝，而不会制造虚假的可填充计划。
+
 ### 7.6 阶段 F：一次批量生成候选池
 
 正常请求只允许一次完整写作调用。请求中包含：

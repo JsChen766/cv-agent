@@ -28,6 +28,8 @@ from app.graphs.resume.nodes import (
     persist_resume_draft_node,
     quality_gate_node,
     quality_gate_route,
+    resume_planning_node,
+    resume_planning_route,
     review_route,
     revision_node,
     self_review_node,
@@ -38,6 +40,7 @@ from app.graphs.tracing import traced_node
 RESUME_NODE_DEFINITIONS = {
     "context_assembly": context_assembly_node,
     "material_sufficiency": material_sufficiency_node,
+    "resume_planning": resume_planning_node,
     "experience_selection": experience_selection_node,
     "cot_planning": cot_planning_node,
     "draft_generation": draft_generation_node,
@@ -77,7 +80,17 @@ def build_resume_subgraph() -> StateGraph[ResumeGenerationState]:
         material_sufficiency_route,
         {
             "experience_selection": "experience_selection",
+            "resume_planning": "resume_planning",
             "content_gap": "content_gap",
+            "failed": "output_failure",
+        },
+    )
+    builder.add_conditional_edges(
+        "resume_planning",
+        resume_planning_route,
+        {
+            "draft_generation": "draft_generation",
+            "failed": "output_failure",
         },
     )
     builder.add_edge("experience_selection", "cot_planning")

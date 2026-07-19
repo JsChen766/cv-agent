@@ -63,6 +63,13 @@ class Settings(BaseSettings):
     resume_material_min_fact_strength: float = Field(default=0.25, ge=0.0, le=1.0)
     resume_material_max_fact_lines: int = Field(default=3, ge=1, le=6)
 
+    # V2 single-authority ResumePlan. The bounded beam search is deterministic
+    # and consumes the complete qualified FactBank from the sufficiency report.
+    resume_plan_enabled: bool = True
+    resume_plan_beam_width: int = Field(default=128, ge=8, le=1024)
+    resume_plan_max_optimizer_facts: int = Field(default=40, ge=16, le=500)
+    resume_plan_near_duplicate_threshold: float = Field(default=0.92, ge=0.5, le=1.0)
+
     # RAG
     evidence_similarity_threshold: float = 0.65
     preference_dedup_threshold: float = 0.85
