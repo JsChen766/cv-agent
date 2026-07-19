@@ -57,7 +57,7 @@ def _structure(*, bullet_text: str = "A" * 70, item_count: int = 1) -> dict[str,
     }
 
 
-def test_bullet_fit_uses_exact_two_thirds_gate() -> None:
+def test_bullet_fit_uses_strictly_more_than_two_thirds_gate() -> None:
     service = ResumeLayoutService(PillowFontMetrics())
 
     below_gate = service.measure_bullet_fit(
@@ -70,7 +70,7 @@ def test_bullet_fit_uses_exact_two_thirds_gate() -> None:
         "A" * 110, bullet_id="awkward", item_id="item", section_type="experience"
     )
 
-    assert below_gate.last_line_ratio < below_gate.gate_ratio == 0.667
+    assert below_gate.last_line_ratio < below_gate.gate_ratio == 0.6671
     assert below_gate.status == "too_short"
     assert passing.last_line_ratio >= passing.gate_ratio
     assert passing.status == "pass"

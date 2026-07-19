@@ -77,23 +77,27 @@ class Settings(BaseSettings):
     max_self_review_iterations: int = 1
     max_layout_revision_iterations: int = 3
     max_resume_generation_calls: int = 5
-    max_resume_local_repair_calls: int = Field(default=3, ge=0, le=5)
+    max_resume_local_repair_calls: int = Field(default=1, ge=0, le=5)
     resume_layout_hard_gate_enabled: bool = True
     resume_min_page_usage_ratio: float = Field(default=0.85, ge=0.0, le=1.0)
     resume_target_page_usage_ratio: float = Field(default=0.90, ge=0.0, le=1.0)
     resume_max_page_usage_ratio: float = Field(default=0.98, ge=0.0, le=1.0)
     resume_candidate_pool_target_ratio: float = Field(default=1.20, ge=1.0)
-    # V2 batch writing uses one request in the normal path and shares one retry
-    # budget across transport failures and structured-protocol fallback.
+    # V2 fans out one streaming request per experience. Each request writes the
+    # complete bullet pool for that experience under its own bounded budget.
     resume_batch_generation_enabled: bool = True
-    resume_batch_generation_deadline_seconds: float = Field(default=45.0, gt=0.0, le=60.0)
-    resume_batch_generation_max_attempts: int = Field(default=2, ge=1, le=2)
+    resume_batch_generation_deadline_seconds: float = Field(default=150.0, gt=0.0, le=240.0)
+    resume_batch_generation_max_attempts: int = Field(default=1, ge=1, le=2)
+    resume_batch_first_token_timeout_seconds: float = Field(default=65.0, gt=0.0, le=90.0)
+    resume_batch_idle_timeout_seconds: float = Field(default=30.0, gt=0.0, le=60.0)
+    resume_batch_max_tokens_per_experience: int = Field(default=4000, ge=600, le=6000)
+    resume_batch_measured_revision_rounds: int = Field(default=2, ge=0, le=3)
     resume_candidate_pool_max_ratio: float = Field(default=1.35, ge=1.0, le=2.0)
     # V2 deterministic layout compiler. The legacy optimizer remains available
     # only for the V1 draft path while rollout is reversible.
     resume_layout_compiler_enabled: bool = True
-    resume_layout_compiler_beam_width: int = Field(default=256, ge=32, le=2048)
-    resume_layout_compiler_exact_candidate_limit: int = Field(default=32, ge=8, le=128)
+    resume_layout_compiler_beam_width: int = Field(default=2048, ge=32, le=2048)
+    resume_layout_compiler_exact_candidate_limit: int = Field(default=128, ge=8, le=128)
     # V2 deterministic evidence, coverage and layout quality gate. A repairable
     # run may make exactly one bounded local model request before recompiling.
     resume_quality_gate_enabled: bool = True

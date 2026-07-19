@@ -42,7 +42,9 @@ class BulletLayout(BaseModel):
     indent_mm: float = 0.3
     gap_mm: float = 1.5
     target_ratio: float = 0.6967
-    gate_ratio: float = 0.6967
+    # Product hard gate: the final rendered line must be strictly wider than
+    # 66.7% of the available bullet line width.
+    gate_ratio: float = 0.6671
 
 
 class BlockPaginationRules(BaseModel):
@@ -111,9 +113,7 @@ class ResumeLayoutProfile(BaseModel):
 
 FONT_CHECKSUM_SHA256 = "2c76254f6fc379fddfce0a7e84fb5385bb135d3e399294f6eeb6680d0365b74b"
 SIMSUN_CHECKSUM_SHA256 = "120a51d2b14eb588700a21e15fc301f0ea55d7c1a4e1f3ae61db83b7c8d42cd6"
-TIMES_NEW_ROMAN_CHECKSUM_SHA256 = (
-    "2cff2a03d8034801979dd6d16f09b9a825c3d710fcf068f2ebfbf0e1425c87cf"
-)
+TIMES_NEW_ROMAN_CHECKSUM_SHA256 = "2cff2a03d8034801979dd6d16f09b9a825c3d710fcf068f2ebfbf0e1425c87cf"
 
 DEFAULT_RESUME_LAYOUT_PROFILE = ResumeLayoutProfile(
     font=FontAsset(

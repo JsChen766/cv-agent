@@ -90,6 +90,20 @@ class OpenAIFormatProvider:
             max_retries=0,
         )
 
+    def _bind_chat(self, *, temperature: float) -> Any:
+        options: dict[str, Any] = {"temperature": temperature}
+        base_url = getattr(self, "_base_url", None)
+        if base_url and "deepseek.com" in base_url.lower():
+            # DeepSeek V4 enables thinking by default. The resume pipeline needs
+            # bounded, directly usable output for both prose and structured calls;
+            # otherwise package drafting can spend thousands of tokens reasoning
+            # before returning the small artifact requested by the caller.
+            options["extra_body"] = {"thinking": {"type": "disabled"}}
+        return cast(Any, self._llm.bind(**options))
+
+    def _bind_structured(self, *, temperature: float) -> Any:
+        return self._bind_chat(temperature=temperature)
+
     async def chat(
         self,
         messages: list[dict[str, str]],
@@ -111,7 +125,7 @@ class OpenAIFormatProvider:
             elif role == "assistant":
                 lc_msgs.append(AIMessage(content=content))
 
-        llm = cast(Any, self._llm.bind(temperature=temperature))
+        llm = self._bind_chat(temperature=temperature)
         if max_tokens is not None:
             llm = llm.bind(max_tokens=max_tokens)
 
@@ -196,7 +210,7 @@ class OpenAIFormatProvider:
             else:
                 lc_msgs.append(HumanMessage(content=content))
 
-        bound = self._llm.bind(temperature=temperature)
+        bound = self._bind_structured(temperature=temperature)
         total_stats = RetryStats()
         protocol_attempts: list[dict[str, object]] = []
         schema_name = getattr(schema, "__name__", str(schema))
@@ -308,7 +322,7 @@ class OpenAIFormatProvider:
         """Structured call with one deadline and one shared physical-request budget."""
         normalized_messages = _ensure_json_mode_prompt(messages)
         lc_messages = _to_lc_messages(normalized_messages)
-        bound = self._llm.bind(temperature=temperature)
+        bound = self._bind_structured(temperature=temperature)
         protocols = _structured_protocol_order(
             self._structured_protocol,
             supports_json_schema=self._json_schema_supported,
@@ -341,9 +355,9 @@ class OpenAIFormatProvider:
                                     normalized_messages,
                                     schema,
                                 )
-                                raw_message = await self._llm.bind(temperature=temperature).ainvoke(
-                                    _to_lc_messages(fallback_messages)
-                                )
+                                raw_message = await self._bind_structured(
+                                    temperature=temperature
+                                ).ainvoke(_to_lc_messages(fallback_messages))
                                 parsed, repaired = _parse_structured_text(
                                     text_from_content(raw_message.content),
                                     schema,
@@ -401,6 +415,131 @@ class OpenAIFormatProvider:
             ),
         ) from first_error
 
+    async def chat_structured_stream_bounded(
+        self,
+        messages: list[dict[str, str]],
+        schema: type,
+        *,
+        temperature: float = 0.2,
+        first_token_timeout_seconds: float,
+        idle_timeout_seconds: float,
+        deadline_seconds: float,
+        max_attempts: int,
+        max_tokens: int | None = None,
+        on_token: TokenCallback | None = None,
+    ) -> StructuredCallResult:
+        """Stream one compact JSON response with first-token and idle deadlines."""
+        normalized_messages = _ensure_json_mode_prompt(messages)
+        stream_messages = _json_prompt_messages(normalized_messages, schema)
+        lc_messages = _to_lc_messages(stream_messages)
+        llm = self._bind_structured(temperature=temperature)
+        if max_tokens is not None:
+            llm = llm.bind(max_tokens=max_tokens)
+
+        loop = asyncio.get_running_loop()
+        deadline_at = loop.time() + deadline_seconds
+        attempts = 0
+        first_error: Exception | None = None
+        error_category = "UnknownError"
+        schema_name = getattr(schema, "__name__", str(schema))
+        with observation_span(
+            "llm_calls",
+            "chat_structured_stream_bounded",
+            attributes={
+                **_llm_attributes(self, mode="structured_stream_bounded"),
+                "schema_name": schema_name,
+                "max_physical_attempts": max_attempts,
+                "deadline_seconds": deadline_seconds,
+                "first_token_timeout_seconds": first_token_timeout_seconds,
+                "idle_timeout_seconds": idle_timeout_seconds,
+                "max_tokens": max_tokens,
+            },
+        ) as span:
+            while attempts < max_attempts:
+                remaining = deadline_at - loop.time()
+                if remaining <= 0:
+                    error_category = "DeadlineTimeout"
+                    break
+                attempts += 1
+                chunks: list[str] = []
+                emitted = False
+                last_message: Any | None = None
+                stream = llm.astream(lc_messages).__aiter__()
+                try:
+                    while True:
+                        remaining = deadline_at - loop.time()
+                        if remaining <= 0:
+                            raise TimeoutError("stream deadline exceeded")
+                        token_timeout = (
+                            idle_timeout_seconds if emitted else first_token_timeout_seconds
+                        )
+                        try:
+                            message = await asyncio.wait_for(
+                                anext(stream),
+                                timeout=min(token_timeout, remaining),
+                            )
+                        except StopAsyncIteration:
+                            break
+                        last_message = message
+                        # Reasoning-capable OpenAI-format endpoints may stream many
+                        # chunks in `reasoning_content` before the first final
+                        # `content` token. Any received chunk proves that the stream
+                        # is alive and must refresh the first-token/idle deadline,
+                        # while only final content is accumulated for JSON parsing.
+                        emitted = True
+                        text = text_from_content(getattr(message, "content", ""))
+                        if on_token is not None:
+                            on_token(text)
+                        if not text:
+                            continue
+                        chunks.append(text)
+                    parsed, repaired = _parse_structured_text("".join(chunks), schema)
+                except asyncio.CancelledError:
+                    raise
+                except TimeoutError as exc:
+                    first_error = first_error or exc
+                    if loop.time() >= deadline_at - 1e-6:
+                        error_category = "DeadlineTimeout"
+                        break
+                    error_category = "IdleTimeout" if emitted else "FirstTokenTimeout"
+                    continue
+                except Exception as exc:
+                    first_error = first_error or exc
+                    error_category = exc.__class__.__name__
+                    continue
+
+                _update_span(
+                    span,
+                    stats=RetryStats(attempts=attempts, retries=max(0, attempts - 1)),
+                    message=last_message,
+                    protocol="json_prompt_stream",
+                    protocol_attempts=[
+                        {
+                            "protocol": "json_prompt_stream",
+                            "status": "completed",
+                            "physical_attempts": attempts,
+                            "repaired": repaired,
+                        }
+                    ],
+                )
+                return StructuredCallResult(
+                    value=parsed,
+                    attempts=attempts,
+                    protocol="json_prompt_stream",
+                )
+
+            _update_span(
+                span,
+                stats=RetryStats(attempts=attempts, retries=max(0, attempts - 1)),
+                protocol="json_prompt_stream",
+            )
+            raise StructuredCallBudgetError(
+                "Structured streaming LLM call did not complete within its budget.",
+                attempts=attempts,
+                protocol="json_prompt_stream",
+                error_category=error_category,
+            ) from first_error
+
     async def _chat_structured_via_json_prompt(
         self,
         messages: list[dict[str, str]],
@@ -412,7 +551,7 @@ class OpenAIFormatProvider:
         fallback_messages = _json_prompt_messages(messages, schema)
         # No max_tokens cap: a full resume JSON with multiple experiences easily
         # exceeds 2k tokens; letting the vendor default apply avoids truncation.
-        llm = self._llm.bind(temperature=temperature)
+        llm = self._bind_structured(temperature=temperature)
         raw_message = await run_with_transport_retries(
             lambda: llm.ainvoke(_to_lc_messages(fallback_messages)),
             max_retries=settings.llm_max_transport_retries,
@@ -448,9 +587,8 @@ class OpenAIFormatProvider:
                     "schema_name": getattr(schema, "__name__", str(schema)),
                 },
             ) as span:
-                llm = self._llm.bind(
-                    temperature=temperature,
-                    response_format={"type": "json_object"},
+                llm = self._bind_chat(temperature=temperature).bind(
+                    response_format={"type": "json_object"}
                 )
                 raw_message = await run_with_transport_retries(
                     lambda: llm.ainvoke(_to_lc_messages(messages)),
@@ -522,7 +660,7 @@ class OpenAIFormatProvider:
         temperature: float = 0.2,
         max_tokens: int | None = None,
     ) -> ChatResult:
-        llm = cast(Any, self._llm.bind(temperature=temperature))
+        llm = self._bind_chat(temperature=temperature)
         if max_tokens is not None:
             llm = llm.bind(max_tokens=max_tokens)
         if tools:
@@ -562,7 +700,7 @@ class OpenAIFormatProvider:
         arguments. Adding the chunks back together lets LangChain reconstruct
         the complete tool-call payload before it is parsed into ``ChatResult``.
         """
-        llm = cast(Any, self._llm.bind(temperature=temperature))
+        llm = self._bind_chat(temperature=temperature)
         if max_tokens is not None:
             llm = llm.bind(max_tokens=max_tokens)
         if tools:

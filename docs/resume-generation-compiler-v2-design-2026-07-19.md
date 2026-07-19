@@ -808,6 +808,35 @@ maximize
 - 仓库全量回归在本地 PostgreSQL 下为 `541 passed, 8 failed`；全量 unit 为 `415 passed, 8 failed`。8 个失败均为阶段 H 前已存在的 V1 bullet 阈值/optimizer、旧局部修复、旧并行生成排序和前端模板 manifest 差异，没有新增失败类别；
 - 阶段 I 变更目标 Ruff 检查通过；5 个生产源码目标的 mypy strict 检查通过；候选增量实现保持在 domain/graphs 边界内，未引入反向依赖。
 
+### 7.9.2 阶段 I 后真实链路修复与验收（2026-07-19）
+
+**状态：后端真实模型链路已通过；最终浏览器 DOM 硬门禁仍等待运行中的前端回传。** 阶段 A–I 的单元和合成测试通过后，使用真实账号、已导入 PDF、75 条 ready facts、本地 FastAPI、本地 Docker PostgreSQL、真实 DeepSeek Flash/Pro 和阿里项目管理实习 JD 进行完整生成，暴露出单元测试没有覆盖的模型延迟、候选容量和最终排版问题。本节的实现与结论覆盖并修正阶段 F 中“一次整份 batch call”以及第 15 节“废弃逐经历 fan-out”的原始假设：当前生产策略是**每段经历一个并发流式请求**，但同一经历的全部 bullets 必须在同一个请求中生成，禁止按 bullet 并发。
+
+根因与修复：
+
+1. Flash 和 Pro 同时超时的首要原因不是 JSON 解析，而是 DeepSeek V4 在兼容接口上默认进入 thinking。旧 structured 调用等待完整响应，服务端会先产生大量 reasoning token，业务层在看到可解析 JSON 前已经耗尽同步超时；现已对 DeepSeek 请求显式关闭 thinking，并将候选生成改为真实 token stream，分别设置首 token、流空闲和总 deadline，任何 chunk（包括 reasoning-only chunk）都刷新活动时间，但只累积最终 content；
+2. 原阶段 F 把全部经历和全部 bullets 放入单个巨大 structured payload，既延长首个可用输出时间，也让一次失败拖垮整轮。现改为按经历并发：一个经历对应一个完整候选池请求，默认并发上限 3；每个请求只接收该经历 facts、requirement 归属和高度预算，失败和 deadline 独立，模型不再按 bullet 并发，因此不会出现同一经历内部多个进程相互重复、语气不一致和 bullet 过短；
+3. 首轮流式生成恢复后，真实失败从“超时”转为“合法候选容量不足”：部分模型版本尾行不足、同事实重复、无来源技术词，编译器又因估算高度过早剪枝，导致页面只能达到约 54%–75%。现增加真实字体测量后的逐经历有限修订、完整 FactBank 候选储备、同经历相邻事实的 grounded 合并候选，并在 CandidatePool 层提前拒绝无来源数字和技术；
+4. 编译器现在先剔除尾行不合格版本，以 fact 和规范化全文双重去重，扩大 beam/exact 候选边界，并保留高高度状态参与精确测量；视觉调节只允许扩大行高和间距或在既定上限内调整字号，不得通过缩小不可读字号、虚构内容或重复 bullet 填页；
+5. bullet 硬门槛设置为 `0.6671`，从而落实“最后一行严格大于 66.7%”，不是把等于 `0.667` 当作通过。最终候选同时要求 1 页、使用率 `85%–98%`、无 overflow、所有 bullet 尾行通过、fact 唯一、元数据一致、无来源数字/技术为零。
+
+真实端到端结果：
+
+| 模型 | 完整同步请求耗时 | 页数 | 后端真实字体使用率 | bullets | 最小尾行比例 | `<=66.7%` | 终态 |
+|---|---:|---:|---:|---:|---:|---:|---|
+| `deepseek-v4-flash` | `95.20s` | 1 | `89.76%` | 22 | `67.34%` | 0 | 到达 `resume_layout_verification` |
+| `deepseek-v4-pro` | `240.39s` | 1 | `85.74%` | 18 | `66.92%` | 0 | 到达 `resume_layout_verification` |
+| `deepseek-v4-flash`（提交前最终代码） | `192.58s` | 1 | `93.13%` | 23 | `67.34%` | 0 | 到达 `resume_layout_verification` |
+
+三次请求都实际创建了独立 resume/variant，执行了真实 JD 解析缓存、FactBank 检索、ResumePlan、逐经历并发流式模型写作、候选 grounding、版面编译和质量门禁，不是 mock 或只运行单元测试。首轮 Flash 产物为 `resume-1d7b0e71-fcc4-4ffa-96cc-431829453faa / variant-7404b085-1d6f-4ae3-ac6b-567390e7b885`；Pro 产物为 `resume-5cb9c692-ed35-4f41-b3ef-2e647f52396f / variant-f1545a6d-e135-4969-8285-e2bca0fd37e6`；提交前最终 Flash 产物为 `resume-3983d777-3157-4e79-8179-57394d1eb857 / variant-4a486a19-fb4e-4be9-8ef1-f2d7776c7bf3`。
+
+验收边界与剩余项：
+
+- 当前后端硬门禁已经达到用户要求，但候选 gate status 仍为 `unverified`，这是正确行为：最终 `passed` 必须由生产前端使用统一 `ResumeDocument`、真实加载字体和 DOM 像素 observation 自动恢复 interrupt，后端不得用自身估算伪造浏览器结果；
+- 本次执行环境中的浏览器安全策略拒绝访问临时 localhost 排版探针，同时当前前端服务未运行，因此没有绕过策略或提交伪造 observation。上线/验收前仍必须在实际前端完成两份候选的 DOM 单页、`>=85%`、overflow、字体和全部尾行复核；
+- 新流式方案解决了“Flash/Pro 都生成不出来”的可用性问题，但尚未达到本文原定 `<45s` P95：Flash 两次为 95.20 秒和 192.58 秒，Pro 为 240.39 秒。同步 HTTP 仍是主要产品风险，阶段 P4 的持久化异步 Run API + SSE 不能再以延长客户端 timeout 替代；
+- 修复后相关候选、编译、质量、Graph 和浏览器门禁定向回归为 `60 passed`；本地可写临时目录下的完整仓库回归为 `546 passed, 3 skipped, 0 failed`；本次变更文件 Ruff 全通过，11 个生产源码目标 mypy strict 全通过。仓库全量 Ruff 仍报告 11 项与本次无关的既有格式/简化问题，未为通过检查而扩大无关修改范围。
+
 ## 8. API 与运行时模型
 
 ### 8.1 异步运行协议

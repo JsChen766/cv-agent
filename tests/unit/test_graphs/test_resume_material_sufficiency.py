@@ -7,6 +7,7 @@ import pytest
 
 from app.domain.resume.candidates.service import CandidatePoolService
 from app.domain.resume.layout_service import ResumeLayoutService
+from app.domain.resume.layout_templates import STANDARD_RESUME_TEMPLATE
 from app.domain.resume.retrieval.models import (
     FactScoreBreakdown,
     HybridRetrievalResult,
@@ -229,7 +230,7 @@ async def test_resume_planning_node_is_the_only_v2_budget_authority() -> None:
     assert budget_fact_ids == plan_fact_ids
 
 
-async def test_v2_generation_uses_one_complete_batch_call(
+async def test_v2_generation_streams_one_complete_call_per_experience_and_revision_round(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     retrieval = _retrieval(60)
@@ -257,15 +258,15 @@ async def test_v2_generation_uses_one_complete_batch_call(
         _config(),
     )
 
-    assert provider.calls == 1
+    assert provider.calls == 2
     assert result["candidate_generation_status"] == "ready"
     assert batch_candidate_generation_route(result) == "layout_compile"
-    assert result["generation_strategy"] == "single_batch_candidate_pool"
-    assert result["full_generation_call_count"] == 1
+    assert result["generation_strategy"] == "parallel_experience_stream_candidate_pool"
+    assert result["full_generation_call_count"] == 2
     diagnostics = result["candidate_generation_diagnostics"]
-    assert diagnostics["physical_attempts"] == 1
+    assert diagnostics["physical_attempts"] == 2
     assert diagnostics["generation_source"] == "model"
-    plan_fact_ids = set(planned["resume_plan"]["selected_fact_ids"])
+    plan_fact_ids = set(result["resume_plan"]["selected_fact_ids"])
     candidate_fact_ids = {
         fact_id
         for value in result["resume_candidate_bullets"]
@@ -325,12 +326,12 @@ async def test_incremental_generation_reuses_unchanged_experience_candidates(
         {"configurable": {"services": ServiceContainer.model_construct(resume_layout=layout)}},
     )
 
-    assert provider.calls == 1
+    assert provider.calls == 2
     assert provider.payloads[0]["selected_experience_ids"] == ["exp-work"]
     assert set(provider.payloads[0]["selected_fact_ids"]) == {"fact-1", "fact-2"}
     assert result["generation_strategy"] == "incremental_candidate_pool"
     assert result["full_generation_call_count"] == 1
-    assert result["incremental_generation_call_count"] == 1
+    assert result["incremental_generation_call_count"] == 2
     assert result["candidate_generation_diagnostics"]["reused_candidate_count"] == 1
     assert result["candidate_generation_diagnostics"]["regenerated_experience_count"] == 1
     assert {value["experience_id"] for value in result["resume_candidate_bullets"]} == {
@@ -362,9 +363,29 @@ async def test_v2_layout_compiler_consumes_complete_candidate_pool(
         _config(),
     )
     candidates = generated["resume_candidate_bullets"]
+    target_lines = {"short": 1, "medium": 2, "long": 3}
+    grounded_test_phrase = "项目协作流程优化"
+    active_layout = ResumeLayoutService(PillowFontMetrics()).with_profile(
+        STANDARD_RESUME_TEMPLATE.profile
+    )
+    language = generated["resume_candidate_pool"]["language"]
     for candidate in candidates:
-        multiplier = {"short": 1, "medium": 2, "long": 3}[candidate["length_variant"]]
-        candidate["text"] = "，".join([candidate["text"]] * multiplier)
+        expected_lines = target_lines[candidate["length_variant"]]
+        seed = f"{candidate['text']}，{grounded_test_phrase}"
+        for target in range(1, 401):
+            text = (seed * (target // len(seed) + 1))[:target]
+            fit = active_layout.measure_bullet_fit(
+                text,
+                bullet_id=candidate["bullet_id"],
+                item_id=candidate["experience_id"],
+                section_type="experience",
+                language=language,
+            )
+            if fit.line_count == expected_lines and fit.status == "pass":
+                candidate["text"] = text
+                break
+        else:  # pragma: no cover - fixed profile always has a fitting length
+            raise AssertionError(f"No {expected_lines}-line fixture text found")
 
     def legacy_optimizer_must_not_run(*args: object, **kwargs: object) -> None:
         raise AssertionError("V2 compiler must not call ResumeLayoutOptimizer")
@@ -439,7 +460,7 @@ async def test_batch_failure_uses_grounded_fallback_after_two_attempt_budget(
     diagnostics = result["candidate_generation_diagnostics"]
     assert diagnostics["physical_attempts"] == 2
     assert diagnostics["generation_source"] == "deterministic_fallback"
-    assert diagnostics["provider_error_category"] == "TimeoutError"
+    assert diagnostics["provider_error_category"] == "exp-1:TimeoutError"
 
 
 def test_v2_self_review_never_routes_to_complete_regeneration() -> None:

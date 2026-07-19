@@ -172,6 +172,20 @@ class LLMProvider(Protocol):
         max_attempts: int,
     ) -> StructuredCallResult: ...
 
+    async def chat_structured_stream_bounded(
+        self,
+        messages: list[dict[str, str]],
+        schema: type,
+        *,
+        temperature: float = 0.2,
+        first_token_timeout_seconds: float,
+        idle_timeout_seconds: float,
+        deadline_seconds: float,
+        max_attempts: int,
+        max_tokens: int | None = None,
+        on_token: TokenCallback | None = None,
+    ) -> StructuredCallResult: ...
+
     async def chat_with_tools(
         self,
         messages: list[dict[str, Any]],

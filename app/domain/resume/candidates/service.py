@@ -13,6 +13,10 @@ from app.domain.resume.candidates.models import (
     CandidateReusePlan,
     CandidateTextVariantDraft,
 )
+from app.domain.resume.grounding import (
+    technology_vocabulary,
+    unsupported_technologies,
+)
 from app.domain.resume.layout_service import ResumeLayoutService
 from app.domain.resume.planning.models import ResumePlan
 from app.domain.resume.retrieval.models import HybridRetrievalResult, RankedFact
@@ -165,6 +169,7 @@ class CandidatePoolService:
         provider_error_category: str | None = None,
     ) -> CandidatePool:
         fact_by_id = {value.fact_id: value for value in retrieval.facts}
+        grounding_vocabulary = technology_vocabulary(plan, retrieval)
         experience_ids = set(plan.selected_experience_ids)
         selected_fact_ids = set(plan.selected_fact_ids)
         fact_order = {value: index for index, value in enumerate(plan.selected_fact_ids)}
@@ -182,6 +187,7 @@ class CandidatePoolService:
                 selected_experience_ids=experience_ids,
                 represented_facts=represented_facts,
                 fact_requirement_map=plan.fact_requirement_map,
+                technology_vocabulary=grounding_vocabulary,
             )
             rejected_variants += invalid_variant_count
             if normalized is None:
@@ -309,6 +315,7 @@ class CandidatePoolService:
         selected_experience_ids: set[str],
         represented_facts: set[str],
         fact_requirement_map: dict[str, tuple[str, ...]],
+        technology_vocabulary: tuple[str, ...],
     ) -> tuple[CandidateGroupDraft | None, int]:
         fact_ids = tuple(dict.fromkeys(group.source_fact_ids))
         if (
@@ -330,6 +337,10 @@ class CandidatePoolService:
             for fact_id in fact_ids
             for requirement_id in fact_requirement_map.get(fact_id, ())
         }
+        source_text = "\n".join(value.source_text for value in grounded_facts)
+        allowed_technologies = tuple(
+            technology for fact in grounded_facts for technology in fact.technologies
+        )
         covered = tuple(
             value
             for value in dict.fromkeys(group.covered_requirement_ids)
@@ -344,6 +355,12 @@ class CandidatePoolService:
                 variant.length_variant in seen_variants
                 or not text
                 or not set(_NUMBER.findall(text)).issubset(allowed_numbers)
+                or unsupported_technologies(
+                    text,
+                    source_text,
+                    allowed_technologies,
+                    technology_vocabulary,
+                )
             ):
                 rejected_variants += 1
                 continue

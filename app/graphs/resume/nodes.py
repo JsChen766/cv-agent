@@ -40,9 +40,15 @@ from app.domain.resume.compiler.models import CandidateMeasurement, CompiledResu
 from app.domain.resume.compiler.service import ResumeLayoutCompiler
 from app.domain.resume.content_budget import build_resume_content_budget
 from app.domain.resume.content_style import normalize_resume_narrative_punctuation
-from app.domain.resume.layout_models import LayoutConstraint, LayoutReport, LayoutViolation
+from app.domain.resume.layout_models import (
+    BulletFitReport,
+    LayoutConstraint,
+    LayoutReport,
+    LayoutViolation,
+)
 from app.domain.resume.layout_optimizer import ResumeLayoutOptimizer
 from app.domain.resume.layout_profile import DEFAULT_RESUME_LAYOUT_PROFILE
+from app.domain.resume.layout_service import ResumeLayoutService
 from app.domain.resume.layout_templates import (
     STANDARD_RESUME_TEMPLATE,
     ResumeTemplateDefinition,
@@ -60,7 +66,7 @@ from app.domain.resume.quality.service import ResumeQualityGateService
 from app.domain.resume.render import render_structured_to_markdown
 from app.domain.resume.repair_models import BulletRepairBatch
 from app.domain.resume.repair_service import ResumeBulletRepairService
-from app.domain.resume.retrieval.models import HybridRetrievalResult
+from app.domain.resume.retrieval.models import HybridRetrievalResult, RankedFact
 from app.domain.resume.sufficiency.models import MaterialSufficiencyReport
 from app.domain.resume.sufficiency.service import MaterialSufficiencyService
 from app.graphs.resume.state import ResumeGenerationState
@@ -361,7 +367,7 @@ async def batch_candidate_generation_node(
     state: ResumeGenerationState,
     config: RunnableConfig | None = None,
 ) -> dict[str, object]:
-    """Write all planned narrative candidates in one bounded provider call."""
+    """Stream one complete candidate pool per experience with bounded concurrency."""
     raw_plan = state.get("resume_plan")
     raw_retrieval = state.get("fact_retrieval_result")
     services = services_from_config(config)
@@ -374,6 +380,7 @@ async def batch_candidate_generation_node(
     except ValidationError as exc:
         logger.warning("Batch candidate input validation failed: %s", exc)
         return _batch_candidate_failure("invalid_batch_candidate_inputs")
+    plan = _expand_candidate_fact_reserve(plan, retrieval)
 
     profile = state.get("user_profile") or {}
     language = _requested_resume_language(state, profile)
@@ -387,9 +394,22 @@ async def batch_candidate_generation_node(
     if reuse_plan.mode == "incremental":
         emit_thinking(event_writer, "正在复用未变化经历，只重写受 revision 影响的候选要点…")
     else:
-        emit_thinking(event_writer, "正在一次性生成全部经历的证据化候选要点…")
+        emit_thinking(event_writer, "正在按经历并行流式生成证据化候选要点…")
     started_at = time.perf_counter()
     if reuse_plan.generation_fact_ids:
+        experience_titles = {value.experience_id: value.title for value in retrieval.experiences}
+
+        def on_experience_event(experience_id: str, status: str) -> None:
+            title = experience_titles.get(experience_id, experience_id)
+            messages = {
+                "started": f"正在生成经历「{title}」的完整要点…",
+                "streaming": f"经历「{title}」已开始流式返回…",
+                "completed": f"经历「{title}」的要点已生成。",
+                "failed": f"经历「{title}」生成失败，正在使用受控降级路径。",
+            }
+            if status in messages:
+                emit_thinking(event_writer, messages[status])
+
         write_result = await ResumeBatchWriter(get_provider()).write(
             generation_plan,
             retrieval,
@@ -399,6 +419,11 @@ async def batch_candidate_generation_node(
             candidate_pool_max_ratio=settings.resume_candidate_pool_max_ratio,
             deadline_seconds=settings.resume_batch_generation_deadline_seconds,
             max_attempts=settings.resume_batch_generation_max_attempts,
+            max_concurrency=settings.resume_generation_max_concurrency,
+            first_token_timeout_seconds=settings.resume_batch_first_token_timeout_seconds,
+            idle_timeout_seconds=settings.resume_batch_idle_timeout_seconds,
+            max_tokens_per_experience=settings.resume_batch_max_tokens_per_experience,
+            on_experience_event=on_experience_event,
             revision_instruction=(
                 str(state.get("revision_instruction"))
                 if state.get("revision_instruction")
@@ -420,7 +445,8 @@ async def batch_candidate_generation_node(
             *(generated_draft.groups if generated_draft is not None else ()),
         )
     )
-    pool = CandidatePoolService(layout).build(
+    pool_service = CandidatePoolService(layout)
+    pool = pool_service.build(
         plan,
         retrieval,
         combined_draft,
@@ -431,6 +457,140 @@ async def batch_candidate_generation_node(
         provider_protocol=provider_protocol,
         provider_error_category=provider_error_category,
     )
+    active_layout = layout.with_profile(STANDARD_RESUME_TEMPLATE.profile)
+    capacity, capacity_by_experience, measured_feedback = _legal_candidate_capacity(
+        pool,
+        active_layout,
+        language=language,
+    )
+    target_by_experience = _candidate_line_targets_by_experience(plan)
+    current_draft = combined_draft
+    for revision_round in range(settings.resume_batch_measured_revision_rounds):
+        deficient_experience_ids = tuple(
+            experience_id
+            for experience_id in reuse_plan.generation_experience_ids
+            if capacity_by_experience.get(experience_id, 0)
+            < target_by_experience.get(experience_id, 0)
+        )
+        if (
+            not deficient_experience_ids
+            or pool.diagnostics.generation_source == "deterministic_fallback"
+        ):
+            break
+        emit_thinking(
+            event_writer,
+            f"部分经历未达到真实字体行高与尾行门槛，正在进行第 {revision_round + 1} "
+            "轮整段测量重写…",
+        )
+        revision_instructions = {
+            experience_id: _measured_candidate_revision_instruction(
+                experience_id,
+                target_lines=target_by_experience.get(experience_id, 0),
+                current_lines=capacity_by_experience.get(experience_id, 0),
+                measurements=measured_feedback.get(experience_id, ()),
+            )
+            for experience_id in deficient_experience_ids
+        }
+        revised = await ResumeBatchWriter(get_provider()).write(
+            generation_plan,
+            retrieval,
+            language=language,
+            tone=tone,
+            candidate_pool_target_ratio=settings.resume_candidate_pool_target_ratio,
+            candidate_pool_max_ratio=settings.resume_candidate_pool_max_ratio,
+            deadline_seconds=settings.resume_batch_generation_deadline_seconds,
+            max_attempts=settings.resume_batch_generation_max_attempts,
+            max_concurrency=settings.resume_generation_max_concurrency,
+            first_token_timeout_seconds=settings.resume_batch_first_token_timeout_seconds,
+            idle_timeout_seconds=settings.resume_batch_idle_timeout_seconds,
+            max_tokens_per_experience=settings.resume_batch_max_tokens_per_experience,
+            on_experience_event=on_experience_event,
+            generation_experience_ids=deficient_experience_ids,
+            revision_instructions=revision_instructions,
+        )
+        physical_attempts += revised.attempts
+        revised_draft = _merge_measured_revision_draft(
+            current_draft,
+            revised.draft or CandidateBatchDraft(groups=()),
+            deficient_experience_ids=deficient_experience_ids,
+        )
+        revised_pool = pool_service.build(
+            plan,
+            retrieval,
+            revised_draft,
+            language=language,
+            candidate_pool_target_ratio=settings.resume_candidate_pool_target_ratio,
+            candidate_pool_max_ratio=settings.resume_candidate_pool_max_ratio,
+            physical_attempts=physical_attempts,
+            provider_protocol=revised.protocol or provider_protocol,
+            provider_error_category=revised.error_category or provider_error_category,
+        )
+        revised_capacity, revised_capacity_by_experience, revised_feedback = (
+            _legal_candidate_capacity(
+                revised_pool,
+                active_layout,
+                language=language,
+            )
+        )
+        if revised_capacity > capacity:
+            pool = revised_pool
+            capacity = revised_capacity
+            capacity_by_experience = revised_capacity_by_experience
+            measured_feedback = revised_feedback
+            current_draft = revised_draft
+            provider_protocol = revised.protocol or provider_protocol
+            provider_error_category = revised.error_category or provider_error_category
+        else:
+            pool = pool.model_copy(
+                update={
+                    "diagnostics": pool.diagnostics.model_copy(
+                        update={
+                            "physical_attempts": physical_attempts,
+                            "warnings": tuple(
+                                dict.fromkeys(
+                                    (*pool.diagnostics.warnings, "measured_revision_not_better")
+                                )
+                            ),
+                        }
+                    )
+                }
+            )
+            break
+    pool, grounded_merge_count = _add_grounded_merge_candidates(
+        pool,
+        plan,
+        active_layout,
+        language=language,
+    )
+    if grounded_merge_count:
+        pool = pool.model_copy(
+            update={
+                "diagnostics": pool.diagnostics.model_copy(
+                    update={
+                        "candidate_count": len(pool.candidates),
+                        "warnings": tuple(
+                            dict.fromkeys(
+                                (
+                                    *pool.diagnostics.warnings,
+                                    "grounded_merge_candidates_added",
+                                )
+                            )
+                        ),
+                    }
+                )
+            }
+        )
+    if pool.diagnostics.generation_source != "model" or pool.diagnostics.warnings:
+        logger.warning(
+            "Experience candidate pool degraded: %s",
+            {
+                **pool.diagnostics.model_dump(mode="json"),
+                "measured_legal_line_capacity": capacity,
+                "measured_legal_lines_by_experience": capacity_by_experience,
+                "target_lines_by_experience": target_by_experience,
+                "grounded_merge_candidate_count": grounded_merge_count,
+            },
+        )
     pool = pool.model_copy(
         update={
             "diagnostics": pool.diagnostics.model_copy(
@@ -496,6 +656,7 @@ async def batch_candidate_generation_node(
     existing_events = list(state.get("pending_sse_events", []))
     return {
         "candidate_generation_status": "ready",
+        "resume_plan": plan.model_dump(mode="json"),
         "resume_candidate_bullets": [value.model_dump(mode="json") for value in pool.candidates],
         "candidate_generation_diagnostics": pool.diagnostics.model_dump(mode="json"),
         "candidate_reuse_diagnostics": reuse_plan.model_dump(
@@ -536,13 +697,305 @@ async def batch_candidate_generation_node(
         "generation_strategy": (
             "incremental_candidate_pool"
             if reuse_plan.mode == "incremental"
-            else "single_batch_candidate_pool"
+            else "parallel_experience_stream_candidate_pool"
         ),
         "browser_layout_observation": None,
         "browser_layout_violations": [],
         "browser_verification_iteration": 0,
         "browser_verification_status": None,
     }
+
+
+def _candidate_line_targets_by_experience(plan: ResumePlan) -> dict[str, int]:
+    experience_ids = tuple(
+        value
+        for value in plan.selected_experience_ids
+        if plan.experience_height_budgets_mm.get(value, 0.0) > 0
+    )
+    if not experience_ids:
+        return {}
+    total_budget = sum(plan.experience_height_budgets_mm[value] for value in experience_ids)
+    if total_budget <= 0:
+        return {}
+    raw = {
+        value: plan.target_candidate_lines * plan.experience_height_budgets_mm[value] / total_budget
+        for value in experience_ids
+    }
+    targets = {value: math.floor(raw[value]) for value in experience_ids}
+    remainder = max(0, plan.target_candidate_lines - sum(targets.values()))
+    ranked = sorted(
+        experience_ids,
+        key=lambda value: (-(raw[value] - targets[value]), experience_ids.index(value)),
+    )
+    for experience_id in ranked[:remainder]:
+        targets[experience_id] += 1
+    return targets
+
+
+def _expand_candidate_fact_reserve(
+    plan: ResumePlan,
+    retrieval: HybridRetrievalResult,
+) -> ResumePlan:
+    """Add grounded reserve facts for the compiler without forcing them into the final page."""
+    selected = list(plan.selected_fact_ids)
+    target_count = max(len(selected), plan.target_candidate_lines)
+    if len(selected) >= target_count:
+        return plan
+    selected_set = set(selected)
+    selected_experiences = set(plan.selected_experience_ids)
+    narrative_experiences = {
+        value.experience_id for value in retrieval.experiences if value.category != "education"
+    }
+    normalized_sources = {
+        "".join(value.source_text.casefold().split())
+        for value in retrieval.facts
+        if value.fact_id in selected_set
+    }
+    additions: list[RankedFact] = []
+    for fact in retrieval.facts:
+        if len(selected) + len(additions) >= target_count:
+            break
+        if (
+            fact.fact_id in selected_set
+            or fact.experience_id not in selected_experiences
+            or fact.experience_id not in narrative_experiences
+        ):
+            continue
+        source_key = "".join(fact.source_text.casefold().split())
+        if not source_key or source_key in normalized_sources:
+            continue
+        normalized_sources.add(source_key)
+        additions.append(fact)
+    if not additions:
+        return plan
+    addition_ids = tuple(value.fact_id for value in additions)
+    selection_reasons = dict(plan.selection_reasons)
+    rejection_reasons = dict(plan.rejection_reasons)
+    fact_requirement_map = dict(plan.fact_requirement_map)
+    for fact in additions:
+        selection_reasons[fact.fact_id] = ("candidate_pool_reserve",)
+        rejection_reasons.pop(fact.fact_id, None)
+        fact_requirement_map[fact.fact_id] = fact.matched_requirement_ids
+    return plan.model_copy(
+        update={
+            "selected_fact_ids": (*plan.selected_fact_ids, *addition_ids),
+            "fact_requirement_map": fact_requirement_map,
+            "selection_reasons": selection_reasons,
+            "rejection_reasons": rejection_reasons,
+        }
+    )
+
+
+def _merge_measured_revision_draft(
+    current: CandidateBatchDraft,
+    revised: CandidateBatchDraft,
+    *,
+    deficient_experience_ids: tuple[str, ...],
+) -> CandidateBatchDraft:
+    deficient = set(deficient_experience_ids)
+    ordered_keys: list[tuple[str, tuple[str, ...]]] = []
+    groups: dict[tuple[str, tuple[str, ...]], CandidateGroupDraft] = {}
+    for group in (*current.groups, *revised.groups):
+        if group.experience_id not in deficient and group in revised.groups:
+            continue
+        key = (group.experience_id, group.source_fact_ids)
+        existing = groups.get(key)
+        if existing is None:
+            ordered_keys.append(key)
+            groups[key] = group
+            continue
+        variants = tuple(
+            {
+                (variant.length_variant, variant.text): variant
+                for variant in (*existing.variants, *group.variants)
+            }.values()
+        )
+        groups[key] = existing.model_copy(
+            update={
+                "covered_requirement_ids": tuple(
+                    dict.fromkeys(
+                        (*existing.covered_requirement_ids, *group.covered_requirement_ids)
+                    )
+                ),
+                "variants": variants,
+            }
+        )
+    return CandidateBatchDraft(groups=tuple(groups[value] for value in ordered_keys))
+
+
+def _legal_candidate_capacity(
+    pool: CandidatePool,
+    layout: ResumeLayoutService,
+    *,
+    language: str,
+) -> tuple[int, dict[str, int], dict[str, tuple[dict[str, object], ...]]]:
+    groups: dict[tuple[str, str], list[tuple[CandidateBullet, BulletFitReport]]] = {}
+    feedback: dict[str, list[dict[str, object]]] = {}
+    for candidate in pool.candidates:
+        fit = layout.measure_bullet_fit(
+            candidate.text,
+            bullet_id=candidate.bullet_id,
+            item_id=candidate.experience_id,
+            section_type="experience",
+            language=language,
+        )
+        groups.setdefault((candidate.experience_id, candidate.candidate_group_id), []).append(
+            (candidate, fit)
+        )
+        feedback.setdefault(candidate.experience_id, []).append(
+            {
+                "source_fact_ids": list(candidate.source_fact_ids),
+                "variant": candidate.length_variant,
+                "visible_characters": len(candidate.text),
+                "measured_lines": fit.line_count,
+                "last_line_ratio": fit.last_line_ratio,
+                "status": fit.status,
+                "text": candidate.text,
+            }
+        )
+    capacity_by_experience: dict[str, int] = {}
+    for (experience_id, _group_id), values in groups.items():
+        legal_lines = [fit.line_count for _candidate, fit in values if fit.status == "pass"]
+        if legal_lines:
+            capacity_by_experience[experience_id] = capacity_by_experience.get(
+                experience_id, 0
+            ) + max(legal_lines)
+    return (
+        sum(capacity_by_experience.values()),
+        capacity_by_experience,
+        {key: tuple(value) for key, value in feedback.items()},
+    )
+
+
+def _add_grounded_merge_candidates(
+    pool: CandidatePool,
+    plan: ResumePlan,
+    layout: ResumeLayoutService,
+    *,
+    language: str,
+) -> tuple[CandidatePool, int]:
+    fact_order = {value: index for index, value in enumerate(plan.selected_fact_ids)}
+    candidates_by_fact: dict[tuple[str, str], list[CandidateBullet]] = {}
+    for candidate in pool.candidates:
+        if len(candidate.source_fact_ids) != 1:
+            continue
+        candidates_by_fact.setdefault(
+            (candidate.experience_id, candidate.source_fact_ids[0]), []
+        ).append(candidate)
+
+    fact_ids_by_experience: dict[str, list[str]] = {}
+    for experience_id, fact_id in candidates_by_fact:
+        fact_ids_by_experience.setdefault(experience_id, []).append(fact_id)
+    additions: list[CandidateBullet] = []
+    seen_fact_sets: set[tuple[str, ...]] = set()
+    for experience_id, fact_ids in fact_ids_by_experience.items():
+        ordered = sorted(fact_ids, key=lambda value: fact_order.get(value, 10**9))
+        for window_size in (2, 3, 4):
+            for start in range(0, len(ordered) - window_size + 1):
+                source_fact_ids = tuple(ordered[start : start + window_size])
+                if source_fact_ids in seen_fact_sets:
+                    continue
+                selected = [
+                    max(
+                        candidates_by_fact[(experience_id, fact_id)],
+                        key=lambda value: (len(value.text), value.quality_score),
+                    )
+                    for fact_id in source_fact_ids
+                ]
+                text = "；".join(
+                    value.text.rstrip("。.;； ") for value in selected if value.text.strip()
+                )
+                if not text:
+                    continue
+                group_seed = "\x1f".join((experience_id, *source_fact_ids))
+                candidate_group_id = (
+                    f"candidate-merge-group-{uuid.uuid5(uuid.NAMESPACE_URL, group_seed).hex[:20]}"
+                )
+                bullet_seed = f"{group_seed}\x1f{text}"
+                bullet_id = (
+                    f"candidate-merge-{uuid.uuid5(uuid.NAMESPACE_URL, bullet_seed).hex[:20]}"
+                )
+                fit = layout.measure_bullet_fit(
+                    text,
+                    bullet_id=bullet_id,
+                    item_id=experience_id,
+                    section_type="experience",
+                    language=language,
+                )
+                if fit.status != "pass" or fit.line_count > 4:
+                    continue
+                covered_requirement_ids = tuple(
+                    dict.fromkeys(
+                        requirement_id
+                        for value in selected
+                        for requirement_id in value.covered_requirement_ids
+                    )
+                )
+                additions.append(
+                    CandidateBullet(
+                        bullet_id=bullet_id,
+                        candidate_group_id=candidate_group_id,
+                        experience_id=experience_id,
+                        text=text,
+                        source_fact_ids=source_fact_ids,
+                        covered_requirement_ids=covered_requirement_ids,
+                        quality_score=round(
+                            sum(value.quality_score for value in selected) / len(selected), 4
+                        ),
+                        estimated_lines=fit.line_count,
+                        estimated_height_mm=round(
+                            fit.line_count * layout.profile.body.line_height_mm,
+                            3,
+                        ),
+                        length_variant=(
+                            "short"
+                            if fit.line_count == 1
+                            else "medium"
+                            if fit.line_count == 2
+                            else "long"
+                        ),
+                    )
+                )
+                seen_fact_sets.add(source_fact_ids)
+    if not additions:
+        return pool, 0
+    return (
+        pool.model_copy(update={"candidates": (*pool.candidates, *additions)}),
+        len(additions),
+    )
+
+
+def _measured_candidate_revision_instruction(
+    experience_id: str,
+    *,
+    target_lines: int,
+    current_lines: int,
+    measurements: tuple[dict[str, object], ...],
+) -> str:
+    return json.dumps(
+        {
+            "experience_id": experience_id,
+            "mandatory_action": "rewrite_the_complete_experience_candidate_pool",
+            "measured_legal_max_lines": current_lines,
+            "required_legal_max_lines": target_lines,
+            "validator_contract": {
+                "each_fact_has_exactly_one_group": True,
+                "medium_zh_visible_characters": [70, 100],
+                "optional_long_zh_visible_characters": [170, 202],
+                "last_line_ratio_strictly_greater_than": 0.667,
+                "preserve_grounding_and_all_source_details": True,
+                "do_not_pad_or_invent": True,
+            },
+            "previous_real_font_measurements": list(measurements),
+            "instruction": (
+                "Use the measurements as failure feedback. Return every fact group again. "
+                "Rewrite failed medium variants into the required one-line range, and add "
+                "a grounded two-line long variant for detailed facts until the required legal "
+                "line capacity is reached. Count visible characters before returning JSON."
+            ),
+        },
+        ensure_ascii=False,
+    )
 
 
 def batch_candidate_generation_route(state: ResumeGenerationState) -> str:
@@ -750,6 +1203,14 @@ async def layout_compile_node(
     }
     compiled = result.compiled_resume
     if compiled is None:
+        logger.warning(
+            "Resume layout compilation rejected candidate pool: %s",
+            {
+                "status": result.status,
+                "failure_reasons": result.failure_reasons,
+                "diagnostics": result.diagnostics.model_dump(mode="json"),
+            },
+        )
         return {
             **common,
             "quality_status": "failed",
@@ -913,6 +1374,16 @@ async def deterministic_quality_gate_node(
         },
     )
     issue_payloads = [value.model_dump(mode="json") for value in report.issues]
+    if report.status != "passed":
+        logger.warning(
+            "Resume deterministic quality validation rejected compiled candidate: %s",
+            {
+                "status": report.status,
+                "page_usage_ratio": report.page_usage_ratio,
+                "repairable_bullet_ids": report.repairable_bullet_ids,
+                "issues": issue_payloads,
+            },
+        )
     quality_status = "passed" if report.status == "passed" else None
     if report.status == "failed":
         quality_status = "failed"
@@ -1853,8 +2324,6 @@ def layout_route(state: ResumeGenerationState) -> str:
     )
     if status == "needs_revision" and can_revise:
         return "revision"
-    if hard_codes and hard_codes.issubset(repairable_codes):
-        return "fact_check"
     return "failed"
 
 
@@ -4132,7 +4601,14 @@ async def _generate_resume_by_experience(
     if budgeted_ids:
         narrative = [
             value for value in narrative_candidates if str(value.get("id") or "") in budgeted_ids
-        ][: settings.resume_parallel_max_experiences]
+        ]
+        narrative.sort(
+            key=lambda value: float(
+                budget_by_id.get(str(value.get("id") or ""), {}).get("jd_match_score") or 0.0
+            ),
+            reverse=True,
+        )
+        narrative = narrative[: settings.resume_parallel_max_experiences]
     else:
         narrative = narrative_candidates[: settings.resume_parallel_max_experiences]
 

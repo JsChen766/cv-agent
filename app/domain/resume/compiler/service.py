@@ -21,6 +21,27 @@ _VARIANT_RANK = {"short": 0, "medium": 1, "long": 2}
 _SAFE_TUNINGS = (
     LayoutTuning(),
     LayoutTuning(
+        body_font_scale=1.0,
+        body_line_height=1.24,
+        section_gap_scale=1.20,
+        item_gap_scale=1.30,
+        bullet_gap_scale=1.30,
+    ),
+    LayoutTuning(
+        body_font_scale=1.0,
+        body_line_height=1.28,
+        section_gap_scale=1.50,
+        item_gap_scale=1.60,
+        bullet_gap_scale=1.50,
+    ),
+    LayoutTuning(
+        body_font_scale=1.0,
+        body_line_height=1.28,
+        section_gap_scale=2.50,
+        item_gap_scale=4.00,
+        bullet_gap_scale=3.00,
+    ),
+    LayoutTuning(
         body_font_scale=1.015,
         body_line_height=1.20,
         section_gap_scale=1.05,
@@ -33,6 +54,20 @@ _SAFE_TUNINGS = (
         section_gap_scale=1.10,
         item_gap_scale=1.10,
         bullet_gap_scale=1.10,
+    ),
+    LayoutTuning(
+        body_font_scale=1.06,
+        body_line_height=1.22,
+        section_gap_scale=1.12,
+        item_gap_scale=1.12,
+        bullet_gap_scale=1.12,
+    ),
+    LayoutTuning(
+        body_font_scale=1.08,
+        body_line_height=1.24,
+        section_gap_scale=1.18,
+        item_gap_scale=1.18,
+        bullet_gap_scale=1.18,
     ),
 )
 
@@ -53,6 +88,7 @@ class _BeamState:
     experience_ids: frozenset[str] = frozenset()
     section_ids: frozenset[str] = frozenset()
     requirement_ids: frozenset[str] = frozenset()
+    text_keys: frozenset[str] = frozenset()
     estimated_height_mm: float = 0.0
     value_score: float = 0.0
     readability_score: float = 0.0
@@ -159,6 +195,8 @@ class ResumeLayoutCompiler:
                 cache_hits += int(hit)
                 cache_misses += int(not hit)
                 measurements.append(measurement)
+                if measurement.fit_status in {"too_short", "awkward_wrap"}:
+                    continue
                 requirement_value = sum(
                     requirement_weights.get(value, 0.0)
                     for value in candidate.covered_requirement_ids
@@ -217,6 +255,9 @@ class ResumeLayoutCompiler:
                     candidate = option.candidate
                     if state.fact_ids.intersection(candidate.source_fact_ids):
                         continue
+                    text_key = _candidate_text_key(candidate.text)
+                    if text_key and text_key in state.text_keys:
+                        continue
                     section_delta = (
                         section_overheads.get(option.section_id, 0.0)
                         if option.section_id not in state.section_ids
@@ -251,6 +292,7 @@ class ResumeLayoutCompiler:
                             section_ids=state.section_ids | {option.section_id},
                             requirement_ids=state.requirement_ids
                             | set(candidate.covered_requirement_ids),
+                            text_keys=state.text_keys | ({text_key} if text_key else set()),
                             estimated_height_mm=height,
                             value_score=(
                                 state.value_score
@@ -293,6 +335,7 @@ class ResumeLayoutCompiler:
         exact_results: list[
             tuple[tuple[object, ...], _BeamState, dict[str, Any], LayoutReport, LayoutTuning]
         ] = []
+        exact_attempts: list[tuple[float, bool, bool, bool, int]] = []
         for state in ranked_states:
             for tuning in _SAFE_TUNINGS:
                 structure = _structure_for_options(
@@ -308,6 +351,21 @@ class ResumeLayoutCompiler:
                 exact_layout_calls += 1
                 usage = _first_page_usage(report)
                 predicted_browser_usage = usage * browser_scale
+                single_page = report.page_count == 1 and report.overflow_mm <= 1e-6
+                density_in_band = (
+                    constraint.minimum_page_usage_ratio
+                    <= usage
+                    <= constraint.maximum_page_usage_ratio
+                    and constraint.minimum_page_usage_ratio
+                    <= predicted_browser_usage
+                    <= constraint.maximum_page_usage_ratio
+                )
+                tail_failures = sum(
+                    value.status in {"too_short", "awkward_wrap"} for value in report.bullet_fits
+                )
+                exact_attempts.append(
+                    (usage, single_page, density_in_band, tail_failures == 0, tail_failures)
+                )
                 if not _layout_is_eligible(
                     report,
                     constraint,
@@ -333,6 +391,23 @@ class ResumeLayoutCompiler:
 
         warnings: list[str] = []
         if not exact_results:
+            if exact_attempts:
+                usages = [value[0] for value in exact_attempts]
+                nearest = min(
+                    exact_attempts,
+                    key=lambda value: abs(value[0] - constraint.target_page_usage_ratio),
+                )
+                warnings.extend(
+                    (
+                        f"exact_usage_range:{min(usages):.4f}-{max(usages):.4f}",
+                        f"exact_single_page_count:{sum(value[1] for value in exact_attempts)}",
+                        f"exact_density_in_band_count:{sum(value[2] for value in exact_attempts)}",
+                        f"exact_tail_pass_count:{sum(value[3] for value in exact_attempts)}",
+                        "nearest_exact_attempt:"
+                        f"usage={nearest[0]:.4f},single_page={nearest[1]},"
+                        f"density={nearest[2]},tail_failures={nearest[4]}",
+                    )
+                )
             maximum_pool_stays_on_one_page = all(
                 value.page_count == 1 and value.overflow_mm <= 1e-6 for value in maximum_reports
             )
@@ -543,10 +618,15 @@ class ResumeLayoutCompiler:
         browser_scale: float,
     ) -> list[_BeamState]:
         available = self._layout.profile.content_height_mm
-        target_height = constraint.target_page_usage_ratio * available
+        # The additive beam estimate intentionally omits several interactions
+        # that exact pagination applies later and therefore runs high for dense,
+        # merged candidate pools. Search near the allowed ceiling; exact layout
+        # remains the authority and still rejects anything outside the contract.
+        target_height = available
         best: dict[
             tuple[
                 int,
+                frozenset[str],
                 frozenset[str],
                 frozenset[str],
                 frozenset[str],
@@ -562,6 +642,7 @@ class ResumeLayoutCompiler:
                 state.requirement_ids,
                 state.group_ids,
                 state.fact_ids,
+                state.text_keys,
             )
             current = best.get(key)
             if current is None or self._state_rank(
@@ -586,10 +667,10 @@ class ResumeLayoutCompiler:
         predicted = state.estimated_height_mm * browser_scale
         return (
             -len(state.requirement_ids),
-            -round(state.value_score, 6),
             -len(state.experience_ids),
-            -round(state.readability_score, 6),
             abs(predicted - target_height),
+            -round(state.value_score, 6),
+            -round(state.readability_score, 6),
             tuple(value.candidate.bullet_id for value in state.selected),
         )
 
@@ -654,6 +735,10 @@ class ResumeLayoutCompiler:
 
 def _measurement_key(*parts: str) -> str:
     return hashlib.sha256("\x1f".join(parts).encode("utf-8")).hexdigest()
+
+
+def _candidate_text_key(text: str) -> str:
+    return "".join(text.casefold().split()).rstrip("。.！!")
 
 
 def _readability(measurement: CandidateMeasurement) -> float:
@@ -766,6 +851,8 @@ def _layout_is_eligible(
         for value in report.violations
         if value.code
         in {
+            "bullet_awkward_wrap",
+            "bullet_too_short",
             "profile_mismatch",
             "font_checksum_mismatch",
             "page_limit_exceeded",
@@ -799,7 +886,25 @@ def _stratified_exact_states(
     selected: list[_BeamState] = []
     selected_ids: set[int] = set()
     strata: set[tuple[int, int]] = set()
+    height_reserve = min(limit, max(8, limit // 4))
+    tallest_states = sorted(
+        ranked_states,
+        key=lambda state: (-state.estimated_height_mm, -len(state.selected)),
+    )
+    for state in tallest_states:
+        stratum = (round(state.estimated_height_mm * 10), len(state.selected))
+        if stratum in strata:
+            continue
+        strata.add(stratum)
+        selected.append(state)
+        selected_ids.add(id(state))
+        if len(selected) >= height_reserve:
+            break
+    if len(selected) >= limit:
+        return selected
     for state in ranked_states:
+        if id(state) in selected_ids:
+            continue
         stratum = (round(state.estimated_height_mm * 10), len(state.selected))
         if stratum in strata:
             continue

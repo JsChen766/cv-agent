@@ -115,6 +115,6 @@ class LayoutTuning(BaseModel):
 
     body_font_scale: float = Field(default=1.0, ge=1.0, le=1.08)
     body_line_height: float = Field(default=1.18, ge=1.18, le=1.28)
-    section_gap_scale: float = Field(default=1.0, ge=1.0, le=1.5)
-    item_gap_scale: float = Field(default=1.0, ge=1.0, le=1.6)
-    bullet_gap_scale: float = Field(default=1.0, ge=1.0, le=1.5)
+    section_gap_scale: float = Field(default=1.0, ge=1.0, le=2.5)
+    item_gap_scale: float = Field(default=1.0, ge=1.0, le=4.0)
+    bullet_gap_scale: float = Field(default=1.0, ge=1.0, le=3.0)
