@@ -443,6 +443,100 @@ def test_local_candidate_repair_rejects_changed_fact_ids_atomically() -> None:
     assert result.candidates == candidates
 
 
+def test_local_candidate_repair_falls_back_to_verbatim_grounded_facts() -> None:
+    plan, retrieval, candidates, compiled, constraint = _fixture(fit_status="awkward_wrap")
+    grounded_text = (
+        "使用 Python 对接口处理流程进行系统优化，"
+        "通过重构处理逻辑将接口响应时间降低 20%"
+    )
+    retrieval = retrieval.model_copy(
+        update={
+            "facts": (
+                retrieval.facts[0].model_copy(update={"source_text": grounded_text}),
+            )
+        }
+    )
+    quality = ResumeQualityGateService().validate(plan, retrieval, candidates, compiled, constraint)
+    draft = LocalRepairBatchDraft(
+        repairs=(
+            LocalRepairChoiceDraft(
+                bullet_id="bullet-1",
+                candidates=(
+                    LocalRepairCandidateDraft(
+                        text="使用 Kubernetes 优化接口处理流程",
+                        source_fact_ids=("fact-1",),
+                        covered_requirement_ids=("req-python",),
+                    ),
+                ),
+            ),
+        )
+    )
+
+    result = ResumeLocalCandidateRepairService(ResumeLayoutService(PillowFontMetrics())).apply(
+        plan,
+        retrieval,
+        candidates,
+        compiled.selected_candidate_ids,
+        quality.repairable_bullet_ids,
+        draft,
+        language="zh-CN",
+    )
+
+    assert result.status == "applied"
+    repaired = next(
+        value for value in result.candidates if value.bullet_id in result.added_candidate_ids
+    )
+    assert repaired.text == grounded_text
+    assert repaired.source_fact_ids == ("fact-1",)
+
+
+def test_local_candidate_repair_prefers_grounded_facts_for_browser_orphan() -> None:
+    plan, retrieval, candidates, compiled, constraint = _fixture(fit_status="awkward_wrap")
+    grounded_text = (
+        "使用 Python 对接口处理流程进行系统优化，"
+        "通过重构处理逻辑将接口响应时间降低 20%"
+    )
+    retrieval = retrieval.model_copy(
+        update={
+            "facts": (
+                retrieval.facts[0].model_copy(update={"source_text": grounded_text}),
+            )
+        }
+    )
+    quality = ResumeQualityGateService().validate(plan, retrieval, candidates, compiled, constraint)
+    draft = LocalRepairBatchDraft(
+        repairs=(
+            LocalRepairChoiceDraft(
+                bullet_id="bullet-1",
+                candidates=(
+                    LocalRepairCandidateDraft(
+                        text="使用 Python 优化接口处理流程，将响应时间降低 20%，并建立回归验证流程",
+                        source_fact_ids=("fact-1",),
+                        covered_requirement_ids=("req-python",),
+                    ),
+                ),
+            ),
+        )
+    )
+
+    result = ResumeLocalCandidateRepairService(ResumeLayoutService(PillowFontMetrics())).apply(
+        plan,
+        retrieval,
+        candidates,
+        compiled.selected_candidate_ids,
+        quality.repairable_bullet_ids,
+        draft,
+        language="zh-CN",
+        prefer_grounded_fallback_ids=("bullet-1",),
+    )
+
+    assert result.status == "applied"
+    repaired = next(
+        value for value in result.candidates if value.bullet_id in result.added_candidate_ids
+    )
+    assert repaired.text == grounded_text
+
+
 class _BoundedRepairProvider:
     def __init__(self, *, fail: bool = False) -> None:
         self.fail = fail

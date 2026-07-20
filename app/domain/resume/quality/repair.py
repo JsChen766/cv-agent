@@ -11,7 +11,7 @@ from app.domain.resume.quality.service import (
     _technology_vocabulary,
     _unsupported_technologies,
 )
-from app.domain.resume.retrieval.models import HybridRetrievalResult
+from app.domain.resume.retrieval.models import HybridRetrievalResult, RankedFact
 
 _NUMBER = re.compile(r"(?<!\w)\d+(?:[.,]\d+)?%?")
 
@@ -32,8 +32,10 @@ class ResumeLocalCandidateRepairService:
         draft: LocalRepairBatchDraft,
         *,
         language: str,
+        prefer_grounded_fallback_ids: tuple[str, ...] = (),
     ) -> LocalRepairResult:
         target_ids = set(repairable_bullet_ids)
+        grounded_fallback_ids = set(prefer_grounded_fallback_ids)
         repair_ids = [value.bullet_id for value in draft.repairs]
         if (
             not target_ids
@@ -73,8 +75,14 @@ class ResumeLocalCandidateRepairService:
             )
             valid_texts: list[tuple[str, int, int]] = []
             seen_texts: set[str] = set()
+            preserves_evidence_contract = False
             for option in repair.candidates:
                 text = option.text.strip()
+                if (
+                    option.source_fact_ids == original.source_fact_ids
+                    and option.covered_requirement_ids == original.covered_requirement_ids
+                ):
+                    preserves_evidence_contract = True
                 if (
                     option.source_fact_ids != original.source_fact_ids
                     or option.covered_requirement_ids != original.covered_requirement_ids
@@ -101,6 +109,29 @@ class ResumeLocalCandidateRepairService:
                     continue
                 seen_texts.add(text)
                 valid_texts.append((text, fit.line_count, len(text)))
+            if preserves_evidence_contract:
+                # A browser-only wrap failure can expose a font-metric mismatch that
+                # model alternatives still miss. Use the verbatim source facts for
+                # extreme orphan lines, or as a fallback when no model option passes.
+                source_fallback = _join_grounded_source_facts(grounded_facts, language)
+                if source_fallback and source_fallback not in seen_texts:
+                    fit = self._layout.measure_bullet_fit(
+                        source_fallback,
+                        bullet_id=repair.bullet_id,
+                        item_id=original.experience_id,
+                        section_type="experience",
+                        language=language,
+                    )
+                    if fit.status == "pass":
+                        grounded_value = (
+                            source_fallback,
+                            fit.line_count,
+                            len(source_fallback),
+                        )
+                        if repair.bullet_id in grounded_fallback_ids:
+                            valid_texts = [grounded_value]
+                        elif not valid_texts:
+                            valid_texts.append(grounded_value)
             if not valid_texts:
                 rejection_reasons.append(f"{repair.bullet_id}:no_valid_repair_candidate")
                 continue
@@ -137,6 +168,16 @@ class ResumeLocalCandidateRepairService:
             candidates=repaired_pool,
             added_candidate_ids=tuple(value.bullet_id for value in replacements),
         )
+
+
+def _join_grounded_source_facts(grounded_facts: list[RankedFact], language: str) -> str:
+    separator = "，" if language.lower().startswith("zh") else "; "
+    parts: list[str] = []
+    for fact in grounded_facts:
+        source_text = fact.source_text.strip().rstrip("。.")
+        if source_text and source_text not in parts:
+            parts.append(source_text)
+    return separator.join(parts)
 
 
 def _variant_labels(count: int, fallback: LengthVariant) -> tuple[LengthVariant, ...]:

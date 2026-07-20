@@ -110,6 +110,12 @@ def test_observability_does_not_add_a_public_layout_observation_route() -> None:
     assert "/v1/product/resumes/{resume_id}/variants/{variant_id}/layout-observations" not in paths
 
 
+def test_generate_resume_product_action_exposes_sse_transport() -> None:
+    operation = app.openapi()["paths"]["/v1/copilot/actions/stream"]["post"]
+
+    assert "text/event-stream" in operation["responses"]["200"]["content"]
+
+
 def test_resume_canvas_metadata_keeps_renderable_snapshot_and_variant_reference() -> None:
     metadata = _resume_canvas_metadata(
         {

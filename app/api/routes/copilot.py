@@ -4,6 +4,7 @@ Copilot API routes.
 POST /copilot/chat         — non-streaming chat
 POST /copilot/chat/stream  — SSE streaming chat
 POST /copilot/actions      — explicit product actions
+POST /copilot/actions/stream — SSE streaming resume-generation action
 GET  /copilot/sidebar      — sidebar summary data
 """
 
@@ -1329,6 +1330,32 @@ async def product_action(
     raise ValidationError(f"Action '{body.action.type}' is not implemented yet")
 
 
+@router.post(
+    "/actions/stream",
+    response_class=StreamingResponse,
+    responses=SSE_STREAM_RESPONSES,  # type: ignore[arg-type]
+)
+async def product_action_stream(
+    body: ActionRequest,
+    request: Request,
+    user_id: str = Depends(get_current_user_id),
+    pool: asyncpg.Pool | None = Depends(pool_dep),
+) -> StreamingResponse:
+    """Stream the long-running JD-to-resume action without changing its graph branch."""
+    payload = body.action.payload_model()
+    if not isinstance(payload, GenerateResumeFromJdPayload):
+        raise ValidationError(
+            f"Action '{body.action.type}' does not support streaming"
+        )
+    return await _run_generate_resume_from_jd_action_stream(
+        body,
+        payload,
+        request,
+        user_id,
+        pool,
+    )
+
+
 async def _run_generate_resume_from_jd_action(
     body: ActionRequest,
     payload: GenerateResumeFromJdPayload,
@@ -1452,6 +1479,222 @@ async def _run_generate_resume_from_jd_action(
             assistant_message_id,
         ),
         request,
+    )
+
+
+async def _run_generate_resume_from_jd_action_stream(
+    body: ActionRequest,
+    payload: GenerateResumeFromJdPayload,
+    request: Request,
+    user_id: str,
+    pool: asyncpg.Pool | None,
+) -> StreamingResponse:
+    """SSE equivalent of the existing generate_resume_from_jd product action."""
+    from app.graphs.main import get_graph
+
+    action_pool = _require_action_pool(pool)
+    thread_id, turn_id, workspace, services, graph_config = await _prepare_action_context(
+        body,
+        user_id,
+        action_pool,
+    )
+    recorder = create_resume_trace(
+        request_id=getattr(request.state, "request_id", None),
+        thread_id=thread_id,
+        turn_id=turn_id,
+        trigger="product_action",
+    )
+    inject_trace(graph_config, recorder)
+    jd = await services.jd.get_jd(user_id, payload.jdId)
+    if body.clientState.activeResumeId:
+        resume = await services.resume.get_resume(user_id, body.clientState.activeResumeId)
+    else:
+        title = f"Resume for {jd.target_role or jd.title}"
+        resume = await services.resume.create_resume(
+            user_id,
+            title,
+            target_role=jd.target_role,
+            jd_id=jd.id,
+        )
+    workspace["jd_id"] = jd.id
+    workspace["resume_id"] = resume.id
+
+    instruction = _resume_generation_user_message(jd.raw_text)
+    if body.threadId is None:
+        await _set_thread_title(
+            action_pool,
+            thread_id=thread_id,
+            title=_resume_generation_thread_title(
+                company=jd.company,
+                target_role=jd.target_role,
+                jd_title=jd.title,
+            ),
+        )
+        await _persist_message(
+            action_pool,
+            thread_id=thread_id,
+            role="user",
+            content=instruction,
+            turn_id=turn_id,
+            metadata={"source": "jd_match_detail", "jd_id": jd.id},
+        )
+
+    initial_state = _build_initial_state(
+        thread_id,
+        user_id,
+        [{"role": "user", "content": instruction, "turn_id": turn_id}],
+        workspace,
+        turn_id,
+    )
+    initial_state["target_subgraph"] = "application_package"
+    initial_state["intent_description"] = instruction
+    if recorder is not None:
+        initial_state["observability_run_id"] = recorder.run_id
+
+    graph = get_graph(_get_checkpointer_or_none())
+    await _reject_if_pending_interrupt(graph, graph_config)
+
+    async def _stream_with_persistence() -> AsyncGenerator[str, None]:
+        assistant_saved = False
+        trace_finished = False
+        try:
+            async for chunk in stream_graph_events(graph, initial_state, graph_config):
+                try:
+                    data_line = next(
+                        (
+                            line[len("data:") :].strip()
+                            for line in chunk.splitlines()
+                            if line.startswith("data:")
+                        ),
+                        None,
+                    )
+                    if not data_line:
+                        yield chunk
+                        continue
+                    event_payload = json.loads(data_line)
+                    event_type = event_payload.get("event")
+                    if not assistant_saved and event_type == "agent.completed":
+                        response = event_payload.get("response")
+                        response = response if isinstance(response, dict) else {}
+                        assistant_message = response.get("assistantMessage")
+                        assistant_message = (
+                            assistant_message if isinstance(assistant_message, dict) else {}
+                        )
+                        content = str(assistant_message.get("content") or "")
+                        interrupt = response.get("interrupt")
+                        response_workspace = response.get("workspace")
+                        canvas_message_id = await _persist_resume_canvas_message(
+                            action_pool,
+                            thread_id=thread_id,
+                            turn_id=turn_id,
+                            workspace=(
+                                response_workspace
+                                if isinstance(response_workspace, dict)
+                                else workspace
+                            ),
+                            interrupt=interrupt if isinstance(interrupt, dict) else None,
+                            content=content or "简历草稿已生成，可在画布中查看和编辑。",
+                        )
+                        if canvas_message_id is None:
+                            canvas_message_id = await _persist_message(
+                                action_pool,
+                                thread_id=thread_id,
+                                role="assistant",
+                                content=content,
+                                turn_id=turn_id,
+                                metadata={"interrupt": bool(interrupt)},
+                            )
+                        if canvas_message_id:
+                            assistant_message["id"] = canvas_message_id
+                            chunk = format_sse(event_payload)
+                        assistant_saved = True
+                    elif not assistant_saved and event_type == "agent.interrupt":
+                        interrupt = event_payload.get("data")
+                        interrupt_workspace = (
+                            interrupt.get("workspace")
+                            if isinstance(interrupt, dict)
+                            else None
+                        )
+                        canvas_message_id = await _persist_resume_canvas_message(
+                            action_pool,
+                            thread_id=thread_id,
+                            turn_id=turn_id,
+                            workspace=(
+                                interrupt_workspace
+                                if isinstance(interrupt_workspace, dict)
+                                else workspace
+                            ),
+                            interrupt=interrupt if isinstance(interrupt, dict) else None,
+                        )
+                        if canvas_message_id and isinstance(interrupt, dict):
+                            interrupt["canvas_message_id"] = canvas_message_id
+                            chunk = format_sse(event_payload)
+                        assistant_saved = True
+                    elif not assistant_saved and event_type == "agent.failed":
+                        error = event_payload.get("error") or {}
+                        await _persist_message(
+                            action_pool,
+                            thread_id=thread_id,
+                            role="assistant",
+                            content=str(error.get("message") or "Agent failed"),
+                            turn_id=turn_id,
+                            metadata={"error": True},
+                        )
+                        assistant_saved = True
+
+                    if not trace_finished and event_type in {
+                        "agent.completed",
+                        "agent.interrupt",
+                        "agent.failed",
+                    }:
+                        status = {
+                            "agent.completed": "completed",
+                            "agent.interrupt": "interrupted",
+                            "agent.failed": "failed",
+                        }[event_type]
+                        await finish_trace_best_effort(
+                            recorder,
+                            user_id=user_id,
+                            service=services.resume_observability,
+                            status=cast(
+                                "Literal['completed', 'interrupted', 'failed']",
+                                status,
+                            ),
+                            error_code=(
+                                "product_action_stream_failed"
+                                if event_type == "agent.failed"
+                                else None
+                            ),
+                        )
+                        trace_finished = True
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("Action SSE persistence hook failed: %s", exc)
+                yield chunk
+        except GeneratorExit:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "Action stream ended with exception for thread %s: %s",
+                thread_id,
+                exc,
+            )
+        finally:
+            if not trace_finished:
+                await finish_trace_best_effort(
+                    recorder,
+                    user_id=user_id,
+                    service=services.resume_observability,
+                    status="cancelled",
+                    error_code="client_cancelled",
+                )
+
+    return StreamingResponse(
+        _stream_with_persistence(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
     )
 
 

@@ -1490,6 +1490,13 @@ async def local_candidate_repair_node(
             ],
         }
     active_layout = layout.with_profile(STANDARD_RESUME_TEMPLATE.profile)
+    browser_orphan_ids = tuple(
+        fit.bullet_id
+        for fit in compiled.layout_report.bullet_fits
+        if fit.bullet_id in quality.repairable_bullet_ids
+        and fit.line_count > 1
+        and fit.last_line_ratio < 0.2
+    )
     repaired = ResumeLocalCandidateRepairService(active_layout).apply(
         plan,
         retrieval,
@@ -1498,6 +1505,7 @@ async def local_candidate_repair_node(
         quality.repairable_bullet_ids,
         write_result.draft,
         language=language,
+        prefer_grounded_fallback_ids=browser_orphan_ids,
     )
     if repaired.status != "applied":
         return {

@@ -108,11 +108,19 @@ class PostgresResumeObservabilityRepository:
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(
                 """
-                SELECT rv.structured->>'layout_profile_version' AS profile_version,
-                       rv.structured->>'layout_profile_hash' AS profile_hash
-                FROM resume_variants rv
-                JOIN resumes r ON r.id=rv.resume_id
-                WHERE r.user_id=$1 AND r.id=$2 AND rv.id=$3
+                WITH candidate AS (
+                    SELECT CASE
+                        WHEN jsonb_typeof(rv.structured) = 'string'
+                            THEN (rv.structured #>> '{}')::jsonb
+                        ELSE rv.structured
+                    END AS structured
+                    FROM resume_variants rv
+                    JOIN resumes r ON r.id=rv.resume_id
+                    WHERE r.user_id=$1 AND r.id=$2 AND rv.id=$3
+                )
+                SELECT structured->>'layout_profile_version' AS profile_version,
+                       structured->>'layout_profile_hash' AS profile_hash
+                FROM candidate
                 """,
                 user_id,
                 resume_id,
