@@ -222,7 +222,43 @@ class ResumeService:
         if self._layout is None:
             raise RuntimeError("Resume layout service is required for structured canvas edits")
         new_structured = apply_patch_operations(variant.structured, operations)
-        new_structured = normalize_resume_narrative_punctuation(new_structured)
+        return await self._persist_structured_revision(variant, new_structured)
+
+    async def replace_variant_structure(
+        self,
+        user_id: str,
+        variant_id: str,
+        structured: dict[str, Any],
+    ) -> ResumeVariantPatchResult:
+        """Persist a full editor snapshot through the same versioned layout gate.
+
+        The editor may replace user-owned resume content, but it cannot change
+        the server-owned template/profile contract used by the quality gate.
+        """
+        variant = await self.get_variant(variant_id)
+        await self.get_resume(user_id, variant.resume_id)
+        if not variant.structured:
+            raise NotFoundError(f"Variant has no structured data: {variant_id}")
+        if self._layout is None:
+            raise RuntimeError("Resume layout service is required for structured canvas edits")
+        canonical = copy.deepcopy(structured)
+        for key in (
+            "layout_template_id",
+            "layout_profile_version",
+            "layout_profile_hash",
+        ):
+            if canonical.get(key) != variant.structured.get(key):
+                raise ValueError(f"Resume editor cannot change {key}")
+        return await self._persist_structured_revision(variant, canonical)
+
+    async def _persist_structured_revision(
+        self,
+        variant: ResumeVariant,
+        structured: dict[str, Any],
+    ) -> ResumeVariantPatchResult:
+        if self._layout is None:
+            raise RuntimeError("Resume layout service is required for structured canvas edits")
+        new_structured = normalize_resume_narrative_punctuation(structured)
         report = self._layout.measure_resume_layout(new_structured, LayoutConstraint())
         usage = report.pages[0].usage_ratio if report.pages else 0.0
         new_structured["layout_usage_ratio"] = usage
@@ -232,11 +268,13 @@ class ResumeService:
             "maximum": report.maximum_page_usage_ratio,
         }
         new_content = render_structured_to_markdown(new_structured)
+        if not new_content.strip():
+            raise ValueError("Resume structure must contain renderable content")
         persisted = await self._repo.patch_variant_structured(
-            variant_id=variant_id,
+            variant_id=variant.id,
             structured=new_structured,
             content=new_content,
-            parent_variant_id=variant_id,
+            parent_variant_id=variant.id,
         )
         return ResumeVariantPatchResult(
             **persisted.model_dump(),

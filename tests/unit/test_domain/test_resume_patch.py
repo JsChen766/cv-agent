@@ -89,6 +89,65 @@ def _all_ids(structured: dict) -> set[str]:
     return ids
 
 
+# ── contact / section structure ──────────────────────────────────────────────
+
+
+def test_replace_contact_field_supports_resume_header_editing() -> None:
+    structured = _make_structured()
+    result = apply_patch_operations(
+        structured,
+        [
+            {"op": "replace_contact_field", "field": "name", "value": "Alice Chen"},
+            {"op": "replace_contact_field", "field": "phone", "value": "13800000000"},
+        ],
+    )
+
+    assert result["contact"]["name"] == "Alice Chen"
+    assert result["contact"]["phone"] == "13800000000"
+
+
+def test_replace_contact_field_rejects_system_owned_fields() -> None:
+    with pytest.raises(ValueError, match="not allowed"):
+        apply_patch_operations(
+            _make_structured(),
+            [{"op": "replace_contact_field", "field": "layout_profile_hash", "value": "x"}],
+        )
+
+
+def test_add_and_delete_section_assigns_server_owned_nested_ids() -> None:
+    structured = _make_structured()
+    result = apply_patch_operations(
+        structured,
+        [
+            {
+                "op": "add_section",
+                "after_section_id": "sec-001",
+                "section": {
+                    "id": "sec-local",
+                    "type": "project",
+                    "heading": "Projects",
+                    "items": [
+                        {
+                            "id": "item-local",
+                            "title": "Project",
+                            "bullets": [{"id": "bul-local", "text": "Built it"}],
+                        }
+                    ],
+                },
+            },
+            {"op": "delete_section", "section_id": "sec-002"},
+        ],
+    )
+
+    assert [section["type"] for section in result["sections"]] == ["experience", "project"]
+    added = result["sections"][1]
+    assert added["id"].startswith("sec-") and added["id"] != "sec-local"
+    assert added["items"][0]["id"].startswith("item-")
+    assert added["items"][0]["id"] != "item-local"
+    assert added["items"][0]["bullets"][0]["id"].startswith("bul-")
+    assert added["items"][0]["bullets"][0]["id"] != "bul-local"
+
+
 # ── replace_bullet ─────────────────────────────────────────────────────────────
 
 
@@ -562,3 +621,83 @@ async def test_service_patch_variant_raises_on_bad_op() -> None:
         )
     # Repo should NOT have been called because batch failed before DB write
     repo.patch_variant_structured.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_replace_variant_structure_uses_versioned_layout_gate() -> None:
+    structured = _make_structured()
+    structured.update(
+        {
+            "layout_template_id": "resume-standard",
+            "layout_profile_version": "resume-template-v2",
+            "layout_profile_hash": "profile-hash",
+        }
+    )
+    edited = copy.deepcopy(structured)
+    edited["contact"]["name"] = "Edited Name"
+    now = datetime.now()
+    source_variant = ResumeVariant(
+        id="variant-src",
+        resume_id="resume-1",
+        title="Draft",
+        content="old",
+        structured=structured,
+        gate_status="passed",
+        created_at=now,
+    )
+    saved_variant = source_variant.model_copy(
+        update={
+            "id": "variant-new",
+            "structured": edited,
+            "parent_variant_id": "variant-src",
+            "gate_status": "unverified",
+        }
+    )
+    repo = MagicMock()
+    repo.get_variant = AsyncMock(return_value=source_variant)
+    repo.get = AsyncMock(return_value=MagicMock(id="resume-1"))
+    repo.patch_variant_structured = AsyncMock(return_value=saved_variant)
+    service = ResumeService(repo, ResumeLayoutService(PillowFontMetrics()))
+
+    result = await service.replace_variant_structure("user-1", "variant-src", edited)
+
+    assert result.id == "variant-new"
+    assert result.parent_variant_id == "variant-src"
+    assert result.gate_status == "unverified"
+    assert result.structured is not None
+    assert result.structured["contact"]["name"] == "Edited Name"
+    assert result.quality_status in {"pass", "needs_revision"}
+    repo.patch_variant_structured.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_replace_variant_structure_rejects_layout_contract_changes() -> None:
+    structured = _make_structured()
+    structured.update(
+        {
+            "layout_template_id": "resume-standard",
+            "layout_profile_version": "resume-template-v2",
+            "layout_profile_hash": "profile-hash",
+        }
+    )
+    now = datetime.now()
+    source_variant = ResumeVariant(
+        id="variant-src",
+        resume_id="resume-1",
+        title="Draft",
+        content="old",
+        structured=structured,
+        created_at=now,
+    )
+    repo = MagicMock()
+    repo.get_variant = AsyncMock(return_value=source_variant)
+    repo.get = AsyncMock(return_value=MagicMock(id="resume-1"))
+    repo.patch_variant_structured = AsyncMock()
+    service = ResumeService(repo, ResumeLayoutService(PillowFontMetrics()))
+    edited = copy.deepcopy(structured)
+    edited["layout_profile_hash"] = "tampered"
+
+    with pytest.raises(ValueError, match="cannot change layout_profile_hash"):
+        await service.replace_variant_structure("user-1", "variant-src", edited)
+
+    repo.patch_variant_structured.assert_not_awaited()

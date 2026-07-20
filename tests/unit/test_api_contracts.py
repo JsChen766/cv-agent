@@ -116,6 +116,15 @@ def test_generate_resume_product_action_exposes_sse_transport() -> None:
     assert "text/event-stream" in operation["responses"]["200"]["content"]
 
 
+def test_structured_resume_replacement_uses_a_dedicated_versioned_route() -> None:
+    operation = app.openapi()["paths"][
+        "/v1/product/resumes/{resume_id}/variants/{variant_id}/structured"
+    ]["put"]
+
+    assert operation["requestBody"]["required"] is True
+    assert "200" in operation["responses"]
+
+
 def test_resume_canvas_metadata_keeps_renderable_snapshot_and_variant_reference() -> None:
     metadata = _resume_canvas_metadata(
         {

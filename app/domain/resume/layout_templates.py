@@ -85,7 +85,7 @@ SPARSE_RESUME_LAYOUT_PROFILE = DEFAULT_RESUME_LAYOUT_PROFILE.model_copy(
         "section_heading": TextStyle(font_size_pt=13.5, font_weight=700, line_height=1.15),
         "item_heading": TextStyle(font_size_pt=11.25, font_weight=700, line_height=1.25),
         "item_subheading": TextStyle(font_size_pt=10.75, italic=True, line_height=1.25),
-        "date": TextStyle(font_size_pt=10.75, line_height=1.25),
+        "date": TextStyle(font_size_pt=10.75, font_weight=700, line_height=1.25),
         "spacing": ResumeSpacing(
             header_after_mm=3.0,
             section_before_mm=3.5,

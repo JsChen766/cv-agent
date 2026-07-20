@@ -161,7 +161,16 @@ async def _fetch_profile(services: ServiceContainer, user_id: str) -> dict[str, 
     ) as span:
         profile = await services.user.get_profile(user_id)
         _set_row_count(span, 1)
-        return profile.model_dump(mode="json", exclude_none=True)
+        result = profile.model_dump(mode="json", exclude_none=True)
+        # Fall back to the auth-layer email when the profile has none set.
+        if not result.get("email"):
+            try:
+                user = await services.user.get_by_id(user_id)
+                if user.email:
+                    result["email"] = user.email
+            except Exception:
+                pass
+        return result
 
 
 async def _fetch_preferences(services: ServiceContainer, user_id: str) -> list[dict[str, object]]:

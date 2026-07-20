@@ -83,7 +83,7 @@ class ResumeLayoutProfile(BaseModel):
     item_subheading: TextStyle = Field(
         default_factory=lambda: TextStyle(font_size_pt=9.5, italic=True, line_height=1.18)
     )
-    date: TextStyle = Field(default_factory=lambda: TextStyle(font_size_pt=9.5, line_height=1.18))
+    date: TextStyle = Field(default_factory=lambda: TextStyle(font_size_pt=9.5, font_weight=700, line_height=1.18))
     spacing: ResumeSpacing = Field(default_factory=ResumeSpacing)
     bullet: BulletLayout = Field(default_factory=BulletLayout)
     pagination: BlockPaginationRules = Field(default_factory=BlockPaginationRules)

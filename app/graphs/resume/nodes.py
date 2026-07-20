@@ -4511,6 +4511,7 @@ def _candidate_pool_to_structure(
         category = str(experience.get("category") or "other")
         section_type = {
             "work": "experience",
+            "volunteer": "experience",
             "project": "project",
             "education": "education",
         }.get(category, "other")
@@ -4800,6 +4801,7 @@ async def _generate_resume_by_experience(
         category = str(experience.get("category") or "other")
         section_type = {
             "work": "experience",
+            "volunteer": "experience",
             "project": "project",
             "education": "education",
         }.get(category, "other")

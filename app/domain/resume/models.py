@@ -101,16 +101,19 @@ class ResumeItemCreate(BaseModel):
     title: str | None = None
     content_snapshot: str = ""
     order_index: int = 0
+    hidden: bool = False
     source_experience_id: str | None = None
     source_variant_id: str | None = None
 
 
 class ResumeItemPatch(BaseModel):
+    section_type: ResumeSectionType | None = None
     title: str | None = None
     content_snapshot: str | None = None
     order_index: int | None = None
     hidden: bool | None = None
     pinned: bool | None = None
+    source_variant_id: str | None = None
 
     @property
     def has_changes(self) -> bool:

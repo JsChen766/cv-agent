@@ -248,6 +248,7 @@ class _FakeResumeService:
             title=data.title,
             content_snapshot=data.content_snapshot,
             order_index=data.order_index,
+            hidden=data.hidden,
             source_experience_id=data.source_experience_id,
             source_variant_id=data.source_variant_id,
             created_at=now,
@@ -386,3 +387,4 @@ async def test_resume_review_accept_saves_variant_and_consumes_interrupt(
     assert accepted["workspace"]["resume_item_id"] == "item-1"
     assert service.resume is not None
     assert [item.source_variant_id for item in service.resume.items] == ["variant-1"]
+    assert service.resume.items[0].hidden is True

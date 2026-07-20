@@ -12,11 +12,15 @@ def render_structured_to_markdown(structured: dict[str, object]) -> str:
     lines: list[str] = []
     contact = structured.get("contact")
     if isinstance(contact, dict):
-        header_bits = [
-            str(contact.get(k)) for k in ("name", "email", "phone", "location") if contact.get(k)
+        name = contact.get("name")
+        if name:
+            lines.append(str(name))
+        contact_bits = [
+            str(contact.get(k)) for k in ("email", "phone", "location") if contact.get(k)
         ]
-        if header_bits:
-            lines.append(" · ".join(header_bits))
+        if contact_bits:
+            lines.append(" · ".join(contact_bits))
+        if name or contact_bits:
             lines.append("")
 
     sections = structured.get("sections") or []

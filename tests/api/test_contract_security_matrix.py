@@ -252,6 +252,12 @@ PROTECTED_ENDPOINTS: list[tuple[str, HttpMethod, str, dict[str, object]]] = [
     ("resumes-get", "get", "/v1/product/resumes/resume-owned-by-a", {}),
     ("resumes-patch", "patch", "/v1/product/resumes/resume-owned-by-a", {"json": {"title": "x"}}),
     (
+        "resume-structured-replace",
+        "put",
+        "/v1/product/resumes/resume-owned-by-a/variants/variant-owned-by-a/structured",
+        {"json": {"structured": {}}},
+    ),
+    (
         "resume-item-add",
         "post",
         "/v1/product/resumes/resume-owned-by-a/items",

@@ -140,6 +140,7 @@ async def accept_variant(
                 section_type="other",
                 title=variant.title,
                 content_snapshot=variant.content,
+                hidden=True,
                 source_variant_id=variant.id,
             ),
         )
@@ -305,7 +306,10 @@ async def _load_experience_context(
     else:
         experience_ids = experience_ids[:limit]
     experiences = await asyncio.gather(
-        *(services.experience.get_experience(user_id, experience_id) for experience_id in experience_ids)
+        *(
+            services.experience.get_experience(user_id, experience_id)
+            for experience_id in experience_ids
+        )
     )
     context = []
     for experience in experiences:

@@ -38,7 +38,7 @@ from app.core.errors import (
     ValidationError,
 )
 from app.core.types import ThreadStatus
-from app.domain.resume.models import ResumeItemPatch, ResumeVariantPatch
+from app.domain.resume.models import ResumeItemPatch, ResumeVariant, ResumeVariantPatch
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/threads", tags=["threads"])
@@ -518,13 +518,13 @@ async def save_resume_canvas(
         raise NotFoundError(f"Resume variant '{body.selectedVariantId}' is not in this canvas")
 
     services = build_service_container(checked_pool)
+    updated_variant: ResumeVariant
     try:
         if body.structured is not None:
-            updated_variant = await services.resume.save_variant_structure(
+            updated_variant = await services.resume.replace_variant_structure(
                 user_id,
                 body.selectedVariantId,
                 dict(body.structured),
-                title=body.title,
             )
         else:
             # Compatibility path for clients released before structured canvas saves.
@@ -543,17 +543,27 @@ async def save_resume_canvas(
             ResumeItemPatch(
                 title=updated_variant.title,
                 content_snapshot=updated_variant.content,
+                hidden=True,
+                source_variant_id=updated_variant.id,
             ),
         )
 
+    old_variant_id = body.selectedVariantId
+    variant["id"] = updated_variant.id
     variant["content"] = updated_variant.content
     variant["title"] = updated_variant.title
     variant["structured"] = updated_variant.structured
     selected_resume = presentation.get("resume")
-    if isinstance(selected_resume, dict) and selected_resume.get("id") == updated_variant.id:
+    if isinstance(selected_resume, dict) and selected_resume.get("id") == old_variant_id:
+        selected_resume["id"] = updated_variant.id
         selected_resume["content"] = updated_variant.content
         selected_resume["title"] = updated_variant.title
         selected_resume["structured"] = updated_variant.structured
+    raw_variant_ids = presentation.get("variant_ids")
+    if isinstance(raw_variant_ids, list):
+        presentation["variant_ids"] = [
+            updated_variant.id if value == old_variant_id else value for value in raw_variant_ids
+        ]
     presentation["selected_variant_id"] = updated_variant.id
     presentation["content_snapshot"] = updated_variant.content
     presentation["structured_snapshot"] = updated_variant.structured
@@ -716,9 +726,7 @@ async def resume_thread(
 
     assistant_msg = str(final_state.get("assistant_message") or "Done.")
     extracted_interrupt = _extract_interrupt_payload(final_state)
-    interrupt_payload = (
-        extracted_interrupt if isinstance(extracted_interrupt, dict) else None
-    )
+    interrupt_payload = extracted_interrupt if isinstance(extracted_interrupt, dict) else None
     workspace = (
         cast("dict[str, JsonValue]", final_state.get("workspace"))
         if isinstance(final_state.get("workspace"), dict)

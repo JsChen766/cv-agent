@@ -50,7 +50,7 @@ class PostgresResumeRepository:
             idx += 1
         values.append(limit + 1)
         sql = f"""
-            SELECT * FROM resumes WHERE {' AND '.join(conditions)}
+            SELECT * FROM resumes WHERE {" AND ".join(conditions)}
             ORDER BY updated_at DESC, id DESC LIMIT ${idx}
         """
         async with self._pool.acquire() as conn:
@@ -94,7 +94,11 @@ class PostgresResumeRepository:
                 INSERT INTO resumes (id, user_id, title, target_role, jd_id)
                 VALUES ($1,$2,$3,$4,$5) RETURNING *
                 """,
-                resume_id, user_id, title, target_role, jd_id,
+                resume_id,
+                user_id,
+                title,
+                target_role,
+                jd_id,
             )
         if row is None:
             raise RuntimeError("Failed to create resume")
@@ -117,7 +121,7 @@ class PostgresResumeRepository:
             return resume
         set_parts.append("updated_at = NOW()")
         values.extend([resume_id, user_id])
-        sql = f"UPDATE resumes SET {', '.join(set_parts)} WHERE id=${idx} AND user_id=${idx+1} RETURNING *"
+        sql = f"UPDATE resumes SET {', '.join(set_parts)} WHERE id=${idx} AND user_id=${idx + 1} RETURNING *"
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(sql, *values)
         if row is None:
@@ -126,9 +130,7 @@ class PostgresResumeRepository:
 
     async def delete(self, user_id: str, resume_id: str) -> None:
         async with self._pool.acquire() as conn:
-            await conn.execute(
-                "DELETE FROM resumes WHERE id=$1 AND user_id=$2", resume_id, user_id
-            )
+            await conn.execute("DELETE FROM resumes WHERE id=$1 AND user_id=$2", resume_id, user_id)
 
     # ── Items ─────────────────────────────────────────────────────────────────
 
@@ -138,15 +140,17 @@ class PostgresResumeRepository:
                 """
                 INSERT INTO resume_items
                     (id, resume_id, section_type, title, content_snapshot,
-                     order_index, source_experience_id, source_variant_id)
-                VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+                     order_index, hidden, source_experience_id, source_variant_id)
+                VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
                 RETURNING *
                 """,
-                item_id, resume_id,
+                item_id,
+                resume_id,
                 data.section_type,
                 data.title,
                 data.content_snapshot,
                 data.order_index,
+                data.hidden,
                 data.source_experience_id,
                 data.source_variant_id,
             )
@@ -168,10 +172,16 @@ class PostgresResumeRepository:
             )
         return self._to_item(row) if row else None
 
-    async def update_item(
-        self, user_id: str, item_id: str, patch: ResumeItemPatch
-    ) -> ResumeItem:
-        allowed = {"title", "content_snapshot", "order_index", "hidden", "pinned"}
+    async def update_item(self, user_id: str, item_id: str, patch: ResumeItemPatch) -> ResumeItem:
+        allowed = {
+            "section_type",
+            "title",
+            "content_snapshot",
+            "order_index",
+            "hidden",
+            "pinned",
+            "source_variant_id",
+        }
         set_parts: builtins.list[str] = []
         values: builtins.list[object] = []
         idx = 1
@@ -189,7 +199,7 @@ class PostgresResumeRepository:
         values.extend([item_id, user_id])
         sql = f"""
             UPDATE resume_items AS ri
-            SET {', '.join(set_parts)}
+            SET {", ".join(set_parts)}
             FROM resumes AS r
             WHERE ri.id = ${idx}
               AND ri.resume_id = r.id
@@ -204,17 +214,19 @@ class PostgresResumeRepository:
 
     async def delete_item(self, user_id: str, item_id: str) -> bool:
         async with self._pool.acquire() as conn:
-            result = str(await conn.execute(
-                """
+            result = str(
+                await conn.execute(
+                    """
                 DELETE FROM resume_items AS ri
                 USING resumes AS r
                 WHERE ri.id = $1
                   AND ri.resume_id = r.id
                   AND r.user_id = $2
                 """,
-                item_id,
-                user_id,
-            ))
+                    item_id,
+                    user_id,
+                )
+            )
         return result == "DELETE 1"
 
     async def reorder_items(
@@ -224,7 +236,9 @@ class PostgresResumeRepository:
             for idx, item_id in enumerate(ordered_ids):
                 await conn.execute(
                     "UPDATE resume_items SET order_index=$1 WHERE id=$2 AND resume_id=$3",
-                    idx, item_id, resume_id,
+                    idx,
+                    item_id,
+                    resume_id,
                 )
             rows = await conn.fetch(
                 "SELECT * FROM resume_items WHERE resume_id=$1 ORDER BY order_index",
@@ -248,14 +262,19 @@ class PostgresResumeRepository:
                         $12,$13::jsonb,$14)
                 RETURNING *
                 """,
-                variant_id, resume_id,
+                variant_id,
+                resume_id,
                 data.jd_id,
                 data.title,
                 data.content,
                 data.structured,
                 json.dumps(data.score.model_dump(mode="json"), ensure_ascii=False),
-                json.dumps([e.model_dump(mode="json") for e in data.evidence_summary], ensure_ascii=False),
-                json.dumps([r.model_dump(mode="json") for r in data.risk_summary], ensure_ascii=False),
+                json.dumps(
+                    [e.model_dump(mode="json") for e in data.evidence_summary], ensure_ascii=False
+                ),
+                json.dumps(
+                    [r.model_dump(mode="json") for r in data.risk_summary], ensure_ascii=False
+                ),
                 json.dumps(data.missing_info or [], ensure_ascii=False),
                 data.parent_variant_id,
                 data.gate_status,
@@ -268,9 +287,7 @@ class PostgresResumeRepository:
 
     async def get_variant(self, variant_id: str) -> ResumeVariant | None:
         async with self._pool.acquire() as conn:
-            row = await conn.fetchrow(
-                "SELECT * FROM resume_variants WHERE id=$1", variant_id
-            )
+            row = await conn.fetchrow("SELECT * FROM resume_variants WHERE id=$1", variant_id)
         return self._to_variant(row) if row else None
 
     async def update_variant(
@@ -293,7 +310,7 @@ class PostgresResumeRepository:
         values.extend([variant_id, user_id])
         sql = f"""
             UPDATE resume_variants AS rv
-            SET {', '.join(set_parts)},
+            SET {", ".join(set_parts)},
                 quality_status = 'unverified',
                 quality_issues = '[]'::jsonb,
                 quality_gate_version = NULL
@@ -490,7 +507,9 @@ class PostgresResumeRepository:
             structured=structured_raw if isinstance(structured_raw, dict) else None,
             parent_variant_id=parent_variant_id,
             score=ScoreBreakdown(**raw_score) if raw_score else ScoreBreakdown(),
-            evidence_summary=[EvidenceItem(**e) for e in (parse_jsonb(row["evidence_summary"]) or [])],
+            evidence_summary=[
+                EvidenceItem(**e) for e in (parse_jsonb(row["evidence_summary"]) or [])
+            ],
             risk_summary=[RiskItem(**r) for r in (parse_jsonb(row["risk_summary"]) or [])],
             missing_info=parse_jsonb(row["missing_info"]) or [],
             gate_status=cast(ResumeVariantQualityStatus, quality_status),

@@ -64,6 +64,7 @@ class AddItemBody(StrictRequestModel):
 
 
 class UpdateItemBody(StrictRequestModel):
+    section_type: ResumeSectionType | None = None
     title: str | None = None
     content_snapshot: str | None = None
     order_index: int | None = Field(default=None, ge=0)
@@ -72,6 +73,7 @@ class UpdateItemBody(StrictRequestModel):
 
     def to_patch(self) -> ResumeItemPatch:
         return ResumeItemPatch(
+            section_type=self.section_type,
             title=self.title,
             content_snapshot=self.content_snapshot,
             order_index=self.order_index,
@@ -86,6 +88,10 @@ class ReorderBody(StrictRequestModel):
 
 class PatchStructuredBody(StrictRequestModel):
     operations: list[dict[str, Any]] = Field(min_length=1)
+
+
+class ReplaceStructuredBody(StrictRequestModel):
+    structured: dict[str, Any]
 
 
 @router.get("/product/resumes")
@@ -210,6 +216,39 @@ async def patch_variant_structured(
     )
 
 
+@router.put("/product/resumes/{resume_id}/variants/{variant_id}/structured")
+async def replace_variant_structured(
+    resume_id: str,
+    variant_id: str,
+    body: ReplaceStructuredBody,
+    request: Request,
+    user_id: str = Depends(get_current_user_id),
+    svc: ResumeService = Depends(get_resume_service),
+) -> JSONResponse:
+    # Bind the nested variant to the requested resume before creating a revision.
+    await svc.get_resume(user_id, resume_id)
+    variant = await svc.get_variant(variant_id)
+    if variant.resume_id != resume_id:
+        raise ValidationError("Variant does not belong to the requested resume")
+    try:
+        updated = await svc.replace_variant_structure(user_id, variant_id, body.structured)
+    except ValueError as exc:
+        raise ValidationError(str(exc)) from exc
+    return ok(
+        {
+            "variantId": updated.id,
+            "structured": updated.structured,
+            "content": updated.content,
+            "version": updated.version,
+            "parentVariantId": updated.parent_variant_id,
+            "gateStatus": updated.gate_status,
+            "qualityStatus": updated.quality_status,
+            "layoutReport": updated.layout_report.model_dump(mode="json"),
+        },
+        request,
+    )
+
+
 # ── Serialisers ───────────────────────────────────────────────────────────────
 
 
@@ -243,6 +282,7 @@ def _serialize_item(i: ResumeItem) -> dict[str, object]:
         "hidden": i.hidden,
         "pinned": i.pinned,
         "sourceExperienceId": i.source_experience_id,
+        "sourceVariantId": i.source_variant_id,
         "updatedAt": i.updated_at.isoformat(),
     }
 
