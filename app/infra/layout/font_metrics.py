@@ -17,6 +17,7 @@ _DEFAULT_FONT_PATHS = {
     "SimSun": _FONT_DIR / "simsun.ttc",
     "Times New Roman": _FONT_DIR / "times.ttf",
 }
+_FONT_MEASUREMENT_SCALE = 16
 
 
 class PillowFontMetrics:
@@ -64,12 +65,16 @@ class PillowFontMetrics:
             return 0.0
         font_path = self.font_path_for_family(style.font_family or "CV Noto Sans CJK SC")
         font = self._font(str(font_path), style.font_size_pt)
-        width_px = font.getlength(text)
+        width_px = font.getlength(text) / _FONT_MEASUREMENT_SCALE
         # Load at 96 CSS pixels per inch so conversion is stable and matches browsers.
         return float(width_px) * 25.4 / 96.0
 
     @staticmethod
     @lru_cache(maxsize=32)
     def _font(font_path: str, size_pt: float) -> ImageFont.FreeTypeFont:
-        px_size = max(1, round(size_pt * 96.0 / 72.0))
+        # FreeType accepts only integer pixel sizes. Loading the font at the
+        # final CSS size would round fractional point sizes (for example the
+        # compiler's 9.75pt * 1.015 tuning) to the same integer and can hide a
+        # real browser line wrap. Oversampling preserves that sub-pixel delta.
+        px_size = max(1, round(size_pt * 96.0 / 72.0 * _FONT_MEASUREMENT_SCALE))
         return ImageFont.truetype(font_path, size=px_size)

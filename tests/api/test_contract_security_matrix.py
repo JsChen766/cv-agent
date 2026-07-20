@@ -119,6 +119,9 @@ class _CrossUserJdService(_ListJdService):
 
 
 class _CrossUserResumeService(_ListResumeService):
+    async def get_repository_resume(self, user_id: str, resume_id: str) -> object:
+        raise NotFoundError(f"Resume not found: {resume_id}")
+
     async def get_resume(self, user_id: str, resume_id: str) -> object:
         raise NotFoundError(f"Resume not found: {resume_id}")
 

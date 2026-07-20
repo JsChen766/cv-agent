@@ -68,6 +68,43 @@ async def test_v2_quality_node_repairs_once_then_returns_to_compiler(
     assert provider.calls == [(15.0, 1)]
 
 
+async def test_browser_local_repair_does_not_reuse_preflight_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plan, retrieval, candidates, compiled, constraint = _fixture(fit_status="awkward_wrap")
+    state = {
+        "resume_plan": plan.model_dump(mode="json"),
+        "fact_retrieval_result": retrieval.model_dump(mode="json"),
+        "resume_candidate_bullets": [value.model_dump(mode="json") for value in candidates],
+        "compiled_resume": compiled.model_dump(mode="json"),
+        "layout_constraint": constraint.model_dump(mode="json"),
+        "quality_local_repair_call_count": 1,
+        "browser_local_repair_call_count": 0,
+        "quality_local_repair_origin": "browser",
+        "quality_local_repair_provider_attempts": 0,
+        "generation_call_count": 2,
+    }
+    validated = await deterministic_quality_gate_node(state)  # type: ignore[arg-type]
+    provider = _BoundedRepairProvider()
+    monkeypatch.setattr("app.graphs.resume.nodes.get_provider", lambda: provider)
+    services = ServiceContainer.model_construct(
+        resume_layout=ResumeLayoutService(PillowFontMetrics())
+    )
+
+    repaired = await local_candidate_repair_node(
+        {
+            **state,
+            **validated,
+            "quality_local_repair_origin": "browser",
+        },  # type: ignore[arg-type]
+        {"configurable": {"services": services}},
+    )
+
+    assert repaired["quality_local_repair_status"] == "applied"
+    assert repaired["quality_local_repair_call_count"] == 1
+    assert repaired["browser_local_repair_call_count"] == 1
+
+
 def test_v2_quality_route_fails_after_single_repair_budget_is_consumed() -> None:
     assert (
         deterministic_quality_gate_route(

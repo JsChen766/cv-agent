@@ -22,7 +22,7 @@ class _RepairProvider:
                         "bullet_id": "bullet-1",
                         "candidates": [
                             {
-                                "text": "A" * 68,
+                                "text": "A" * 74,
                                 "source_fact_ids": ["exp-1-fact-1"],
                                 "matched_jd_requirement_ids": ["req-1"],
                             }
@@ -52,7 +52,7 @@ class _TwoBulletRepairProvider:
                             }
                         ],
                     }
-                    for bullet_id, length in (("bullet-1", 68), ("bullet-2", 69))
+                    for bullet_id, length in (("bullet-1", 74), ("bullet-2", 75))
                 ]
             }
         )
@@ -85,7 +85,7 @@ async def test_layout_revision_is_one_local_batch_and_keeps_one_variant(
     structured["sections"][0]["items"][0]["bullets"].append(
         {
             "id": "passing-bullet",
-            "text": "B" * 68,
+            "text": "B" * 74,
             "source_fact_ids": ["exp-1-fact-1"],
             "matched_jd_requirement_ids": [],
         }
@@ -111,7 +111,7 @@ async def test_layout_revision_is_one_local_batch_and_keeps_one_variant(
     prompt = provider.calls[0][0][1]["content"]
     targets = json.loads(prompt.split("\n", 1)[1])
     assert [target["bullet_id"] for target in targets] == ["bullet-1"]
-    assert "B" * 68 not in prompt
+    assert "B" * 74 not in prompt
     assert len(result["variants"]) == 1
     assert result["variants"][0]["id"] == "variant-1"
     assert result["local_repair_call_count"] == 1
@@ -147,7 +147,7 @@ async def test_layout_revision_repairs_all_failed_bullets_in_one_call(
 
     assert len(provider.calls) == 1
     repaired_bullets = result["variants"][0]["structured"]["sections"][0]["items"][0]["bullets"]
-    assert [bullet["text"] for bullet in repaired_bullets] == ["A" * 68, "A" * 69]
+    assert [bullet["text"] for bullet in repaired_bullets] == ["A" * 74, "A" * 75]
 
 
 async def test_layout_revision_exposes_pii_free_rejection_diagnostics(

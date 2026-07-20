@@ -183,6 +183,7 @@ class _FakeResumeService:
         self.created_resume_id: str | None = None
         self.resume: Resume | None = None
         self.variant: ResumeVariant | None = None
+        self.published_variant_id: str | None = None
 
     async def create_resume(
         self,
@@ -221,6 +222,7 @@ class _FakeResumeService:
             gate_status=data.gate_status,
             quality_issues=data.quality_issues,
             quality_gate_version=data.quality_gate_version,
+            publication_status=data.publication_status,
             created_at=datetime.now(UTC),
         )
         return self.variant
@@ -237,6 +239,15 @@ class _FakeResumeService:
     async def get_resume(self, user_id: str, resume_id: str) -> Resume:
         assert self.resume is not None and self.resume.id == resume_id
         return self.resume
+
+    async def set_variant_publication(
+        self, user_id: str, variant_id: str, status: str
+    ) -> ResumeVariant:
+        variant = await self.get_variant(variant_id)
+        self.variant = variant.model_copy(update={"publication_status": status})
+        if status == "published":
+            self.published_variant_id = variant_id
+        return self.variant
 
     async def add_item(self, user_id: str, resume_id: str, data: ResumeItemCreate) -> ResumeItem:
         assert self.resume is not None and self.resume.id == resume_id
@@ -388,3 +399,4 @@ async def test_resume_review_accept_saves_variant_and_consumes_interrupt(
     assert service.resume is not None
     assert [item.source_variant_id for item in service.resume.items] == ["variant-1"]
     assert service.resume.items[0].hidden is True
+    assert service.published_variant_id == "variant-1"

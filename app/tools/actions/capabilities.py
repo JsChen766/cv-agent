@@ -144,6 +144,7 @@ async def accept_variant(
                 source_variant_id=variant.id,
             ),
         )
+    await services.resume.set_variant_publication(user_id, variant.id, "published")
     workspace = _workspace(base_workspace)
     workspace["resume_id"] = variant.resume_id
     workspace["variant_id"] = variant.id

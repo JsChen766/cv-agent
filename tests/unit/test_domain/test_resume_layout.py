@@ -1,4 +1,4 @@
-from app.domain.resume.layout_models import LayoutConstraint
+from app.domain.resume.layout_models import LayoutConstraint, LayoutTuning
 from app.domain.resume.layout_optimizer import ResumeLayoutOptimizer
 from app.domain.resume.layout_profile import DEFAULT_RESUME_LAYOUT_PROFILE
 from app.domain.resume.layout_service import ResumeLayoutService
@@ -64,7 +64,7 @@ def test_bullet_fit_uses_strictly_more_than_two_thirds_gate() -> None:
         "A" * 67, bullet_id="short", item_id="item", section_type="experience"
     )
     passing = service.measure_bullet_fit(
-        "A" * 68, bullet_id="pass", item_id="item", section_type="experience"
+        "A" * 74, bullet_id="pass", item_id="item", section_type="experience"
     )
     awkward = service.measure_bullet_fit(
         "A" * 110, bullet_id="awkward", item_id="item", section_type="experience"
@@ -220,7 +220,7 @@ def test_profile_mismatch_and_summary_never_pass() -> None:
     }
 
 
-def test_optimizer_repairs_real_awkward_bullets_without_model_revision() -> None:
+def test_optimizer_exposes_real_bullets_that_still_need_local_revision() -> None:
     service = ResumeLayoutService(PillowFontMetrics())
     profile = DEFAULT_RESUME_LAYOUT_PROFILE
     item_bullets = [
@@ -295,7 +295,9 @@ def test_optimizer_repairs_real_awkward_bullets_without_model_revision() -> None
         ),
     )
 
-    assert all(fit.status == "pass" for fit in result.report.bullet_fits)
+    assert {
+        fit.bullet_id for fit in result.report.bullet_fits if fit.status != "pass"
+    } == {"bullet-1-0", "bullet-1-1", "bullet-1-2", "bullet-1-3"}
     repaired_fact_ids = {
         fact_id
         for section in result.structure["sections"]
@@ -304,3 +306,20 @@ def test_optimizer_repairs_real_awkward_bullets_without_model_revision() -> None
         for fact_id in bullet["source_fact_ids"]
     }
     assert repaired_fact_ids == source_fact_ids
+
+
+def test_fractional_tuning_detects_the_browser_wrapped_bullet_tail() -> None:
+    service = ResumeLayoutService(PillowFontMetrics()).with_tuning(
+        LayoutTuning(body_font_scale=1.025)
+    )
+    result = service.measure_bullet_fit(
+        "将医院临床操作规范与疗效评价标准转化为可量化的技术指标与算法约束；"
+        "系统评分与专家人工评分的一致性较基线提升80%",
+        bullet_id="browser-tail",
+        item_id="item",
+        section_type="experience",
+    )
+
+    assert result.line_count == 2
+    assert result.last_line_ratio < result.gate_ratio
+    assert result.status == "awkward_wrap"

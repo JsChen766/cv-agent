@@ -42,6 +42,8 @@ class ResumeGenerationState(MainState, total=False):
     grounding_report: dict[str, Any] | None
     quality_local_repair_status: str | None
     quality_local_repair_call_count: int
+    quality_local_repair_origin: str | None
+    browser_local_repair_call_count: int
     quality_local_repair_provider_attempts: int
     quality_local_repair_protocol: str | None
     quality_local_repair_error_category: str | None

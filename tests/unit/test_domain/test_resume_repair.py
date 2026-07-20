@@ -55,12 +55,12 @@ def test_local_repair_selects_passing_grounded_candidate_deterministically() -> 
                             "matched_jd_requirement_ids": ["req-1"],
                         },
                         {
-                            "text": "A" * 68,
+                            "text": "A" * 74,
                             "source_fact_ids": ["exp-1-fact-1"],
                             "matched_jd_requirement_ids": ["req-1"],
                         },
                         {
-                            "text": "A" * 75,
+                            "text": "A" * 80,
                             "source_fact_ids": ["exp-1-fact-1"],
                             "matched_jd_requirement_ids": ["req-1"],
                         },
@@ -79,7 +79,7 @@ def test_local_repair_selects_passing_grounded_candidate_deterministically() -> 
 
     assert first == second
     assert first is not None
-    assert first["sections"][0]["items"][0]["bullets"][0]["text"] == "A" * 68
+    assert first["sections"][0]["items"][0]["bullets"][0]["text"] == "A" * 74
     assert structured["sections"][0]["items"][0]["bullets"][0]["text"] == "Python"
 
 
@@ -87,17 +87,17 @@ def test_local_repair_selects_passing_grounded_candidate_deterministically() -> 
     "candidate",
     [
         {
-            "text": "A" * 68,
+            "text": "A" * 74,
             "source_fact_ids": ["unknown-fact"],
             "matched_jd_requirement_ids": ["req-1"],
         },
         {
-            "text": "A" * 68 + " 999",
+            "text": "A" * 74 + " 999",
             "source_fact_ids": ["exp-1-fact-1"],
             "matched_jd_requirement_ids": ["req-1"],
         },
         {
-            "text": "A" * 68,
+            "text": "A" * 74,
             "source_fact_ids": ["exp-1-fact-1"],
             "matched_jd_requirement_ids": ["req-new"],
         },
@@ -125,7 +125,7 @@ def test_local_repair_reports_candidate_rejection_without_retaining_text() -> No
                     "bullet_id": "bullet-1",
                     "candidates": [
                         {
-                            "text": "A" * 68 + " 999.",
+                            "text": "A" * 74 + " 999.",
                             "source_fact_ids": ["unknown-fact"],
                             "matched_jd_requirement_ids": ["req-new"],
                         }
@@ -157,7 +157,7 @@ def test_local_repair_requires_exactly_all_failing_bullet_ids() -> None:
             "repairs": [
                 {
                     "bullet_id": "unknown",
-                    "candidates": [{"text": "A" * 68}],
+                    "candidates": [{"text": "A" * 74}],
                 }
             ]
         }

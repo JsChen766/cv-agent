@@ -18,6 +18,7 @@ from app.domain.resume.models import (
     ResumeVariant,
     ResumeVariantCreate,
     ResumeVariantPatch,
+    ResumeVariantPublicationStatus,
     ResumeVariantQualityStatus,
     RiskItem,
     ScoreBreakdown,
@@ -38,20 +39,28 @@ class PostgresResumeRepository:
         limit: int = 20,
         cursor: str | None = None,
     ) -> tuple[builtins.list[Resume], str | None]:
-        conditions = ["user_id = $1"]
+        conditions = ["r.user_id = $1"]
         values: builtins.list[object] = [user_id]
         idx = 2
         if cursor:
             conditions.append(
-                f"(updated_at, id) < (SELECT updated_at, id FROM resumes "
+                f"(r.updated_at, r.id) < (SELECT updated_at, id FROM resumes "
                 f"WHERE id = ${idx} AND user_id = $1)"
             )
             values.append(cursor)
             idx += 1
         values.append(limit + 1)
+        conditions.append(
+            "(NOT EXISTS (SELECT 1 FROM resume_variants any_variant "
+            "WHERE any_variant.resume_id = r.id) OR EXISTS ("
+            "SELECT 1 FROM resume_variants visible_variant "
+            "WHERE visible_variant.resume_id = r.id "
+            "AND visible_variant.publication_status = 'published' "
+            "AND visible_variant.quality_status <> 'failed'))"
+        )
         sql = f"""
-            SELECT * FROM resumes WHERE {" AND ".join(conditions)}
-            ORDER BY updated_at DESC, id DESC LIMIT ${idx}
+            SELECT r.* FROM resumes AS r WHERE {" AND ".join(conditions)}
+            ORDER BY r.updated_at DESC, r.id DESC LIMIT ${idx}
         """
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(sql, *values)
@@ -257,9 +266,9 @@ class PostgresResumeRepository:
                 INSERT INTO resume_variants
                     (id, resume_id, jd_id, title, content, structured, score,
                      evidence_summary, risk_summary, missing_info, parent_variant_id,
-                     quality_status, quality_issues, quality_gate_version)
+                     quality_status, quality_issues, quality_gate_version, publication_status)
                 VALUES ($1,$2,$3,$4,$5,$6::jsonb,$7::jsonb,$8::jsonb,$9::jsonb,$10::jsonb,$11,
-                        $12,$13::jsonb,$14)
+                        $12,$13::jsonb,$14,$15)
                 RETURNING *
                 """,
                 variant_id,
@@ -280,6 +289,7 @@ class PostgresResumeRepository:
                 data.gate_status,
                 json.dumps(data.quality_issues or [], ensure_ascii=False),
                 data.quality_gate_version,
+                data.publication_status,
             )
         if row is None:
             raise RuntimeError("Failed to create resume variant")
@@ -377,6 +387,7 @@ class PostgresResumeRepository:
         status: ResumeVariantQualityStatus,
         issues: builtins.list[dict[str, Any]],
         gate_version: str,
+        publication_status: ResumeVariantPublicationStatus | None = None,
     ) -> ResumeVariant:
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(
@@ -384,16 +395,43 @@ class PostgresResumeRepository:
                 UPDATE resume_variants AS rv
                 SET quality_status = $1,
                     quality_issues = $2::jsonb,
-                    quality_gate_version = $3
+                    quality_gate_version = $3,
+                    publication_status = COALESCE($4, rv.publication_status)
                 FROM resumes AS r
-                WHERE rv.id = $4
+                WHERE rv.id = $5
                   AND rv.resume_id = r.id
-                  AND r.user_id = $5
+                  AND r.user_id = $6
                 RETURNING rv.*
                 """,
                 status,
                 issues,
                 gate_version,
+                publication_status,
+                variant_id,
+                user_id,
+            )
+        if row is None:
+            raise ValueError(f"Resume variant not found: {variant_id}")
+        return self._to_variant(row)
+
+    async def update_variant_publication(
+        self,
+        user_id: str,
+        variant_id: str,
+        status: ResumeVariantPublicationStatus,
+    ) -> ResumeVariant:
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                UPDATE resume_variants AS rv
+                SET publication_status = $1
+                FROM resumes AS r
+                WHERE rv.id = $2
+                  AND rv.resume_id = r.id
+                  AND r.user_id = $3
+                RETURNING rv.*
+                """,
+                status,
                 variant_id,
                 user_id,
             )
@@ -437,10 +475,10 @@ class PostgresResumeRepository:
                 INSERT INTO resume_variants
                     (id, resume_id, jd_id, title, content, structured, score,
                      evidence_summary, risk_summary, missing_info, parent_variant_id,
-                     quality_status, quality_issues, quality_gate_version)
+                     quality_status, quality_issues, quality_gate_version, publication_status)
                 SELECT $1, resume_id, jd_id, title, $2, $3::jsonb, score,
                        evidence_summary, risk_summary, missing_info, $4,
-                       'unverified', '[]'::jsonb, NULL
+                       'unverified', '[]'::jsonb, NULL, publication_status
                 FROM resume_variants WHERE id = $4
                 RETURNING *
                 """,
@@ -498,6 +536,9 @@ class PostgresResumeRepository:
         quality_gate_version = (
             row["quality_gate_version"] if "quality_gate_version" in keys else None
         )
+        publication_status = (
+            row["publication_status"] if "publication_status" in keys else "published"
+        )
         return ResumeVariant(
             id=row["id"],
             resume_id=row["resume_id"],
@@ -515,5 +556,6 @@ class PostgresResumeRepository:
             gate_status=cast(ResumeVariantQualityStatus, quality_status),
             quality_issues=quality_issues or [],
             quality_gate_version=quality_gate_version,
+            publication_status=cast(ResumeVariantPublicationStatus, publication_status),
             created_at=row["created_at"],
         )

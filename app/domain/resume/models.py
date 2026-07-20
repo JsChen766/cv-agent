@@ -10,6 +10,7 @@ from app.domain.resume.layout_models import LayoutReport
 ResumeStatus = Literal["draft", "active", "published", "archived"]
 ResumeSectionType = Literal["summary", "experience", "education", "skills", "projects", "other"]
 ResumeVariantQualityStatus = Literal["unverified", "passed", "needs_revision", "failed"]
+ResumeVariantPublicationStatus = Literal["staged", "published", "discarded"]
 
 
 class ScoreBreakdown(BaseModel):
@@ -51,6 +52,7 @@ class ResumeVariant(BaseModel):
     gate_status: ResumeVariantQualityStatus = "unverified"
     quality_issues: list[dict[str, Any]] = Field(default_factory=list)
     quality_gate_version: str | None = None
+    publication_status: ResumeVariantPublicationStatus = "published"
     created_at: datetime
 
 
@@ -133,6 +135,7 @@ class ResumeVariantCreate(BaseModel):
     gate_status: ResumeVariantQualityStatus = "unverified"
     quality_issues: list[dict[str, Any]] = Field(default_factory=list)
     quality_gate_version: str | None = None
+    publication_status: ResumeVariantPublicationStatus = "published"
 
 
 class ResumeVariantPatch(BaseModel):

@@ -126,7 +126,7 @@ async def get_resume(
     user_id: str = Depends(get_current_user_id),
     svc: ResumeService = Depends(get_resume_service),
 ) -> JSONResponse:
-    resume = await svc.get_resume(user_id, resume_id)
+    resume = await svc.get_repository_resume(user_id, resume_id)
     return ok(_serialize_full(resume), request)
 
 

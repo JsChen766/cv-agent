@@ -18,6 +18,7 @@ from app.domain.resume.models import (
     ResumeVariantCreate,
     ResumeVariantPatch,
     ResumeVariantPatchResult,
+    ResumeVariantPublicationStatus,
     ResumeVariantQualityStatus,
 )
 from app.domain.resume.patch import apply_patch_operations
@@ -48,6 +49,18 @@ class ResumeService:
         if not resume:
             raise NotFoundError(f"Resume not found: {resume_id}")
         return resume
+
+    async def get_repository_resume(self, user_id: str, resume_id: str) -> Resume:
+        """Return only variants that are safe to expose in the resume repository."""
+        resume = await self.get_resume(user_id, resume_id)
+        published = [
+            variant
+            for variant in resume.variants
+            if variant.publication_status == "published" and variant.gate_status != "failed"
+        ]
+        if resume.variants and not published:
+            raise NotFoundError(f"Resume not found: {resume_id}")
+        return resume.model_copy(update={"variants": published})
 
     async def create_resume(
         self,
@@ -141,7 +154,7 @@ class ResumeService:
         """Return a user-owned variant only when it passed the persisted quality gate."""
         variant = await self.get_variant(variant_id)
         await self.get_resume(user_id, variant.resume_id)
-        if variant.gate_status != "passed":
+        if variant.gate_status != "passed" or variant.publication_status == "discarded":
             raise ValidationError(
                 "Resume variant has not passed the quality gate",
                 code="resume_variant_not_acceptable",
@@ -193,6 +206,7 @@ class ResumeService:
         issues: list[dict[str, Any]],
         *,
         gate_version: str = "browser-layout-gate-v1",
+        publication_status: ResumeVariantPublicationStatus | None = None,
     ) -> ResumeVariant:
         return await self._repo.update_variant_quality(
             user_id,
@@ -200,7 +214,16 @@ class ResumeService:
             status,
             issues,
             gate_version,
+            publication_status,
         )
+
+    async def set_variant_publication(
+        self,
+        user_id: str,
+        variant_id: str,
+        status: ResumeVariantPublicationStatus,
+    ) -> ResumeVariant:
+        return await self._repo.update_variant_publication(user_id, variant_id, status)
 
     async def patch_variant(
         self,

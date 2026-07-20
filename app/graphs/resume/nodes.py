@@ -675,6 +675,8 @@ async def batch_candidate_generation_node(
         "uncovered_jd_requirement_ids": [],
         "quality_local_repair_status": None,
         "quality_local_repair_call_count": 0,
+        "quality_local_repair_origin": None,
+        "browser_local_repair_call_count": 0,
         "quality_local_repair_provider_attempts": 0,
         "quality_local_repair_protocol": None,
         "quality_local_repair_error_category": None,
@@ -1395,6 +1397,9 @@ async def deterministic_quality_gate_node(
         "uncovered_jd_requirement_ids": list(report.coverage.uncovered_must_have_requirement_ids),
         "quality_status": quality_status,
         "quality_issues": issue_payloads,
+        "quality_local_repair_origin": (
+            "quality" if report.status == "repairable" else None
+        ),
     }
 
 
@@ -1434,10 +1439,18 @@ async def local_candidate_repair_node(
             state,
             "local_candidate_repair_inputs_unavailable",
         )
-    if (
-        state.get("quality_local_repair_call_count", 0)
-        >= settings.resume_quality_local_repair_max_calls
-    ):
+    repair_origin = state.get("quality_local_repair_origin") or "quality"
+    repair_count = (
+        state.get("browser_local_repair_call_count", 0)
+        if repair_origin == "browser"
+        else state.get("quality_local_repair_call_count", 0)
+    )
+    repair_budget = (
+        settings.resume_browser_local_repair_max_calls
+        if repair_origin == "browser"
+        else settings.resume_quality_local_repair_max_calls
+    )
+    if repair_count >= repair_budget:
         return _local_candidate_repair_failure(state, "local_candidate_repair_budget_exhausted")
     try:
         quality = QualityValidationReport.model_validate(raw_quality)
@@ -1466,7 +1479,9 @@ async def local_candidate_repair_node(
     )
     duration_ms = round((time.perf_counter() - started_at) * 1000, 2)
     common: dict[str, object] = {
-        "quality_local_repair_call_count": state.get("quality_local_repair_call_count", 0) + 1,
+        "quality_local_repair_call_count": state.get("quality_local_repair_call_count", 0),
+        "browser_local_repair_call_count": state.get("browser_local_repair_call_count", 0),
+        "quality_local_repair_origin": None,
         "quality_local_repair_provider_attempts": state.get(
             "quality_local_repair_provider_attempts", 0
         )
@@ -1476,6 +1491,12 @@ async def local_candidate_repair_node(
         "quality_local_repair_duration_ms": duration_ms,
         "generation_call_count": state.get("generation_call_count", 0) + write_result.attempts,
     }
+    counter_key = (
+        "browser_local_repair_call_count"
+        if repair_origin == "browser"
+        else "quality_local_repair_call_count"
+    )
+    common[counter_key] = repair_count + 1
     if write_result.draft is None:
         return {
             **common,
@@ -1569,6 +1590,8 @@ def _local_candidate_repair_failure(
         "quality_status": "failed",
         "quality_issues": [{"code": "local_candidate_repair_failed", "message": reason}],
         "quality_local_repair_call_count": state.get("quality_local_repair_call_count", 0),
+        "browser_local_repair_call_count": state.get("browser_local_repair_call_count", 0),
+        "quality_local_repair_origin": None,
     }
 
 
@@ -3423,6 +3446,7 @@ async def persist_resume_draft_node(
                             if browser_gate_pending
                             else "resume-quality-gate-v1"
                         ),
+                        "publication_status": "staged" if browser_gate_pending else "published",
                     }
                 ),
             )
@@ -3544,7 +3568,11 @@ async def browser_layout_gate_node(
             }
         ]
         await services.resume.set_variant_quality(
-            state.get("user_id", ""), variant_id, "failed", issues
+            state.get("user_id", ""),
+            variant_id,
+            "failed",
+            issues,
+            publication_status="discarded",
         )
         return {
             "quality_status": "failed",
@@ -3563,7 +3591,11 @@ async def browser_layout_gate_node(
             }
         ]
         await services.resume.set_variant_quality(
-            state.get("user_id", ""), variant_id, "failed", issues
+            state.get("user_id", ""),
+            variant_id,
+            "failed",
+            issues,
+            publication_status="discarded",
         )
         return {
             "quality_status": "failed",
@@ -3636,8 +3668,8 @@ async def browser_layout_gate_node(
             and repaired_report is not None
             and isinstance(state.get("quality_validation_report"), dict)
             and isinstance(state.get("compiled_resume"), dict)
-            and state.get("quality_local_repair_call_count", 0)
-            < settings.resume_quality_local_repair_max_calls
+            and state.get("browser_local_repair_call_count", 0)
+            < settings.resume_browser_local_repair_max_calls
         )
         if can_quality_repair:
             try:
@@ -3675,6 +3707,7 @@ async def browser_layout_gate_node(
                     "compiled_resume": compiled_payload,
                     "quality_validation_report": updated_quality.model_dump(mode="json"),
                     "quality_validation_status": "repairable",
+                    "quality_local_repair_origin": "browser",
                     "browser_verification_status": "quality_repair",
                     "quality_status": None,
                     "quality_issues": issues,
@@ -3705,7 +3738,11 @@ async def browser_layout_gate_node(
             }
 
     await services.resume.set_variant_quality(
-        state.get("user_id", ""), variant_id, "failed", issues
+        state.get("user_id", ""),
+        variant_id,
+        "failed",
+        issues,
+        publication_status="discarded",
     )
     return {
         **common,
@@ -4209,6 +4246,8 @@ async def content_gap_node(
         "quality_issues": [],
         "quality_local_repair_status": None,
         "quality_local_repair_call_count": 0,
+        "quality_local_repair_origin": None,
+        "browser_local_repair_call_count": 0,
         "quality_local_repair_provider_attempts": 0,
         "quality_local_repair_protocol": None,
         "quality_local_repair_error_category": None,
@@ -4315,6 +4354,11 @@ async def output_node(
 
     # User discarded or a new chat message preempted this interrupt.
     if isinstance(resume_value, dict) and resume_value.get("action") in ("preempted", "discard"):
+        variant_id = variants[0].get("id") if variants else None
+        if services is not None and isinstance(variant_id, str):
+            await services.resume.set_variant_publication(
+                state.get("user_id", ""), variant_id, "discarded"
+            )
         return {
             "interrupt_payload": None,
             "assistant_message": "Resume variant discarded.",

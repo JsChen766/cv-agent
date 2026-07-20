@@ -92,9 +92,13 @@ class _ObservabilityService:
 class _ResumeService:
     def __init__(self) -> None:
         self.statuses: list[str] = []
+        self.publication_statuses: list[str | None] = []
 
-    async def set_variant_quality(self, user_id, variant_id, status, issues):
+    async def set_variant_quality(
+        self, user_id, variant_id, status, issues, *, publication_status=None
+    ):
         self.statuses.append(status)
+        self.publication_statuses.append(publication_status)
         return ResumeVariant(
             id="variant-1",
             resume_id="resume-1",
@@ -234,12 +238,21 @@ async def test_browser_gate_routes_tail_only_failure_to_local_repair(
 
 
 @pytest.mark.parametrize(
-    ("repair_call_count", "expected_route", "expected_saved_status"),
-    [(0, "quality_repair", "needs_revision"), (1, "failed", "failed")],
+    (
+        "quality_repair_call_count",
+        "browser_repair_call_count",
+        "expected_route",
+        "expected_saved_status",
+    ),
+    [
+        (1, 0, "quality_repair", "needs_revision"),
+        (0, 1, "failed", "failed"),
+    ],
 )
-async def test_v2_browser_tail_failure_reuses_single_quality_repair_budget(
+async def test_v2_browser_tail_failure_uses_an_independent_single_repair_budget(
     monkeypatch: pytest.MonkeyPatch,
-    repair_call_count: int,
+    quality_repair_call_count: int,
+    browser_repair_call_count: int,
     expected_route: str,
     expected_saved_status: str,
 ) -> None:
@@ -271,7 +284,8 @@ async def test_v2_browser_tail_failure_reuses_single_quality_repair_budget(
     state.update(
         {
             "layout_compilation_status": "compiled",
-            "quality_local_repair_call_count": repair_call_count,
+            "quality_local_repair_call_count": quality_repair_call_count,
+            "browser_local_repair_call_count": browser_repair_call_count,
             "quality_validation_report": {
                 "validation_version": "resume-quality-gate-v2",
                 "status": "passed",
@@ -328,6 +342,8 @@ async def test_v2_browser_tail_failure_reuses_single_quality_repair_budget(
 
     assert browser_layout_gate_route(result) == expected_route
     assert resume.statuses == [expected_saved_status]
+    if expected_route == "failed":
+        assert resume.publication_statuses == ["discarded"]
     if expected_route == "quality_repair":
         assert result["quality_validation_status"] == "repairable"
         assert result["quality_validation_report"]["repairable_bullet_ids"] == ["bullet-1"]

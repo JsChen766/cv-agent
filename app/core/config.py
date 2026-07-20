@@ -105,6 +105,9 @@ class Settings(BaseSettings):
     resume_quality_max_repair_bullets: int = Field(default=3, ge=1, le=10)
     resume_quality_local_repair_deadline_seconds: float = Field(default=15.0, gt=0.0, le=30.0)
     resume_quality_local_repair_max_calls: int = Field(default=1, ge=1, le=1)
+    # Browser DOM verification has its own single bounded repair opportunity.
+    # It must not be consumed by the deterministic preflight repair above.
+    resume_browser_local_repair_max_calls: int = Field(default=1, ge=1, le=1)
     # Generate independent experience bullet pools concurrently, then assemble
     # one deterministic resume. Smaller structured calls are substantially more
     # reliable on OpenAI-compatible providers than one monolithic resume JSON.
