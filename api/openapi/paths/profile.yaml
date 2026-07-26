@@ -1,0 +1,20 @@
+profile:
+  get:
+    operationId: getUserProfile
+    tags:
+      - Profile
+    summary: Read the current user's asset profile.
+    responses:
+      "200":
+        description: Current user profile.
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: ../components/common.yaml#/schemas/SuccessEnvelope
+                - type: object
+                  properties:
+                    data:
+                      $ref: ../components/profile.yaml#/schemas/UserProfile
+      "401":
+        $ref: ../components/common.yaml#/responses/Unauthorized

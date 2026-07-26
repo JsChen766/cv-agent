@@ -1,0 +1,22 @@
+{
+  "success": true,
+  "data": {
+    "fullName": "Alice Chen",
+    "email": "alice@example.com",
+    "phone": "+852 1234 5678",
+    "location": "Hong Kong",
+    "linkedinUrl": null,
+    "githubUrl": null,
+    "personalWebsite": null,
+    "currentTitle": null,
+    "currentCompany": null,
+    "yearsOfExperience": 2,
+    "careerStage": "early_career",
+    "targetRoles": ["Product Manager"],
+    "targetIndustries": [],
+    "targetLocations": ["Hong Kong"],
+    "preferredLanguage": "zh-CN",
+    "resumeStyle": "standard"
+  },
+  "request_id": "request-profile-1"
+}

@@ -1,0 +1,64 @@
+schemas:
+  SuccessEnvelope:
+    type: object
+    required:
+      - success
+      - data
+    properties:
+      success:
+        const: true
+      data: {}
+      request_id:
+        type: string
+  ErrorEnvelope:
+    type: object
+    required:
+      - success
+    properties:
+      success:
+        const: false
+      error:
+        type: object
+        properties:
+          code:
+            type: string
+          message:
+            type: string
+      request_id:
+        type: string
+  Cursor:
+    type:
+      - string
+      - "null"
+
+responses:
+  BadRequest:
+    description: Request JSON or parameters are malformed.
+    content:
+      application/json:
+        schema:
+          $ref: "#/schemas/ErrorEnvelope"
+  Unauthorized:
+    description: Session is missing, invalid or expired.
+    content:
+      application/json:
+        schema:
+          $ref: "#/schemas/ErrorEnvelope"
+  NotFound:
+    description: The user-owned resource does not exist.
+    content:
+      application/json:
+        schema:
+          $ref: "#/schemas/ErrorEnvelope"
+  Conflict:
+    description: Version, content hash or idempotency conflict.
+    content:
+      application/json:
+        schema:
+          $ref: "#/schemas/ErrorEnvelope"
+  UnprocessableEntity:
+    description: Domain validation failed.
+    content:
+      application/json:
+        schema:
+          $ref: "#/schemas/ErrorEnvelope"

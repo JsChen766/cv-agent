@@ -1,0 +1,70 @@
+publishNew:
+  post:
+    operationId: publishNewResume
+    tags:
+      - Resume
+    summary: Atomically publish a new full resume document.
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: ../components/resume-publication.yaml#/schemas/ResumePublishRequest
+    responses:
+      "200":
+        description: Published resume and publication metadata.
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: ../components/common.yaml#/schemas/SuccessEnvelope
+                - type: object
+                  properties:
+                    data:
+                      $ref: ../components/resume-publication.yaml#/schemas/ResumePublicationResult
+      "401":
+        $ref: ../components/common.yaml#/responses/Unauthorized
+      "409":
+        $ref: ../components/common.yaml#/responses/Conflict
+      "422":
+        $ref: ../components/common.yaml#/responses/UnprocessableEntity
+
+publishExisting:
+  parameters:
+    - name: resumeId
+      in: path
+      required: true
+      schema:
+        type: string
+        minLength: 1
+  put:
+    operationId: publishExistingResume
+    tags:
+      - Resume
+    summary: Atomically replace an existing full resume document.
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: ../components/resume-publication.yaml#/schemas/ResumePublishRequest
+    responses:
+      "200":
+        description: Replaced resume and publication metadata.
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: ../components/common.yaml#/schemas/SuccessEnvelope
+                - type: object
+                  properties:
+                    data:
+                      $ref: ../components/resume-publication.yaml#/schemas/ResumePublicationResult
+      "401":
+        $ref: ../components/common.yaml#/responses/Unauthorized
+      "404":
+        $ref: ../components/common.yaml#/responses/NotFound
+      "409":
+        $ref: ../components/common.yaml#/responses/Conflict
+      "422":
+        $ref: ../components/common.yaml#/responses/UnprocessableEntity

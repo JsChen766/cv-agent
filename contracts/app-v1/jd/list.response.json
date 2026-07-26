@@ -1,0 +1,34 @@
+{
+  "success": true,
+  "data": {
+    "items": [
+      {
+        "id": "jd-1",
+        "title": "Product Manager",
+        "company": "Example",
+        "targetRole": "Product Manager",
+        "rawText": "Build reliable data products.",
+        "requirements": [
+          {
+            "id": "req-1",
+            "text": "Experience with data products",
+            "category": "domain",
+            "importance": "high",
+            "keywords": ["data"],
+            "weight": 0.9,
+            "v2Importance": "must_have",
+            "v2Category": "domain"
+          }
+        ],
+        "jdHash": "jd-hash",
+        "requirementMapId": "map-1",
+        "requirementsOrigin": "parsed",
+        "sourceThreadId": null,
+        "createdAt": "2026-07-01T00:00:00Z",
+        "updatedAt": "2026-07-02T00:00:00Z"
+      }
+    ],
+    "nextCursor": "jd-next"
+  },
+  "request_id": "request-jd-list-1"
+}

@@ -1,0 +1,111 @@
+name: cv-agent-app-be
+
+x-api-environment: &api-environment
+  APP_ENV: ${APP_ENV:-local}
+  HTTP_ADDRESS: ${HTTP_ADDRESS:-:8080}
+  HTTP_READ_HEADER_TIMEOUT: ${HTTP_READ_HEADER_TIMEOUT:-5s}
+  HTTP_READ_TIMEOUT: ${HTTP_READ_TIMEOUT:-15s}
+  HTTP_WRITE_TIMEOUT: ${HTTP_WRITE_TIMEOUT:-30s}
+  HTTP_IDLE_TIMEOUT: ${HTTP_IDLE_TIMEOUT:-60s}
+  SHUTDOWN_TIMEOUT: ${SHUTDOWN_TIMEOUT:-10s}
+  DATABASE_URL: ${DATABASE_URL:-postgres://cv_agent:cv_agent_dev@postgres:5432/cv_agent?sslmode=disable}
+  DATABASE_MAX_CONNS: ${DATABASE_MAX_CONNS:-20}
+  DATABASE_MIN_CONNS: ${DATABASE_MIN_CONNS:-2}
+  REDIS_ADDRESS: ${REDIS_ADDRESS:-redis:6379}
+  REDIS_PASSWORD: ${REDIS_PASSWORD:-}
+  REDIS_DB: ${REDIS_DB:-0}
+  SMTP_ADDRESS: ${SMTP_ADDRESS:-mailpit:1025}
+  ENABLE_DEV_PASSWORD_LOGIN: ${ENABLE_DEV_PASSWORD_LOGIN:-true}
+
+services:
+  api:
+    build:
+      context: .
+      target: dev
+      args:
+        GO_VERSION: "1.26.5"
+        AIR_VERSION: "v1.65.1"
+        GOOSE_VERSION: "v3.27.3"
+    init: true
+    working_dir: /workspace
+    environment: *api-environment
+    volumes:
+      - .:/workspace
+      - go-mod-cache:/go/pkg/mod
+      - go-build-cache:/root/.cache/go-build
+    ports:
+      - "${API_PORT:-8080}:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    command: ["air", "-c", ".air.toml"]
+    stop_grace_period: 15s
+
+  postgres:
+    image: postgres:18.4-bookworm
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-cv_agent}
+      POSTGRES_USER: ${POSTGRES_USER:-cv_agent}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-cv_agent_dev}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+
+  redis:
+    image: redis:8.0.6-alpine
+    command: ["redis-server", "--appendonly", "yes", "--appendfsync", "everysec"]
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  mailpit:
+    image: axllent/mailpit:v1.30.5
+    ports:
+      - "${MAILPIT_UI_PORT:-8025}:8025"
+      - "${SMTP_PORT:-1025}:1025"
+
+  migrate:
+    build:
+      context: .
+      target: dev
+      args:
+        GO_VERSION: "1.26.5"
+        AIR_VERSION: "v1.65.1"
+        GOOSE_VERSION: "v3.27.3"
+    profiles: ["tools"]
+    working_dir: /workspace
+    environment:
+      <<: *api-environment
+      GOOSE_DRIVER: postgres
+      GOOSE_DBSTRING: ${DATABASE_URL:-postgres://cv_agent:cv_agent_dev@postgres:5432/cv_agent?sslmode=disable}
+      GOOSE_MIGRATION_DIR: migrations
+    volumes:
+      - .:/workspace
+      - go-mod-cache:/go/pkg/mod
+      - go-build-cache:/root/.cache/go-build
+    depends_on:
+      postgres:
+        condition: service_healthy
+    entrypoint: ["goose"]
+    command: ["status"]
+
+volumes:
+  postgres-data:
+  redis-data:
+  go-mod-cache:
+  go-build-cache:

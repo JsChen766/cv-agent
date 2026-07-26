@@ -1,0 +1,87 @@
+collection:
+  get:
+    operationId: listJds
+    tags:
+      - JD
+    summary: List the current user's job descriptions.
+    parameters:
+      - name: limit
+        in: query
+        schema:
+          type: integer
+          minimum: 1
+      - name: cursor
+        in: query
+        schema:
+          type: string
+    responses:
+      "200":
+        description: Cursor page of job descriptions.
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: ../components/common.yaml#/schemas/SuccessEnvelope
+                - type: object
+                  properties:
+                    data:
+                      $ref: ../components/jd.yaml#/schemas/JdList
+      "401":
+        $ref: ../components/common.yaml#/responses/Unauthorized
+  post:
+    operationId: createJd
+    tags:
+      - JD
+    summary: Create a job description asset.
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: ../components/jd.yaml#/schemas/JdCreateRequest
+    responses:
+      "200":
+        description: Created job description.
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: ../components/common.yaml#/schemas/SuccessEnvelope
+                - type: object
+                  properties:
+                    data:
+                      $ref: ../components/jd.yaml#/schemas/JdRecord
+      "401":
+        $ref: ../components/common.yaml#/responses/Unauthorized
+      "422":
+        $ref: ../components/common.yaml#/responses/UnprocessableEntity
+
+item:
+  parameters:
+    - name: jdId
+      in: path
+      required: true
+      schema:
+        type: string
+        minLength: 1
+  get:
+    operationId: getJd
+    tags:
+      - JD
+    summary: Read one job description asset.
+    responses:
+      "200":
+        description: Job description.
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: ../components/common.yaml#/schemas/SuccessEnvelope
+                - type: object
+                  properties:
+                    data:
+                      $ref: ../components/jd.yaml#/schemas/JdRecord
+      "401":
+        $ref: ../components/common.yaml#/responses/Unauthorized
+      "404":
+        $ref: ../components/common.yaml#/responses/NotFound

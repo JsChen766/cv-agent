@@ -1,0 +1,167 @@
+schemas:
+  ResumeStatus:
+    type: string
+    enum:
+      - draft
+      - active
+      - published
+      - archived
+  ResumeQualityStatus:
+    type: string
+    enum:
+      - unverified
+      - passed
+      - needs_revision
+      - failed
+  ResumeSummary:
+    type: object
+    required:
+      - id
+      - title
+      - targetRole
+      - jdId
+      - contentHash
+      - schemaVersion
+      - qualityStatus
+      - status
+      - createdAt
+      - updatedAt
+    properties:
+      id:
+        type: string
+        minLength: 1
+      title:
+        type: string
+      targetRole:
+        type: [string, "null"]
+      jdId:
+        type: [string, "null"]
+      contentHash:
+        type: string
+      schemaVersion:
+        type: string
+      qualityStatus:
+        $ref: "#/schemas/ResumeQualityStatus"
+      status:
+        $ref: "#/schemas/ResumeStatus"
+      createdAt:
+        type: string
+        format: date-time
+      updatedAt:
+        type: string
+        format: date-time
+  ResumeScoreWire:
+    type: object
+    required:
+      - overall
+      - relevance
+      - clarity
+      - evidence_strength
+      - quantified_impact
+    properties:
+      overall:
+        type: number
+      relevance:
+        type: number
+      clarity:
+        type: number
+      evidence_strength:
+        type: number
+      quantified_impact:
+        type: number
+  ResumeEvidenceSummaryWire:
+    type: object
+    required:
+      - requirement_id
+      - requirement_text
+      - supporting_claims
+      - match_score
+    properties:
+      requirement_id:
+        type: string
+      requirement_text:
+        type: string
+      supporting_claims:
+        type: array
+        items:
+          type: string
+      match_score:
+        type: number
+  ResumeRiskSummaryWire:
+    type: object
+    required:
+      - type
+      - text
+      - severity
+    properties:
+      type:
+        type: string
+      text:
+        type: string
+      severity:
+        type: string
+  ResumeFull:
+    allOf:
+      - $ref: "#/schemas/ResumeSummary"
+      - type: object
+        required:
+          - structured
+          - content
+          - score
+          - evidenceSummary
+          - riskSummary
+          - missingInfo
+          - qualityIssues
+          - qualityGateVersion
+        properties:
+          structured:
+            $ref: ./resume-structure.yaml#/schemas/ResumeStructure
+          content:
+            type: string
+          score:
+            $ref: "#/schemas/ResumeScoreWire"
+          evidenceSummary:
+            type: array
+            items:
+              $ref: "#/schemas/ResumeEvidenceSummaryWire"
+          riskSummary:
+            type: array
+            items:
+              $ref: "#/schemas/ResumeRiskSummaryWire"
+          missingInfo:
+            type: array
+            items:
+              type: string
+          qualityIssues:
+            type: array
+            items:
+              type: object
+              additionalProperties: true
+          qualityGateVersion:
+            type: [string, "null"]
+  ResumeList:
+    type: object
+    required:
+      - items
+    properties:
+      items:
+        type: array
+        items:
+          $ref: "#/schemas/ResumeSummary"
+      nextCursor:
+        $ref: ./common.yaml#/schemas/Cursor
+  ResumePatchRequest:
+    type: object
+    anyOf:
+      - required:
+          - title
+      - required:
+          - status
+    properties:
+      title:
+        type: string
+      status:
+        type: string
+        enum:
+          - active
+          - archived

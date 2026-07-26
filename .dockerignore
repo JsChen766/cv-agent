@@ -1,0 +1,12 @@
+.git
+.gitignore
+.env
+.env.*
+!.env.example
+docs
+AGENTS.md
+bin
+tmp
+coverage
+*.out
+.DS_Store

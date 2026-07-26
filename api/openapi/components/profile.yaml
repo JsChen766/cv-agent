@@ -1,0 +1,60 @@
+schemas:
+  UserProfile:
+    type: object
+    required:
+      - fullName
+      - email
+      - phone
+      - location
+      - linkedinUrl
+      - githubUrl
+      - personalWebsite
+      - currentTitle
+      - currentCompany
+      - yearsOfExperience
+      - careerStage
+      - targetRoles
+      - targetIndustries
+      - targetLocations
+      - preferredLanguage
+      - resumeStyle
+    properties:
+      fullName:
+        type: [string, "null"]
+      email:
+        type: [string, "null"]
+        format: email
+      phone:
+        type: [string, "null"]
+      location:
+        type: [string, "null"]
+      linkedinUrl:
+        type: [string, "null"]
+      githubUrl:
+        type: [string, "null"]
+      personalWebsite:
+        type: [string, "null"]
+      currentTitle:
+        type: [string, "null"]
+      currentCompany:
+        type: [string, "null"]
+      yearsOfExperience:
+        type: [number, "null"]
+      careerStage:
+        type: [string, "null"]
+      targetRoles:
+        type: array
+        items:
+          type: string
+      targetIndustries:
+        type: array
+        items:
+          type: string
+      targetLocations:
+        type: array
+        items:
+          type: string
+      preferredLanguage:
+        type: [string, "null"]
+      resumeStyle:
+        type: [string, "null"]

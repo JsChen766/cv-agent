@@ -1,0 +1,61 @@
+openapi: 3.1.0
+info:
+  title: CV Agent App Asset API
+  version: 1.0.0
+  license:
+    name: Proprietary
+    identifier: LicenseRef-Proprietary
+  description: |
+    Migration reference extracted from cv-agent-app access and asset adapters
+    on 2026-07-26. It reduces replacement cost but is not a permanent field-level
+    freeze. LLM, Agent, Prompt, Tool, conversation and rendering protocols are
+    explicitly outside this API.
+servers:
+  - url: http://127.0.0.1:8080
+    description: Docker local development
+tags:
+  - name: Auth
+    description: Development login and session lifecycle compatibility.
+  - name: User
+    description: Current authenticated user access.
+  - name: Profile
+    description: Current user's synchronized profile asset.
+  - name: Experience
+    description: Experience Bank assets and revisions.
+  - name: JD
+    description: Job description assets and structured requirements.
+  - name: Resume
+    description: Current cloud resume documents and publication.
+paths:
+  /v1/auth/login:
+    $ref: ./paths/auth-user.yaml#/login
+  /v1/auth/logout:
+    $ref: ./paths/auth-user.yaml#/logout
+  /v1/users/me:
+    $ref: ./paths/auth-user.yaml#/currentUser
+  /v1/users/me/profile:
+    $ref: ./paths/profile.yaml#/profile
+  /v1/product/experiences:
+    $ref: ./paths/experiences.yaml#/collection
+  /v1/product/experiences/{experienceId}:
+    $ref: ./paths/experiences.yaml#/item
+  /v1/product/jds:
+    $ref: ./paths/jds.yaml#/collection
+  /v1/product/jds/{jdId}:
+    $ref: ./paths/jds.yaml#/item
+  /v1/product/resumes:
+    $ref: ./paths/resumes.yaml#/collection
+  /v1/product/resumes/{resumeId}:
+    $ref: ./paths/resumes.yaml#/item
+  /v1/product/resumes/publish:
+    $ref: ./paths/resume-publication.yaml#/publishNew
+  /v1/product/resumes/{resumeId}/publish:
+    $ref: ./paths/resume-publication.yaml#/publishExisting
+components:
+  securitySchemes:
+    accessTokenCookie:
+      type: apiKey
+      in: cookie
+      name: access_token
+security:
+  - accessTokenCookie: []

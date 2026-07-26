@@ -1,0 +1,77 @@
+{
+  "idempotencyKey": "approval-payload-hash",
+  "proposalId": "proposal-1",
+  "title": "Product Manager Resume",
+  "targetRole": "Product Manager",
+  "jdId": "jd-1",
+  "sourceFingerprint": "source-fingerprint-1",
+  "structured": {
+    "language": "zh-CN",
+    "contact": null,
+    "sections": [],
+    "layout_template_id": "resume-standard",
+    "layout_profile_version": "resume-template-v2",
+    "layout_profile_hash": "profile-hash",
+    "layout_tuning": {
+      "body_font_scale": 1,
+      "body_line_height": 1,
+      "section_gap_scale": 1,
+      "item_gap_scale": 1,
+      "bullet_gap_scale": 1
+    },
+    "layout_target_band": {
+      "minimum": 0.85,
+      "target": 0.92,
+      "maximum": 1
+    }
+  },
+  "evidenceBindings": [
+    {
+      "bulletId": "bullet-1",
+      "sourceExperienceId": "exp-1",
+      "bulletText": "Built a reliable product",
+      "excerpts": [
+        {
+          "experienceId": "exp-1",
+          "revisionId": "rev-1",
+          "revisionContentHash": "revision-hash-1",
+          "sourceStart": 0,
+          "sourceEnd": 24,
+          "sourceQuote": "Built a reliable product"
+        }
+      ],
+      "matchedRequirementIds": ["req-1"]
+    }
+  ],
+  "observation": {
+    "run_id": null,
+    "surface": "review",
+    "measurement_version": "browser-layout-observation-v1",
+    "template_id": "resume-standard",
+    "profile_version": "resume-template-v2",
+    "profile_hash": "profile-hash",
+    "fonts_ready": true,
+    "loaded_font_families": ["Inter"],
+    "page_count": 1,
+    "overflow_px": 0,
+    "used_height_px": 900,
+    "available_height_px": 1000,
+    "viewport": {
+      "width_px": 794,
+      "height_px": 1123,
+      "device_pixel_ratio": 1
+    },
+    "page_metrics": [],
+    "bullets": [
+      {
+        "bullet_id": "bullet-1",
+        "line_count": 1,
+        "last_line_width_px": 300,
+        "available_line_width_px": 600
+      }
+    ],
+    "client_build": "coolto-desktop-g5-v1",
+    "observed_at": "2026-07-24T00:00:00Z",
+    "idempotency_key": "proposal-1:layout"
+  }
+}

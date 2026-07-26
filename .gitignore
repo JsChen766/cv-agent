@@ -1,0 +1,27 @@
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
+
+# Go workspace, build and test output
+go.work
+go.work.sum
+/bin/
+/build/
+/dist/
+/tmp/
+/coverage/
+*.coverprofile
+*.prof
+*.test
+*.out
+vendor/
+
+# Runtime output
+*.log
+
+# Editor and OS metadata
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

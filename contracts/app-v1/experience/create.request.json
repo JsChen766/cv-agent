@@ -1,0 +1,11 @@
+{
+  "category": "project",
+  "title": "Local Agent",
+  "content": "Built a local agent.",
+  "organization": null,
+  "role": null,
+  "location": null,
+  "start_date": "2026-01",
+  "end_date": "present",
+  "tags": ["TypeScript"]
+}

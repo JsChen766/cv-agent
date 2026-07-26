@@ -1,0 +1,86 @@
+collection:
+  get:
+    operationId: listResumes
+    tags:
+      - Resume
+    summary: List cloud resume summaries.
+    parameters:
+      - name: limit
+        in: query
+        schema:
+          type: integer
+          minimum: 1
+        description: The current APP always sends 100.
+    responses:
+      "200":
+        description: Resume summaries.
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: ../components/common.yaml#/schemas/SuccessEnvelope
+                - type: object
+                  properties:
+                    data:
+                      $ref: ../components/resume.yaml#/schemas/ResumeList
+      "401":
+        $ref: ../components/common.yaml#/responses/Unauthorized
+
+item:
+  parameters:
+    - name: resumeId
+      in: path
+      required: true
+      schema:
+        type: string
+        minLength: 1
+  get:
+    operationId: getResume
+    tags:
+      - Resume
+    summary: Read a full cloud resume.
+    responses:
+      "200":
+        description: Full resume.
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: ../components/common.yaml#/schemas/SuccessEnvelope
+                - type: object
+                  properties:
+                    data:
+                      $ref: ../components/resume.yaml#/schemas/ResumeFull
+      "401":
+        $ref: ../components/common.yaml#/responses/Unauthorized
+      "404":
+        $ref: ../components/common.yaml#/responses/NotFound
+  patch:
+    operationId: patchResumeMetadata
+    tags:
+      - Resume
+    summary: Rename, archive or unarchive a cloud resume.
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: ../components/resume.yaml#/schemas/ResumePatchRequest
+    responses:
+      "200":
+        description: Updated full resume.
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: ../components/common.yaml#/schemas/SuccessEnvelope
+                - type: object
+                  properties:
+                    data:
+                      $ref: ../components/resume.yaml#/schemas/ResumeFull
+      "401":
+        $ref: ../components/common.yaml#/responses/Unauthorized
+      "404":
+        $ref: ../components/common.yaml#/responses/NotFound
+      "422":
+        $ref: ../components/common.yaml#/responses/UnprocessableEntity

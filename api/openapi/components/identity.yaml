@@ -1,0 +1,44 @@
+schemas:
+  LoginRequest:
+    type: object
+    required:
+      - email
+      - password
+    properties:
+      email:
+        type: string
+        format: email
+      password:
+        type: string
+        minLength: 1
+  LoginUser:
+    type: object
+    required:
+      - userId
+      - email
+    properties:
+      userId:
+        type: string
+        minLength: 1
+      email:
+        type: string
+        format: email
+  CurrentUser:
+    type: object
+    required:
+      - id
+      - email
+    properties:
+      id:
+        type: string
+        minLength: 1
+      email:
+        type: string
+        format: email
+  LogoutResult:
+    type: object
+    required:
+      - message
+    properties:
+      message:
+        type: string

@@ -1,0 +1,190 @@
+schemas:
+  SourceEvidenceExcerpt:
+    type: object
+    required:
+      - experienceId
+      - revisionId
+      - revisionContentHash
+      - sourceStart
+      - sourceEnd
+      - sourceQuote
+    properties:
+      experienceId:
+        type: string
+      revisionId:
+        type: string
+      revisionContentHash:
+        type: string
+      sourceStart:
+        type: number
+      sourceEnd:
+        type: number
+      sourceQuote:
+        type: string
+  BulletEvidenceBinding:
+    type: object
+    required:
+      - bulletId
+      - sourceExperienceId
+      - bulletText
+      - excerpts
+      - matchedRequirementIds
+    properties:
+      bulletId:
+        type: string
+      sourceExperienceId:
+        type: string
+      bulletText:
+        type: string
+      excerpts:
+        type: array
+        items:
+          $ref: "#/schemas/SourceEvidenceExcerpt"
+      matchedRequirementIds:
+        type: array
+        items:
+          type: string
+  ObservationViewport:
+    type: object
+    required:
+      - width_px
+      - height_px
+      - device_pixel_ratio
+    properties:
+      width_px:
+        type: number
+      height_px:
+        type: number
+      device_pixel_ratio:
+        type: number
+  ObservationBullet:
+    type: object
+    required:
+      - bullet_id
+      - line_count
+      - last_line_width_px
+      - available_line_width_px
+    properties:
+      bullet_id:
+        type: string
+      line_count:
+        type: number
+      last_line_width_px:
+        type: number
+      available_line_width_px:
+        type: number
+  ResumeBrowserLayoutObservation:
+    type: object
+    required:
+      - run_id
+      - surface
+      - measurement_version
+      - template_id
+      - profile_version
+      - profile_hash
+      - fonts_ready
+      - loaded_font_families
+      - page_count
+      - overflow_px
+      - used_height_px
+      - available_height_px
+      - viewport
+      - page_metrics
+      - bullets
+      - client_build
+      - observed_at
+      - idempotency_key
+    properties:
+      run_id:
+        type: "null"
+      surface:
+        const: review
+      measurement_version:
+        const: browser-layout-observation-v1
+      template_id:
+        type: string
+        enum:
+          - resume-standard
+          - resume-sparse
+      profile_version:
+        type: string
+      profile_hash:
+        type: string
+      fonts_ready:
+        type: boolean
+      loaded_font_families:
+        type: array
+        items:
+          type: string
+      page_count:
+        type: number
+      overflow_px:
+        type: number
+      used_height_px:
+        type: number
+      available_height_px:
+        type: number
+      viewport:
+        $ref: "#/schemas/ObservationViewport"
+      page_metrics:
+        type: array
+        items:
+          type: object
+          additionalProperties: true
+      bullets:
+        type: array
+        items:
+          $ref: "#/schemas/ObservationBullet"
+      client_build:
+        type: string
+      observed_at:
+        type: string
+      idempotency_key:
+        type: string
+  ResumePublishRequest:
+    type: object
+    required:
+      - idempotencyKey
+      - proposalId
+      - title
+      - targetRole
+      - jdId
+      - sourceFingerprint
+      - structured
+      - evidenceBindings
+      - observation
+    properties:
+      idempotencyKey:
+        type: string
+      proposalId:
+        type: string
+      title:
+        type: string
+      targetRole:
+        type: [string, "null"]
+      jdId:
+        type: string
+      sourceFingerprint:
+        type: string
+      structured:
+        $ref: ./resume-structure.yaml#/schemas/ResumeStructure
+      evidenceBindings:
+        type: array
+        items:
+          $ref: "#/schemas/BulletEvidenceBinding"
+      observation:
+        $ref: "#/schemas/ResumeBrowserLayoutObservation"
+      expectedContentHash:
+        type: string
+  ResumePublicationResult:
+    allOf:
+      - $ref: ./resume.yaml#/schemas/ResumeFull
+      - type: object
+        required:
+          - created
+          - pageUsageRatio
+        properties:
+          created:
+            type: boolean
+          pageUsageRatio:
+            type: number

@@ -1,0 +1,21 @@
+{
+  "success": true,
+  "data": {
+    "items": [
+      {
+        "id": "resume-1",
+        "title": "Product Manager Resume",
+        "targetRole": "Product Manager",
+        "jdId": "jd-1",
+        "contentHash": "content-hash-1",
+        "schemaVersion": "resume-structure.v1",
+        "qualityStatus": "passed",
+        "status": "published",
+        "createdAt": "2026-07-24T00:00:00Z",
+        "updatedAt": "2026-07-24T00:00:00Z"
+      }
+    ],
+    "nextCursor": null
+  },
+  "request_id": "request-resume-list-1"
+}

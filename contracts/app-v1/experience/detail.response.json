@@ -1,0 +1,39 @@
+{
+  "success": true,
+  "data": {
+    "id": "exp-1",
+    "category": "project",
+    "title": "Local Agent",
+    "organization": null,
+    "role": "Developer",
+    "location": null,
+    "startDate": "2026-01-01",
+    "endDate": null,
+    "tags": ["typescript", "ai"],
+    "status": "active",
+    "currentRevisionId": "rev-1",
+    "currentRevision": {
+      "id": "rev-1",
+      "experienceId": "exp-1",
+      "content": "Built a local agent.",
+      "source": "manual",
+      "revisionHash": "hash",
+      "factBankStatus": "completed",
+      "createdAt": "2026-07-01T00:00:00Z"
+    },
+    "createdAt": "2026-07-01T00:00:00Z",
+    "updatedAt": "2026-07-01T00:00:00Z",
+    "revisions": [
+      {
+        "id": "rev-1",
+        "experienceId": "exp-1",
+        "content": "Built a local agent.",
+        "source": "manual",
+        "revisionHash": "hash",
+        "factBankStatus": "completed",
+        "createdAt": "2026-07-01T00:00:00Z"
+      }
+    ]
+  },
+  "request_id": "request-experience-detail-1"
+}

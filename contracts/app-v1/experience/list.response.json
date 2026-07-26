@@ -1,0 +1,24 @@
+{
+  "success": true,
+  "data": {
+    "items": [
+      {
+        "id": "exp-1",
+        "category": "project",
+        "title": "Local Agent",
+        "organization": null,
+        "role": "Developer",
+        "location": null,
+        "startDate": "2026-01-01",
+        "endDate": null,
+        "tags": ["typescript", "ai"],
+        "status": "active",
+        "currentRevisionId": "rev-1",
+        "createdAt": "2026-07-01T00:00:00Z",
+        "updatedAt": "2026-07-01T00:00:00Z"
+      }
+    ],
+    "nextCursor": "exp-next"
+  },
+  "request_id": "request-experience-list-1"
+}

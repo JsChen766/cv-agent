@@ -1,0 +1,47 @@
+{
+  "success": true,
+  "data": {
+    "id": "resume-1",
+    "title": "Product Manager Resume",
+    "targetRole": "Product Manager",
+    "jdId": "jd-1",
+    "contentHash": "content-hash-1",
+    "schemaVersion": "resume-structure.v1",
+    "qualityStatus": "passed",
+    "status": "published",
+    "createdAt": "2026-07-24T00:00:00Z",
+    "updatedAt": "2026-07-24T00:00:00Z",
+    "structured": {
+      "language": "zh-CN",
+      "contact": null,
+      "sections": []
+    },
+    "content": "private structured content",
+    "score": {
+      "overall": 1,
+      "relevance": 1,
+      "clarity": 1,
+      "evidence_strength": 1,
+      "quantified_impact": 1
+    },
+    "evidenceSummary": [
+      {
+        "requirement_id": "req-1",
+        "requirement_text": "Experience with data products",
+        "supporting_claims": ["Built a reliable product"],
+        "match_score": 0.9
+      }
+    ],
+    "riskSummary": [
+      {
+        "type": "missing_metric",
+        "text": "Impact has no metric",
+        "severity": "medium"
+      }
+    ],
+    "missingInfo": [],
+    "qualityIssues": [],
+    "qualityGateVersion": "app-resume-publication-browser-gate-v2"
+  },
+  "request_id": "request-resume-detail-1"
+}

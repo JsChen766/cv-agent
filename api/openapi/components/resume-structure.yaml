@@ -1,0 +1,215 @@
+schemas:
+  ResumeSourceEvidence:
+    type: object
+    required:
+      - experience_id
+      - revision_id
+      - revision_content_hash
+      - source_start
+      - source_end
+      - source_quote
+    properties:
+      experience_id:
+        type: string
+      revision_id:
+        type: string
+      revision_content_hash:
+        type: string
+      source_start:
+        type: integer
+      source_end:
+        type: integer
+      source_quote:
+        type: string
+  ResumeBullet:
+    type: object
+    required:
+      - id
+      - text
+      - matched_jd_requirement_ids
+    properties:
+      id:
+        type: string
+      text:
+        type: string
+      matched_jd_requirement_ids:
+        type: array
+        items:
+          type: string
+      source_fact_ids:
+        type: array
+        items:
+          type: string
+      source_evidence:
+        type: array
+        items:
+          $ref: "#/schemas/ResumeSourceEvidence"
+      layout_exception:
+        type:
+          - string
+          - "null"
+        enum:
+          - unfixable_grounded_short
+          - null
+  ResumeSectionItem:
+    type: object
+    required:
+      - id
+      - title
+      - organization
+      - role
+      - start_date
+      - end_date
+      - source_experience_id
+      - bullets
+      - raw_text
+    properties:
+      id:
+        type: string
+      title:
+        type: [string, "null"]
+      organization:
+        type: [string, "null"]
+      role:
+        type: [string, "null"]
+      location:
+        type: [string, "null"]
+      start_date:
+        type: [string, "null"]
+      end_date:
+        type: [string, "null"]
+      source_experience_id:
+        type: [string, "null"]
+      bullets:
+        type: array
+        items:
+          $ref: "#/schemas/ResumeBullet"
+      raw_text:
+        type: [string, "null"]
+  ResumeSection:
+    type: object
+    required:
+      - id
+      - type
+      - heading
+      - items
+    properties:
+      id:
+        type: string
+      type:
+        type: string
+        enum:
+          - summary
+          - education
+          - experience
+          - project
+          - skills
+          - other
+      heading:
+        type: [string, "null"]
+      items:
+        type: array
+        items:
+          $ref: "#/schemas/ResumeSectionItem"
+  ResumeContact:
+    type: object
+    required:
+      - name
+      - email
+      - phone
+      - location
+    properties:
+      name:
+        type: [string, "null"]
+      email:
+        type: [string, "null"]
+      phone:
+        type: [string, "null"]
+      location:
+        type: [string, "null"]
+      linkedin:
+        type: [string, "null"]
+  ResumeLayoutTuning:
+    type: object
+    required:
+      - body_font_scale
+      - body_line_height
+      - section_gap_scale
+      - item_gap_scale
+      - bullet_gap_scale
+    properties:
+      body_font_scale:
+        type: number
+      body_line_height:
+        type: number
+      section_gap_scale:
+        type: number
+      item_gap_scale:
+        type: number
+      bullet_gap_scale:
+        type: number
+  ResumeLayoutTargetBand:
+    type: object
+    required:
+      - minimum
+      - target
+      - maximum
+    properties:
+      minimum:
+        type: number
+      target:
+        type: number
+      maximum:
+        type: number
+  ResumeQualityIssue:
+    type: object
+    required:
+      - code
+      - message
+    properties:
+      code:
+        type: string
+      message:
+        type: string
+  ResumeStructure:
+    type: object
+    required:
+      - language
+      - contact
+      - sections
+    properties:
+      language:
+        type: string
+      contact:
+        oneOf:
+          - $ref: "#/schemas/ResumeContact"
+          - type: "null"
+      sections:
+        type: array
+        items:
+          $ref: "#/schemas/ResumeSection"
+      layout_template_id:
+        type: string
+        enum:
+          - resume-standard
+          - resume-sparse
+      layout_profile_version:
+        type: string
+      layout_profile_hash:
+        type: string
+      layout_tuning:
+        $ref: "#/schemas/ResumeLayoutTuning"
+      layout_usage_ratio:
+        type: number
+      layout_target_band:
+        $ref: "#/schemas/ResumeLayoutTargetBand"
+      quality_status:
+        type: string
+        enum:
+          - passed
+          - needs_user_decision
+          - failed
+      quality_issues:
+        type: array
+        items:
+          $ref: "#/schemas/ResumeQualityIssue"

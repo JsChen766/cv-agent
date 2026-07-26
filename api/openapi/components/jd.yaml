@@ -1,0 +1,168 @@
+schemas:
+  JdImportance:
+    type: string
+    enum:
+      - low
+      - medium
+      - high
+  JdV2Importance:
+    type:
+      - string
+      - "null"
+    enum:
+      - must_have
+      - preferred
+      - optional
+      - null
+  JdRequirement:
+    type: object
+    required:
+      - id
+      - text
+      - category
+      - importance
+      - keywords
+      - weight
+      - v2Importance
+      - v2Category
+    properties:
+      id:
+        type: string
+        minLength: 1
+      text:
+        type: string
+        minLength: 1
+      category:
+        type: string
+        minLength: 1
+      importance:
+        $ref: "#/schemas/JdImportance"
+      keywords:
+        type: array
+        items:
+          type: string
+      weight:
+        type: [number, "null"]
+        minimum: 0
+        maximum: 1
+      v2Importance:
+        $ref: "#/schemas/JdV2Importance"
+      v2Category:
+        type: [string, "null"]
+  JdRecord:
+    type: object
+    required:
+      - id
+      - title
+      - company
+      - targetRole
+      - rawText
+      - requirements
+      - jdHash
+      - requirementMapId
+      - requirementsOrigin
+      - sourceThreadId
+      - createdAt
+      - updatedAt
+    properties:
+      id:
+        type: string
+        minLength: 1
+      title:
+        type: string
+        minLength: 1
+      company:
+        type: [string, "null"]
+      targetRole:
+        type: [string, "null"]
+      rawText:
+        type: string
+        minLength: 1
+      requirements:
+        type: array
+        items:
+          $ref: "#/schemas/JdRequirement"
+      jdHash:
+        type: [string, "null"]
+      requirementMapId:
+        type: [string, "null"]
+      requirementsOrigin:
+        type: string
+        minLength: 1
+      sourceThreadId:
+        type: [string, "null"]
+      createdAt:
+        type: string
+        format: date-time
+      updatedAt:
+        type: string
+        format: date-time
+  JdList:
+    type: object
+    required:
+      - items
+      - nextCursor
+    properties:
+      items:
+        type: array
+        items:
+          $ref: "#/schemas/JdRecord"
+      nextCursor:
+        $ref: ./common.yaml#/schemas/Cursor
+  JdRequirementCreate:
+    type: object
+    required:
+      - text
+      - category
+      - importance
+      - keywords
+      - v2_importance
+      - v2_category
+    properties:
+      text:
+        type: string
+        minLength: 1
+      category:
+        type: string
+        minLength: 1
+      importance:
+        $ref: "#/schemas/JdImportance"
+      keywords:
+        type: array
+        items:
+          type: string
+      v2_importance:
+        $ref: "#/schemas/JdV2Importance"
+      v2_category:
+        type:
+          - string
+          - "null"
+        enum:
+          - qualification
+          - responsibility
+          - technology
+          - domain
+          - soft_skill
+          - null
+  JdCreateRequest:
+    type: object
+    required:
+      - title
+      - raw_text
+      - company
+      - target_role
+    properties:
+      title:
+        type: string
+        minLength: 1
+      raw_text:
+        type: string
+        minLength: 1
+      company:
+        type: [string, "null"]
+      target_role:
+        type: [string, "null"]
+      requirements:
+        type: array
+        items:
+          $ref: "#/schemas/JdRequirementCreate"

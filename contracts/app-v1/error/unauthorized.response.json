@@ -1,0 +1,8 @@
+{
+  "success": false,
+  "error": {
+    "code": "unauthorized",
+    "message": "Invalid or expired session"
+  },
+  "request_id": "request-error-1"
+}

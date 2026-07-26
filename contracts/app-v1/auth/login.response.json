@@ -1,0 +1,8 @@
+{
+  "success": true,
+  "data": {
+    "userId": "user-1",
+    "email": "alice@example.com"
+  },
+  "request_id": "request-login-1"
+}

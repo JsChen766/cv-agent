@@ -1,0 +1,16 @@
+{
+  "title": "Product Manager",
+  "raw_text": "Build reliable data products.",
+  "company": "Example",
+  "target_role": "Product Manager",
+  "requirements": [
+    {
+      "text": "Experience with data products",
+      "category": "domain",
+      "importance": "high",
+      "keywords": ["data"],
+      "v2_importance": "must_have",
+      "v2_category": "domain"
+    }
+  ]
+}

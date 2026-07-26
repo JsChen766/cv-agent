@@ -1,0 +1,154 @@
+schemas:
+  ExperienceCategory:
+    type: string
+    enum:
+      - work
+      - project
+      - education
+      - volunteer
+      - other
+  ExperienceRevision:
+    type: object
+    required:
+      - id
+      - experienceId
+      - content
+      - source
+      - revisionHash
+      - factBankStatus
+      - createdAt
+    properties:
+      id:
+        type: string
+        minLength: 1
+      experienceId:
+        type: string
+        minLength: 1
+      content:
+        type: string
+        minLength: 1
+      source:
+        type: string
+        minLength: 1
+      revisionHash:
+        type: [string, "null"]
+      factBankStatus:
+        type: string
+        minLength: 1
+      createdAt:
+        type: string
+        format: date-time
+  ExperienceSummary:
+    type: object
+    required:
+      - id
+      - category
+      - title
+      - organization
+      - role
+      - location
+      - startDate
+      - endDate
+      - tags
+      - status
+      - currentRevisionId
+      - createdAt
+      - updatedAt
+    properties:
+      id:
+        type: string
+        minLength: 1
+      category:
+        $ref: "#/schemas/ExperienceCategory"
+      title:
+        type: string
+        minLength: 1
+      organization:
+        type: [string, "null"]
+      role:
+        type: [string, "null"]
+      location:
+        type: [string, "null"]
+      startDate:
+        type: [string, "null"]
+      endDate:
+        type: [string, "null"]
+      tags:
+        type: array
+        items:
+          type: string
+      status:
+        type: string
+        enum:
+          - active
+          - archived
+      currentRevisionId:
+        type: [string, "null"]
+      currentRevision:
+        oneOf:
+          - $ref: "#/schemas/ExperienceRevision"
+          - type: "null"
+      createdAt:
+        type: string
+        format: date-time
+      updatedAt:
+        type: string
+        format: date-time
+  ExperienceDetail:
+    allOf:
+      - $ref: "#/schemas/ExperienceSummary"
+      - type: object
+        required:
+          - revisions
+        properties:
+          revisions:
+            type: array
+            items:
+              $ref: "#/schemas/ExperienceRevision"
+  ExperienceList:
+    type: object
+    required:
+      - items
+      - nextCursor
+    properties:
+      items:
+        type: array
+        items:
+          $ref: "#/schemas/ExperienceSummary"
+      nextCursor:
+        $ref: ./common.yaml#/schemas/Cursor
+  ExperienceCreateRequest:
+    type: object
+    required:
+      - category
+      - title
+      - content
+      - organization
+      - role
+      - location
+      - start_date
+      - end_date
+      - tags
+    properties:
+      category:
+        $ref: "#/schemas/ExperienceCategory"
+      title:
+        type: string
+        minLength: 1
+      content:
+        type: string
+        minLength: 1
+      organization:
+        type: [string, "null"]
+      role:
+        type: [string, "null"]
+      location:
+        type: [string, "null"]
+      start_date:
+        type: [string, "null"]
+      end_date:
+        type: [string, "null"]
+      tags:
+        type: array
+        items:
+          type: string

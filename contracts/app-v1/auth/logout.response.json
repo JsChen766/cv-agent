@@ -1,0 +1,7 @@
+{
+  "success": true,
+  "data": {
+    "message": "Logged out"
+  },
+  "request_id": "request-logout-1"
+}

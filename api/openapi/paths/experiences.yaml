@@ -1,0 +1,103 @@
+collection:
+  get:
+    operationId: listExperiences
+    tags:
+      - Experience
+    summary: Search the current user's experiences.
+    parameters:
+      - name: q
+        in: query
+        schema:
+          type: string
+      - name: category
+        in: query
+        schema:
+          $ref: ../components/experience.yaml#/schemas/ExperienceCategory
+      - name: tags
+        in: query
+        style: form
+        explode: true
+        schema:
+          type: array
+          items:
+            type: string
+      - name: limit
+        in: query
+        schema:
+          type: integer
+          minimum: 1
+      - name: cursor
+        in: query
+        schema:
+          type: string
+    responses:
+      "200":
+        description: Cursor page of experience summaries.
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: ../components/common.yaml#/schemas/SuccessEnvelope
+                - type: object
+                  properties:
+                    data:
+                      $ref: ../components/experience.yaml#/schemas/ExperienceList
+      "401":
+        $ref: ../components/common.yaml#/responses/Unauthorized
+  post:
+    operationId: createExperience
+    tags:
+      - Experience
+    summary: Create an experience and its initial revision.
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: ../components/experience.yaml#/schemas/ExperienceCreateRequest
+    responses:
+      "200":
+        description: Created experience summary.
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: ../components/common.yaml#/schemas/SuccessEnvelope
+                - type: object
+                  properties:
+                    data:
+                      $ref: ../components/experience.yaml#/schemas/ExperienceSummary
+      "401":
+        $ref: ../components/common.yaml#/responses/Unauthorized
+      "422":
+        $ref: ../components/common.yaml#/responses/UnprocessableEntity
+
+item:
+  parameters:
+    - name: experienceId
+      in: path
+      required: true
+      schema:
+        type: string
+        minLength: 1
+  get:
+    operationId: getExperience
+    tags:
+      - Experience
+    summary: Read an experience with revisions.
+    responses:
+      "200":
+        description: Full experience detail.
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: ../components/common.yaml#/schemas/SuccessEnvelope
+                - type: object
+                  properties:
+                    data:
+                      $ref: ../components/experience.yaml#/schemas/ExperienceDetail
+      "401":
+        $ref: ../components/common.yaml#/responses/Unauthorized
+      "404":
+        $ref: ../components/common.yaml#/responses/NotFound

@@ -1,0 +1,77 @@
+login:
+  post:
+    operationId: loginWithDevelopmentPassword
+    tags:
+      - Auth
+    summary: Log in with the local/test password flow.
+    description: This operation must not be registered in production.
+    security: []
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: ../components/identity.yaml#/schemas/LoginRequest
+    responses:
+      "200":
+        description: Login succeeded and access_token was set.
+        headers:
+          Set-Cookie:
+            required: true
+            schema:
+              type: string
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: ../components/common.yaml#/schemas/SuccessEnvelope
+                - type: object
+                  properties:
+                    data:
+                      $ref: ../components/identity.yaml#/schemas/LoginUser
+      "400":
+        $ref: ../components/common.yaml#/responses/BadRequest
+      "401":
+        $ref: ../components/common.yaml#/responses/Unauthorized
+
+logout:
+  post:
+    operationId: logout
+    tags:
+      - Auth
+    summary: Revoke the current access_token session.
+    responses:
+      "200":
+        description: Session was revoked.
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: ../components/common.yaml#/schemas/SuccessEnvelope
+                - type: object
+                  properties:
+                    data:
+                      $ref: ../components/identity.yaml#/schemas/LogoutResult
+      "401":
+        $ref: ../components/common.yaml#/responses/Unauthorized
+
+currentUser:
+  get:
+    operationId: getCurrentUser
+    tags:
+      - User
+    summary: Restore the current user from the session cookie.
+    responses:
+      "200":
+        description: Current user.
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: ../components/common.yaml#/schemas/SuccessEnvelope
+                - type: object
+                  properties:
+                    data:
+                      $ref: ../components/identity.yaml#/schemas/CurrentUser
+      "401":
+        $ref: ../components/common.yaml#/responses/Unauthorized
