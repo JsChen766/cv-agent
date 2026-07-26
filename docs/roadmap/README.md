@@ -136,6 +136,68 @@ Phase 0 完成前还需确认：
 - 权益查询；
 - 登录主流程和跨用户隔离验收。
 
+### Phase 1 纵向切片 1：最小认证基座（2026-07-26）
+
+状态：🟡 部分完成，切片内 3 个用例通过端到端联调，其他 Phase 1 用例未开始。
+
+已完成：
+
+- `internal/platform/security`：Argon2id 密码 hash/verify 与 SHA-256 Session Token；
+- `internal/platform/id`：UUIDv7 生成器；
+- `internal/modules/identity`：按 `domain / application / postgres / httpapi` 分层，
+  以及组装模块的 `module.go`，未出现上帝类；
+- Session Issuer 生成 opaque token（`[A-Za-z0-9._~-]`），DB 只存 SHA-256 hash；
+- Session middleware `RequireSession` 通过 `access_token` Cookie 恢复会话；
+- Dev 密码登录：`POST /v1/auth/login`（仅 `ENABLE_DEV_PASSWORD_LOGIN=true` 时注册）；
+- 当前用户：`GET /v1/users/me`；
+- 会话登出：`POST /v1/auth/logout`；
+- Device upsert 严格校验 `user_id` 归属，禁止跨用户复用同一 device id；
+- Device/Session 复合外键 `(user_id, id)` 保护跨用户越权；
+- 新增 `migrations-dev/00001_dev_account.sql`（独立 goose 表 `goose_db_version_dev`，
+  只由 `make migrate-dev-up` 加载），种子账号 `dev@example.com / devpassword` 及
+  绑定的 Profile、development Subscription；
+- `HTTP Handler` 路由从平台层通过 `RouteRegistrar` 挂载 `/v1`，不出现上帝路由文件。
+
+安全约束落地：
+
+- 生产环境启动即因 `DevPasswordAuth && Environment==production` 拒绝启动（既有
+  `platform/config` 门禁，未变更）；
+- Cookie 在非 local/test 下 `Secure=true`，始终 `HttpOnly + SameSite=Lax`；
+- 错误响应仅返回稳定错误码 `invalid_credentials / session_invalid / device_conflict`；
+- Password/token/cookie 均未写入结构化日志。
+
+验证证据：
+
+- `make check`：contract-lint、gofmt、go vet、go build、行数检查、`compose config`
+  全部通过；
+- `make test`：现有 3 个包共 5 个测试通过（`-race`）；
+- `make migrate-up`：主 migration 保持 version 6；
+- `make migrate-dev-up`：dev seed migration 独立追踪至 version 1；
+- Docker-only 端到端 smoke（`compose up -d api` 后 curl）：
+  - 错误密码返回 `401 invalid_credentials`；
+  - 正确密码返回 `200 + Set-Cookie: access_token=...` 并写入 `auth_sessions`；
+  - `GET /v1/users/me` 使用 Cookie 返回用户；无 Cookie 返回 `401 session_invalid`；
+  - `POST /v1/auth/logout` 撤销 Session 并清除 Cookie，后续请求返回 `401`；
+  - 同用户重登：`devices` 记录被 upsert，`device_name/app_version` 更新；
+  - 跨用户使用同一 device id：返回 `409 device_conflict`（不写入）。
+
+新增/修改文件行数（业务代码 220/250 行限制）：
+
+- 最大文件 `internal/modules/identity/httpapi/handlers.go` 128 行；
+- 所有新业务/平台文件均 <150 行，无上帝类。
+
+未完成 / 未验证：
+
+- 正式 OTP 邮箱验证码 challenge/verify（`email_login_challenges`、Mailpit、Redis 限流）；
+- Profile GET/PUT、Entitlement GET；
+- `DELETE /v1/devices/{deviceId}/sessions` 远程撤销；
+- 单元测试（依赖真实 pgxpool 的 Repository 尚未做隔离测试）；
+- CI 流水线；
+- APP LocalSyncStore 接线。
+
+后续下一切片建议：Profile GET/PUT + Entitlement GET，将 Phase 1 的“权益查询”门槛
+覆盖到位后再进入 OTP。
+
 ## Phase 2：同步内核
 
 范围：

@@ -10,9 +10,13 @@ import (
 	"github.com/go-chi/chi/v5/middleware"
 )
 
+// RouteRegistrar mounts module routes under a shared /v1 router.
+type RouteRegistrar func(router chi.Router)
+
 func NewHandler(
 	logger *slog.Logger,
 	checks map[string]CheckFunc,
+	registrars ...RouteRegistrar,
 ) http.Handler {
 	router := chi.NewRouter()
 	router.Use(middleware.RequestID)
@@ -23,6 +27,12 @@ func NewHandler(
 	health := newHealthHandler(checks)
 	router.Get("/health/live", health.live)
 	router.Get("/health/ready", health.ready)
+
+	router.Route("/v1", func(v1 chi.Router) {
+		for _, register := range registrars {
+			register(v1)
+		}
+	})
 	return router
 }
 

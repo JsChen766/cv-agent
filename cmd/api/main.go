@@ -9,6 +9,7 @@ import (
 	"os/signal"
 	"syscall"
 
+	"coolto.local/cv-agent-app-be/internal/modules/identity"
 	"coolto.local/cv-agent-app-be/internal/platform/cache"
 	"coolto.local/cv-agent-app-be/internal/platform/config"
 	"coolto.local/cv-agent-app-be/internal/platform/database"
@@ -48,12 +49,17 @@ func run(ctx context.Context, logger *slog.Logger) error {
 	}
 	defer redisClient.Close()
 
+	identityModule := identity.New(db, identity.Options{
+		DevPasswordLogin: cfg.DevPasswordAuth,
+		SecureCookie:     cfg.Environment != "local" && cfg.Environment != "test",
+	})
+
 	handler := httpserver.NewHandler(logger, map[string]httpserver.CheckFunc{
 		"postgres": db.Ping,
 		"redis": func(ctx context.Context) error {
 			return redisClient.Ping(ctx).Err()
 		},
-	})
+	}, identityModule.Registrar())
 	server := httpserver.New(cfg.HTTP, handler)
 	serverErrors := make(chan error, 1)
 

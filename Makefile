@@ -6,6 +6,7 @@ APP_REPO ?= ../cv-agent-app
 .PHONY: dev up down logs config tidy fmt vet test build check
 .PHONY: contract-lint contract-source-check
 .PHONY: migrate-status migrate-up migrate-down psql redis-cli
+.PHONY: migrate-dev-up migrate-dev-down
 
 dev:
 	$(COMPOSE) up --build
@@ -67,6 +68,12 @@ migrate-up:
 
 migrate-down:
 	$(COMPOSE) run --rm migrate down
+
+migrate-dev-up:
+	$(COMPOSE) run --rm -e GOOSE_TABLE=goose_db_version_dev -e GOOSE_MIGRATION_DIR=migrations-dev migrate up
+
+migrate-dev-down:
+	$(COMPOSE) run --rm -e GOOSE_TABLE=goose_db_version_dev -e GOOSE_MIGRATION_DIR=migrations-dev migrate down
 
 psql:
 	$(COMPOSE) exec postgres psql -U "$${POSTGRES_USER:-cv_agent}" -d "$${POSTGRES_DB:-cv_agent}"
