@@ -97,6 +97,7 @@ Phase 0 完成前还需确认：
 - 用户已确认 Resume 云端单文档、本地 checkpoint 历史，以及完整墓碑保留至账号物理清除；
 - 已确认 v1 不建立 Material；支付事件和通用 Server Outbox 同样暂不建立；
 - Schema v1 已实现为 `00002`–`00006`；正式 OpenAPI 已覆盖 OTP、完整 CRUD、Tracker 和 Sync。
+- 已补 Coding Agent 实施交接，固化阅读顺序、代码导航、纵向交付流程和验收格式。
 
 验证证据：
 

@@ -69,6 +69,7 @@ make migrate-up
 - [API v1 设计说明](docs/api/README.md)
 - [APP v1 迁移参考 fixtures](contracts/app-v1/README.md)
 - [后端工程设计原则](docs/development/design-principles.md)
+- [Coding Agent 实施交接](docs/development/implementation-handoff.md)
 - [实施路线](docs/roadmap/README.md)
 
 ## 状态说明

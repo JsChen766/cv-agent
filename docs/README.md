@@ -53,7 +53,8 @@
 10. [API v1 设计说明](api/README.md)
 11. [APP v1 迁移参考 fixtures](../contracts/app-v1/README.md)
 12. [后端工程设计原则](development/design-principles.md)
-13. [实施路线](roadmap/README.md)
+13. [Coding Agent 实施交接](development/implementation-handoff.md)
+14. [实施路线](roadmap/README.md)
 
 ## 4. 上游需求来源
 
