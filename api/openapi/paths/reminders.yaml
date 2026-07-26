@@ -1,22 +1,23 @@
 collection:
   get:
-    operationId: listJds
-    tags:
-      - JD
-    summary: List the current user's job descriptions.
+    operationId: listReminders
+    tags: [Reminder]
+    summary: List synchronized reminders; the APP triggers local notifications.
     parameters:
-      - name: limit
+      - name: applicationId
         in: query
         schema:
-          type: integer
-          minimum: 1
-      - name: cursor
+          $ref: ../components/common.yaml#/schemas/Uuid
+      - name: status
         in: query
         schema:
           type: string
+          enum: [scheduled, delivered, dismissed, canceled]
+      - $ref: ../components/common.yaml#/parameters/Cursor
+      - $ref: ../components/common.yaml#/parameters/Limit
     responses:
       "200":
-        description: Cursor page of job descriptions.
+        description: Cursor page of reminders.
         content:
           application/json:
             schema:
@@ -25,14 +26,13 @@ collection:
                 - type: object
                   properties:
                     data:
-                      $ref: ../components/jd.yaml#/schemas/JdList
+                      $ref: ../components/tracker-pages.yaml#/schemas/ReminderList
       "401":
         $ref: ../components/common.yaml#/responses/Unauthorized
   post:
-    operationId: createJd
-    tags:
-      - JD
-    summary: Create a job description asset.
+    operationId: createReminder
+    tags: [Reminder]
+    summary: Create a synchronized reminder.
     parameters:
       - $ref: ../components/common.yaml#/parameters/IdempotencyKey
     requestBody:
@@ -40,10 +40,10 @@ collection:
       content:
         application/json:
           schema:
-            $ref: ../components/jd.yaml#/schemas/JdCreateRequest
+            $ref: ../components/tracker-child.yaml#/schemas/ReminderWriteRequest
     responses:
       "201":
-        description: Created job description.
+        description: Created reminder.
         content:
           application/json:
             schema:
@@ -52,27 +52,28 @@ collection:
                 - type: object
                   properties:
                     data:
-                      $ref: ../components/jd.yaml#/schemas/JdRecord
+                      $ref: ../components/tracker-child.yaml#/schemas/Reminder
       "401":
         $ref: ../components/common.yaml#/responses/Unauthorized
+      "404":
+        $ref: ../components/common.yaml#/responses/NotFound
       "422":
         $ref: ../components/common.yaml#/responses/UnprocessableEntity
 
 item:
   parameters:
-    - name: jdId
+    - name: reminderId
       in: path
       required: true
       schema:
         $ref: ../components/common.yaml#/schemas/Uuid
   get:
-    operationId: getJd
-    tags:
-      - JD
-    summary: Read one job description asset.
+    operationId: getReminder
+    tags: [Reminder]
+    summary: Read a reminder.
     responses:
       "200":
-        description: Job description.
+        description: Reminder.
         content:
           application/json:
             schema:
@@ -81,25 +82,24 @@ item:
                 - type: object
                   properties:
                     data:
-                      $ref: ../components/jd.yaml#/schemas/JdRecord
+                      $ref: ../components/tracker-child.yaml#/schemas/Reminder
       "401":
         $ref: ../components/common.yaml#/responses/Unauthorized
       "404":
         $ref: ../components/common.yaml#/responses/NotFound
   put:
-    operationId: replaceJd
-    tags:
-      - JD
-    summary: Atomically replace the JD and its complete requirements collection.
+    operationId: replaceReminder
+    tags: [Reminder]
+    summary: Replace a reminder using optimistic locking.
     requestBody:
       required: true
       content:
         application/json:
           schema:
-            $ref: ../components/jd-write.yaml#/schemas/JdUpdateRequest
+            $ref: ../components/tracker-pages.yaml#/schemas/ReminderUpdateRequest
     responses:
       "200":
-        description: Updated job description.
+        description: Updated reminder.
         content:
           application/json:
             schema:
@@ -108,25 +108,22 @@ item:
                 - type: object
                   properties:
                     data:
-                      $ref: ../components/jd.yaml#/schemas/JdRecord
+                      $ref: ../components/tracker-child.yaml#/schemas/Reminder
       "401":
         $ref: ../components/common.yaml#/responses/Unauthorized
       "404":
         $ref: ../components/common.yaml#/responses/NotFound
       "409":
         $ref: ../components/common.yaml#/responses/Conflict
-      "422":
-        $ref: ../components/common.yaml#/responses/UnprocessableEntity
   delete:
-    operationId: deleteJd
-    tags:
-      - JD
-    summary: Soft-delete a JD and preserve Application snapshots.
+    operationId: deleteReminder
+    tags: [Reminder]
+    summary: Soft-delete a reminder.
     parameters:
       - $ref: ../components/common.yaml#/parameters/ExpectedVersion
     responses:
       "200":
-        description: Deleted JD tombstone.
+        description: Deleted reminder tombstone.
         content:
           application/json:
             schema:
@@ -135,7 +132,7 @@ item:
                 - type: object
                   properties:
                     data:
-                      $ref: ../components/jd.yaml#/schemas/JdRecord
+                      $ref: ../components/tracker-child.yaml#/schemas/Reminder
       "401":
         $ref: ../components/common.yaml#/responses/Unauthorized
       "404":

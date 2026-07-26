@@ -1,0 +1,46 @@
+schemas:
+  InterviewRoundList:
+    type: object
+    required: [items, nextCursor]
+    properties:
+      items:
+        type: array
+        items:
+          $ref: ./tracker-child.yaml#/schemas/InterviewRound
+      nextCursor:
+        $ref: ./common.yaml#/schemas/Cursor
+  ApplicationNoteList:
+    type: object
+    required: [items, nextCursor]
+    properties:
+      items:
+        type: array
+        items:
+          $ref: ./tracker-child.yaml#/schemas/ApplicationNote
+      nextCursor:
+        $ref: ./common.yaml#/schemas/Cursor
+  ReminderList:
+    type: object
+    required: [items, nextCursor]
+    properties:
+      items:
+        type: array
+        items:
+          $ref: ./tracker-child.yaml#/schemas/Reminder
+      nextCursor:
+        $ref: ./common.yaml#/schemas/Cursor
+  InterviewRoundUpdateRequest:
+    allOf:
+      - $ref: ./tracker-child.yaml#/schemas/InterviewRoundWriteRequest
+      - type: object
+        required: [expectedVersion]
+  ApplicationNoteUpdateRequest:
+    allOf:
+      - $ref: ./tracker-child.yaml#/schemas/ApplicationNoteWriteRequest
+      - type: object
+        required: [expectedVersion]
+  ReminderUpdateRequest:
+    allOf:
+      - $ref: ./tracker-child.yaml#/schemas/ReminderWriteRequest
+      - type: object
+        required: [expectedVersion]

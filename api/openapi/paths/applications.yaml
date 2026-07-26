@@ -1,38 +1,34 @@
 collection:
   get:
-    operationId: listExperiences
-    tags:
-      - Experience
-    summary: Search the current user's experiences.
+    operationId: listApplications
+    tags: [Application]
+    summary: List or query the current user's tracker board.
     parameters:
-      - name: q
+      - name: status
+        in: query
+        schema:
+          $ref: ../components/application.yaml#/schemas/ApplicationStatus
+      - name: company
         in: query
         schema:
           type: string
-      - name: category
+      - name: jdId
         in: query
         schema:
-          $ref: ../components/experience.yaml#/schemas/ExperienceCategory
-      - name: tags
-        in: query
-        style: form
-        explode: true
-        schema:
-          type: array
-          items:
-            type: string
-      - name: limit
+          $ref: ../components/common.yaml#/schemas/Uuid
+      - name: resumeId
         in: query
         schema:
-          type: integer
-          minimum: 1
-      - name: cursor
+          $ref: ../components/common.yaml#/schemas/Uuid
+      - name: pendingConfirmation
         in: query
         schema:
-          type: string
+          type: boolean
+      - $ref: ../components/common.yaml#/parameters/Cursor
+      - $ref: ../components/common.yaml#/parameters/Limit
     responses:
       "200":
-        description: Cursor page of experience summaries.
+        description: Cursor page of applications.
         content:
           application/json:
             schema:
@@ -41,14 +37,13 @@ collection:
                 - type: object
                   properties:
                     data:
-                      $ref: ../components/experience.yaml#/schemas/ExperienceList
+                      $ref: ../components/application.yaml#/schemas/ApplicationList
       "401":
         $ref: ../components/common.yaml#/responses/Unauthorized
   post:
-    operationId: createExperience
-    tags:
-      - Experience
-    summary: Create an experience and its initial revision.
+    operationId: createApplication
+    tags: [Application]
+    summary: Record a completed or pending-confirmation application.
     parameters:
       - $ref: ../components/common.yaml#/parameters/IdempotencyKey
     requestBody:
@@ -56,10 +51,10 @@ collection:
       content:
         application/json:
           schema:
-            $ref: ../components/experience.yaml#/schemas/ExperienceCreateRequest
+            $ref: ../components/application.yaml#/schemas/ApplicationCreateRequest
     responses:
       "201":
-        description: Created experience summary.
+        description: Created application.
         content:
           application/json:
             schema:
@@ -68,27 +63,28 @@ collection:
                 - type: object
                   properties:
                     data:
-                      $ref: ../components/experience.yaml#/schemas/ExperienceSummary
+                      $ref: ../components/application.yaml#/schemas/Application
       "401":
         $ref: ../components/common.yaml#/responses/Unauthorized
+      "409":
+        $ref: ../components/common.yaml#/responses/Conflict
       "422":
         $ref: ../components/common.yaml#/responses/UnprocessableEntity
 
 item:
   parameters:
-    - name: experienceId
+    - name: applicationId
       in: path
       required: true
       schema:
         $ref: ../components/common.yaml#/schemas/Uuid
   get:
-    operationId: getExperience
-    tags:
-      - Experience
-    summary: Read an experience with revisions.
+    operationId: getApplication
+    tags: [Application]
+    summary: Read an application.
     responses:
       "200":
-        description: Full experience detail.
+        description: Application detail.
         content:
           application/json:
             schema:
@@ -97,25 +93,24 @@ item:
                 - type: object
                   properties:
                     data:
-                      $ref: ../components/experience.yaml#/schemas/ExperienceDetail
+                      $ref: ../components/application.yaml#/schemas/Application
       "401":
         $ref: ../components/common.yaml#/responses/Unauthorized
       "404":
         $ref: ../components/common.yaml#/responses/NotFound
   put:
-    operationId: updateExperience
-    tags:
-      - Experience
-    summary: Update metadata and optionally append a new immutable content revision.
+    operationId: updateApplication
+    tags: [Application]
+    summary: Update tracker metadata without changing status.
     requestBody:
       required: true
       content:
         application/json:
           schema:
-            $ref: ../components/experience-write.yaml#/schemas/ExperienceUpdateRequest
+            $ref: ../components/application.yaml#/schemas/ApplicationUpdateRequest
     responses:
       "200":
-        description: Updated experience detail.
+        description: Updated application.
         content:
           application/json:
             schema:
@@ -124,7 +119,7 @@ item:
                 - type: object
                   properties:
                     data:
-                      $ref: ../components/experience.yaml#/schemas/ExperienceDetail
+                      $ref: ../components/application.yaml#/schemas/Application
       "401":
         $ref: ../components/common.yaml#/responses/Unauthorized
       "404":
@@ -134,15 +129,14 @@ item:
       "422":
         $ref: ../components/common.yaml#/responses/UnprocessableEntity
   delete:
-    operationId: deleteExperience
-    tags:
-      - Experience
-    summary: Soft-delete an experience and return its tombstone projection.
+    operationId: deleteApplication
+    tags: [Application]
+    summary: Soft-delete an application.
     parameters:
       - $ref: ../components/common.yaml#/parameters/ExpectedVersion
     responses:
       "200":
-        description: Deleted experience tombstone.
+        description: Deleted application tombstone.
         content:
           application/json:
             schema:
@@ -151,42 +145,10 @@ item:
                 - type: object
                   properties:
                     data:
-                      $ref: ../components/experience.yaml#/schemas/ExperienceSummary
+                      $ref: ../components/application.yaml#/schemas/Application
       "401":
         $ref: ../components/common.yaml#/responses/Unauthorized
       "404":
         $ref: ../components/common.yaml#/responses/NotFound
       "409":
         $ref: ../components/common.yaml#/responses/Conflict
-
-revisions:
-  parameters:
-    - name: experienceId
-      in: path
-      required: true
-      schema:
-        $ref: ../components/common.yaml#/schemas/Uuid
-  get:
-    operationId: listExperienceRevisions
-    tags:
-      - Experience
-    summary: List immutable content revisions newest first.
-    parameters:
-      - $ref: ../components/common.yaml#/parameters/Cursor
-      - $ref: ../components/common.yaml#/parameters/Limit
-    responses:
-      "200":
-        description: Cursor page of revisions.
-        content:
-          application/json:
-            schema:
-              allOf:
-                - $ref: ../components/common.yaml#/schemas/SuccessEnvelope
-                - type: object
-                  properties:
-                    data:
-                      $ref: ../components/experience-write.yaml#/schemas/ExperienceRevisionList
-      "401":
-        $ref: ../components/common.yaml#/responses/Unauthorized
-      "404":
-        $ref: ../components/common.yaml#/responses/NotFound

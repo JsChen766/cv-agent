@@ -1,22 +1,20 @@
 collection:
+  parameters:
+    - name: applicationId
+      in: path
+      required: true
+      schema:
+        $ref: ../components/common.yaml#/schemas/Uuid
   get:
-    operationId: listJds
-    tags:
-      - JD
-    summary: List the current user's job descriptions.
+    operationId: listInterviewRounds
+    tags: [Interview]
+    summary: List interview rounds for one application.
     parameters:
-      - name: limit
-        in: query
-        schema:
-          type: integer
-          minimum: 1
-      - name: cursor
-        in: query
-        schema:
-          type: string
+      - $ref: ../components/common.yaml#/parameters/Cursor
+      - $ref: ../components/common.yaml#/parameters/Limit
     responses:
       "200":
-        description: Cursor page of job descriptions.
+        description: Cursor page of interview rounds.
         content:
           application/json:
             schema:
@@ -25,14 +23,15 @@ collection:
                 - type: object
                   properties:
                     data:
-                      $ref: ../components/jd.yaml#/schemas/JdList
+                      $ref: ../components/tracker-pages.yaml#/schemas/InterviewRoundList
       "401":
         $ref: ../components/common.yaml#/responses/Unauthorized
+      "404":
+        $ref: ../components/common.yaml#/responses/NotFound
   post:
-    operationId: createJd
-    tags:
-      - JD
-    summary: Create a job description asset.
+    operationId: createInterviewRound
+    tags: [Interview]
+    summary: Add an interview round.
     parameters:
       - $ref: ../components/common.yaml#/parameters/IdempotencyKey
     requestBody:
@@ -40,10 +39,10 @@ collection:
       content:
         application/json:
           schema:
-            $ref: ../components/jd.yaml#/schemas/JdCreateRequest
+            $ref: ../components/tracker-child.yaml#/schemas/InterviewRoundWriteRequest
     responses:
       "201":
-        description: Created job description.
+        description: Created interview round.
         content:
           application/json:
             schema:
@@ -52,63 +51,7 @@ collection:
                 - type: object
                   properties:
                     data:
-                      $ref: ../components/jd.yaml#/schemas/JdRecord
-      "401":
-        $ref: ../components/common.yaml#/responses/Unauthorized
-      "422":
-        $ref: ../components/common.yaml#/responses/UnprocessableEntity
-
-item:
-  parameters:
-    - name: jdId
-      in: path
-      required: true
-      schema:
-        $ref: ../components/common.yaml#/schemas/Uuid
-  get:
-    operationId: getJd
-    tags:
-      - JD
-    summary: Read one job description asset.
-    responses:
-      "200":
-        description: Job description.
-        content:
-          application/json:
-            schema:
-              allOf:
-                - $ref: ../components/common.yaml#/schemas/SuccessEnvelope
-                - type: object
-                  properties:
-                    data:
-                      $ref: ../components/jd.yaml#/schemas/JdRecord
-      "401":
-        $ref: ../components/common.yaml#/responses/Unauthorized
-      "404":
-        $ref: ../components/common.yaml#/responses/NotFound
-  put:
-    operationId: replaceJd
-    tags:
-      - JD
-    summary: Atomically replace the JD and its complete requirements collection.
-    requestBody:
-      required: true
-      content:
-        application/json:
-          schema:
-            $ref: ../components/jd-write.yaml#/schemas/JdUpdateRequest
-    responses:
-      "200":
-        description: Updated job description.
-        content:
-          application/json:
-            schema:
-              allOf:
-                - $ref: ../components/common.yaml#/schemas/SuccessEnvelope
-                - type: object
-                  properties:
-                    data:
-                      $ref: ../components/jd.yaml#/schemas/JdRecord
+                      $ref: ../components/tracker-child.yaml#/schemas/InterviewRound
       "401":
         $ref: ../components/common.yaml#/responses/Unauthorized
       "404":
@@ -117,16 +60,26 @@ item:
         $ref: ../components/common.yaml#/responses/Conflict
       "422":
         $ref: ../components/common.yaml#/responses/UnprocessableEntity
-  delete:
-    operationId: deleteJd
-    tags:
-      - JD
-    summary: Soft-delete a JD and preserve Application snapshots.
-    parameters:
-      - $ref: ../components/common.yaml#/parameters/ExpectedVersion
+
+item:
+  parameters:
+    - name: applicationId
+      in: path
+      required: true
+      schema:
+        $ref: ../components/common.yaml#/schemas/Uuid
+    - name: interviewId
+      in: path
+      required: true
+      schema:
+        $ref: ../components/common.yaml#/schemas/Uuid
+  get:
+    operationId: getInterviewRound
+    tags: [Interview]
+    summary: Read an interview round.
     responses:
       "200":
-        description: Deleted JD tombstone.
+        description: Interview round.
         content:
           application/json:
             schema:
@@ -135,7 +88,57 @@ item:
                 - type: object
                   properties:
                     data:
-                      $ref: ../components/jd.yaml#/schemas/JdRecord
+                      $ref: ../components/tracker-child.yaml#/schemas/InterviewRound
+      "401":
+        $ref: ../components/common.yaml#/responses/Unauthorized
+      "404":
+        $ref: ../components/common.yaml#/responses/NotFound
+  put:
+    operationId: replaceInterviewRound
+    tags: [Interview]
+    summary: Replace an interview round using optimistic locking.
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: ../components/tracker-pages.yaml#/schemas/InterviewRoundUpdateRequest
+    responses:
+      "200":
+        description: Updated interview round.
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: ../components/common.yaml#/schemas/SuccessEnvelope
+                - type: object
+                  properties:
+                    data:
+                      $ref: ../components/tracker-child.yaml#/schemas/InterviewRound
+      "401":
+        $ref: ../components/common.yaml#/responses/Unauthorized
+      "404":
+        $ref: ../components/common.yaml#/responses/NotFound
+      "409":
+        $ref: ../components/common.yaml#/responses/Conflict
+  delete:
+    operationId: deleteInterviewRound
+    tags: [Interview]
+    summary: Soft-delete an interview round.
+    parameters:
+      - $ref: ../components/common.yaml#/parameters/ExpectedVersion
+    responses:
+      "200":
+        description: Deleted interview round tombstone.
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: ../components/common.yaml#/schemas/SuccessEnvelope
+                - type: object
+                  properties:
+                    data:
+                      $ref: ../components/tracker-child.yaml#/schemas/InterviewRound
       "401":
         $ref: ../components/common.yaml#/responses/Unauthorized
       "404":

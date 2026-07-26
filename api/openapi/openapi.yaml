@@ -1,15 +1,15 @@
 openapi: 3.1.0
 info:
-  title: CV Agent App Asset API
-  version: 1.0.0
+  title: CV Agent App Business API
+  version: 1.1.0
   license:
     name: Proprietary
     identifier: LicenseRef-Proprietary
   description: |
-    Migration reference extracted from cv-agent-app access and asset adapters
-    on 2026-07-26. It reduces replacement cost but is not a permanent field-level
-    freeze. LLM, Agent, Prompt, Tool, conversation and rendering protocols are
-    explicitly outside this API.
+    Formal v1 business contract for the standalone APP backend. Existing access
+    and asset adapters remain the compatibility baseline, while OTP, complete
+    CRUD, Application Tracker and local-first sync are first-class operations.
+    LLM, Agent, Prompt, conversation and rendering protocols remain APP-owned.
 servers:
   - url: http://127.0.0.1:8080
     description: Docker local development
@@ -18,6 +18,8 @@ tags:
     description: Development login and session lifecycle compatibility.
   - name: User
     description: Current authenticated user access.
+  - name: Entitlement
+    description: Current subscription-derived feature capabilities.
   - name: Profile
     description: Current user's synchronized profile asset.
   - name: Experience
@@ -26,7 +28,21 @@ tags:
     description: Job description assets and structured requirements.
   - name: Resume
     description: Current cloud resume documents and publication.
+  - name: Application
+    description: Application Tracker records and validated state transitions.
+  - name: Interview
+    description: Interview rounds linked to applications.
+  - name: Note
+    description: Application and interview notes.
+  - name: Reminder
+    description: Cloud reminder state synchronized to APP notifications.
+  - name: Sync
+    description: Idempotent push, incremental pull and projection bootstrap.
 paths:
+  /v1/auth/email/challenges:
+    $ref: ./paths/auth-email.yaml#/challenge
+  /v1/auth/email/verify:
+    $ref: ./paths/auth-email.yaml#/verify
   /v1/auth/login:
     $ref: ./paths/auth-user.yaml#/login
   /v1/auth/logout:
@@ -35,10 +51,16 @@ paths:
     $ref: ./paths/auth-user.yaml#/currentUser
   /v1/users/me/profile:
     $ref: ./paths/profile.yaml#/profile
+  /v1/users/me/entitlements:
+    $ref: ./paths/entitlements.yaml#/entitlements
+  /v1/devices/{deviceId}/sessions:
+    $ref: ./paths/auth-email.yaml#/deviceSessions
   /v1/product/experiences:
     $ref: ./paths/experiences.yaml#/collection
   /v1/product/experiences/{experienceId}:
     $ref: ./paths/experiences.yaml#/item
+  /v1/product/experiences/{experienceId}/revisions:
+    $ref: ./paths/experiences.yaml#/revisions
   /v1/product/jds:
     $ref: ./paths/jds.yaml#/collection
   /v1/product/jds/{jdId}:
@@ -51,6 +73,32 @@ paths:
     $ref: ./paths/resume-publication.yaml#/publishNew
   /v1/product/resumes/{resumeId}/publish:
     $ref: ./paths/resume-publication.yaml#/publishExisting
+  /v1/product/applications:
+    $ref: ./paths/applications.yaml#/collection
+  /v1/product/applications/{applicationId}:
+    $ref: ./paths/applications.yaml#/item
+  /v1/product/applications/{applicationId}/transitions:
+    $ref: ./paths/application-workflow.yaml#/transitions
+  /v1/product/applications/{applicationId}/status-events:
+    $ref: ./paths/application-workflow.yaml#/statusEvents
+  /v1/product/applications/{applicationId}/interviews:
+    $ref: ./paths/interviews.yaml#/collection
+  /v1/product/applications/{applicationId}/interviews/{interviewId}:
+    $ref: ./paths/interviews.yaml#/item
+  /v1/product/applications/{applicationId}/notes:
+    $ref: ./paths/notes.yaml#/collection
+  /v1/product/applications/{applicationId}/notes/{noteId}:
+    $ref: ./paths/notes.yaml#/item
+  /v1/product/reminders:
+    $ref: ./paths/reminders.yaml#/collection
+  /v1/product/reminders/{reminderId}:
+    $ref: ./paths/reminders.yaml#/item
+  /v1/sync/push:
+    $ref: ./paths/sync.yaml#/push
+  /v1/sync/pull:
+    $ref: ./paths/sync.yaml#/pull
+  /v1/sync/bootstrap:
+    $ref: ./paths/sync.yaml#/bootstrap
 components:
   securitySchemes:
     accessTokenCookie:

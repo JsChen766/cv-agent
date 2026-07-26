@@ -47,8 +47,12 @@ schemas:
         maximum: 1
       v2Importance:
         $ref: "#/schemas/JdV2Importance"
+        description: Canonical database importance when non-null.
       v2Category:
         type: [string, "null"]
+      sortOrder:
+        type: integer
+        minimum: 0
   JdRecord:
     type: object
     required:
@@ -64,6 +68,11 @@ schemas:
       - sourceThreadId
       - createdAt
       - updatedAt
+      - sourceKind
+      - sourceUrl
+      - status
+      - entityVersion
+      - deletedAt
     properties:
       id:
         type: string
@@ -86,16 +95,39 @@ schemas:
         type: [string, "null"]
       requirementMapId:
         type: [string, "null"]
+        deprecated: true
+        description: Compatibility field; always null in the CRUD backend.
       requirementsOrigin:
         type: string
         minLength: 1
       sourceThreadId:
         type: [string, "null"]
+        deprecated: true
+        description: Compatibility field; always null in the CRUD backend.
       createdAt:
         type: string
         format: date-time
       updatedAt:
         type: string
+        format: date-time
+      sourceKind:
+        type: string
+        enum:
+          - manual
+          - pasted
+          - browser
+          - imported
+      sourceUrl:
+        type: [string, "null"]
+      status:
+        type: string
+        enum:
+          - active
+          - archived
+      entityVersion:
+        $ref: ./common.yaml#/schemas/EntityVersion
+      deletedAt:
+        type: [string, "null"]
         format: date-time
   JdList:
     type: object
@@ -119,6 +151,8 @@ schemas:
       - v2_importance
       - v2_category
     properties:
+      id:
+        $ref: ./common.yaml#/schemas/Uuid
       text:
         type: string
         minLength: 1
@@ -143,7 +177,15 @@ schemas:
           - technology
           - domain
           - soft_skill
+          - other
           - null
+      weight:
+        type: [number, "null"]
+        minimum: 0
+        maximum: 1
+      sort_order:
+        type: integer
+        minimum: 0
   JdCreateRequest:
     type: object
     required:
@@ -152,6 +194,8 @@ schemas:
       - company
       - target_role
     properties:
+      id:
+        $ref: ./common.yaml#/schemas/Uuid
       title:
         type: string
         minLength: 1
@@ -166,3 +210,26 @@ schemas:
         type: array
         items:
           $ref: "#/schemas/JdRequirementCreate"
+      source_kind:
+        type: string
+        enum:
+          - manual
+          - pasted
+          - browser
+          - imported
+        default: manual
+      source_url:
+        type: [string, "null"]
+        maxLength: 4096
+      requirements_origin:
+        type: string
+        enum:
+          - manual
+          - app_extracted
+        default: manual
+      status:
+        type: string
+        enum:
+          - active
+          - archived
+        default: active

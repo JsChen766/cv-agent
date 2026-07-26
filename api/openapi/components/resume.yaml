@@ -26,6 +26,9 @@ schemas:
       - status
       - createdAt
       - updatedAt
+      - targetCompany
+      - entityVersion
+      - deletedAt
     properties:
       id:
         type: string
@@ -49,6 +52,13 @@ schemas:
         format: date-time
       updatedAt:
         type: string
+        format: date-time
+      targetCompany:
+        type: [string, "null"]
+      entityVersion:
+        $ref: ./common.yaml#/schemas/EntityVersion
+      deletedAt:
+        type: [string, "null"]
         format: date-time
   ResumeScoreWire:
     type: object
@@ -152,16 +162,40 @@ schemas:
         $ref: ./common.yaml#/schemas/Cursor
   ResumePatchRequest:
     type: object
+    additionalProperties: false
+    required:
+      - expectedVersion
     anyOf:
       - required:
           - title
       - required:
           - status
+      - required:
+          - targetRole
+      - required:
+          - targetCompany
+      - required:
+          - jdId
     properties:
+      expectedVersion:
+        $ref: ./common.yaml#/schemas/EntityVersion
       title:
         type: string
+        minLength: 1
+        maxLength: 240
+      targetRole:
+        type: [string, "null"]
+        maxLength: 240
+      targetCompany:
+        type: [string, "null"]
+        maxLength: 240
+      jdId:
+        type: [string, "null"]
+        format: uuid
       status:
         type: string
         enum:
+          - draft
           - active
+          - published
           - archived

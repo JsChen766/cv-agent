@@ -7,7 +7,7 @@
 
 ## Design Baseline：第一版架构文档
 
-状态：✅ 已完成（2026-07-26），等待产品与字段级评审。
+状态：✅ 已完成（2026-07-26），Schema 已确认，API 等待功能评审。
 
 已完成：
 
@@ -26,7 +26,7 @@ Phase 0 完成前还需确认：
 
 - 本地 SyncStore 加密方案；
 - 云厂商、地域和邮件验证码供应商；
-- 四大业务模块字段级 schema 与功能 API。
+- 功能 OpenAPI 审核结论。
 
 ### Design Baseline 补充记录（2026-07-26）
 
@@ -96,19 +96,18 @@ Phase 0 完成前还需确认：
 - 经 APP/PRD 复核确认 Experience 仅存 content、JD 聚合更新、Application 无 draft、三种终态；
 - 用户已确认 Resume 云端单文档、本地 checkpoint 历史，以及完整墓碑保留至账号物理清除；
 - 已确认 v1 不建立 Material；支付事件和通用 Server Outbox 同样暂不建立；
-- Schema v1 设计审核已通过；尚未创建 Migration，`make check` 通过且未运行可选测试。
+- Schema v1 已实现为 `00002`–`00006`；正式 OpenAPI 已覆盖 OTP、完整 CRUD、Tracker 和 Sync。
 
 验证证据：
 
 - `make check` 与 OpenAPI recommended lint：通过；
 - `make contract-source-check`：相邻 APP 的 17 个权威源文件 SHA-256 全部匹配；
-- `make migrate-up/status` 与 Compose health：通过；
+- `make migrate-up/status`：升级至 version 6，实建 23 表、42 外键和 5 条开发权益；
 - production target 镜像构建：通过，scratch 运行镜像约 3.75 MB。
 
 尚未完成：
 
-- Experience、JD、Resume、Application 及必要 Sync API 的正式 OpenAPI；
-- 正式 Migration（Schema v1 设计审核已通过）；
+- 正式 OpenAPI 的用户评审、业务实现与 APP 联调；
 - CI；
 - local/test/staging/production 完整部署配置；
 - APP LocalSyncStore 的接线方案与首批功能联调清单。

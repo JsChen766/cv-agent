@@ -154,6 +154,8 @@ schemas:
       - evidenceBindings
       - observation
     properties:
+      id:
+        $ref: ./common.yaml#/schemas/Uuid
       idempotencyKey:
         type: string
       proposalId:
@@ -176,6 +178,45 @@ schemas:
         $ref: "#/schemas/ResumeBrowserLayoutObservation"
       expectedContentHash:
         type: string
+      expectedEntityVersion:
+        $ref: ./common.yaml#/schemas/EntityVersion
+      targetCompany:
+        type: [string, "null"]
+        maxLength: 240
+      schemaVersion:
+        type: string
+        default: resume-document-v1
+      status:
+        type: string
+        enum:
+          - draft
+          - active
+          - published
+          - archived
+        default: active
+      score:
+        $ref: ./resume.yaml#/schemas/ResumeScoreWire
+      evidenceSummary:
+        type: array
+        items:
+          $ref: ./resume.yaml#/schemas/ResumeEvidenceSummaryWire
+      riskSummary:
+        type: array
+        items:
+          $ref: ./resume.yaml#/schemas/ResumeRiskSummaryWire
+      missingInfo:
+        type: array
+        items:
+          type: string
+      qualityGateVersion:
+        type: [string, "null"]
+  ResumeReplaceRequest:
+    allOf:
+      - $ref: "#/schemas/ResumePublishRequest"
+      - type: object
+        required:
+          - expectedContentHash
+          - expectedEntityVersion
   ResumePublicationResult:
     allOf:
       - $ref: ./resume.yaml#/schemas/ResumeFull

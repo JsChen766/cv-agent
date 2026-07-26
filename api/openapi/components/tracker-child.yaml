@@ -1,0 +1,209 @@
+schemas:
+  InterviewRound:
+    type: object
+    required:
+      - id
+      - applicationId
+      - roundNumber
+      - interviewType
+      - timezone
+      - status
+      - entityVersion
+      - createdAt
+      - updatedAt
+      - deletedAt
+    properties:
+      id:
+        $ref: ./common.yaml#/schemas/Uuid
+      applicationId:
+        $ref: ./common.yaml#/schemas/Uuid
+      roundNumber:
+        type: integer
+        minimum: 1
+      interviewType:
+        type: string
+        enum: [phone, video, onsite, hr, technical, case, other]
+      scheduledAt:
+        type: [string, "null"]
+        format: date-time
+      timezone:
+        type: string
+        default: Asia/Shanghai
+      durationMinutes:
+        type: [integer, "null"]
+        minimum: 1
+        maximum: 1440
+      locationOrLink:
+        type: [string, "null"]
+      interviewer:
+        type: [string, "null"]
+      status:
+        type: string
+        enum: [scheduled, completed, canceled]
+      entityVersion:
+        $ref: ./common.yaml#/schemas/EntityVersion
+      createdAt:
+        type: string
+        format: date-time
+      updatedAt:
+        type: string
+        format: date-time
+      deletedAt:
+        type: [string, "null"]
+        format: date-time
+  InterviewRoundWriteRequest:
+    type: object
+    additionalProperties: false
+    required: [roundNumber, interviewType, status]
+    properties:
+      id:
+        $ref: ./common.yaml#/schemas/Uuid
+      expectedVersion:
+        $ref: ./common.yaml#/schemas/EntityVersion
+      roundNumber:
+        type: integer
+        minimum: 1
+      interviewType:
+        type: string
+        enum: [phone, video, onsite, hr, technical, case, other]
+      scheduledAt:
+        type: [string, "null"]
+        format: date-time
+      timezone:
+        type: string
+        default: Asia/Shanghai
+      durationMinutes:
+        type: [integer, "null"]
+        minimum: 1
+        maximum: 1440
+      locationOrLink:
+        type: [string, "null"]
+        maxLength: 4096
+      interviewer:
+        type: [string, "null"]
+        maxLength: 240
+      status:
+        type: string
+        enum: [scheduled, completed, canceled]
+  ApplicationNote:
+    type: object
+    required:
+      - id
+      - applicationId
+      - noteType
+      - content
+      - entityVersion
+      - createdAt
+      - updatedAt
+      - deletedAt
+    properties:
+      id:
+        $ref: ./common.yaml#/schemas/Uuid
+      applicationId:
+        $ref: ./common.yaml#/schemas/Uuid
+      interviewRoundId:
+        type: [string, "null"]
+        format: uuid
+      noteType:
+        type: string
+        enum: [general, interview, follow_up, company]
+      content:
+        type: string
+      entityVersion:
+        $ref: ./common.yaml#/schemas/EntityVersion
+      createdAt:
+        type: string
+        format: date-time
+      updatedAt:
+        type: string
+        format: date-time
+      deletedAt:
+        type: [string, "null"]
+        format: date-time
+  ApplicationNoteWriteRequest:
+    type: object
+    additionalProperties: false
+    required: [noteType, content]
+    properties:
+      id:
+        $ref: ./common.yaml#/schemas/Uuid
+      expectedVersion:
+        $ref: ./common.yaml#/schemas/EntityVersion
+      interviewRoundId:
+        type: [string, "null"]
+        format: uuid
+      noteType:
+        type: string
+        enum: [general, interview, follow_up, company]
+      content:
+        type: string
+        minLength: 1
+  Reminder:
+    type: object
+    required:
+      - id
+      - applicationId
+      - title
+      - remindAt
+      - status
+      - entityVersion
+      - createdAt
+      - updatedAt
+      - deletedAt
+    properties:
+      id:
+        $ref: ./common.yaml#/schemas/Uuid
+      applicationId:
+        $ref: ./common.yaml#/schemas/Uuid
+      interviewRoundId:
+        type: [string, "null"]
+        format: uuid
+      title:
+        type: string
+      remindAt:
+        type: string
+        format: date-time
+      status:
+        type: string
+        enum: [scheduled, delivered, dismissed, canceled]
+      deliveredAt:
+        type: [string, "null"]
+        format: date-time
+      entityVersion:
+        $ref: ./common.yaml#/schemas/EntityVersion
+      createdAt:
+        type: string
+        format: date-time
+      updatedAt:
+        type: string
+        format: date-time
+      deletedAt:
+        type: [string, "null"]
+        format: date-time
+  ReminderWriteRequest:
+    type: object
+    additionalProperties: false
+    required: [applicationId, title, remindAt, status]
+    properties:
+      id:
+        $ref: ./common.yaml#/schemas/Uuid
+      expectedVersion:
+        $ref: ./common.yaml#/schemas/EntityVersion
+      applicationId:
+        $ref: ./common.yaml#/schemas/Uuid
+      interviewRoundId:
+        type: [string, "null"]
+        format: uuid
+      title:
+        type: string
+        minLength: 1
+        maxLength: 240
+      remindAt:
+        type: string
+        format: date-time
+      status:
+        type: string
+        enum: [scheduled, delivered, dismissed, canceled]
+      deliveredAt:
+        type: [string, "null"]
+        format: date-time

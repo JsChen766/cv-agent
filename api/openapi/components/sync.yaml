@@ -1,0 +1,165 @@
+schemas:
+  SyncEntityType:
+    type: string
+    enum:
+      - user_profile
+      - experience
+      - job_description
+      - resume
+      - application
+      - application_status_event
+      - interview_round
+      - application_note
+      - reminder
+  SyncAction:
+    type: string
+    enum:
+      - create
+      - update
+      - delete
+      - transition
+  SyncOperation:
+    type: object
+    additionalProperties: false
+    required:
+      - operationId
+      - entityType
+      - entityId
+      - action
+      - payload
+    properties:
+      operationId:
+        $ref: ./common.yaml#/schemas/Uuid
+      entityType:
+        $ref: "#/schemas/SyncEntityType"
+      entityId:
+        $ref: ./common.yaml#/schemas/Uuid
+      action:
+        $ref: "#/schemas/SyncAction"
+      expectedVersion:
+        oneOf:
+          - $ref: ./common.yaml#/schemas/EntityVersion
+          - type: "null"
+      payload:
+        type: object
+        additionalProperties: true
+  SyncPushRequest:
+    type: object
+    additionalProperties: false
+    required:
+      - deviceId
+      - operations
+    properties:
+      deviceId:
+        $ref: ./common.yaml#/schemas/Uuid
+      operations:
+        type: array
+        minItems: 1
+        maxItems: 100
+        items:
+          $ref: "#/schemas/SyncOperation"
+  SyncOperationResult:
+    type: object
+    required:
+      - operationId
+      - status
+      - entityId
+      - appliedVersion
+    properties:
+      operationId:
+        $ref: ./common.yaml#/schemas/Uuid
+      status:
+        type: string
+        enum:
+          - applied
+          - already_applied
+          - conflict
+          - validation_failed
+          - forbidden
+          - retryable_error
+      entityId:
+        $ref: ./common.yaml#/schemas/Uuid
+      appliedVersion:
+        oneOf:
+          - $ref: ./common.yaml#/schemas/EntityVersion
+          - type: "null"
+      errorCode:
+        type: [string, "null"]
+      serverEntity:
+        type: [object, "null"]
+        additionalProperties: true
+  SyncPushResult:
+    type: object
+    required:
+      - results
+      - serverTime
+    properties:
+      results:
+        type: array
+        items:
+          $ref: "#/schemas/SyncOperationResult"
+      serverTime:
+        type: string
+        format: date-time
+  SyncChange:
+    type: object
+    required:
+      - entityType
+      - entityId
+      - entityVersion
+      - operation
+      - changedAt
+      - payload
+    properties:
+      entityType:
+        $ref: "#/schemas/SyncEntityType"
+      entityId:
+        $ref: ./common.yaml#/schemas/Uuid
+      entityVersion:
+        $ref: ./common.yaml#/schemas/EntityVersion
+      operation:
+        type: string
+        enum:
+          - upsert
+          - delete
+      changedAt:
+        type: string
+        format: date-time
+      payload:
+        type: object
+        additionalProperties: true
+        description: Full current projection or a minimal delete tombstone.
+  SyncPage:
+    type: object
+    required:
+      - changes
+      - nextCursor
+      - hasMore
+      - serverTime
+    properties:
+      changes:
+        type: array
+        items:
+          $ref: "#/schemas/SyncChange"
+      nextCursor:
+        $ref: ./common.yaml#/schemas/Cursor
+      hasMore:
+        type: boolean
+      serverTime:
+        type: string
+        format: date-time
+  SyncBootstrapRequest:
+    type: object
+    additionalProperties: false
+    required:
+      - deviceId
+    properties:
+      deviceId:
+        $ref: ./common.yaml#/schemas/Uuid
+      cursor:
+        type: [string, "null"]
+      limit:
+        type: integer
+        minimum: 1
+        maximum: 500
+        default: 500

@@ -2,7 +2,7 @@
 
 > 状态：Approved Design v1.0  
 > 日期：2026-07-26  
-> 本轮只做设计，不是 Migration
+> 实现：`migrations/00002`–`00006`，本地 Docker PostgreSQL 已升级至 version 6
 
 ## 1. 范围
 

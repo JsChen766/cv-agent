@@ -50,9 +50,10 @@
 7. [现有 APP 访问与资产兼容参考](architecture/07-app-contract-compatibility.md)
 8. [四大业务能力基线](architecture/08-business-capability-baseline.md)
 9. [OpenAPI 3.1 入口](../api/openapi/openapi.yaml)
-10. [APP v1 迁移参考 fixtures](../contracts/app-v1/README.md)
-11. [后端工程设计原则](development/design-principles.md)
-12. [实施路线](roadmap/README.md)
+10. [API v1 设计说明](api/README.md)
+11. [APP v1 迁移参考 fixtures](../contracts/app-v1/README.md)
+12. [后端工程设计原则](development/design-principles.md)
+13. [实施路线](roadmap/README.md)
 
 ## 4. 上游需求来源
 
@@ -89,7 +90,7 @@
 - 最终云厂商和部署地域；
 - 支付渠道、套餐定价和账单流程；
 - APP 新增本地同步数据库的具体加密实现；
-- OTP、Application、Sync 等增量资产 API 的字段级设计；
+- 正式 API 的 APP Adapter 接线与主流程联调；
 - 数据保留、账号注销和合规文本。
 
 ## 7. 工程协作规范

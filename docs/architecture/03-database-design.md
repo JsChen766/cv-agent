@@ -122,7 +122,7 @@ erDiagram
 
 ## 6. Schema 到 Migration
 
-Schema v1 已完成用户审核。后续实现应按依赖拆成以下 Goose Migration：
+Schema v1 已完成用户审核，并按依赖实现为以下 Goose Migration：
 
 ```text
 00002_identity_and_subscription.sql
@@ -133,4 +133,4 @@ Schema v1 已完成用户审核。后续实现应按依赖拆成以下 Goose Mig
 ```
 
 每个 Migration 只负责结构变化；开发账号和演示业务数据使用独立 seed 命令。
-设计通过不代表 Migration 已实现或已在 PostgreSQL 执行。
+本地 Docker PostgreSQL 已成功从 version 1 升级至 version 6；Down 路径尚未执行破坏性验证。

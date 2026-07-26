@@ -4,6 +4,10 @@ publishNew:
     tags:
       - Resume
     summary: Atomically publish a new full resume document.
+    description: |
+      The backend stores the final APP-confirmed document and does not call an
+      LLM. Legacy proposal and observation fields are accepted as wire
+      compatibility metadata and are not separate cloud entities.
     requestBody:
       required: true
       content:
@@ -35,8 +39,7 @@ publishExisting:
       in: path
       required: true
       schema:
-        type: string
-        minLength: 1
+        $ref: ../components/common.yaml#/schemas/Uuid
   put:
     operationId: publishExistingResume
     tags:
@@ -47,7 +50,7 @@ publishExisting:
       content:
         application/json:
           schema:
-            $ref: ../components/resume-publication.yaml#/schemas/ResumePublishRequest
+            $ref: ../components/resume-publication.yaml#/schemas/ResumeReplaceRequest
     responses:
       "200":
         description: Replaced resume and publication metadata.

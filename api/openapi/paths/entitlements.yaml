@@ -1,0 +1,20 @@
+entitlements:
+  get:
+    operationId: getCurrentEntitlements
+    tags:
+      - Entitlement
+    summary: Read the current effective plan and feature entitlements.
+    responses:
+      "200":
+        description: Effective entitlements.
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: ../components/common.yaml#/schemas/SuccessEnvelope
+                - type: object
+                  properties:
+                    data:
+                      $ref: ../components/identity.yaml#/schemas/EntitlementSummary
+      "401":
+        $ref: ../components/common.yaml#/responses/Unauthorized

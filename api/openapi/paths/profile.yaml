@@ -18,3 +18,32 @@ profile:
                       $ref: ../components/profile.yaml#/schemas/UserProfile
       "401":
         $ref: ../components/common.yaml#/responses/Unauthorized
+  put:
+    operationId: replaceUserProfile
+    tags:
+      - Profile
+    summary: Replace the synchronized profile fields using optimistic locking.
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: ../components/profile.yaml#/schemas/UserProfileUpdateRequest
+    responses:
+      "200":
+        description: Updated user profile.
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: ../components/common.yaml#/schemas/SuccessEnvelope
+                - type: object
+                  properties:
+                    data:
+                      $ref: ../components/profile.yaml#/schemas/UserProfile
+      "401":
+        $ref: ../components/common.yaml#/responses/Unauthorized
+      "409":
+        $ref: ../components/common.yaml#/responses/Conflict
+      "422":
+        $ref: ../components/common.yaml#/responses/UnprocessableEntity

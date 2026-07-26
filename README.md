@@ -18,6 +18,7 @@ LLM、LangGraph、浏览器自动化或桌面端本地生成流程。
 - 开发环境保留受限的密码登录，以提高测试效率；
 - 暂不绑定支付渠道，只建立订阅与权益的供应商无关模型；
 - 技术方案以高性能、可横向扩展和可商业化运维为目标。
+- Schema v1 已实现为 Goose Migration，正式 OpenAPI 已进入功能评审。
 
 ## Docker-only 本地开发
 
@@ -65,12 +66,13 @@ make migrate-up
 - [现有 APP 访问与资产兼容参考](docs/architecture/07-app-contract-compatibility.md)
 - [四大业务能力基线](docs/architecture/08-business-capability-baseline.md)
 - [OpenAPI 3.1 入口](api/openapi/openapi.yaml)
+- [API v1 设计说明](docs/api/README.md)
 - [APP v1 迁移参考 fixtures](contracts/app-v1/README.md)
 - [后端工程设计原则](docs/development/design-principles.md)
 - [实施路线](docs/roadmap/README.md)
 
 ## 状态说明
 
-工程骨架已可通过 Docker 启动和校验，但业务模块尚未实施。继续开发前仍需完成数据库字段级
-评审、OpenAPI 功能评审和 APP 本地同步存储的技术验证。除非用户明确要求实现，本项目后续
+工程骨架和正式 Migration 已可通过 Docker 启动和校验，但业务 Handler/Service/Repository 尚未实施。
+继续开发前仍需完成 OpenAPI 功能评审和 APP 本地同步存储的技术验证。除非用户明确要求实现，本项目后续
 由 Codex 只承担架构指导、代码审核、风险识别和验收。

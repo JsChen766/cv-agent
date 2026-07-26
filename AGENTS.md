@@ -45,7 +45,7 @@
 | `docs/architecture/07-app-contract-compatibility.md` | 现有 APP v1 访问与资产迁移参考 | 修改任何现有 endpoint、DTO、envelope、Cookie |
 | `docs/architecture/08-business-capability-baseline.md` | 四大业务模块及 APP/后端分工 | 任何业务范围、数据模型和 Phase 设计 |
 | `docs/development/design-principles.md` | 分层、单一职责、反模式 | 新包、新 Service/Repository/Handler、架构审核 |
-| `api/openapi/openapi.yaml` | 机器可读访问与资产 API contract | Handler、DTO、状态码、字段和 API review |
+| `docs/api/README.md` 与 `api/openapi/openapi.yaml` | API 边界与机器契约 | API、DTO、Adapter、Sync 接线 |
 | `contracts/app-v1/README.md` | 当前 APP 的迁移 fixtures 与来源 hash | 兼容性、Normalizer 和 APP 联调 |
 
 额外规则：

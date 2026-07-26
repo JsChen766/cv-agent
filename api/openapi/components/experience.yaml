@@ -34,7 +34,9 @@ schemas:
         type: [string, "null"]
       factBankStatus:
         type: string
-        minLength: 1
+        const: not_applicable
+        deprecated: true
+        description: Compatibility field; FactBank is not part of this backend.
       createdAt:
         type: string
         format: date-time
@@ -54,6 +56,8 @@ schemas:
       - currentRevisionId
       - createdAt
       - updatedAt
+      - entityVersion
+      - deletedAt
     properties:
       id:
         type: string
@@ -94,6 +98,11 @@ schemas:
       updatedAt:
         type: string
         format: date-time
+      entityVersion:
+        $ref: ./common.yaml#/schemas/EntityVersion
+      deletedAt:
+        type: [string, "null"]
+        format: date-time
   ExperienceDetail:
     allOf:
       - $ref: "#/schemas/ExperienceSummary"
@@ -130,6 +139,8 @@ schemas:
       - end_date
       - tags
     properties:
+      id:
+        $ref: ./common.yaml#/schemas/Uuid
       category:
         $ref: "#/schemas/ExperienceCategory"
       title:
@@ -152,3 +163,8 @@ schemas:
         type: array
         items:
           type: string
+      status:
+        type: string
+        enum:
+          - active
+          - archived

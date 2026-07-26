@@ -301,7 +301,7 @@ Publish 结果另外包含：
 - 已生成 1 个 JSON 来源清单和 1 个可由 `sha256sum` 直接检查的来源清单；
 - 已记录 17 个上游源文件的 SHA-256，便于发现 APP contract 漂移；
 - 已生成模块化 OpenAPI 3.1，并通过 Redocly 2.31.6 recommended lint；
-- 当前样本覆盖 APP 已使用的 endpoint；OTP、Application 和 Sync 仍需正式设计；
+- 当前 fixtures 仍只覆盖 APP 已使用的 endpoint；正式 OpenAPI 已补齐 OTP、Application 和 Sync；
 - 不再计划建设跨仓库自动 contract runner，改用业务主流程联调。
 
 ## 9. 版本策略

@@ -1,0 +1,66 @@
+schemas:
+  ExperienceUpdateRequest:
+    type: object
+    additionalProperties: false
+    required:
+      - expectedVersion
+    anyOf:
+      - required: [content]
+      - required: [title]
+      - required: [status]
+      - required: [tags]
+    properties:
+      expectedVersion:
+        $ref: ./common.yaml#/schemas/EntityVersion
+      category:
+        $ref: ./experience.yaml#/schemas/ExperienceCategory
+      title:
+        type: string
+        minLength: 1
+        maxLength: 200
+      content:
+        type: string
+        minLength: 1
+      organization:
+        type: [string, "null"]
+        maxLength: 200
+      role:
+        type: [string, "null"]
+        maxLength: 200
+      location:
+        type: [string, "null"]
+        maxLength: 200
+      start_date:
+        type: [string, "null"]
+        format: date
+      end_date:
+        type: [string, "null"]
+        format: date
+      tags:
+        type: array
+        items:
+          type: string
+      status:
+        type: string
+        enum:
+          - active
+          - archived
+      revisionSource:
+        type: string
+        enum:
+          - manual
+          - import
+          - app_generated
+        default: manual
+  ExperienceRevisionList:
+    type: object
+    required:
+      - items
+      - nextCursor
+    properties:
+      items:
+        type: array
+        items:
+          $ref: ./experience.yaml#/schemas/ExperienceRevision
+      nextCursor:
+        $ref: ./common.yaml#/schemas/Cursor

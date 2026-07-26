@@ -1,0 +1,91 @@
+push:
+  post:
+    operationId: pushSyncOperations
+    tags: [Sync]
+    summary: Apply a bounded batch of offline operations independently.
+    description: |
+      Each operation is idempotent by operationId. One failed operation does
+      not erase results for other operations in the batch.
+    parameters:
+      - $ref: ../components/common.yaml#/parameters/IdempotencyKey
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: ../components/sync.yaml#/schemas/SyncPushRequest
+    responses:
+      "200":
+        description: Per-operation results.
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: ../components/common.yaml#/schemas/SuccessEnvelope
+                - type: object
+                  properties:
+                    data:
+                      $ref: ../components/sync.yaml#/schemas/SyncPushResult
+      "401":
+        $ref: ../components/common.yaml#/responses/Unauthorized
+      "403":
+        $ref: ../components/common.yaml#/responses/Forbidden
+      "429":
+        $ref: ../components/common.yaml#/responses/TooManyRequests
+
+pull:
+  get:
+    operationId: pullSyncChanges
+    tags: [Sync]
+    summary: Pull ordered changes after an opaque cursor.
+    parameters:
+      - $ref: ../components/common.yaml#/parameters/Cursor
+      - $ref: ../components/common.yaml#/parameters/Limit
+    responses:
+      "200":
+        description: Ordered incremental changes.
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: ../components/common.yaml#/schemas/SuccessEnvelope
+                - type: object
+                  properties:
+                    data:
+                      $ref: ../components/sync.yaml#/schemas/SyncPage
+      "401":
+        $ref: ../components/common.yaml#/responses/Unauthorized
+      "409":
+        description: Cursor expired; rebuild only LocalSyncStore using bootstrap.
+        content:
+          application/json:
+            schema:
+              $ref: ../components/common.yaml#/schemas/ErrorEnvelope
+
+bootstrap:
+  post:
+    operationId: bootstrapSyncProjection
+    tags: [Sync]
+    summary: Page through a complete cloud projection for a new or stale device.
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: ../components/sync.yaml#/schemas/SyncBootstrapRequest
+    responses:
+      "200":
+        description: One page of the complete synchronized projection.
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: ../components/common.yaml#/schemas/SuccessEnvelope
+                - type: object
+                  properties:
+                    data:
+                      $ref: ../components/sync.yaml#/schemas/SyncPage
+      "401":
+        $ref: ../components/common.yaml#/responses/Unauthorized
+      "403":
+        $ref: ../components/common.yaml#/responses/Forbidden

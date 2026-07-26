@@ -28,6 +28,7 @@ schemas:
     required:
       - id
       - email
+      - status
     properties:
       id:
         type: string
@@ -35,6 +36,13 @@ schemas:
       email:
         type: string
         format: email
+      status:
+        type: string
+        enum:
+          - active
+          - suspended
+          - pending_deletion
+          - deleted
   LogoutResult:
     type: object
     required:
@@ -42,3 +50,137 @@ schemas:
     properties:
       message:
         type: string
+  DeviceInput:
+    type: object
+    additionalProperties: false
+    required:
+      - id
+      - name
+      - platform
+      - appVersion
+    properties:
+      id:
+        $ref: ./common.yaml#/schemas/Uuid
+      name:
+        type: string
+        minLength: 1
+        maxLength: 120
+      platform:
+        type: string
+        enum:
+          - macos
+          - windows
+          - linux
+      appVersion:
+        type: string
+        minLength: 1
+        maxLength: 40
+  Device:
+    allOf:
+      - $ref: "#/schemas/DeviceInput"
+      - type: object
+        required:
+          - lastSeenAt
+          - revokedAt
+        properties:
+          lastSeenAt:
+            type: string
+            format: date-time
+          revokedAt:
+            type: [string, "null"]
+            format: date-time
+  EmailChallengeRequest:
+    type: object
+    additionalProperties: false
+    required:
+      - challengeId
+      - email
+      - purpose
+      - device
+    properties:
+      challengeId:
+        $ref: ./common.yaml#/schemas/Uuid
+      email:
+        type: string
+        format: email
+      purpose:
+        const: login
+      device:
+        $ref: "#/schemas/DeviceInput"
+  EmailChallengeAccepted:
+    type: object
+    required:
+      - challengeId
+      - expiresAt
+      - retryAfterSeconds
+    properties:
+      challengeId:
+        $ref: ./common.yaml#/schemas/Uuid
+      expiresAt:
+        type: string
+        format: date-time
+      retryAfterSeconds:
+        type: integer
+        minimum: 1
+  EmailVerifyRequest:
+    type: object
+    additionalProperties: false
+    required:
+      - challengeId
+      - code
+      - device
+    properties:
+      challengeId:
+        $ref: ./common.yaml#/schemas/Uuid
+      code:
+        type: string
+        pattern: "^[0-9]{6}$"
+      device:
+        $ref: "#/schemas/DeviceInput"
+  EmailLoginResult:
+    type: object
+    required:
+      - user
+      - device
+      - entitlements
+    properties:
+      user:
+        $ref: "#/schemas/CurrentUser"
+      device:
+        $ref: "#/schemas/Device"
+      entitlements:
+        $ref: "#/schemas/EntitlementSummary"
+  EntitlementSummary:
+    type: object
+    required:
+      - plan
+      - subscriptionStatus
+      - features
+      - effectiveUntil
+    properties:
+      plan:
+        type: string
+      subscriptionStatus:
+        type: string
+        enum:
+          - trialing
+          - active
+          - canceled
+          - expired
+      features:
+        type: object
+        additionalProperties: true
+      effectiveUntil:
+        type: [string, "null"]
+        format: date-time
+  RevokeSessionsResult:
+    type: object
+    required:
+      - deviceId
+      - revokedSessionCount
+    properties:
+      deviceId:
+        $ref: ./common.yaml#/schemas/Uuid
+      revokedSessionCount:
+        type: integer
+        minimum: 0

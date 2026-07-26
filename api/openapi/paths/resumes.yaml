@@ -11,6 +11,7 @@ collection:
           type: integer
           minimum: 1
         description: The current APP always sends 100.
+      - $ref: ../components/common.yaml#/parameters/Cursor
     responses:
       "200":
         description: Resume summaries.
@@ -32,8 +33,7 @@ item:
       in: path
       required: true
       schema:
-        type: string
-        minLength: 1
+        $ref: ../components/common.yaml#/schemas/Uuid
   get:
     operationId: getResume
     tags:
@@ -84,3 +84,30 @@ item:
         $ref: ../components/common.yaml#/responses/NotFound
       "422":
         $ref: ../components/common.yaml#/responses/UnprocessableEntity
+      "409":
+        $ref: ../components/common.yaml#/responses/Conflict
+  delete:
+    operationId: deleteResume
+    tags:
+      - Resume
+    summary: Soft-delete a cloud resume while preserving Application snapshots.
+    parameters:
+      - $ref: ../components/common.yaml#/parameters/ExpectedVersion
+    responses:
+      "200":
+        description: Deleted resume tombstone.
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: ../components/common.yaml#/schemas/SuccessEnvelope
+                - type: object
+                  properties:
+                    data:
+                      $ref: ../components/resume.yaml#/schemas/ResumeSummary
+      "401":
+        $ref: ../components/common.yaml#/responses/Unauthorized
+      "404":
+        $ref: ../components/common.yaml#/responses/NotFound
+      "409":
+        $ref: ../components/common.yaml#/responses/Conflict

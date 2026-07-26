@@ -18,6 +18,8 @@ schemas:
       - targetLocations
       - preferredLanguage
       - resumeStyle
+      - entityVersion
+      - updatedAt
     properties:
       fullName:
         type: [string, "null"]
@@ -58,3 +60,79 @@ schemas:
         type: [string, "null"]
       resumeStyle:
         type: [string, "null"]
+      entityVersion:
+        $ref: ./common.yaml#/schemas/EntityVersion
+      updatedAt:
+        type: string
+        format: date-time
+  UserProfileUpdateRequest:
+    type: object
+    additionalProperties: false
+    required:
+      - expectedVersion
+      - fullName
+      - phone
+      - location
+      - linkedinUrl
+      - githubUrl
+      - personalWebsite
+      - currentTitle
+      - currentCompany
+      - yearsOfExperience
+      - careerStage
+      - targetRoles
+      - targetIndustries
+      - targetLocations
+      - preferredLanguage
+      - resumeStyle
+    properties:
+      expectedVersion:
+        $ref: ./common.yaml#/schemas/EntityVersion
+      fullName:
+        type: [string, "null"]
+        maxLength: 120
+      phone:
+        type: [string, "null"]
+        maxLength: 40
+      location:
+        type: [string, "null"]
+        maxLength: 160
+      linkedinUrl:
+        type: [string, "null"]
+        maxLength: 2048
+      githubUrl:
+        type: [string, "null"]
+        maxLength: 2048
+      personalWebsite:
+        type: [string, "null"]
+        maxLength: 2048
+      currentTitle:
+        type: [string, "null"]
+        maxLength: 160
+      currentCompany:
+        type: [string, "null"]
+        maxLength: 200
+      yearsOfExperience:
+        type: [integer, "null"]
+        minimum: 0
+        maximum: 80
+      careerStage:
+        type: [string, "null"]
+        maxLength: 40
+      targetRoles:
+        type: array
+        items:
+          type: string
+      targetIndustries:
+        type: array
+        items:
+          type: string
+      targetLocations:
+        type: array
+        items:
+          type: string
+      preferredLanguage:
+        type: string
+      resumeStyle:
+        type: [string, "null"]
+        maxLength: 40

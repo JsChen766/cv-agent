@@ -201,7 +201,7 @@ POST /v1/product/applications/{id}/transitions
 - APP 删除先产生本地 tombstone 和 Outbox；
 - 服务端确认后返回新的 entityVersion；
 - 其他设备通过 Pull 收到 delete；
-- 墓碑保留时间需覆盖最大离线周期；
+- v1 完整墓碑保留到账号物理清除；
 - 可选 Resume 派生文件对象延迟清理；
 - 恢复归档不是删除恢复，使用普通状态更新；
 - 账号注销使用单独 job 处理所有用户数据。

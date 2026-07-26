@@ -1,0 +1,69 @@
+transitions:
+  parameters:
+    - name: applicationId
+      in: path
+      required: true
+      schema:
+        $ref: ../components/common.yaml#/schemas/Uuid
+  post:
+    operationId: transitionApplication
+    tags: [Application]
+    summary: Apply a validated tracker status transition.
+    description: Status and immutable event are committed in one transaction.
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: ../components/application.yaml#/schemas/ApplicationTransitionRequest
+    responses:
+      "200":
+        description: Transitioned application.
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: ../components/common.yaml#/schemas/SuccessEnvelope
+                - type: object
+                  properties:
+                    data:
+                      $ref: ../components/application.yaml#/schemas/Application
+      "401":
+        $ref: ../components/common.yaml#/responses/Unauthorized
+      "404":
+        $ref: ../components/common.yaml#/responses/NotFound
+      "409":
+        $ref: ../components/common.yaml#/responses/Conflict
+      "422":
+        $ref: ../components/common.yaml#/responses/UnprocessableEntity
+
+statusEvents:
+  parameters:
+    - name: applicationId
+      in: path
+      required: true
+      schema:
+        $ref: ../components/common.yaml#/schemas/Uuid
+  get:
+    operationId: listApplicationStatusEvents
+    tags: [Application]
+    summary: List immutable application status events.
+    parameters:
+      - $ref: ../components/common.yaml#/parameters/Cursor
+      - $ref: ../components/common.yaml#/parameters/Limit
+    responses:
+      "200":
+        description: Cursor page of status events.
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: ../components/common.yaml#/schemas/SuccessEnvelope
+                - type: object
+                  properties:
+                    data:
+                      $ref: ../components/application.yaml#/schemas/ApplicationStatusEventList
+      "401":
+        $ref: ../components/common.yaml#/responses/Unauthorized
+      "404":
+        $ref: ../components/common.yaml#/responses/NotFound

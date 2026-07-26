@@ -1,0 +1,243 @@
+schemas:
+  ApplicationStatus:
+    type: string
+    enum:
+      - applied
+      - screening
+      - interviewing
+      - offer
+      - rejected
+      - no_response
+  Application:
+    type: object
+    required: [id, companyName, roleName, deliveryMethod, appliedAt, status,
+      pendingConfirmation, source, dedupeKey, entityVersion, createdAt, updatedAt, deletedAt]
+    properties:
+      id:
+        $ref: ./common.yaml#/schemas/Uuid
+      jdId:
+        type: [string, "null"]
+        format: uuid
+      resumeId:
+        type: [string, "null"]
+        format: uuid
+      companyName:
+        type: string
+      roleName:
+        type: string
+      jdTitleSnapshot:
+        type: [string, "null"]
+      resumeTitleSnapshot:
+        type: [string, "null"]
+      deliveryMethod:
+        type: string
+        enum:
+          - form_fill
+          - email_fill
+          - manual
+          - other
+      targetUrl:
+        type: [string, "null"]
+      appliedAt:
+        type: [string, "null"]
+        format: date-time
+      status:
+        $ref: "#/schemas/ApplicationStatus"
+      pendingConfirmation:
+        type: boolean
+      source:
+        type: string
+        enum:
+          - manual
+          - browser
+          - email
+          - other
+      dedupeKey:
+        type: [string, "null"]
+      companyBusiness:
+        type: [string, "null"]
+      roleSummary:
+        type: [string, "null"]
+      companyCulture:
+        type: [string, "null"]
+      rejectionReason:
+        type: [string, "null"]
+      entityVersion:
+        $ref: ./common.yaml#/schemas/EntityVersion
+      createdAt:
+        type: string
+        format: date-time
+      updatedAt:
+        type: string
+        format: date-time
+      deletedAt:
+        type: [string, "null"]
+        format: date-time
+  ApplicationCreateRequest:
+    type: object
+    additionalProperties: false
+    required:
+      - companyName
+      - roleName
+      - deliveryMethod
+      - source
+    anyOf:
+      - required: [appliedAt]
+      - properties:
+          pendingConfirmation:
+            const: true
+        required: [pendingConfirmation]
+    properties:
+      id:
+        $ref: ./common.yaml#/schemas/Uuid
+      jdId:
+        type: [string, "null"]
+        format: uuid
+      resumeId:
+        type: [string, "null"]
+        format: uuid
+      companyName:
+        type: string
+        minLength: 1
+        maxLength: 240
+      roleName:
+        type: string
+        minLength: 1
+        maxLength: 240
+      deliveryMethod:
+        type: string
+        enum: [form_fill, email_fill, manual, other]
+      targetUrl:
+        type: [string, "null"]
+        maxLength: 4096
+      appliedAt:
+        type: [string, "null"]
+        format: date-time
+      pendingConfirmation:
+        type: boolean
+        default: false
+      source:
+        type: string
+        enum: [manual, browser, email, other]
+      dedupeKey:
+        type: [string, "null"]
+        pattern: "^[0-9a-f]{64}$"
+      companyBusiness:
+        type: [string, "null"]
+      roleSummary:
+        type: [string, "null"]
+      companyCulture:
+        type: [string, "null"]
+  ApplicationUpdateRequest:
+    type: object
+    additionalProperties: false
+    required: [expectedVersion, jdId, resumeId, companyName, roleName,
+      deliveryMethod, targetUrl, appliedAt, pendingConfirmation, companyBusiness,
+      roleSummary, companyCulture, rejectionReason]
+    properties:
+      expectedVersion:
+        $ref: ./common.yaml#/schemas/EntityVersion
+      jdId:
+        type: [string, "null"]
+        format: uuid
+      resumeId:
+        type: [string, "null"]
+        format: uuid
+      companyName:
+        type: string
+        minLength: 1
+        maxLength: 240
+      roleName:
+        type: string
+        minLength: 1
+        maxLength: 240
+      deliveryMethod:
+        type: string
+        enum: [form_fill, email_fill, manual, other]
+      targetUrl:
+        type: [string, "null"]
+        maxLength: 4096
+      appliedAt:
+        type: [string, "null"]
+        format: date-time
+      pendingConfirmation:
+        type: boolean
+      companyBusiness:
+        type: [string, "null"]
+      roleSummary:
+        type: [string, "null"]
+      companyCulture:
+        type: [string, "null"]
+      rejectionReason:
+        type: [string, "null"]
+  ApplicationTransitionRequest:
+    type: object
+    additionalProperties: false
+    required:
+      - toStatus
+      - expectedVersion
+      - occurredAt
+      - operationId
+    properties:
+      toStatus:
+        $ref: "#/schemas/ApplicationStatus"
+      expectedVersion:
+        $ref: ./common.yaml#/schemas/EntityVersion
+      occurredAt:
+        type: string
+        format: date-time
+      reason:
+        type: [string, "null"]
+      operationId:
+        $ref: ./common.yaml#/schemas/Uuid
+  ApplicationStatusEvent:
+    type: object
+    required:
+      - id
+      - applicationId
+      - fromStatus
+      - toStatus
+      - occurredAt
+      - operationId
+      - createdAt
+    properties:
+      id:
+        $ref: ./common.yaml#/schemas/Uuid
+      applicationId:
+        $ref: ./common.yaml#/schemas/Uuid
+      fromStatus:
+        oneOf:
+          - $ref: "#/schemas/ApplicationStatus"
+          - type: "null"
+      toStatus:
+        $ref: "#/schemas/ApplicationStatus"
+      reason:
+        type: [string, "null"]
+      occurredAt:
+        type: string
+        format: date-time
+      operationId:
+        $ref: ./common.yaml#/schemas/Uuid
+      createdAt:
+        type: string
+        format: date-time
+  ApplicationList:
+    type: object
+    required: [items, nextCursor]
+    properties:
+      items:
+        type: array
+        items:
+          $ref: "#/schemas/Application"
+      nextCursor:
+        $ref: ./common.yaml#/schemas/Cursor
+  ApplicationStatusEventList:
+    type: object
+    required: [items, nextCursor]
+    properties:
+      items:
+        type: array
+        items:
+          $ref: "#/schemas/ApplicationStatusEvent"
+      nextCursor:
+        $ref: ./common.yaml#/schemas/Cursor

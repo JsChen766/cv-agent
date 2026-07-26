@@ -1,22 +1,20 @@
 collection:
+  parameters:
+    - name: applicationId
+      in: path
+      required: true
+      schema:
+        $ref: ../components/common.yaml#/schemas/Uuid
   get:
-    operationId: listJds
-    tags:
-      - JD
-    summary: List the current user's job descriptions.
+    operationId: listApplicationNotes
+    tags: [Note]
+    summary: List notes for one application.
     parameters:
-      - name: limit
-        in: query
-        schema:
-          type: integer
-          minimum: 1
-      - name: cursor
-        in: query
-        schema:
-          type: string
+      - $ref: ../components/common.yaml#/parameters/Cursor
+      - $ref: ../components/common.yaml#/parameters/Limit
     responses:
       "200":
-        description: Cursor page of job descriptions.
+        description: Cursor page of notes.
         content:
           application/json:
             schema:
@@ -25,14 +23,15 @@ collection:
                 - type: object
                   properties:
                     data:
-                      $ref: ../components/jd.yaml#/schemas/JdList
+                      $ref: ../components/tracker-pages.yaml#/schemas/ApplicationNoteList
       "401":
         $ref: ../components/common.yaml#/responses/Unauthorized
+      "404":
+        $ref: ../components/common.yaml#/responses/NotFound
   post:
-    operationId: createJd
-    tags:
-      - JD
-    summary: Create a job description asset.
+    operationId: createApplicationNote
+    tags: [Note]
+    summary: Add an application or interview note.
     parameters:
       - $ref: ../components/common.yaml#/parameters/IdempotencyKey
     requestBody:
@@ -40,10 +39,10 @@ collection:
       content:
         application/json:
           schema:
-            $ref: ../components/jd.yaml#/schemas/JdCreateRequest
+            $ref: ../components/tracker-child.yaml#/schemas/ApplicationNoteWriteRequest
     responses:
       "201":
-        description: Created job description.
+        description: Created note.
         content:
           application/json:
             schema:
@@ -52,27 +51,33 @@ collection:
                 - type: object
                   properties:
                     data:
-                      $ref: ../components/jd.yaml#/schemas/JdRecord
+                      $ref: ../components/tracker-child.yaml#/schemas/ApplicationNote
       "401":
         $ref: ../components/common.yaml#/responses/Unauthorized
+      "404":
+        $ref: ../components/common.yaml#/responses/NotFound
       "422":
         $ref: ../components/common.yaml#/responses/UnprocessableEntity
 
 item:
   parameters:
-    - name: jdId
+    - name: applicationId
+      in: path
+      required: true
+      schema:
+        $ref: ../components/common.yaml#/schemas/Uuid
+    - name: noteId
       in: path
       required: true
       schema:
         $ref: ../components/common.yaml#/schemas/Uuid
   get:
-    operationId: getJd
-    tags:
-      - JD
-    summary: Read one job description asset.
+    operationId: getApplicationNote
+    tags: [Note]
+    summary: Read a note.
     responses:
       "200":
-        description: Job description.
+        description: Application note.
         content:
           application/json:
             schema:
@@ -81,25 +86,24 @@ item:
                 - type: object
                   properties:
                     data:
-                      $ref: ../components/jd.yaml#/schemas/JdRecord
+                      $ref: ../components/tracker-child.yaml#/schemas/ApplicationNote
       "401":
         $ref: ../components/common.yaml#/responses/Unauthorized
       "404":
         $ref: ../components/common.yaml#/responses/NotFound
   put:
-    operationId: replaceJd
-    tags:
-      - JD
-    summary: Atomically replace the JD and its complete requirements collection.
+    operationId: replaceApplicationNote
+    tags: [Note]
+    summary: Replace a note using optimistic locking.
     requestBody:
       required: true
       content:
         application/json:
           schema:
-            $ref: ../components/jd-write.yaml#/schemas/JdUpdateRequest
+            $ref: ../components/tracker-pages.yaml#/schemas/ApplicationNoteUpdateRequest
     responses:
       "200":
-        description: Updated job description.
+        description: Updated note.
         content:
           application/json:
             schema:
@@ -108,25 +112,22 @@ item:
                 - type: object
                   properties:
                     data:
-                      $ref: ../components/jd.yaml#/schemas/JdRecord
+                      $ref: ../components/tracker-child.yaml#/schemas/ApplicationNote
       "401":
         $ref: ../components/common.yaml#/responses/Unauthorized
       "404":
         $ref: ../components/common.yaml#/responses/NotFound
       "409":
         $ref: ../components/common.yaml#/responses/Conflict
-      "422":
-        $ref: ../components/common.yaml#/responses/UnprocessableEntity
   delete:
-    operationId: deleteJd
-    tags:
-      - JD
-    summary: Soft-delete a JD and preserve Application snapshots.
+    operationId: deleteApplicationNote
+    tags: [Note]
+    summary: Soft-delete a note.
     parameters:
       - $ref: ../components/common.yaml#/parameters/ExpectedVersion
     responses:
       "200":
-        description: Deleted JD tombstone.
+        description: Deleted note tombstone.
         content:
           application/json:
             schema:
@@ -135,7 +136,7 @@ item:
                 - type: object
                   properties:
                     data:
-                      $ref: ../components/jd.yaml#/schemas/JdRecord
+                      $ref: ../components/tracker-child.yaml#/schemas/ApplicationNote
       "401":
         $ref: ../components/common.yaml#/responses/Unauthorized
       "404":

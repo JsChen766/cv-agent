@@ -1,0 +1,11 @@
+schemas:
+  JdUpdateRequest:
+    allOf:
+      - $ref: ./jd.yaml#/schemas/JdCreateRequest
+      - type: object
+        required:
+          - expectedVersion
+          - requirements
+        properties:
+          expectedVersion:
+            $ref: ./common.yaml#/schemas/EntityVersion

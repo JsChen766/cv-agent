@@ -1,0 +1,97 @@
+challenge:
+  post:
+    operationId: requestEmailLoginChallenge
+    tags:
+      - Auth
+    summary: Request a passwordless email login code.
+    security: []
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: ../components/identity.yaml#/schemas/EmailChallengeRequest
+    responses:
+      "202":
+        description: The challenge was accepted without revealing account existence.
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: ../components/common.yaml#/schemas/SuccessEnvelope
+                - type: object
+                  properties:
+                    data:
+                      $ref: ../components/identity.yaml#/schemas/EmailChallengeAccepted
+      "400":
+        $ref: ../components/common.yaml#/responses/BadRequest
+      "429":
+        $ref: ../components/common.yaml#/responses/TooManyRequests
+      "503":
+        $ref: ../components/common.yaml#/responses/ServiceUnavailable
+
+verify:
+  post:
+    operationId: verifyEmailLoginChallenge
+    tags:
+      - Auth
+    summary: Verify a login code and create an opaque session.
+    security: []
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: ../components/identity.yaml#/schemas/EmailVerifyRequest
+    responses:
+      "200":
+        description: Login succeeded and access_token was set.
+        headers:
+          Set-Cookie:
+            required: true
+            schema:
+              type: string
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: ../components/common.yaml#/schemas/SuccessEnvelope
+                - type: object
+                  properties:
+                    data:
+                      $ref: ../components/identity.yaml#/schemas/EmailLoginResult
+      "400":
+        $ref: ../components/common.yaml#/responses/BadRequest
+      "401":
+        $ref: ../components/common.yaml#/responses/Unauthorized
+      "429":
+        $ref: ../components/common.yaml#/responses/TooManyRequests
+
+deviceSessions:
+  delete:
+    operationId: revokeDeviceSessions
+    tags:
+      - Auth
+    summary: Revoke all sessions belonging to one user-owned device.
+    parameters:
+      - name: deviceId
+        in: path
+        required: true
+        schema:
+          $ref: ../components/common.yaml#/schemas/Uuid
+    responses:
+      "200":
+        description: Sessions were revoked.
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: ../components/common.yaml#/schemas/SuccessEnvelope
+                - type: object
+                  properties:
+                    data:
+                      $ref: ../components/identity.yaml#/schemas/RevokeSessionsResult
+      "401":
+        $ref: ../components/common.yaml#/responses/Unauthorized
+      "404":
+        $ref: ../components/common.yaml#/responses/NotFound

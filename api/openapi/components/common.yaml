@@ -1,4 +1,11 @@
 schemas:
+  Uuid:
+    type: string
+    format: uuid
+  EntityVersion:
+    type: integer
+    format: int64
+    minimum: 1
   SuccessEnvelope:
     type: object
     required:
@@ -14,11 +21,15 @@ schemas:
     type: object
     required:
       - success
+      - error
     properties:
       success:
         const: false
       error:
         type: object
+        required:
+          - code
+          - message
         properties:
           code:
             type: string
@@ -31,6 +42,35 @@ schemas:
       - string
       - "null"
 
+parameters:
+  IdempotencyKey:
+    name: Idempotency-Key
+    in: header
+    required: true
+    schema:
+      type: string
+      minLength: 1
+      maxLength: 160
+  ExpectedVersion:
+    name: expectedVersion
+    in: query
+    required: true
+    schema:
+      $ref: "#/schemas/EntityVersion"
+  Cursor:
+    name: cursor
+    in: query
+    schema:
+      type: string
+  Limit:
+    name: limit
+    in: query
+    schema:
+      type: integer
+      minimum: 1
+      maximum: 500
+      default: 100
+
 responses:
   BadRequest:
     description: Request JSON or parameters are malformed.
@@ -40,6 +80,12 @@ responses:
           $ref: "#/schemas/ErrorEnvelope"
   Unauthorized:
     description: Session is missing, invalid or expired.
+    content:
+      application/json:
+        schema:
+          $ref: "#/schemas/ErrorEnvelope"
+  Forbidden:
+    description: The operation is forbidden by ownership, account state or entitlement.
     content:
       application/json:
         schema:
@@ -58,6 +104,23 @@ responses:
           $ref: "#/schemas/ErrorEnvelope"
   UnprocessableEntity:
     description: Domain validation failed.
+    content:
+      application/json:
+        schema:
+          $ref: "#/schemas/ErrorEnvelope"
+  TooManyRequests:
+    description: A request rate limit was exceeded.
+    headers:
+      Retry-After:
+        schema:
+          type: integer
+          minimum: 1
+    content:
+      application/json:
+        schema:
+          $ref: "#/schemas/ErrorEnvelope"
+  ServiceUnavailable:
+    description: A required dependency is temporarily unavailable.
     content:
       application/json:
         schema:
