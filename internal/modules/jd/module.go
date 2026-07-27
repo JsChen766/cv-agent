@@ -8,6 +8,7 @@ import (
 	"coolto.local/cv-agent-app-be/internal/modules/jd/postgres"
 	"coolto.local/cv-agent-app-be/internal/modules/jd/syncadapter"
 	syncmod "coolto.local/cv-agent-app-be/internal/modules/sync"
+	"coolto.local/cv-agent-app-be/internal/platform/idempotency"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -17,6 +18,7 @@ type Module struct {
 	Handler   *jdhttp.Handler
 	Projector syncmod.Projector
 	Commands  syncmod.CommandHandler
+	Titles    *application.Service
 }
 
 // New assembles the JD module. It reuses the shared sync recorder so JD writes
@@ -25,11 +27,13 @@ func New(pool *pgxpool.Pool, recorder syncmod.TxRecorder) *Module {
 	tx := application.NewPoolTxRunner(pool)
 	repo := postgres.NewRepository(pool)
 	service := application.NewService(
-		tx, repo, recorderAdapter{recorder}, func() time.Time { return time.Now().UTC() },
+		tx, repo, recorderAdapter{recorder}, idempotency.NewStore(),
+		func() time.Time { return time.Now().UTC() },
 	)
 	return &Module{
 		Handler:   jdhttp.NewHandler(service),
 		Projector: syncadapter.NewProjector(repo),
 		Commands:  syncadapter.NewCommandHandler(service),
+		Titles:    service,
 	}
 }

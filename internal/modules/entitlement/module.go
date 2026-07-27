@@ -20,6 +20,7 @@ const DefaultPlanCode = "development"
 type Module struct {
 	Handler     *entitlementhttp.Handler
 	Provisioner *postgres.Provisioner
+	Service     *application.Service
 }
 
 // New assembles the entitlement module from the shared PostgreSQL pool.
@@ -28,5 +29,5 @@ func New(pool *pgxpool.Pool) *Module {
 	service := application.NewService(repo, func() time.Time { return time.Now().UTC() })
 	handler := entitlementhttp.NewHandler(service)
 	provisioner := postgres.NewProvisioner(pool, DefaultPlanCode)
-	return &Module{Handler: handler, Provisioner: provisioner}
+	return &Module{Handler: handler, Provisioner: provisioner, Service: service}
 }

@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"coolto.local/cv-agent-app-be/internal/modules/experience/domain"
+	"coolto.local/cv-agent-app-be/internal/platform/idempotency"
 	"coolto.local/cv-agent-app-be/internal/platform/pagination"
 
 	"github.com/jackc/pgx/v5"
@@ -77,12 +78,15 @@ type Service struct {
 	tx       TxRunner
 	repo     Repository
 	recorder Recorder
+	idem     *idempotency.Store
 	now      Clock
 }
 
 // NewService wires the experience service.
-func NewService(tx TxRunner, repo Repository, recorder Recorder, now Clock) *Service {
-	return &Service{tx: tx, repo: repo, recorder: recorder, now: now}
+func NewService(
+	tx TxRunner, repo Repository, recorder Recorder, idem *idempotency.Store, now Clock,
+) *Service {
+	return &Service{tx: tx, repo: repo, recorder: recorder, idem: idem, now: now}
 }
 
 // Get returns one experience with its revisions.

@@ -8,6 +8,7 @@ import (
 	"strconv"
 
 	"coolto.local/cv-agent-app-be/internal/platform/httpapi"
+	"coolto.local/cv-agent-app-be/internal/platform/idempotency"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
@@ -25,7 +26,16 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 			"请求体格式错误", middleware.GetReqID(r.Context()))
 		return
 	}
-	exp, err := h.service.Create(r.Context(), principal.UserID, principal.DeviceID, toCreate(req))
+	requestHash, err := idempotency.Hash(req)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	exp, err := h.service.Create(
+		r.Context(), principal.UserID, principal.DeviceID, toCreate(req), idempotency.Command{
+			Scope: "experience.create", Key: r.Header.Get("Idempotency-Key"), RequestHash: requestHash,
+		},
+	)
 	if err != nil {
 		writeError(w, r, err)
 		return

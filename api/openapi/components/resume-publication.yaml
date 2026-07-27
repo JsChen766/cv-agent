@@ -158,6 +158,8 @@ schemas:
         $ref: ./common.yaml#/schemas/Uuid
       idempotencyKey:
         type: string
+        minLength: 1
+        maxLength: 160
       proposalId:
         type: string
       title:
@@ -223,7 +225,6 @@ schemas:
       - type: object
         required:
           - expectedContentHash
-          - expectedEntityVersion
   ResumePublicationResult:
     allOf:
       - $ref: ./resume.yaml#/schemas/ResumeFull

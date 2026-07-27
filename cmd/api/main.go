@@ -20,6 +20,7 @@ import (
 	syncmod "coolto.local/cv-agent-app-be/internal/modules/sync"
 	synchttp "coolto.local/cv-agent-app-be/internal/modules/sync/httpapi"
 	syncpg "coolto.local/cv-agent-app-be/internal/modules/sync/postgres"
+	"coolto.local/cv-agent-app-be/internal/modules/tracker"
 	"coolto.local/cv-agent-app-be/internal/platform/cache"
 	"coolto.local/cv-agent-app-be/internal/platform/config"
 	"coolto.local/cv-agent-app-be/internal/platform/database"
@@ -64,15 +65,20 @@ func run(ctx context.Context, logger *slog.Logger) error {
 	entitlementModule := entitlement.New(db)
 	identityModule := identity.New(db, identity.Options{
 		DevPasswordLogin: cfg.DevPasswordAuth,
-		SecureCookie:     cfg.Environment != "local" && cfg.Environment != "test",
+		SecureCookie:     cfg.Environment == "production",
 		DeviceNSSalt:     cfg.Environment,
 		Provisioner:      entitlementModule.Provisioner,
+		Entitlements:     identityEntitlementReader{service: entitlementModule.Service},
+		Email:            cfg.Email,
+		OTP:              cfg.OTP,
+		Redis:            redisClient,
 	})
 	recorder := syncmod.NewPgxRecorder()
 	profileModule := profile.New(db, recorder)
 	experienceModule := experience.New(db, recorder)
 	jdModule := jd.New(db, recorder)
 	resumeModule := resume.New(db, recorder)
+	trackerModule := tracker.New(db, recorder, jdModule.Titles, resumeModule.Titles)
 	now := func() time.Time { return time.Now().UTC() }
 	cursorCodec := syncmod.NewCursorCodec(
 		cfg.Sync.CursorSigningKey, cfg.Sync.CursorMaxAge, now,
@@ -82,10 +88,12 @@ func run(ctx context.Context, logger *slog.Logger) error {
 		profileModule.Projector, experienceModule.Projector, jdModule.Projector,
 		resumeModule.Projector,
 	}
+	projectors = append(projectors, trackerModule.Projectors...)
 	commandHandlers := []syncmod.CommandHandler{
 		profileModule.Commands, experienceModule.Commands, jdModule.Commands,
 		resumeModule.Commands,
 	}
+	commandHandlers = append(commandHandlers, trackerModule.Commands...)
 	pushService, err := syncmod.NewPushService(
 		syncpg.NewTxRunner(db), syncpg.NewOperationRepository(), commandHandlers, now,
 	)
@@ -114,6 +122,7 @@ func run(ctx context.Context, logger *slog.Logger) error {
 			experienceModule.Handler.Routes(secured)
 			jdModule.Handler.Routes(secured)
 			resumeModule.Handler.Routes(secured)
+			trackerModule.Handler.Routes(secured)
 			syncHandler.Routes(secured)
 		})
 	}

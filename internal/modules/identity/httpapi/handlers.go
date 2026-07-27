@@ -23,17 +23,22 @@ const maxAuthBodyBytes = 8 * 1024
 // Handler exposes identity HTTP endpoints backed by application services.
 type Handler struct {
 	devLogin     *application.DevLoginService
+	emailLogin   *application.EmailLoginService
 	sessions     *application.SessionIssuer
+	entitlements application.EntitlementReader
 	secureCookie bool
 }
 
 // NewHandler wires the identity handler.
 func NewHandler(
 	devLogin *application.DevLoginService,
+	emailLogin *application.EmailLoginService,
 	sessions *application.SessionIssuer,
+	entitlements application.EntitlementReader,
 	secureCookie bool,
 ) *Handler {
-	return &Handler{devLogin: devLogin, sessions: sessions, secureCookie: secureCookie}
+	return &Handler{devLogin: devLogin, emailLogin: emailLogin, sessions: sessions,
+		entitlements: entitlements, secureCookie: secureCookie}
 }
 
 // DevLogin handles POST /v1/auth/login for local/test environments.

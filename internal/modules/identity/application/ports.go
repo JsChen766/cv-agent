@@ -7,9 +7,45 @@ import (
 	"coolto.local/cv-agent-app-be/internal/modules/identity/domain"
 )
 
+type EntitlementSummary struct {
+	Plan               string
+	SubscriptionStatus string
+	Features           map[string]any
+	EffectiveUntil     *time.Time
+}
+
+type EntitlementReader interface {
+	Current(ctx context.Context, userID string) (EntitlementSummary, error)
+}
+
 // UserRepository reads identity aggregates required by auth use cases.
 type UserRepository interface {
 	FindActiveByNormalizedEmail(ctx context.Context, emailNormalized string) (domain.User, error)
+}
+
+// ChallengeRepository persists OTP challenges and consumes them atomically.
+type ChallengeRepository interface {
+	Create(ctx context.Context, challenge domain.EmailChallenge) error
+	MarkDelivery(ctx context.Context, challengeID, status string) error
+	VerifyAndResolveUser(
+		ctx context.Context, challengeID string, codeHash []byte, now time.Time,
+	) (domain.User, error)
+}
+
+// EmailSender delivers a generated code without owning challenge state.
+type EmailSender interface {
+	SendLoginCode(ctx context.Context, email, code string, expiresIn time.Duration) error
+}
+
+type RateLimitRule struct {
+	Key    string
+	Limit  int
+	Window time.Duration
+}
+
+// RateLimiter atomically accepts or rejects a set of fixed-window counters.
+type RateLimiter interface {
+	Allow(ctx context.Context, rules []RateLimitRule) (bool, error)
 }
 
 // CredentialRepository reads development-only password credentials.

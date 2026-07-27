@@ -11,6 +11,7 @@ import (
 	"coolto.local/cv-agent-app-be/internal/modules/resume/domain"
 	"coolto.local/cv-agent-app-be/internal/platform/authctx"
 	"coolto.local/cv-agent-app-be/internal/platform/httpapi"
+	"coolto.local/cv-agent-app-be/internal/platform/idempotency"
 	"coolto.local/cv-agent-app-be/internal/platform/pagination"
 
 	"github.com/go-chi/chi/v5"
@@ -139,12 +140,18 @@ func decodeBody(body io.Reader, target any) error {
 func writeError(w http.ResponseWriter, r *http.Request, err error) {
 	requestID := middleware.GetReqID(r.Context())
 	switch {
+	case errors.Is(err, idempotency.ErrKeyRequired):
+		httpapi.WriteError(w, http.StatusBadRequest, "idempotency_key_required", "idempotencyKey 不合法", requestID)
+	case errors.Is(err, idempotency.ErrKeyReused):
+		httpapi.WriteError(w, http.StatusConflict, "idempotency_key_reused", "idempotencyKey 已用于其他请求", requestID)
 	case errors.Is(err, domain.ErrNotFound):
 		httpapi.WriteError(w, http.StatusNotFound, "resume_not_found", "简历不存在", requestID)
 	case errors.Is(err, domain.ErrVersionConflict):
 		httpapi.WriteError(w, http.StatusConflict, "entity_version_conflict", "资源已在其他设备更新", requestID)
 	case errors.Is(err, domain.ErrContentConflict):
 		httpapi.WriteError(w, http.StatusConflict, "content_hash_conflict", "云端简历内容已变化", requestID)
+	case errors.Is(err, domain.ErrDuplicate):
+		httpapi.WriteError(w, http.StatusConflict, "resume_already_exists", "简历已存在", requestID)
 	case errors.Is(err, domain.ErrInvalidInput):
 		httpapi.WriteError(w, http.StatusUnprocessableEntity, "invalid_resume", "简历字段不合法", requestID)
 	default:

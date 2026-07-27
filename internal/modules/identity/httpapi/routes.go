@@ -13,6 +13,8 @@ import (
 // endpoints that require an authenticated session.
 func (h *Handler) Routes(router chi.Router, devPasswordLogin bool, secured func(http.Handler) http.Handler) {
 	router.Route("/auth", func(auth chi.Router) {
+		auth.Post("/email/challenges", h.RequestEmailChallenge)
+		auth.Post("/email/verify", h.VerifyEmailChallenge)
 		if devPasswordLogin {
 			auth.Post("/login", h.DevLogin)
 		}

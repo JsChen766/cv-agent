@@ -2,11 +2,13 @@ package postgres
 
 import (
 	"context"
+	"errors"
 	"strconv"
 
 	"coolto.local/cv-agent-app-be/internal/modules/resume/domain"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 const insertResume = `
@@ -30,6 +32,10 @@ func (r *Repository) Insert(ctx context.Context, tx pgx.Tx, resume domain.Resume
 		resume.QualityIssues, resume.QualityGateVersion, resume.Score,
 		resume.EvidenceSummary, resume.RiskSummary, resume.MissingInfo,
 	)
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+		return domain.ErrDuplicate
+	}
 	return err
 }
 

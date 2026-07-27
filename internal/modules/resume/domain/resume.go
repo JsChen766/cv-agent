@@ -12,6 +12,7 @@ var (
 	ErrVersionConflict = errors.New("entity version conflict")
 	ErrContentConflict = errors.New("content hash conflict")
 	ErrInvalidInput    = errors.New("invalid resume input")
+	ErrDuplicate       = errors.New("resume already exists")
 )
 
 // Status enumerates the lifecycle states of a resume.
@@ -66,9 +67,9 @@ type Resume struct {
 	MissingInfo          json.RawMessage
 }
 
-// Publish is the validated payload for creating or replacing a resume. For a
-// replace both ExpectedVersion and ExpectedContentHash guard the three-way
-// conflict; for a create they are ignored.
+// Publish is the validated payload for creating or replacing a resume. A
+// replace must carry at least one stable optimistic-concurrency guard; creates
+// ignore both guards.
 type Publish struct {
 	ID                  string
 	ExpectedVersion     *int64

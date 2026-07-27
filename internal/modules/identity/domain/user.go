@@ -11,6 +11,11 @@ var (
 	ErrDeviceNotFound     = errors.New("device not found")
 	ErrDeviceConflict     = errors.New("device conflict")
 	ErrInvalidDeviceInput = errors.New("invalid device input")
+	ErrChallengeInvalid   = errors.New("email challenge invalid")
+	ErrChallengeExpired   = errors.New("email challenge expired")
+	ErrChallengeAttempts  = errors.New("email challenge attempts exhausted")
+	ErrRateLimited        = errors.New("authentication rate limited")
+	ErrEmailDelivery      = errors.New("email delivery failed")
 )
 
 // UserStatus enumerates account lifecycle states.

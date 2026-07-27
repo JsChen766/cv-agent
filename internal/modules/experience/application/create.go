@@ -7,6 +7,7 @@ import (
 
 	"coolto.local/cv-agent-app-be/internal/modules/experience/domain"
 	"coolto.local/cv-agent-app-be/internal/platform/id"
+	"coolto.local/cv-agent-app-be/internal/platform/idempotency"
 
 	"github.com/jackc/pgx/v5"
 )
@@ -18,7 +19,7 @@ func contentHash(content string) string {
 
 // Create inserts a new experience and its first revision in its own tx.
 func (s *Service) Create(
-	ctx context.Context, userID, deviceID string, input domain.Create,
+	ctx context.Context, userID, deviceID string, input domain.Create, command idempotency.Command,
 ) (domain.Experience, error) {
 	tx, err := s.tx.BeginTx(ctx)
 	if err != nil {
@@ -26,6 +27,25 @@ func (s *Service) Create(
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
+	if input.ID == "" {
+		generated, genErr := id.NewV7()
+		if genErr != nil {
+			return domain.Experience{}, genErr
+		}
+		input.ID = generated.String()
+	}
+	record, err := s.idem.Reserve(
+		ctx, tx, userID, "experience", input.ID, command, s.now(),
+	)
+	if err != nil {
+		return domain.Experience{}, err
+	}
+	if record.Replay {
+		if err := tx.Commit(ctx); err != nil {
+			return domain.Experience{}, err
+		}
+		return s.repo.FindDetail(ctx, userID, record.ResourceID)
+	}
 	exp, err := s.CreateInTx(ctx, tx, userID, deviceID, input)
 	if err != nil {
 		return domain.Experience{}, err

@@ -360,6 +360,14 @@ Phase 0 完成前还需确认：
 新增/修改文件行数：最大 `identity/httpapi/handlers.go` 为 166 行，
 `device_fallback.go` 为 113 行；全部低于 220 行目标，无 200 行以上业务文件。
 
+Brevo OTP 配置准备（2026-07-27）：
+
+- `.env.example` 与本地忽略的 `.env` 已加入 `EMAIL_PROVIDER`、Brevo API 地址、API Key、
+  Template ID、Sender 和可选 Reply-To；密钥占位为空，不进入 Git；
+- Compose 已显式透传这些变量，local 默认仍为 `mailpit`，填写 Brevo 参数并切换 provider
+  前不会影响现有开发栈；`docker compose config --quiet` 已通过；
+- 本记录只代表配置骨架就绪，OTP challenge/verify、Brevo Adapter 和 Redis 限流仍未实现。
+
 未完成 / 未验证：
 
 - 正式 OTP 邮箱验证码 challenge/verify 与 Redis 限流；
@@ -369,6 +377,42 @@ Phase 0 完成前还需确认：
 
 下一切片建议：Phase 1 收尾 OTP + Redis 限流；或提升优先级，先做 Phase 2
 Pull/Bootstrap，让 APP 能开始消费已写入的 `sync_changes`。
+
+### Phase 1 纵向切片 4：Mailpit OTP + Redis 限流（2026-07-27）
+
+状态：🟢 Phase 1 功能门槛已完成；生产 Brevo Sender Adapter 仍待上线前切换。
+
+已完成：
+
+- 实现 `POST /v1/auth/email/challenges` 与 `POST /v1/auth/email/verify`；6 位数字码
+  10 分钟有效、最多错误 5 次、60 秒后可重发；正确验证码在 PostgreSQL 行锁事务中
+  原子消费，不存在邮箱时同时创建 User、已验证主邮箱和空 Profile；
+- OTP 只以 HMAC-SHA256 保存，哈希密钥由 `OTP_HASH_KEY` 提供；请求 IP 与设备指纹同样
+  只保留 HMAC，不把邮箱/IP/验证码写入 Redis key 或日志；
+- Redis Lua 脚本原子检查并递增多维 fixed-window 计数：15 分钟内邮箱 5、设备 10、
+  IP 20；校验按 challenge/device/IP 各 10，数据库仍以 maxAttempts=5 作为最终防爆破门；
+- Mailpit SMTP Adapter 只负责发送，challenge 先以 pending 提交，发送成功后标 sent，
+  失败标 failed；只有 sent challenge 可校验；
+- OTP 成功后复用现有 Device、opaque Session、默认 Subscription 与 Entitlement；响应
+  返回 user/device/entitlements 并设置 `HttpOnly + SameSite=Lax` Cookie；仅 production
+  设置 Secure，本地 `APP_ENV=dev` 可直接联调；
+- Compose 已加入 OTP 参数、Sender、Mailpit 依赖；开发密码登录继续由
+  `ENABLE_DEV_PASSWORD_LOGIN=true` 保留，production 配置仍禁止开启；
+- Identity 继续按 application/postgres/email/redis/httpapi 拆分；OTP Handler 与配置加载
+  分文件，所有新增业务文件低于 220 行，未形成上帝类。
+
+验证证据：
+
+- 真实 Mailpit smoke：challenge 返回 202，Mailpit 收到验证码，verify 返回 200；首次邮箱
+  自动创建账号、设备、development Subscription，响应含完整 Entitlement 与 Session；
+- 立即重发同邮箱返回 `429 auth_rate_limited` 与 `Retry-After: 60`；
+- APP `CooltoApiClient` 真实完成 request → Mailpit 取码 → verify → current user →
+  Sync Bootstrap；
+- `make check` 与 `make test -race` 通过；OpenAPI lint、gofmt、vet、build、行数和 Compose
+  校验全绿。
+
+上线前剩余：实现并启用 Brevo `EmailSender` Adapter，验证已认证发件域名与 API Key；
+不改 challenge、限流、账号、Session 或 APP 契约。
 
 ## Phase 2：同步内核
 
@@ -550,10 +594,10 @@ Pull/Bootstrap，让 APP 能开始消费已写入的 `sync_changes`。
 
 设计决策（用户确认）：
 
-- 发布幂等采用「客户端提供 UUIDv7 `id`」方案：同 `id` 已存在走原子 replace，
-  不存在则创建，不新增 idempotency 表；
-- 三路冲突保护：`expectedEntityVersion`（乐观锁）+ `expectedContentHash`（内容 hash）
-  双重校验，`content_hash` 由 `structured` 派生（`json.Compact` + SHA-256）；
+- Direct Publish 使用 body 内稳定 `idempotencyKey` + `http_idempotency_records`；Sync
+  仍使用稳定 `operationId` 和客户端 UUIDv7 entity ID；
+- Replace 至少使用稳定 `expectedContentHash`，能持久化云端版本的客户端可叠加
+  `expectedEntityVersion`；`content_hash` 由 `structured` 派生（`json.Compact` + SHA-256）；
 - `structured` 及伴随 JSONB 字段（score/evidenceSummary/riskSummary/missingInfo/
   qualityIssues）保持 APP 内部 snake_case 不转换，外层字段 camelCase。
 
@@ -561,11 +605,12 @@ Pull/Bootstrap，让 APP 能开始消费已写入的 `sync_changes`。
 
 - 新增 `internal/modules/resume`（domain/application/postgres/httpapi/syncadapter/module）：
   - `POST /v1/product/resumes/publish` 创建、`PUT /{id}/publish` 原子全量替换聚合；
-    replace 复用客户端 `id` 幂等，`created` 标志区分新建/替换；
+    create 与 replace 语义分离，Create 不覆盖既有 ID、Replace 不创建缺失 ID，
+    `created` 标志区分结果；
   - `PATCH /{id}` 仅更新 metadata（title/status/targetRole/targetCompany/jdId），
     `expectedVersion` 乐观锁；`DELETE /{id}` 走 `expectedVersion` 软删（tombstone）；
-  - `content_hash` 由 `structured` 派生，replace 时校验 `expectedContentHash`
-    与 `expectedEntityVersion`，任一不符返回对应 `409`；
+  - `content_hash` 由 `structured` 派生，replace 使用稳定 content hash 和可选 entity version
+    校验，冲突返回对应 `409`；
   - `pageUsageRatio` 由请求 `observation`（used/available height）派生。
 - 同步接线：`Projector`（Hydrate + Bootstrap，含 tombstone 投影）与
   `CommandHandler`（create/update/delete 均在 Sync Push 事务内执行 `*InTx` 用例），
@@ -603,6 +648,22 @@ Pull/Bootstrap，让 APP 能开始消费已写入的 `sync_changes`。
 - APP 端 LocalSyncStore 将 Resume Store 切换到同步链路的联调；
 - Resume PDF 派生文件对象存储引用（对象存储上传能力属后续阶段）。
 
+### Phase 4 APP LocalSyncStore 接线（2026-07-27）
+
+- 新增桌面端 `ResumeSyncStore`：已发布 Resume 的 list/get/publish/replace/rename/archive
+  统一读取本地加密 SQLite projection；写入先原子进入 `sync_entities + local_outbox`，
+  再立即触发 Sync Push；网络不可用时保留 pending，版本冲突进入 conflict，不静默覆盖；
+- `ResumeDraft` 继续保留在独立本地加密文件；发布/覆盖后按 candidateId 写回
+  `ResumeDraftCloudLink`（resumeId、contentHash、syncedRevision、entityVersion）；
+- Agent 保存审批、Resume 读取工具、PDF 云端来源解析和简历仓库均改用同一
+  `ResumeSyncStore`；原 Direct API 保留为兼容 Adapter，但不再是桌面 Resume 业务读源；
+- Remote Bootstrap/Pull projection 与 Outbox 本地预测 payload 分离，避免把仅供 UI 的
+  contentHash/timestamp 误发给严格的同步命令；多次本地写仍按实体顺序更新 expectedVersion；
+- 真实联调由 App Store 生成 Resume create Outbox，后端 Sync Push 返回
+  `applied/entityVersion=1`；Direct GET 读回标题一致，服务端 contentHash 与本地预测一致；
+- App `npm run check` 通过（181/181），Electron 冷启动通过；旧的无 deviceId Session
+  会被静默清理，不会提前访问未启动的同步 Store。
+
 ## Phase 5：Application Tracker
 
 范围：
@@ -623,6 +684,100 @@ Pull/Bootstrap，让 APP 能开始消费已写入的 `sync_changes`。
 - 终态约束通过；
 - 面试提醒跨设备同步、本地通知执行；
 - 看板列表满足性能目标。
+
+### Phase 5 交付记录（2026-07-27）
+
+状态：🟡 后端功能收口完成，但真实性能指标与 APP Tracker/本地通知闭环仍未完成。
+Application Tracker 五个同步实体（application、application_status_event、
+interview_round、application_note、reminder）的 Go 实现端到端通过；CRUD、状态机、
+状态事件、看板查询、Interview/Note/Reminder 及同步接线均验证。沿用 Phase 2 同步内核与
+Experience/JD/Resume 分层模式，未复制第二套同步事务。DB schema（`00004`/`00005`）与
+OpenAPI 契约 Phase 0 已就绪，本阶段只做实现。
+
+设计决策（用户确认）：
+
+- 模块包名 `tracker`，内部分层 domain/application/postgres/httpapi/syncadapter；
+- Direct CRUD Create 使用必填 `Idempotency-Key` 与 `http_idempotency_records`；Sync Create
+  继续使用稳定 `operationId` 和客户端 UUIDv7 entity ID；
+- 一次性交付全部五个实体；
+- 创建 Application 不写初始 status_event，看板直接读 `applications.status`；
+  transition 用 `operationId` 同时作为 `application_status_events.operation_id` 与 event id；
+- 通用 PUT 不改 status，状态变更只能通过 `POST /{id}/transitions` 或同步
+  `action:"transition"`；
+- Reminder 采用顶层路由 `/product/reminders`，`applicationId` 从 body 取；其余子实体挂
+  `/product/applications/{applicationId}/...`。
+
+已完成：
+
+- 新增 `internal/modules/tracker`（domain/application/postgres/httpapi/syncadapter/
+  module/recorder_adapter）：
+  - `GET/POST /v1/product/applications`、`GET/PUT/DELETE /{id}`、
+    `POST /{id}/transitions`、`GET /{id}/status-events`；
+  - `GET/POST /{id}/interviews`、`GET/PUT/DELETE /{id}/interviews/{interviewId}`；
+    notes 同构；`GET/POST /v1/product/reminders` 与 `GET/PUT/DELETE /{reminderId}`；
+  - 状态机 `CanTransition`（applied→screening/rejected/no_response、screening→
+    interviewing/…、interviewing→interviewing/offer/…；offer/rejected/no_response 终态），
+    非法边返回 `422 illegal_transition`；
+  - transition 在单事务内原子写 `applications.status`+`entity_version`、追加不可变
+    `application_status_events`、并记录 application 与 status_event 两条 `sync_changes`；
+  - 所有写入走 `expectedVersion` 乐观锁与 `deleted_at` tombstone 软删；列表 keyset
+    分页（applications/interviews/notes/reminders 用 updated_at DESC,id DESC；
+    status_events 用 occurred_at DESC,id DESC）。
+- 同步接线：5 个 `Projector`（含 tombstone 投影；status_event 为 projection-only、
+  `entity_version=1`、无 tombstone、无 CommandHandler）+ 4 个 `CommandHandler`
+  （application 含 create/update/transition/delete，其余 create/update/delete），
+  均在 Sync Push 事务内执行 `*InTx` 用例；`recorderAdapter` 按 EntityType 绑定桥接
+  `sync.TxRecorder`；`cmd/api/main.go` 追加注册路由、5 Projector 与 4 CommandHandler。
+
+验证证据：
+
+- `make check`：contract-lint（OpenAPI recommended 通过）+ gofmt + vet + build +
+  行数检查（无 >250 行业务文件）+ compose config 全部通过；
+- `make test`：新增 `tracker/domain` 状态机/终态/校验测试通过，既有测试保持通过；
+- Docker 端到端 smoke（既有 `compose up` + migration version 6 + dev seed）通过：
+  create application（status=applied,v=1）、list、transition applied→screening（v=2，
+  写入 1 条 status_event）、status-events 列表、非法 applied→offer→`illegal_transition`、
+  create interview/note/reminder（各 v=1）、list reminders；
+- 同步 smoke 通过：Bootstrap 覆盖全部五个 tracker entityType（application/
+  application_status_event/interview_round/application_note/reminder）；Push
+  `action:"transition"` screening→interviewing（applied,v=3，原子追加第二条
+  status_event）；同 `operationId` 重放→`already_applied` 且不产生重复 status_event。
+
+### Phase 3–5 联调收口（2026-07-27）
+
+后端已补齐并通过 Docker smoke：
+
+- Experience、JD、Resume、Application、Interview、Note、Reminder 的 Direct Create 统一
+  使用事务内 HTTP 幂等记录；同 key 同请求回放原资源，同 key 不同请求返回 409；
+- transition 对同一 `operationId` 做事务级串行化和语义回放，非法 UUID 返回 422；
+- Application 显式换绑 JD/Resume 时刷新标题快照，源资产后续改名不追写快照；
+- 删除 Application 会在同事务软删除 Interview/Note/Reminder 并写各自 tombstone；
+  Status Event 保留审计但在父记录删除后不再通过普通查询/Bootstrap 展示；
+- Note/Reminder 关联 Interview 时校验同用户、同 Application；嵌套 GET/PUT/DELETE 严格
+  校验父路径；migration `00007` 增加复合外键和匹配当前列表 SQL 的索引；
+- Application dedupe 和 Resume create ID 冲突映射为稳定 409，不再泄漏为 500；
+- Resume 空质量分响应规范化为五项零分，满足现有 APP Normalizer/OpenAPI；Create 与
+  Replace 已禁止互相降级。
+
+APP 仅调整现有调用面：Experience/JD Create 已发送幂等键；Experience/JD/Resume 接收
+`entityVersion/deletedAt`；Resume metadata PATCH 携带当前 `expectedVersion`。未新增当前
+不存在的 Tracker Adapter/UI，后续 Tracker App 联调仍保留在本 Phase 遗留项。
+
+真实跨仓库联调已使用 APP `CooltoApiClient` 连接 `127.0.0.1:8080` Docker API，完成开发登录、
+Experience/JD 创建与读取、Resume 发布/列表/重命名/归档；返回版本分别为 1/1/3，Resume
+可在列表命中。联调资产随后通过各资源软删除接口清理。
+
+验证证据：migration version 7 已实际执行；Docker smoke 覆盖 Direct Create 回放/复用冲突、
+transition 回放、错误父路径、跨 Application Interview 关联拒绝和父删除传播；`make check`
+通过（JD handler 224 行仅超过 220 目标、低于 250 硬上限）。
+
+未完成 / 未验证：
+
+- 500 条/页多实体真实数据的看板与同步分页性能压测（Phase 2 遗留压测项，Phase 5
+  完成门槛「看板列表满足性能目标」尚未用真实指标验证）；
+- Repository 层单元测试（SQL 仍靠 Docker smoke 验证，与既有模块一致）；
+- APP 端 LocalSyncStore 将 Tracker Store 切换到同步链路的联调；
+- 面试提醒「本地系统通知执行」属 APP 端职责，后端只存状态，未在本仓库验证。
 
 ## Phase 6：商业化准备
 

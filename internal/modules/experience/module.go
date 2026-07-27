@@ -8,6 +8,7 @@ import (
 	"coolto.local/cv-agent-app-be/internal/modules/experience/postgres"
 	"coolto.local/cv-agent-app-be/internal/modules/experience/syncadapter"
 	syncmod "coolto.local/cv-agent-app-be/internal/modules/sync"
+	"coolto.local/cv-agent-app-be/internal/platform/idempotency"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -25,7 +26,8 @@ func New(pool *pgxpool.Pool, recorder syncmod.TxRecorder) *Module {
 	tx := application.NewPoolTxRunner(pool)
 	repo := postgres.NewRepository(pool)
 	service := application.NewService(
-		tx, repo, recorderAdapter{recorder}, func() time.Time { return time.Now().UTC() },
+		tx, repo, recorderAdapter{recorder}, idempotency.NewStore(),
+		func() time.Time { return time.Now().UTC() },
 	)
 	return &Module{
 		Handler:   experiencehttp.NewHandler(service),

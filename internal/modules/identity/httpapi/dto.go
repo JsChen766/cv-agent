@@ -47,3 +47,44 @@ type revokeSessionsResultDTO struct {
 	DeviceID            string `json:"deviceId"`
 	RevokedSessionCount int64  `json:"revokedSessionCount"`
 }
+
+type emailChallengeRequest struct {
+	ChallengeID string    `json:"challengeId"`
+	Email       string    `json:"email"`
+	Purpose     string    `json:"purpose"`
+	Device      deviceDTO `json:"device"`
+}
+
+type emailChallengeAcceptedDTO struct {
+	ChallengeID       string `json:"challengeId"`
+	ExpiresAt         string `json:"expiresAt"`
+	RetryAfterSeconds int    `json:"retryAfterSeconds"`
+}
+
+type emailVerifyRequest struct {
+	ChallengeID string    `json:"challengeId"`
+	Code        string    `json:"code"`
+	Device      deviceDTO `json:"device"`
+}
+
+type emailLoginResultDTO struct {
+	User         currentUserDTO `json:"user"`
+	Device       loginDeviceDTO `json:"device"`
+	Entitlements entitlementDTO `json:"entitlements"`
+}
+
+type loginDeviceDTO struct {
+	ID         string  `json:"id"`
+	Name       string  `json:"name"`
+	Platform   string  `json:"platform"`
+	AppVersion string  `json:"appVersion"`
+	LastSeenAt string  `json:"lastSeenAt"`
+	RevokedAt  *string `json:"revokedAt"`
+}
+
+type entitlementDTO struct {
+	Plan               string         `json:"plan"`
+	SubscriptionStatus string         `json:"subscriptionStatus"`
+	Features           map[string]any `json:"features"`
+	EffectiveUntil     *string        `json:"effectiveUntil"`
+}

@@ -14,9 +14,29 @@ type Config struct {
 	Database        Database
 	Redis           Redis
 	Sync            Sync
-	SMTPAddress     string
+	Email           Email
+	OTP             OTP
 	DevPasswordAuth bool
 	ShutdownTimeout time.Duration
+}
+
+type Email struct {
+	Provider    string
+	SMTPAddress string
+	SenderEmail string
+	SenderName  string
+}
+
+type OTP struct {
+	HashKey         string
+	TTL             time.Duration
+	ResendAfter     time.Duration
+	MaxAttempts     int
+	RateWindow      time.Duration
+	EmailSendLimit  int
+	DeviceSendLimit int
+	IPSendLimit     int
+	VerifyLimit     int
 }
 
 type HTTP struct {
@@ -101,7 +121,9 @@ func load(lookup lookupFunc) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
-	cfg.SMTPAddress = value(lookup, "SMTP_ADDRESS", "mailpit:1025")
+	if err := loadEmailOTP(&cfg, lookup); err != nil {
+		return Config{}, err
+	}
 	cfg.DevPasswordAuth, err = boolValue(lookup, "ENABLE_DEV_PASSWORD_LOGIN", false)
 	if err != nil {
 		return Config{}, err
@@ -125,6 +147,20 @@ func (cfg Config) validate() error {
 	}
 	if len(cfg.Sync.CursorSigningKey) < 32 {
 		return errors.New("SYNC_CURSOR_SIGNING_KEY must contain at least 32 bytes")
+	}
+	if len(cfg.OTP.HashKey) < 32 {
+		return errors.New("OTP_HASH_KEY must contain at least 32 bytes")
+	}
+	if cfg.OTP.TTL <= 0 || cfg.OTP.ResendAfter <= 0 || cfg.OTP.RateWindow <= 0 {
+		return errors.New("OTP durations must be positive")
+	}
+	if cfg.OTP.MaxAttempts < 1 || cfg.OTP.MaxAttempts > 10 ||
+		cfg.OTP.EmailSendLimit < 1 || cfg.OTP.DeviceSendLimit < 1 ||
+		cfg.OTP.IPSendLimit < 1 || cfg.OTP.VerifyLimit < 1 {
+		return errors.New("OTP limits are invalid")
+	}
+	if cfg.Email.Provider != "mailpit" && cfg.Email.Provider != "brevo" {
+		return errors.New("EMAIL_PROVIDER must be mailpit or brevo")
 	}
 	if cfg.Sync.CursorMaxAge <= 0 {
 		return errors.New("SYNC_CURSOR_MAX_AGE must be positive")

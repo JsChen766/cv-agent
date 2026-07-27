@@ -33,6 +33,7 @@
 - 手动记录通常 `pending_confirmation=false`；
 - 自动识别记录先设 true，确认操作递增版本；
 - 公司、岗位和标题快照不会随 JD/Resume 更新；
+- 显式修改 `jd_id/resume_id` 时重新读取对应资产标题并刷新快照；只修改源资产标题不回写历史快照；
 - 通用 PUT/PATCH 不允许修改 `status`；
 - 状态只通过 transition command 更新；
 - `applied_at` 可在 pending confirmation 时为空，确认后必须存在；
@@ -43,6 +44,7 @@
 索引：
 
 - `(user_id, status, applied_at DESC NULLS LAST, id DESC) WHERE deleted_at IS NULL`；
+- `(user_id, status, updated_at DESC, id DESC) WHERE deleted_at IS NULL`，匹配当前看板游标查询；
 - `(user_id, updated_at DESC, id DESC) WHERE deleted_at IS NULL`；
 - `(user_id, company_name, updated_at DESC) WHERE deleted_at IS NULL`；
 - `(user_id, jd_id) WHERE deleted_at IS NULL`；
@@ -109,6 +111,7 @@ SyncChange → 记录 operation result。
 
 - `UNIQUE (application_id, round_number) WHERE deleted_at IS NULL`；
 - `(user_id, scheduled_at) WHERE deleted_at IS NULL AND status='scheduled'`。
+- `(user_id, application_id, updated_at DESC, id DESC) WHERE deleted_at IS NULL`，匹配子资源列表；
 
 面试正文不塞入该表，统一使用 Note，避免 Round 变成大文本对象。
 
@@ -124,6 +127,9 @@ SyncChange → 记录 operation result。
 | `content` | `text` | NOT NULL |
 
 索引：`(user_id, application_id, updated_at DESC, id DESC) WHERE deleted_at IS NULL`。
+
+`interview_round_id` 使用 `(user_id, application_id, interview_round_id)` 复合外键，保证 Note
+不能跨用户或跨 Application 关联 Interview。
 
 ## `reminders`
 
@@ -142,5 +148,13 @@ SyncChange → 记录 operation result。
 
 - `(user_id, remind_at) WHERE deleted_at IS NULL AND status='scheduled'`；
 - `(user_id, application_id, remind_at DESC) WHERE deleted_at IS NULL`。
+- `(user_id, status, updated_at DESC, id DESC) WHERE deleted_at IS NULL`，匹配状态筛选列表；
+- `(user_id, updated_at DESC, id DESC) WHERE deleted_at IS NULL`，匹配未筛选列表。
+
+`interview_round_id` 同样使用包含 `user_id/application_id` 的复合外键。
+
+删除 Application 时，同一事务软删除其 active Interview、Note、Reminder，逐条递增
+`entity_version` 并写入 tombstone `sync_changes`；Status Event 作为审计数据保留，但普通查询和
+Bootstrap 在父 Application 删除后不再展示。
 
 云端只同步 Reminder 状态；Electron 本地负责触发系统通知。

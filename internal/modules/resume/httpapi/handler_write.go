@@ -5,6 +5,7 @@ import (
 	"strconv"
 
 	"coolto.local/cv-agent-app-be/internal/platform/httpapi"
+	"coolto.local/cv-agent-app-be/internal/platform/idempotency"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
@@ -34,8 +35,16 @@ func (h *Handler) publish(w http.ResponseWriter, r *http.Request, resumeID strin
 	if resumeID != "" {
 		req.ID = resumeID
 	}
+	requestHash, err := idempotency.Hash(req)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
 	resume, created, err := h.service.Publish(
 		r.Context(), principal.UserID, principal.DeviceID, toPublish(req),
+		idempotency.Command{
+			Scope: "resume.publish", Key: req.IdempotencyKey, RequestHash: requestHash,
+		}, resumeID == "",
 	)
 	if err != nil {
 		writeError(w, r, err)

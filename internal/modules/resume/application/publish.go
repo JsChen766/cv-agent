@@ -6,10 +6,10 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 
 	"coolto.local/cv-agent-app-be/internal/modules/resume/domain"
 	"coolto.local/cv-agent-app-be/internal/platform/id"
+	"coolto.local/cv-agent-app-be/internal/platform/idempotency"
 
 	"github.com/jackc/pgx/v5"
 )
@@ -32,6 +32,7 @@ func contentProjection(structured json.RawMessage) (string, string) {
 // reports whether a new document was created.
 func (s *Service) Publish(
 	ctx context.Context, userID, deviceID string, input domain.Publish,
+	command idempotency.Command, createOnly bool,
 ) (domain.Resume, bool, error) {
 	tx, err := s.tx.BeginTx(ctx)
 	if err != nil {
@@ -39,7 +40,30 @@ func (s *Service) Publish(
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	resume, created, err := s.PublishInTx(ctx, tx, userID, deviceID, input)
+	if input.ID == "" {
+		generated, genErr := id.NewV7()
+		if genErr != nil {
+			return domain.Resume{}, false, genErr
+		}
+		input.ID = generated.String()
+	}
+	if !createOnly {
+		if _, err := s.repo.LoadForUpdate(ctx, tx, userID, input.ID); err != nil {
+			return domain.Resume{}, false, err
+		}
+	}
+	record, err := s.idem.Reserve(ctx, tx, userID, "resume", input.ID, command, s.now())
+	if err != nil {
+		return domain.Resume{}, false, err
+	}
+	if record.Replay {
+		if err := tx.Commit(ctx); err != nil {
+			return domain.Resume{}, false, err
+		}
+		resume, err := s.repo.FindDetail(ctx, userID, record.ResourceID)
+		return resume, createOnly, err
+	}
+	resume, created, err := s.PublishInTx(ctx, tx, userID, deviceID, input, createOnly)
 	if err != nil {
 		return domain.Resume{}, false, err
 	}
@@ -50,29 +74,28 @@ func (s *Service) Publish(
 }
 
 // PublishInTx creates or replaces a resume inside a caller-owned transaction and
-// appends the sync change. When the entity ID already exists it replaces the
-// document under an optimistic lock; otherwise it inserts a new document. The
-// caller may supply the entity ID for idempotent offline creation.
+// appends the sync change. Create never overwrites an existing entity; replace
+// never creates a missing entity.
 func (s *Service) PublishInTx(
-	ctx context.Context, tx pgx.Tx, userID, deviceID string, input domain.Publish,
+	ctx context.Context, tx pgx.Tx, userID, deviceID string, input domain.Publish, createOnly bool,
 ) (domain.Resume, bool, error) {
 	if err := input.Validate(); err != nil {
 		return domain.Resume{}, false, err
 	}
-	if input.ID != "" {
-		existing, err := s.repo.LoadForUpdate(ctx, tx, userID, input.ID)
-		switch {
-		case err == nil:
-			existing.UserID = userID
-			replaced, replaceErr := s.replaceExisting(ctx, tx, existing, deviceID, input)
-			return replaced, false, replaceErr
-		case errors.Is(err, domain.ErrNotFound):
-		default:
-			return domain.Resume{}, false, err
-		}
+	if createOnly {
+		created, err := s.insertNew(ctx, tx, userID, deviceID, input)
+		return created, true, err
 	}
-	created, err := s.insertNew(ctx, tx, userID, deviceID, input)
-	return created, true, err
+	if input.ExpectedVersion == nil && input.ExpectedContentHash == nil {
+		return domain.Resume{}, false, domain.ErrInvalidInput
+	}
+	existing, err := s.repo.LoadForUpdate(ctx, tx, userID, input.ID)
+	if err != nil {
+		return domain.Resume{}, false, err
+	}
+	existing.UserID = userID
+	replaced, err := s.replaceExisting(ctx, tx, existing, deviceID, input)
+	return replaced, false, err
 }
 
 func (s *Service) insertNew(

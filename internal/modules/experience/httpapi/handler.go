@@ -9,6 +9,7 @@ import (
 	"coolto.local/cv-agent-app-be/internal/modules/experience/domain"
 	"coolto.local/cv-agent-app-be/internal/platform/authctx"
 	"coolto.local/cv-agent-app-be/internal/platform/httpapi"
+	"coolto.local/cv-agent-app-be/internal/platform/idempotency"
 	"coolto.local/cv-agent-app-be/internal/platform/pagination"
 
 	"github.com/go-chi/chi/v5"
@@ -176,6 +177,10 @@ func toRevisionListDTO(revisions []domain.Revision, limit int) revisionListDTO {
 func writeError(w http.ResponseWriter, r *http.Request, err error) {
 	requestID := middleware.GetReqID(r.Context())
 	switch {
+	case errors.Is(err, idempotency.ErrKeyRequired):
+		httpapi.WriteError(w, http.StatusBadRequest, "idempotency_key_required", "Idempotency-Key 不合法", requestID)
+	case errors.Is(err, idempotency.ErrKeyReused):
+		httpapi.WriteError(w, http.StatusConflict, "idempotency_key_reused", "Idempotency-Key 已用于其他请求", requestID)
 	case errors.Is(err, domain.ErrNotFound):
 		httpapi.WriteError(w, http.StatusNotFound, "experience_not_found", "经历不存在", requestID)
 	case errors.Is(err, domain.ErrVersionConflict):

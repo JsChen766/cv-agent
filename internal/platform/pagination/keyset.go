@@ -6,6 +6,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"coolto.local/cv-agent-app-be/internal/platform/id"
 )
 
 // ErrInvalidCursor indicates a malformed keyset cursor.
@@ -33,13 +35,13 @@ func Decode(token string) (Key, bool, error) {
 	if err != nil {
 		return Key{}, false, ErrInvalidCursor
 	}
-	nanos, id, ok := strings.Cut(string(raw), "|")
-	if !ok || id == "" {
+	nanos, parsedID, ok := strings.Cut(string(raw), "|")
+	if !ok || !id.Valid(parsedID) {
 		return Key{}, false, ErrInvalidCursor
 	}
 	unixNano, err := strconv.ParseInt(nanos, 10, 64)
 	if err != nil {
 		return Key{}, false, ErrInvalidCursor
 	}
-	return Key{UpdatedAt: time.Unix(0, unixNano).UTC(), ID: id}, true, nil
+	return Key{UpdatedAt: time.Unix(0, unixNano).UTC(), ID: parsedID}, true, nil
 }

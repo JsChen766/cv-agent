@@ -30,7 +30,7 @@ func toFullDTO(resume domain.Resume) fullDTO {
 		summaryDTO:         toSummaryDTO(resume),
 		Structured:         orEmptyObject(resume.Structured),
 		Content:            resume.Content,
-		Score:              orEmptyObject(resume.Score),
+		Score:              orDefaultScore(resume.Score),
 		EvidenceSummary:    orEmptyArray(resume.EvidenceSummary),
 		RiskSummary:        orEmptyArray(resume.RiskSummary),
 		MissingInfo:        orEmptyArray(resume.MissingInfo),
@@ -136,6 +136,13 @@ func orEmptyObject(raw json.RawMessage) json.RawMessage {
 func orEmptyArray(raw json.RawMessage) json.RawMessage {
 	if len(raw) == 0 {
 		return json.RawMessage(`[]`)
+	}
+	return raw
+}
+
+func orDefaultScore(raw json.RawMessage) json.RawMessage {
+	if len(raw) == 0 || string(raw) == "{}" || string(raw) == "null" {
+		return json.RawMessage(`{"overall":0,"relevance":0,"clarity":0,"evidence_strength":0,"quantified_impact":0}`)
 	}
 	return raw
 }

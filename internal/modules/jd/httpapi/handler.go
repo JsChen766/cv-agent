@@ -11,6 +11,7 @@ import (
 	"coolto.local/cv-agent-app-be/internal/modules/jd/domain"
 	"coolto.local/cv-agent-app-be/internal/platform/authctx"
 	"coolto.local/cv-agent-app-be/internal/platform/httpapi"
+	"coolto.local/cv-agent-app-be/internal/platform/idempotency"
 	"coolto.local/cv-agent-app-be/internal/platform/pagination"
 
 	"github.com/go-chi/chi/v5"
@@ -102,7 +103,16 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 			"请求体格式错误", middleware.GetReqID(r.Context()))
 		return
 	}
-	jd, err := h.service.Create(r.Context(), principal.UserID, principal.DeviceID, toWrite(req, 0))
+	requestHash, err := idempotency.Hash(req)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	jd, err := h.service.Create(
+		r.Context(), principal.UserID, principal.DeviceID, toWrite(req, 0), idempotency.Command{
+			Scope: "jd.create", Key: r.Header.Get("Idempotency-Key"), RequestHash: requestHash,
+		},
+	)
 	if err != nil {
 		writeError(w, r, err)
 		return
@@ -198,6 +208,10 @@ func decodeBody(body io.Reader, target any) error {
 func writeError(w http.ResponseWriter, r *http.Request, err error) {
 	requestID := middleware.GetReqID(r.Context())
 	switch {
+	case errors.Is(err, idempotency.ErrKeyRequired):
+		httpapi.WriteError(w, http.StatusBadRequest, "idempotency_key_required", "Idempotency-Key 不合法", requestID)
+	case errors.Is(err, idempotency.ErrKeyReused):
+		httpapi.WriteError(w, http.StatusConflict, "idempotency_key_reused", "Idempotency-Key 已用于其他请求", requestID)
 	case errors.Is(err, domain.ErrNotFound):
 		httpapi.WriteError(w, http.StatusNotFound, "jd_not_found", "JD 不存在", requestID)
 	case errors.Is(err, domain.ErrVersionConflict):

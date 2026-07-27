@@ -2,9 +2,11 @@ package application
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"coolto.local/cv-agent-app-be/internal/modules/jd/domain"
+	"coolto.local/cv-agent-app-be/internal/platform/idempotency"
 	"coolto.local/cv-agent-app-be/internal/platform/pagination"
 
 	"github.com/jackc/pgx/v5"
@@ -14,6 +16,15 @@ import (
 // TxRunner exposes pgx transactions to the application layer.
 type TxRunner interface {
 	BeginTx(ctx context.Context) (pgx.Tx, error)
+}
+
+// LookupTitle exposes the minimal cross-module snapshot projection.
+func (s *Service) LookupTitle(ctx context.Context, userID, id string) (string, bool, error) {
+	jd, err := s.repo.FindDetail(ctx, userID, id)
+	if errors.Is(err, domain.ErrNotFound) {
+		return "", false, nil
+	}
+	return jd.Title, err == nil, err
 }
 
 // PoolTxRunner adapts a pgxpool.Pool to TxRunner.
@@ -73,12 +84,15 @@ type Service struct {
 	tx       TxRunner
 	repo     Repository
 	recorder Recorder
+	idem     *idempotency.Store
 	now      Clock
 }
 
 // NewService wires the JD service.
-func NewService(tx TxRunner, repo Repository, recorder Recorder, now Clock) *Service {
-	return &Service{tx: tx, repo: repo, recorder: recorder, now: now}
+func NewService(
+	tx TxRunner, repo Repository, recorder Recorder, idem *idempotency.Store, now Clock,
+) *Service {
+	return &Service{tx: tx, repo: repo, recorder: recorder, idem: idem, now: now}
 }
 
 // Get returns one JD with its requirements.

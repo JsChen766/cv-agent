@@ -242,7 +242,7 @@ DELETE /v1/product/resumes/{resumeId}
 
 ## 6. 当前 Resume Normalizer 所需字段
 
-若不修改当前 `normalizeResume`，列表项需要：
+当前 `normalizeResume` 的列表项需要：
 
 - `id`
 - `title`
@@ -252,6 +252,9 @@ DELETE /v1/product/resumes/{resumeId}
 - `schemaVersion`
 - `qualityStatus`
 - `status`
+- `targetCompany`
+- `entityVersion`
+- `deletedAt`
 - `createdAt`
 - `updatedAt`
 
@@ -293,6 +296,16 @@ Publish 结果另外包含：
 6. 新增 Application 与 Sync 后，原有 APP 功能仍可使用。
 
 如果联调需要修改 APP Adapter，修改结果应和 OpenAPI 在同一阶段确认。
+
+### 2026-07-27 新后端联调收口
+
+- Experience/JD 创建 Adapter 已发送 `Idempotency-Key`；审批链路复用稳定业务键；
+- Experience/JD/Resume Normalizer 已严格接收 `entityVersion` 与 `deletedAt`，Resume 另接收
+  `targetCompany`；
+- Resume 重命名、归档和恢复会先 GET 当前资源，再用 `expectedVersion` PATCH；
+- Resume Replace 继续发送稳定 `expectedContentHash`，未在重试时临时拼入版本，防止同一
+  `idempotencyKey` 的请求 hash 变化；
+- 未新增 APP 当前不存在的 Application/Interview/Note/Reminder Adapter。
 
 ### 2026-07-26 提取记录
 

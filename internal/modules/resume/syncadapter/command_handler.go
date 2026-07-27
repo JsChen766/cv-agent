@@ -57,7 +57,9 @@ func (h *CommandHandler) applyPublish(
 	}
 	input := request.toDomain(expectedVersion)
 	input.ID = command.EntityID
-	resume, _, err := h.service.PublishInTx(ctx, tx, command.UserID, command.DeviceID, input)
+	resume, _, err := h.service.PublishInTx(
+		ctx, tx, command.UserID, command.DeviceID, input, expectedVersion == nil,
+	)
 	return result(resume, err)
 }
 
@@ -78,6 +80,8 @@ func result(resume domain.Resume, err error) (syncmod.ApplyResult, error) {
 		switch {
 		case errors.Is(err, domain.ErrVersionConflict), errors.Is(err, domain.ErrContentConflict):
 			return failure(syncmod.ResultConflict, "entity_version_conflict"), nil
+		case errors.Is(err, domain.ErrDuplicate):
+			return failure(syncmod.ResultConflict, "resume_already_exists"), nil
 		case errors.Is(err, domain.ErrNotFound):
 			return failure(syncmod.ResultValidationFailed, "resume_not_found"), nil
 		case errors.Is(err, domain.ErrInvalidInput):

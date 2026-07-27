@@ -50,7 +50,8 @@ Sync Push  ──┘
 - Create 使用 `Idempotency-Key`；Resume publish 暂兼容 body 内同名字段，离线实体可由 APP 提供 UUIDv7；
 - Update body 必须提供 `expectedVersion`；
 - Delete query 必须提供 `expectedVersion`；
-- Resume Replace 同时提供 `expectedEntityVersion` 和 `expectedContentHash`；
+- Resume Replace 至少提供稳定的 `expectedContentHash`；已持久化云端版本的客户端可同时提供
+  `expectedEntityVersion`。当前 APP 使用 content hash，避免幂等重试时临时读取版本导致请求 hash 漂移；
 - Application status 只能通过 transition command 修改；
 - Sync 单项使用稳定 `operationId`，批次使用 `Idempotency-Key`；
 - 版本冲突返回 `409 ENTITY_VERSION_CONFLICT`，不自动 last-write-wins。
@@ -83,17 +84,20 @@ JD 入参优先使用 `v2_importance/v2_category` 作为数据库规范值；兼
 - Sync Push 每批最多 100 个 operation；
 - Pull/Bootstrap 每页最多 500；
 - Resume 列表不返回 `structured` 大文档；
-- 看板按 status + appliedAt 的 keyset 索引读取；
+- 看板按 status + updatedAt 的 keyset 索引读取；
 - API 不为普通 CRUD 引入 Redis 缓存。
 
-## 8. 实现前仍需联调
+## 8. APP 联调状态
 
-- APP 为现有 Create 请求补充 `Idempotency-Key`；
-- APP 保存并回传各同步实体的 `entityVersion`；
-- Resume Replace 补充 `expectedEntityVersion`；
+- APP 的 Experience/JD 现有 Create 请求已补充稳定 `Idempotency-Key`，无业务操作 ID
+  的兼容调用使用随机 UUID；
+- APP 的 Experience/JD/Resume Normalizer 与共享类型已接收 `entityVersion/deletedAt`，
+  Resume metadata PATCH 会先读取当前版本再提交 `expectedVersion`；
+- Resume Replace 沿用 APP 已持久化的 `expectedContentHash`，并由后端拒绝无任何并发保护的替换；
 - LocalSyncStore、Outbox 和 Sync Worker 内核已接入；Experience、JD、Resume、
   Application 仍需逐模块切换到该存储并补冲突 UI；
-- 新增 OTP、Application Tracker、Interview 与 Reminder Adapter。
+- OTP、Application Tracker、Interview 与 Reminder Adapter 尚未接入；本轮按用户要求不新增
+  APP 当前不存在的 Tracker API/UI。
 
 ## 9. Phase 2 已实现参考切片
 
