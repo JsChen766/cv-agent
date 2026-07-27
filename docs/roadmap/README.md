@@ -452,6 +452,77 @@ Pull/Bootstrap，让 APP 能开始消费已写入的 `sync_changes`。
 - Requirement ID 稳定；
 - 离线读写和双设备同步通过。
 
+### Phase 3 交付记录（2026-07-27）
+
+状态：🟢 Experience 与 JD 的 CRUD、revision、requirements 和同步接线端到端通过；
+沿用 Phase 2 同步内核与 Profile 参考模式，未复制第二套同步事务。
+
+已完成：
+
+- 新增 `internal/platform/pagination`：签名无关的 keyset 游标（`updated_at DESC, id DESC`），
+  Experience/JD 列表复用，对客户端不透明。
+- 新增 `internal/modules/experience`（domain/application/postgres/httpapi/syncadapter/module）：
+  - Content 只落在不可变 `experience_revisions`；创建时插入首个 revision 并原子
+    切换 `current_revision_id`（借助 deferred FK：先插 revision 再 UPDATE 指针）；
+  - 更新时仅当 content hash 变化才追加新 revision 并推进 revision_number，
+    纯元数据更新不产生 revision；`GET /revisions` 按 revision_number 倒序 keyset 分页；
+  - `PUT` 强制 `expectedVersion` 乐观锁，行未更新即 `409 entity_version_conflict`；
+  - `DELETE` 走 `expectedVersion` 软删（tombstone），保留墓碑至账号清除；
+  - 请求兼容现有 APP：创建/更新体 `start_date`/`end_date` snake_case，
+    响应 camelCase，保留 `factBankStatus: not_applicable` 兼容字段。
+- 新增 `internal/modules/jd`（同结构）：
+  - `PUT` 原子全量替换聚合与 requirements；客户端提供的 requirement ID 被保留，
+    缺失的用 UUIDv7 生成，`sort_order` 按数组顺序重排（requirement ID 稳定）；
+  - importance/category 双轨：DB 存 canonical（`must_have` 等），响应回写
+    `v2Importance`/`v2Category`，并映射 legacy `importance`（high/medium/low）兼容 APP；
+    创建请求优先取 `v2_importance`/`v2_category`，回落 legacy；
+  - `raw_text` 变化时重算 `jd_hash`，供 APP 判断旧匹配报告过期；
+  - `expectedVersion` 乐观锁与软删同 Experience。
+- 同步接线：两模块各提供 `Projector`（Hydrate + Bootstrap，含 tombstone 投影）
+  与 `CommandHandler`（create/update/delete，均在 Sync Push 的事务内执行
+  `*InTx` 用例）；通过模块内 `recorderAdapter` 桥接 `sync.TxRecorder`，
+  业务 Service 不感知 sync 线格式；`cmd/api/main.go` 注册 HTTP 路由、
+  三个 Projector 和三个 CommandHandler，未新增全路由上帝文件。
+
+事务 / 同步不变量落地：
+
+- 每个写入用例在单事务内完成聚合写 +（revision/requirements）+ `sync_changes` 追加；
+- Experience revision 切换与聚合更新同事务，避免出现指向不存在 revision 的中间态；
+- JD requirements 全量 DELETE + 重插在同事务内完成，deferred `UNIQUE(jd_id, sort_order)`
+  容忍事务内顺序 churn；
+- Push 复用用户 + `operationId` advisory lock 串行化重放；`already_applied` 幂等、
+  相同 key 不同 payload 返回 `idempotency_key_reused`；
+- 所有 SQL 显式带 `user_id`，复合 `UNIQUE(user_id, id)` 与复合 FK 防跨用户越权。
+
+验证证据：
+
+- `make check`：contract-lint（OpenAPI recommended 通过）+ gofmt + vet + build +
+  行数检查（无 >220 行文件）+ compose config 全部通过；
+- `make test`：新增 `experience/domain` 与 `jd/domain` 校验测试（rune 计数、
+  枚举、必填、weight 边界、乐观锁版本）全部通过，既有测试保持通过；
+- Docker 端到端 smoke（`compose up` + `migrate-up`（version 6）+ dev seed）：
+  - Experience：创建带首 revision；改 content v1→v2 追加 revision（revs=2）；
+    纯元数据 v2→v3 不新增 revision；陈旧 `expectedVersion` 返回 `409`；
+    `/revisions` 返回 2 条；`DELETE` 返回 tombstone 且后续 `GET` 返回 `404`；
+  - JD：创建带 requirement；`PUT` 保留传入 requirement ID（`019fa2ce…` 不变）、
+    为新 requirement 生成 ID、重算 jd_hash；陈旧版本 `409`；`DELETE` tombstone；
+  - Sync：Bootstrap 返回 user_profile/experience/JD 投影；Pull 增量拿到 Push 写入的
+    Experience；Push create `applied`、重放 `already_applied`（离线只创建一次）；
+    stale 版本 Push 返回 `conflict/entity_version_conflict`（双设备冲突可复现）；
+    JD Push create `applied`、tombstone 传播；
+  - 跨用户：dev 登录仅支持种子账号，越权路径经 `WHERE user_id` + 复合 FK 阻断。
+
+新增/修改文件行数：最大业务文件
+`experience/httpapi/handler.go` ≈ 200 行、`jd/httpapi/handler.go` ≈ 210 行，
+均 <220 目标；无上帝类、无 `models.go`/`routes.go` 聚合文件。
+
+未完成 / 未验证：
+
+- 500 条/页多实体真实数据的同步分页压测（属 Phase 2 遗留压测项，未在本阶段执行）；
+- Repository 层单元测试（SQL 仍靠 Docker smoke 验证，与既有模块一致）；
+- APP 端 LocalSyncStore 将 Experience/JD 业务 Store 切换到同步链路的联调；
+- OTP、CI 等 Phase 1/其他阶段遗留项不在本阶段范围。
+
 ## Phase 4：Resume Library
 
 范围：
@@ -471,6 +542,66 @@ Pull/Bootstrap，让 APP 能开始消费已写入的 `sync_changes`。
 - 三路冲突处理通过；
 - 相同幂等请求不重复创建；
 - 过期版本返回明确冲突。
+
+### Phase 4 交付记录（2026-07-27）
+
+状态：🟢 Cloud Resume 单文档发布/替换、metadata PATCH、archive/软删 tombstone 与
+同步接线端到端通过；沿用 Phase 2 同步内核与 Experience/JD 分层模式，未复制第二套同步事务。
+
+设计决策（用户确认）：
+
+- 发布幂等采用「客户端提供 UUIDv7 `id`」方案：同 `id` 已存在走原子 replace，
+  不存在则创建，不新增 idempotency 表；
+- 三路冲突保护：`expectedEntityVersion`（乐观锁）+ `expectedContentHash`（内容 hash）
+  双重校验，`content_hash` 由 `structured` 派生（`json.Compact` + SHA-256）；
+- `structured` 及伴随 JSONB 字段（score/evidenceSummary/riskSummary/missingInfo/
+  qualityIssues）保持 APP 内部 snake_case 不转换，外层字段 camelCase。
+
+已完成：
+
+- 新增 `internal/modules/resume`（domain/application/postgres/httpapi/syncadapter/module）：
+  - `POST /v1/product/resumes/publish` 创建、`PUT /{id}/publish` 原子全量替换聚合；
+    replace 复用客户端 `id` 幂等，`created` 标志区分新建/替换；
+  - `PATCH /{id}` 仅更新 metadata（title/status/targetRole/targetCompany/jdId），
+    `expectedVersion` 乐观锁；`DELETE /{id}` 走 `expectedVersion` 软删（tombstone）；
+  - `content_hash` 由 `structured` 派生，replace 时校验 `expectedContentHash`
+    与 `expectedEntityVersion`，任一不符返回对应 `409`；
+  - `pageUsageRatio` 由请求 `observation`（used/available height）派生。
+- 同步接线：`Projector`（Hydrate + Bootstrap，含 tombstone 投影）与
+  `CommandHandler`（create/update/delete 均在 Sync Push 事务内执行 `*InTx` 用例），
+  经 `recorderAdapter` 桥接 `sync.TxRecorder`；`cmd/api/main.go` 注册路由、
+  Projector 与 CommandHandler。
+- OpenAPI `resume-publication.yaml` 补充 `status`/`qualityStatus`/`qualityIssues`。
+
+修复记录：
+
+- PUT replace 500（`invalid input syntax for type uuid: ""`）：`LoadForUpdate`
+  返回聚合的 `UserID` 未被填充，replace 用例写入时 user_id 传入空串。
+  已在 `PublishInTx` replace 分支显式回填 `existing.UserID = userID` 修复。
+
+验证证据：
+
+- `make check`：contract-lint（OpenAPI recommended 通过）+ gofmt + vet + build +
+  行数检查（无 >220 行文件；`handler.go` 曾 240 行已拆为 `handler.go` +
+  `handler_write.go`）+ compose config 全部通过；
+- `make test`：新增 `resume/domain` 校验测试全部通过，既有测试保持通过；
+- Docker 端到端 smoke（`compose up` + `migrate-up` version 6 + dev seed）10/10 通过：
+  publish new（created=true, v=1, pageUsageRatio=0.9）、get、list、replace（v=2,
+  created=false）、stale 版本 replace→`409 entity_version_conflict`、错误 hash→
+  `409 content_hash_conflict`、patch rename（v=3）、patch archive（v=4）、patch stale
+  →`409`、非法 status→`422`；
+- 同步 smoke 7/7 通过：Bootstrap 含 resume 投影、Push create `applied`、重放
+  `already_applied`（离线只创建一次）、stale update→`conflict`、Pull 增量拿到 Push
+  写入的 resume、Push delete→tombstone、Pull 传播 tombstone；
+- 跨用户隔离：对他人 resume 的 GET/PATCH/DELETE 均返回 `resume_not_found`，
+  列表不泄漏，目标行未被改动。
+
+未完成 / 未验证：
+
+- 500 条/页多实体真实数据的同步分页压测（Phase 2 遗留压测项）；
+- Repository 层单元测试（SQL 仍靠 Docker smoke 验证，与既有模块一致）；
+- APP 端 LocalSyncStore 将 Resume Store 切换到同步链路的联调；
+- Resume PDF 派生文件对象存储引用（对象存储上传能力属后续阶段）。
 
 ## Phase 5：Application Tracker
 

@@ -11,9 +11,12 @@ import (
 	"time"
 
 	"coolto.local/cv-agent-app-be/internal/modules/entitlement"
+	"coolto.local/cv-agent-app-be/internal/modules/experience"
 	"coolto.local/cv-agent-app-be/internal/modules/identity"
 	identityhttp "coolto.local/cv-agent-app-be/internal/modules/identity/httpapi"
+	"coolto.local/cv-agent-app-be/internal/modules/jd"
 	"coolto.local/cv-agent-app-be/internal/modules/profile"
+	"coolto.local/cv-agent-app-be/internal/modules/resume"
 	syncmod "coolto.local/cv-agent-app-be/internal/modules/sync"
 	synchttp "coolto.local/cv-agent-app-be/internal/modules/sync/httpapi"
 	syncpg "coolto.local/cv-agent-app-be/internal/modules/sync/postgres"
@@ -67,13 +70,22 @@ func run(ctx context.Context, logger *slog.Logger) error {
 	})
 	recorder := syncmod.NewPgxRecorder()
 	profileModule := profile.New(db, recorder)
+	experienceModule := experience.New(db, recorder)
+	jdModule := jd.New(db, recorder)
+	resumeModule := resume.New(db, recorder)
 	now := func() time.Time { return time.Now().UTC() }
 	cursorCodec := syncmod.NewCursorCodec(
 		cfg.Sync.CursorSigningKey, cfg.Sync.CursorMaxAge, now,
 	)
 	changeRepository := syncpg.NewChangeRepository(db)
-	projectors := []syncmod.Projector{profileModule.Projector}
-	commandHandlers := []syncmod.CommandHandler{profileModule.Commands}
+	projectors := []syncmod.Projector{
+		profileModule.Projector, experienceModule.Projector, jdModule.Projector,
+		resumeModule.Projector,
+	}
+	commandHandlers := []syncmod.CommandHandler{
+		profileModule.Commands, experienceModule.Commands, jdModule.Commands,
+		resumeModule.Commands,
+	}
 	pushService, err := syncmod.NewPushService(
 		syncpg.NewTxRunner(db), syncpg.NewOperationRepository(), commandHandlers, now,
 	)
@@ -99,6 +111,9 @@ func run(ctx context.Context, logger *slog.Logger) error {
 			secured.Use(identityhttp.RequireSession(identityModule.Authenticator()))
 			entitlementModule.Handler.Routes(secured)
 			profileModule.Handler.Routes(secured)
+			experienceModule.Handler.Routes(secured)
+			jdModule.Handler.Routes(secured)
+			resumeModule.Handler.Routes(secured)
 			syncHandler.Routes(secured)
 		})
 	}

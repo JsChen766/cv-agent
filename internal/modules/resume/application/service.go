@@ -1,0 +1,100 @@
+package application
+
+import (
+	"context"
+	"time"
+
+	"coolto.local/cv-agent-app-be/internal/modules/resume/domain"
+	"coolto.local/cv-agent-app-be/internal/platform/pagination"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
+)
+
+// TxRunner exposes pgx transactions to the application layer.
+type TxRunner interface {
+	BeginTx(ctx context.Context) (pgx.Tx, error)
+}
+
+// PoolTxRunner adapts a pgxpool.Pool to TxRunner.
+type PoolTxRunner struct {
+	pool *pgxpool.Pool
+}
+
+// NewPoolTxRunner constructs a PoolTxRunner.
+func NewPoolTxRunner(pool *pgxpool.Pool) *PoolTxRunner {
+	return &PoolTxRunner{pool: pool}
+}
+
+// BeginTx starts a read-committed transaction.
+func (r *PoolTxRunner) BeginTx(ctx context.Context) (pgx.Tx, error) {
+	return r.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
+}
+
+// ListFilter narrows a resume list query.
+type ListFilter struct {
+	Status *domain.Status
+	Limit  int
+	Cursor pagination.Key
+	HasKey bool
+}
+
+// Repository persists resumes.
+type Repository interface {
+	Insert(ctx context.Context, tx pgx.Tx, resume domain.Resume) error
+	FindDetail(ctx context.Context, userID, id string) (domain.Resume, error)
+	List(ctx context.Context, userID string, filter ListFilter) ([]domain.Resume, error)
+	LoadForUpdate(ctx context.Context, tx pgx.Tx, userID, id string) (domain.Resume, error)
+	UpdateAggregate(ctx context.Context, tx pgx.Tx, resume domain.Resume) error
+	SoftDelete(ctx context.Context, tx pgx.Tx, resume domain.Resume) error
+	HydrateByIDs(ctx context.Context, userID string, ids []string) (map[string]domain.Resume, error)
+	BootstrapPage(ctx context.Context, userID, afterID string, limit int) ([]domain.Resume, error)
+}
+
+// Recorder appends a sync change inside the caller's transaction.
+type Recorder interface {
+	Record(ctx context.Context, tx pgx.Tx, change SyncChange) error
+}
+
+// SyncChange decouples the service from the sync module wire types.
+type SyncChange struct {
+	UserID        string
+	EntityID      string
+	EntityVersion int64
+	Deleted       bool
+	ChangedAt     time.Time
+}
+
+// Clock returns the current UTC time.
+type Clock func() time.Time
+
+// Service implements the Resume use cases.
+type Service struct {
+	tx       TxRunner
+	repo     Repository
+	recorder Recorder
+	now      Clock
+}
+
+// NewService wires the resume service.
+func NewService(tx TxRunner, repo Repository, recorder Recorder, now Clock) *Service {
+	return &Service{tx: tx, repo: repo, recorder: recorder, now: now}
+}
+
+// Get returns one resume.
+func (s *Service) Get(ctx context.Context, userID, id string) (domain.Resume, error) {
+	return s.repo.FindDetail(ctx, userID, id)
+}
+
+// List returns a cursor page of resume summaries.
+func (s *Service) List(ctx context.Context, userID string, filter ListFilter) ([]domain.Resume, error) {
+	return s.repo.List(ctx, userID, filter)
+}
+
+func deviceRef(deviceID string) *string {
+	if deviceID == "" {
+		return nil
+	}
+	value := deviceID
+	return &value
+}
