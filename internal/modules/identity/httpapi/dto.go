@@ -9,8 +9,11 @@ type deviceDTO struct {
 	AppVersion string `json:"appVersion"`
 }
 
-func (d deviceDTO) toInput() application.DeviceInput {
-	return application.DeviceInput{
+func (d *deviceDTO) toInput() *application.DeviceInput {
+	if d == nil {
+		return nil
+	}
+	return &application.DeviceInput{
 		ID:         d.ID,
 		Name:       d.Name,
 		Platform:   d.Platform,
@@ -18,22 +21,10 @@ func (d deviceDTO) toInput() application.DeviceInput {
 	}
 }
 
-func (d deviceDTO) valid() bool {
-	if d.ID == "" || d.Name == "" || d.AppVersion == "" {
-		return false
-	}
-	switch d.Platform {
-	case "macos", "windows", "linux":
-		return true
-	default:
-		return false
-	}
-}
-
 type loginRequest struct {
-	Email    string    `json:"email"`
-	Password string    `json:"password"`
-	Device   deviceDTO `json:"device"`
+	Email    string     `json:"email"`
+	Password string     `json:"password"`
+	Device   *deviceDTO `json:"device,omitempty"`
 }
 
 type loginUserDTO struct {
@@ -49,4 +40,9 @@ type currentUserDTO struct {
 
 type logoutResultDTO struct {
 	Message string `json:"message"`
+}
+
+type revokeSessionsResultDTO struct {
+	DeviceID            string `json:"deviceId"`
+	RevokedSessionCount int64  `json:"revokedSessionCount"`
 }

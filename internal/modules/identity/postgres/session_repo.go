@@ -5,6 +5,7 @@ import (
 	"errors"
 	"time"
 
+	"coolto.local/cv-agent-app-be/internal/modules/identity/application"
 	"coolto.local/cv-agent-app-be/internal/modules/identity/domain"
 
 	"github.com/jackc/pgx/v5"
@@ -36,37 +37,48 @@ func (r *SessionRepository) Create(ctx context.Context, session domain.Session) 
 }
 
 const selectLiveSession = `
-SELECT s.id, s.user_id, s.device_id, s.expires_at, s.last_used_at, s.revoked_at, s.created_at
+SELECT s.id, s.user_id, s.device_id, s.expires_at, s.last_used_at, s.revoked_at, s.created_at,
+       u.status, COALESCE(e.email_display, '')
 FROM auth_sessions s
+JOIN users u ON u.id = s.user_id
+LEFT JOIN user_emails e ON e.user_id = u.id AND e.is_primary
 JOIN devices d ON d.user_id = s.user_id AND d.id = s.device_id
 WHERE s.token_hash = $1
   AND s.revoked_at IS NULL
   AND s.expires_at > $2
   AND d.revoked_at IS NULL`
 
-// FindLiveByTokenHash resolves a live session whose device is still active.
-func (r *SessionRepository) FindLiveByTokenHash(ctx context.Context, tokenHash []byte, now time.Time) (domain.Session, error) {
-	var session domain.Session
+// FindLiveByTokenHash resolves a live session and its owning user in one shot.
+func (r *SessionRepository) FindLiveByTokenHash(
+	ctx context.Context, tokenHash []byte, now time.Time,
+) (application.AuthLookup, error) {
+	var lookup application.AuthLookup
+	var status string
 	err := r.pool.QueryRow(ctx, selectLiveSession, tokenHash, now).Scan(
-		&session.ID, &session.UserID, &session.DeviceID,
-		&session.ExpiresAt, &session.LastUsedAt, &session.RevokedAt, &session.CreatedAt,
+		&lookup.Session.ID, &lookup.Session.UserID, &lookup.Session.DeviceID,
+		&lookup.Session.ExpiresAt, &lookup.Session.LastUsedAt,
+		&lookup.Session.RevokedAt, &lookup.Session.CreatedAt,
+		&status, &lookup.Email,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return domain.Session{}, domain.ErrSessionInvalid
+		return application.AuthLookup{}, domain.ErrSessionInvalid
 	}
 	if err != nil {
-		return domain.Session{}, err
+		return application.AuthLookup{}, err
 	}
-	session.TokenHash = tokenHash
-	return session, nil
+	lookup.Session.TokenHash = tokenHash
+	lookup.UserStatus = domain.UserStatus(status)
+	return lookup, nil
 }
 
 const touchSession = `
-UPDATE auth_sessions SET last_used_at = $2 WHERE id = $1 AND revoked_at IS NULL`
+UPDATE auth_sessions SET last_used_at = $2
+WHERE id = $1 AND revoked_at IS NULL AND last_used_at < $3`
 
-// TouchLastUsed refreshes the last-used timestamp of a live session.
-func (r *SessionRepository) TouchLastUsed(ctx context.Context, sessionID string, now time.Time) error {
-	_, err := r.pool.Exec(ctx, touchSession, sessionID, now)
+// TouchLastUsed refreshes last_used_at only when the recorded value is older
+// than the supplied threshold, avoiding write amplification on every request.
+func (r *SessionRepository) TouchLastUsed(ctx context.Context, sessionID string, now, threshold time.Time) error {
+	_, err := r.pool.Exec(ctx, touchSession, sessionID, now, threshold)
 	return err
 }
 
@@ -81,4 +93,27 @@ func (r *SessionRepository) RevokeByTokenHash(ctx context.Context, tokenHash []b
 		return false, err
 	}
 	return tag.RowsAffected() > 0, nil
+}
+
+const revokeDeviceSessions = `
+WITH target AS (
+    SELECT 1 FROM devices WHERE user_id = $1 AND id = $2
+),
+revoked AS (
+    UPDATE auth_sessions SET revoked_at = $3
+    WHERE user_id = $1 AND device_id = $2 AND revoked_at IS NULL
+      AND EXISTS (SELECT 1 FROM target)
+    RETURNING 1
+)
+SELECT EXISTS (SELECT 1 FROM target), COUNT(*) FROM revoked`
+
+// RevokeDeviceSessions atomically verifies ownership and revokes every live
+// session belonging to the device.
+func (r *SessionRepository) RevokeDeviceSessions(
+	ctx context.Context, userID, deviceID string, now time.Time,
+) (int64, bool, error) {
+	var found bool
+	var count int64
+	err := r.pool.QueryRow(ctx, revokeDeviceSessions, userID, deviceID, now).Scan(&found, &count)
+	return count, found, err
 }

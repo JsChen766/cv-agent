@@ -4,13 +4,17 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"time"
 
 	"coolto.local/cv-agent-app-be/internal/modules/identity/application"
 	"coolto.local/cv-agent-app-be/internal/modules/identity/domain"
+	"coolto.local/cv-agent-app-be/internal/platform/authctx"
 	"coolto.local/cv-agent-app-be/internal/platform/httpapi"
+	"coolto.local/cv-agent-app-be/internal/platform/id"
 
+	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 )
 
@@ -38,14 +42,18 @@ func (h *Handler) DevLogin(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &req) {
 		return
 	}
-	if req.Email == "" || req.Password == "" || !req.Device.valid() {
-		writeBadRequest(w, r, "缺少邮箱、密码或设备信息")
+	if req.Email == "" || req.Password == "" {
+		writeBadRequest(w, r, "缺少邮箱或密码")
 		return
 	}
 	issued, err := h.devLogin.Login(r.Context(), application.DevLoginInput{
 		Email:    req.Email,
 		Password: req.Password,
 		Device:   req.Device.toInput(),
+		Fallback: application.DeviceFallback{
+			UserAgent: r.Header.Get("User-Agent"),
+			RemoteIP:  clientIP(r),
+		},
 	})
 	if err != nil {
 		writeDomainError(w, r, err)
@@ -58,17 +66,40 @@ func (h *Handler) DevLogin(w http.ResponseWriter, r *http.Request) {
 	}, middleware.GetReqID(r.Context()))
 }
 
+// RevokeDeviceSessions handles DELETE /v1/devices/{deviceId}/sessions.
+func (h *Handler) RevokeDeviceSessions(w http.ResponseWriter, r *http.Request) {
+	principal, ok := authctx.From(r.Context())
+	if !ok {
+		writeDomainError(w, r, domain.ErrSessionInvalid)
+		return
+	}
+	deviceID := chi.URLParam(r, "deviceId")
+	if !id.Valid(deviceID) {
+		writeBadRequest(w, r, "设备 ID 格式错误")
+		return
+	}
+	count, err := h.sessions.RevokeDevice(r.Context(), principal.UserID, deviceID)
+	if err != nil {
+		writeDomainError(w, r, err)
+		return
+	}
+	httpapi.WriteSuccess(w, http.StatusOK, revokeSessionsResultDTO{
+		DeviceID:            deviceID,
+		RevokedSessionCount: count,
+	}, middleware.GetReqID(r.Context()))
+}
+
 // CurrentUser handles GET /v1/users/me.
 func (h *Handler) CurrentUser(w http.ResponseWriter, r *http.Request) {
-	auth, ok := AuthFromContext(r.Context())
+	principal, ok := authctx.From(r.Context())
 	if !ok {
 		writeDomainError(w, r, domain.ErrSessionInvalid)
 		return
 	}
 	httpapi.WriteSuccess(w, http.StatusOK, currentUserDTO{
-		ID:     auth.User.ID,
-		Email:  auth.User.Email,
-		Status: string(auth.User.Status),
+		ID:     principal.UserID,
+		Email:  principal.Email,
+		Status: principal.Status,
 	}, middleware.GetReqID(r.Context()))
 }
 
@@ -125,4 +156,11 @@ func decodeJSON(w http.ResponseWriter, r *http.Request, target any) bool {
 		return false
 	}
 	return true
+}
+
+func clientIP(r *http.Request) string {
+	if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
+		return host
+	}
+	return r.RemoteAddr
 }

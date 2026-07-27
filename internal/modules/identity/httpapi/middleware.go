@@ -6,27 +6,19 @@ import (
 
 	"coolto.local/cv-agent-app-be/internal/modules/identity/application"
 	"coolto.local/cv-agent-app-be/internal/modules/identity/domain"
+	"coolto.local/cv-agent-app-be/internal/platform/authctx"
 )
 
 // accessTokenCookie is the APP-compatible session cookie name.
 const accessTokenCookie = "access_token"
-
-type contextKey string
-
-const authContextKey contextKey = "identity.auth"
-
-// AuthContext carries the authenticated principal for downstream handlers.
-type AuthContext struct {
-	User    domain.User
-	Session domain.Session
-}
 
 // Authenticator resolves a session from a raw cookie token value.
 type Authenticator interface {
 	Authenticate(ctx context.Context, tokenValue string) (domain.User, domain.Session, error)
 }
 
-// RequireSession rejects requests without a valid access_token session.
+// RequireSession rejects requests without a valid access_token session and
+// puts the shared Principal in the request context.
 func RequireSession(auth Authenticator) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -40,16 +32,17 @@ func RequireSession(auth Authenticator) func(http.Handler) http.Handler {
 				writeDomainError(w, r, err)
 				return
 			}
-			ctx := context.WithValue(r.Context(), authContextKey, AuthContext{User: user, Session: session})
-			next.ServeHTTP(w, r.WithContext(ctx))
+			principal := authctx.Principal{
+				UserID:    user.ID,
+				Email:     user.Email,
+				Status:    string(user.Status),
+				DeviceID:  session.DeviceID,
+				SessionID: session.ID,
+				ExpiresAt: session.ExpiresAt,
+			}
+			next.ServeHTTP(w, r.WithContext(authctx.With(r.Context(), principal)))
 		})
 	}
-}
-
-// AuthFromContext returns the authenticated principal if present.
-func AuthFromContext(ctx context.Context) (AuthContext, bool) {
-	value, ok := ctx.Value(authContextKey).(AuthContext)
-	return value, ok
 }
 
 var _ Authenticator = (*application.SessionIssuer)(nil)

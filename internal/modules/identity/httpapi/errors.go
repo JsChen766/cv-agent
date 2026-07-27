@@ -22,6 +22,8 @@ func writeDomainError(w http.ResponseWriter, r *http.Request, err error) {
 		httpapi.WriteError(w, http.StatusForbidden, "user_not_active", "账号状态不允许登录", requestID)
 	case errors.Is(err, domain.ErrDeviceRevoked):
 		httpapi.WriteError(w, http.StatusForbidden, "device_revoked", "设备已被撤销", requestID)
+	case errors.Is(err, domain.ErrDeviceNotFound):
+		httpapi.WriteError(w, http.StatusNotFound, "device_not_found", "设备不存在", requestID)
 	case errors.Is(err, domain.ErrDeviceConflict):
 		httpapi.WriteError(w, http.StatusConflict, "device_conflict", "设备已归属其他账号", requestID)
 	case errors.Is(err, domain.ErrInvalidDeviceInput):

@@ -95,3 +95,5 @@ deviceSessions:
         $ref: ../components/common.yaml#/responses/Unauthorized
       "404":
         $ref: ../components/common.yaml#/responses/NotFound
+      "400":
+        $ref: ../components/common.yaml#/responses/BadRequest

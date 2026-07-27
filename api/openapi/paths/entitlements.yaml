@@ -18,3 +18,5 @@ entitlements:
                       $ref: ../components/identity.yaml#/schemas/EntitlementSummary
       "401":
         $ref: ../components/common.yaml#/responses/Unauthorized
+      "500":
+        $ref: ../components/common.yaml#/responses/InternalServerError

@@ -9,11 +9,17 @@ import (
 	"os/signal"
 	"syscall"
 
+	"coolto.local/cv-agent-app-be/internal/modules/entitlement"
 	"coolto.local/cv-agent-app-be/internal/modules/identity"
+	identityhttp "coolto.local/cv-agent-app-be/internal/modules/identity/httpapi"
+	"coolto.local/cv-agent-app-be/internal/modules/profile"
+	syncmod "coolto.local/cv-agent-app-be/internal/modules/sync"
 	"coolto.local/cv-agent-app-be/internal/platform/cache"
 	"coolto.local/cv-agent-app-be/internal/platform/config"
 	"coolto.local/cv-agent-app-be/internal/platform/database"
 	"coolto.local/cv-agent-app-be/internal/platform/httpserver"
+
+	"github.com/go-chi/chi/v5"
 )
 
 func main() {
@@ -49,17 +55,30 @@ func run(ctx context.Context, logger *slog.Logger) error {
 	}
 	defer redisClient.Close()
 
+	entitlementModule := entitlement.New(db)
 	identityModule := identity.New(db, identity.Options{
 		DevPasswordLogin: cfg.DevPasswordAuth,
 		SecureCookie:     cfg.Environment != "local" && cfg.Environment != "test",
+		DeviceNSSalt:     cfg.Environment,
+		Provisioner:      entitlementModule.Provisioner,
 	})
+	recorder := syncmod.NewPgxRecorder()
+	profileModule := profile.New(db, recorder)
+
+	authenticated := func(router chi.Router) {
+		router.Group(func(secured chi.Router) {
+			secured.Use(identityhttp.RequireSession(identityModule.Authenticator()))
+			entitlementModule.Handler.Routes(secured)
+			profileModule.Handler.Routes(secured)
+		})
+	}
 
 	handler := httpserver.NewHandler(logger, map[string]httpserver.CheckFunc{
 		"postgres": db.Ping,
 		"redis": func(ctx context.Context) error {
 			return redisClient.Ping(ctx).Err()
 		},
-	}, identityModule.Registrar())
+	}, identityModule.Registrar(), authenticated)
 	server := httpserver.New(cfg.HTTP, handler)
 	serverErrors := make(chan error, 1)
 

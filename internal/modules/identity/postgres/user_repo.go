@@ -40,26 +40,6 @@ func (r *UserRepository) FindActiveByNormalizedEmail(ctx context.Context, emailN
 	return user, nil
 }
 
-const selectUserByID = `
-SELECT u.id, u.status, COALESCE(e.email_display, '')
-FROM users u
-LEFT JOIN user_emails e ON e.user_id = u.id AND e.is_primary
-WHERE u.id = $1`
-
-// FindByID resolves a user by its identifier.
-func (r *UserRepository) FindByID(ctx context.Context, userID string) (domain.User, error) {
-	var user domain.User
-	err := r.pool.QueryRow(ctx, selectUserByID, userID).
-		Scan(&user.ID, &user.Status, &user.Email)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return domain.User{}, domain.ErrSessionInvalid
-	}
-	if err != nil {
-		return domain.User{}, err
-	}
-	return user, nil
-}
-
 // CredentialRepository reads development password credentials.
 type CredentialRepository struct {
 	pool *pgxpool.Pool

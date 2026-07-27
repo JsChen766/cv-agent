@@ -198,6 +198,179 @@ Phase 0 完成前还需确认：
 后续下一切片建议：Profile GET/PUT + Entitlement GET，将 Phase 1 的“权益查询”门槛
 覆盖到位后再进入 OTP。
 
+### Phase 1 纵向切片 2：Profile + Entitlement + Sync Recorder（2026-07-26）
+
+状态：🟢 切片内 3 个用例全部通过端到端联调；Phase 1 剩余 OTP/Redis 限流/设备撤销
+未开始。
+
+已完成：
+
+- 新增 `internal/platform/authctx`：跨模块只读 `Principal` 上下文；identity
+  `RequireSession` 中间件重构后写入该上下文，`CurrentUser` 不再依赖 identity
+  内部结构。
+- 新增 `internal/modules/sync`：定义合法的 `EntityType` / `Operation` 枚举，
+  以及 `TxRecorder` 端口与 PostgreSQL 适配器 `PgxRecorder`。业务模块通过
+  接收 `TxRecorder` 完成同事务写入，`sync` 内部不感知具体业务。
+- 新增 `internal/modules/entitlement`（domain/application/postgres/httpapi），
+  实现 `GET /v1/users/me/entitlements`：读取当前 `trialing/active` 订阅 +
+  `plan_entitlements`，`features` 通过 `feature_code` map 输出；无生效订阅
+  返回 `404 no_active_subscription`（不静默返回空）。
+- 新增 `internal/modules/profile`（domain/application/postgres/httpapi），
+  实现 `GET/PUT /v1/users/me/profile`：
+  - PUT 强制携带 `expectedVersion`，通过 `SELECT … FOR UPDATE` 锁定聚合，
+    版本不匹配返回 `409 entity_version_conflict`；
+  - 校验 nullable/长度/URL/数组元素约束；`preferredLanguage` 强制非空；
+  - 事务内：UPDATE user_profiles → `entity_version += 1` →
+    INSERT `sync_changes(user_profile, upsert)`；两条写入原子提交；
+  - JSON 请求体强制 `DisallowUnknownFields`，限长 32 KiB；
+  - Repository 使用 `WHERE user_id = $1 AND entity_version = $2 - 1`
+    强制乐观锁，行未被更新即返回 `ErrVersionConflict`；
+- `identity.Module` 暴露 `Authenticator()` 供其他模块挂载 `RequireSession`；
+  `cmd/api/main.go` 用一个 `Group` 一次性挂载所有 authenticated 子路由，
+  避免出现全路由 `routes.go` 上帝文件。
+- `HTTP Handler` 的 `RouteRegistrar` 保持不变，模块通过 `router.Get/Put/…`
+  自我注册。
+
+同步 / 事务不变量落地：
+
+- Profile PUT 与 `sync_changes` 写入使用同一 `pgx.Tx`；任一失败整个事务回滚；
+- 事务级别 `ReadCommitted` + 显式行锁，保证同事务内可读并锁定当前 profile；
+- 无网络调用（邮件、Redis、对象存储）进入该事务；
+- `sync_changes.entity_version` 与 `user_profiles.entity_version` 保持一致
+  （通过“先更新聚合再基于新版本追加 change 行”）；
+- Change 表通过复合 `UNIQUE (user_id, entity_type, entity_id, entity_version)`
+  自动防止重复追加同一版本。
+
+安全 / 隔离约束落地：
+
+- 所有 SQL 显式使用 `authctx.Principal.UserID`；跨用户越权路径通过
+  `WHERE user_id=$1` 与 `user_profiles.UNIQUE(user_id, id)` 双重防护；
+- Entitlement 只读订阅表，不接触 subscription provider metadata；
+- Profile DTO 手工组装，不直接序列化 Domain 或 DB 行；
+- 未在日志中记录 Profile 字段、订阅字段或 principal。
+
+验证证据：
+
+- `make check`：contract-lint + gofmt + vet + build + 行数（无 >220 行文件）
+  + `compose config` 全部通过。
+- `make test`：现有 5 个测试仍通过。
+- Docker-only 端到端 smoke（`compose up -d api` 后 curl）：
+  - `GET /v1/users/me/entitlements` 返回
+    `{plan:"development", subscriptionStatus:"active", features:{...}, effectiveUntil:null}`；
+  - 初次 `GET /users/me/profile` 返回 `entityVersion=1`；
+  - `PUT` with `expectedVersion=1` 返回 `entityVersion=2` 且字段回显正确；
+  - 陈旧版本再次 `PUT expectedVersion=1` 返回 `409 entity_version_conflict`；
+  - `preferredLanguage=""` 返回 `422 invalid_profile`；
+  - 未知字段返回 `400 bad_request`；
+  - 新建用户 `bob` 登录后 `GET /users/me/profile` 只看到自己的空档案，
+    未污染 dev1 的数据；
+  - 数据库直接查询：`sync_changes` 出现 1 条
+    `(user_profile, dev1, version=2, upsert)`；`user_profiles` 更新为
+    `entity_version=2` 且新字段落库。
+
+新增文件行数：最大 `profile/postgres/repository.go` = 101 行；所有新业务文件
+远低于 220 目标；未新增 200 行以上文件；未出现 `models.go / routes.go`
+类上帝文件。
+
+未完成 / 未验证：
+
+- 正式 OTP 邮箱验证码 challenge/verify（`email_login_challenges`、Mailpit、
+  Redis 限流）；
+- `DELETE /v1/devices/{deviceId}/sessions` 远程撤销；
+- Repository 层的单元测试（仍靠端到端 Docker smoke 验证 SQL 正确性）；
+- CI 流水线；
+- Sync Push/Pull/Bootstrap（`sync_changes` 已写入，读取端属于 Phase 2）；
+- APP LocalSyncStore 接线。
+
+下一切片建议：Phase 1 收尾 OTP + Redis 限流 + `DELETE /devices/{id}/sessions`，
+或直接进入 Phase 2 Pull（读取端消费本切片已写入的 `sync_changes`）。
+
+### Phase 1 纵向切片 3：Device 兼容、远程撤销与自动 Provision（2026-07-27）
+
+状态：🟢 切片内 4 个用例已通过端到端联调；Phase 1 仍缺 OTP 与 Redis 限流。
+
+背景：切片 2 收尾后与 APP 联调，暴露三个阻塞项：登录必须携带 `device`（APP v1
+不发送）、设备远程登出未落地、新账号首次登录缺少 `subscription` 会立即被
+`no_active_subscription` 拒绝。本切片专门解决兼容与运营缺口，不引入 OTP。
+
+已完成：
+
+- `identity/application/device_fallback.go`：开发登录未携带 `device` 时按
+  `SHA256("dev-fallback|<userID>|<UA>|<remoteIP>|<namespace>")` 合成
+  UUID 格式的 legacy-client 兼容 bucket；`Platform` 通过 User-Agent 关键字识别；
+  同一 UA + IP 反复登录只 upsert 单条记录。该 fallback 只服务 local/test 旧
+  LoginScreen，不代表可靠的物理设备身份；正式 OTP 必须由 APP 提供持久化安装 ID。
+- `identity/httpapi/handlers.go`：新增 `clientIP()`，用 `net.SplitHostPort`
+  从 `RemoteAddr` 拆出宿主机 IP，避免容器网络下每次登录端口变化导致设备重复；
+  不信任客户端直接提交的 `X-Forwarded-For`。
+- `identity/application/session_service.go` +
+  `identity/postgres/session_repo.go`：新增 `RevokeSessionsByDevice`，
+  用单条 CTE SQL 校验 `Device.user_id == principal.user_id` 并执行
+  `UPDATE auth_sessions SET revoked_at=now()`，跨用户设备返回
+  `404 device_not_found`。
+- `identity/httpapi/routes.go` + `handlers.go` + `module.go`：新增
+  `DELETE /v1/devices/{deviceId}/sessions`（受 `RequireSession` 保护），
+  响应 `{ deviceId, revokedSessionCount }`；OpenAPI `identity.yaml`
+  同步补充 path + response schema。
+- `identity/application/login_dev.go` + `entitlement/postgres/provisioner.go`：
+  密码校验成功后以独立短事务确保存在当前有效 Subscription；插入使用与部分唯一索引
+  匹配的 `ON CONFLICT ... DO NOTHING`，随后重新确认订阅时间窗口与 Plan 状态。
+  无法建立有效订阅时登录返回 500，不签发缺少权益基础的 Session。
+- `compose.yaml` + `scripts/goose_guard.sh`：迁移入口通过 guard 脚本执行，
+  `migrations-dev` 仅允许在 `APP_ENV=local/test` 且数据库 host 为本机或 Compose
+  PostgreSQL 时运行；普通 destructive migration 是否执行仍由 AGENTS.md 的人工授权
+  约束控制。
+
+安全 / 事务不变量落地：
+
+- Device fallback 的哈希输入包含 `userID`，不同用户不会碰撞；同一用户多台机器在
+  相同 UA/NAT 下仍可能共享 legacy bucket，因此不作为正式设备隔离依据。
+- `RevokeSessionsByDevice` 使用单条 CTE SQL 原子完成设备权属判断与 Session 更新；
+  不存在或跨用户设备统一返回 `404 device_not_found`。
+- 自动 provisioning 使用独立事务和部分索引冲突处理；提交前确认时间窗口与 Plan
+  状态，失败时保留 cause 并阻断登录，避免签发“登录成功但无权益”的 Session。
+- `identity/application` 的 Session Port 使用自身 `AuthLookup` 投影，不再反向依赖
+  PostgreSQL Adapter。
+- Session 鉴权合并 User/Session 查询，并只在 `last_used_at` 超过 10 分钟时执行
+  条件更新，普通热请求只执行一次查询。
+
+验证证据：
+
+- `make check`：contract-lint + gofmt + vet + build + 行数 + compose config
+  全部通过。
+- `make test`：`device_fallback_test.go` 覆盖 fallback、UUID、平台和 metadata
+  规范化；`session_service_test.go` 覆盖热 Session 不写与过期阈值刷新；
+  `login_dev_test.go` 覆盖 Repository 故障保真；`profile/domain/validate_test.go`
+  覆盖中文 rune 计数、超长、必填和越界；全部通过。
+- Docker 端到端 smoke（`compose up -d` 后 curl）：
+  - APP 兼容登录（无 `device` 字段，Content-Type JSON）返回 200 + Cookie；
+  - 同一 UA/IP 反复登录后 `SELECT count(*) FROM devices WHERE user_id=…` 保持
+    单条 fallback 记录，`device_name` 落 UA、`platform` 命中 `macos`；
+  - `DELETE /v1/devices/{deviceId}/sessions` 返回
+    `{"deviceId":"…","revokedSessionCount":1}`，随后同 Cookie 请求
+    `/v1/users/me` 返回 `401 session_invalid`；
+  - `UPDATE plans SET status='inactive'` 与 `UPDATE subscriptions SET ends_at`
+    过期后 `/entitlements` 返回 `no_active_subscription`；恢复后再次返回 active；
+  - 新账号 `carol@example.com` 首次登录后自动写入 `subscriptions` 单条 active
+    记录，重复登录不产生第二条，`/entitlements` 立即返回 development features。
+  - 隔离 QA 账号 8 个并发首次登录全部返回 200，最终只有 1 条 active
+    Subscription；测试账号及级联数据随后清理完成。
+  - 显式传入非法 Device UUID 返回 400；不存在/跨用户 Device 撤销返回 404；
+    合法设备撤销返回 200，原 Cookie 后续返回 401。
+
+新增/修改文件行数：最大 `identity/httpapi/handlers.go` 为 166 行，
+`device_fallback.go` 为 113 行；全部低于 220 行目标，无 200 行以上业务文件。
+
+未完成 / 未验证：
+
+- 正式 OTP 邮箱验证码 challenge/verify 与 Redis 限流；
+- Repository 层单元测试（仍依赖 Docker smoke 验证 SQL）；
+- CI 流水线；
+- Sync Pull/Bootstrap 与 APP LocalSyncStore 接线。
+
+下一切片建议：Phase 1 收尾 OTP + Redis 限流；或提升优先级，先做 Phase 2
+Pull/Bootstrap，让 APP 能开始消费已写入的 `sync_changes`。
+
 ## Phase 2：同步内核
 
 范围：

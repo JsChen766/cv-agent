@@ -16,11 +16,14 @@ import (
 type Options struct {
 	DevPasswordLogin bool
 	SecureCookie     bool
+	DeviceNSSalt     string
+	Provisioner      application.Provisioner
 }
 
 // Module bundles the identity application services and HTTP handler.
 type Module struct {
 	handler          *identityhttp.Handler
+	issuer           *application.SessionIssuer
 	devPasswordLogin bool
 }
 
@@ -33,16 +36,28 @@ func New(pool *pgxpool.Pool, opts Options) *Module {
 	devices := postgres.NewDeviceRepository(pool)
 	sessions := postgres.NewSessionRepository(pool)
 
-	issuer := application.NewSessionIssuer(users, devices, sessions, now)
-	devLogin := application.NewDevLoginService(users, credentials, issuer)
+	issuer := application.NewSessionIssuer(devices, sessions, now)
+	provisioner := opts.Provisioner
+	if provisioner == nil {
+		provisioner = application.NoopProvisioner{}
+	}
+	devLogin := application.NewDevLoginService(users, credentials, issuer, provisioner, opts.DeviceNSSalt)
 
 	handler := identityhttp.NewHandler(devLogin, issuer, opts.SecureCookie)
-	return &Module{handler: handler, devPasswordLogin: opts.DevPasswordLogin}
+	return &Module{handler: handler, issuer: issuer, devPasswordLogin: opts.DevPasswordLogin}
 }
 
-// Registrar returns the route registrar mounted under /v1.
+// Registrar returns the route registrar mounted under /v1. The identity
+// module owns the RequireSession middleware and re-exports it to protect
+// its own authenticated endpoints and downstream module routes.
 func (m *Module) Registrar() httpserver.RouteRegistrar {
 	return func(router chi.Router) {
-		m.handler.Routes(router, m.devPasswordLogin)
+		m.handler.Routes(router, m.devPasswordLogin, identityhttp.RequireSession(m.issuer))
 	}
+}
+
+// Authenticator returns the identity module's session authenticator so other
+// modules can mount RequireSession middleware without importing internals.
+func (m *Module) Authenticator() identityhttp.Authenticator {
+	return m.issuer
 }

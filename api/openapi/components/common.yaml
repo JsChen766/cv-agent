@@ -125,3 +125,9 @@ responses:
       application/json:
         schema:
           $ref: "#/schemas/ErrorEnvelope"
+  InternalServerError:
+    description: A server-side invariant or dependency failed.
+    content:
+      application/json:
+        schema:
+          $ref: "#/schemas/ErrorEnvelope"

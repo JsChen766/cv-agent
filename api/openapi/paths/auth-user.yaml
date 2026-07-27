@@ -33,6 +33,8 @@ login:
         $ref: ../components/common.yaml#/responses/BadRequest
       "401":
         $ref: ../components/common.yaml#/responses/Unauthorized
+      "500":
+        $ref: ../components/common.yaml#/responses/InternalServerError
 
 logout:
   post:

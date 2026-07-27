@@ -1,6 +1,7 @@
 schemas:
   LoginRequest:
     type: object
+    additionalProperties: false
     required:
       - email
       - password
@@ -11,6 +12,13 @@ schemas:
       password:
         type: string
         minLength: 1
+      device:
+        description: >
+          Optional device metadata. Existing APP clients omit this field, so
+          local/test development login uses a deterministic legacy-client
+          compatibility bucket. Accurate device isolation requires newer APP
+          clients and the production OTP flow to send a persisted install ID.
+        $ref: "#/schemas/DeviceInput"
   LoginUser:
     type: object
     required:

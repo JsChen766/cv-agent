@@ -101,7 +101,7 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-    entrypoint: ["goose"]
+    entrypoint: ["/workspace/scripts/goose_guard.sh"]
     command: ["status"]
 
 volumes:
