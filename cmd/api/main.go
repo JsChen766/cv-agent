@@ -8,12 +8,15 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"coolto.local/cv-agent-app-be/internal/modules/entitlement"
 	"coolto.local/cv-agent-app-be/internal/modules/identity"
 	identityhttp "coolto.local/cv-agent-app-be/internal/modules/identity/httpapi"
 	"coolto.local/cv-agent-app-be/internal/modules/profile"
 	syncmod "coolto.local/cv-agent-app-be/internal/modules/sync"
+	synchttp "coolto.local/cv-agent-app-be/internal/modules/sync/httpapi"
+	syncpg "coolto.local/cv-agent-app-be/internal/modules/sync/postgres"
 	"coolto.local/cv-agent-app-be/internal/platform/cache"
 	"coolto.local/cv-agent-app-be/internal/platform/config"
 	"coolto.local/cv-agent-app-be/internal/platform/database"
@@ -64,12 +67,39 @@ func run(ctx context.Context, logger *slog.Logger) error {
 	})
 	recorder := syncmod.NewPgxRecorder()
 	profileModule := profile.New(db, recorder)
+	now := func() time.Time { return time.Now().UTC() }
+	cursorCodec := syncmod.NewCursorCodec(
+		cfg.Sync.CursorSigningKey, cfg.Sync.CursorMaxAge, now,
+	)
+	changeRepository := syncpg.NewChangeRepository(db)
+	projectors := []syncmod.Projector{profileModule.Projector}
+	commandHandlers := []syncmod.CommandHandler{profileModule.Commands}
+	pushService, err := syncmod.NewPushService(
+		syncpg.NewTxRunner(db), syncpg.NewOperationRepository(), commandHandlers, now,
+	)
+	if err != nil {
+		return err
+	}
+	pullService, err := syncmod.NewPullService(
+		changeRepository, projectors, cursorCodec, now,
+	)
+	if err != nil {
+		return err
+	}
+	bootstrapService, err := syncmod.NewBootstrapService(
+		changeRepository, projectors, cursorCodec, now,
+	)
+	if err != nil {
+		return err
+	}
+	syncHandler := synchttp.NewHandler(pushService, pullService, bootstrapService)
 
 	authenticated := func(router chi.Router) {
 		router.Group(func(secured chi.Router) {
 			secured.Use(identityhttp.RequireSession(identityModule.Authenticator()))
 			entitlementModule.Handler.Routes(secured)
 			profileModule.Handler.Routes(secured)
+			syncHandler.Routes(secured)
 		})
 	}
 

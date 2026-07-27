@@ -91,5 +91,16 @@ JD 入参优先使用 `v2_importance/v2_category` 作为数据库规范值；兼
 - APP 为现有 Create 请求补充 `Idempotency-Key`；
 - APP 保存并回传各同步实体的 `entityVersion`；
 - Resume Replace 补充 `expectedEntityVersion`；
-- 新增 LocalSyncStore、Outbox、Sync Worker 和冲突 UI；
+- LocalSyncStore、Outbox 和 Sync Worker 内核已接入；Experience、JD、Resume、
+  Application 仍需逐模块切换到该存储并补冲突 UI；
 - 新增 OTP、Application Tracker、Interview 与 Reminder Adapter。
+
+## 9. Phase 2 已实现参考切片
+
+- `/sync/pull` 强制使用 HMAC 签名、用户绑定且有时效的 cursor；
+- `/sync/bootstrap` 在首屏捕获 `sync_changes` 高水位，结束后返回可直接 Pull 的 cursor；
+- `/sync/push` 按 operation 独立事务执行，Profile 写入、`sync_changes` 和
+  `sync_operations` 原子提交；
+- `user_profile/update` 是首个端到端参考实现，其他 entity/action 在其所属 Phase
+  注册前逐项返回 `validation_failed`；
+- `GET /users/me` 增加当前 Session 的 `deviceId`，APP 用它恢复对应同步 Worker。

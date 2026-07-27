@@ -23,14 +23,17 @@ Existing Local Stores
 └─ Browser Session
 
 New LocalSyncStore
-├─ synced_entities
+├─ sync_entities
 ├─ local_outbox
 ├─ sync_state
 ├─ sync_conflicts
 └─ sync_failures
 ```
 
-建议使用 SQLite，并评估 SQLCipher 或“系统安全存储中的主密钥 + 字段加密”。现有加密文件不迁移。
+已确认使用 Electron 内置 SQLite。实体和 Outbox 的业务 payload 使用 AES-256-GCM
+逐条加密；随机 256 位数据密钥只以 Electron `safeStorage` 包装后的形式落盘。
+实体 ID、版本、状态和索引字段保持可查询。系统安全存储不可用时拒绝打开同步库，
+现有加密文件不迁移。
 
 ## 3. 本地写入
 
@@ -112,6 +115,7 @@ GET /v1/sync/pull?cursor=<opaque-cursor>&limit=500
 
 - Cursor 对 APP 不透明；
 - Pull 按服务端 `change_seq` 排序；
+- Pull 必须携带服务端签名、用户绑定且有时效的不透明 cursor；首次同步必须 Bootstrap；
 - 每页在本地事务中应用；
 - 成功提交本地事务后才更新 cursor；
 - 删除以 tombstone 返回；
@@ -126,7 +130,7 @@ GET /v1/sync/pull?cursor=<opaque-cursor>&limit=500
 → Push 本地 Outbox
 → Pull 云端 changes
 → 处理冲突
-→ 保存 cursor
+→ 在应用远端页的同一本地事务中保存 cursor
 → 网络恢复、定时器或用户刷新时再次执行
 ```
 
@@ -209,7 +213,7 @@ POST /v1/product/applications/{id}/transitions
 ## 10. 重试策略
 
 - 网络错误和 5xx：指数退避并加随机抖动；
-- 401：尝试刷新会话一次；
+- 401：暂停后台同步，等待用户重新登录后创建新 Session 并重启 Worker；
 - 409：停止自动重试，进入冲突；
 - 422：停止重试，展示字段错误；
 - 429：遵守 `Retry-After`；

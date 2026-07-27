@@ -5,7 +5,9 @@ push:
     summary: Apply a bounded batch of offline operations independently.
     description: |
       Each operation is idempotent by operationId. One failed operation does
-      not erase results for other operations in the batch.
+      not erase results for other operations in the batch. Commands are
+      dispatched to the owning business module; unregistered entity/action
+      pairs return a per-operation validation_failed result.
     parameters:
       - $ref: ../components/common.yaml#/parameters/IdempotencyKey
     requestBody:
@@ -28,10 +30,14 @@ push:
                       $ref: ../components/sync.yaml#/schemas/SyncPushResult
       "401":
         $ref: ../components/common.yaml#/responses/Unauthorized
+      "400":
+        $ref: ../components/common.yaml#/responses/BadRequest
       "403":
         $ref: ../components/common.yaml#/responses/Forbidden
       "429":
         $ref: ../components/common.yaml#/responses/TooManyRequests
+      "500":
+        $ref: ../components/common.yaml#/responses/InternalServerError
 
 pull:
   get:
@@ -39,7 +45,12 @@ pull:
     tags: [Sync]
     summary: Pull ordered changes after an opaque cursor.
     parameters:
-      - $ref: ../components/common.yaml#/parameters/Cursor
+      - name: cursor
+        in: query
+        required: true
+        description: Signed opaque cursor returned by bootstrap or a previous pull.
+        schema:
+          type: string
       - $ref: ../components/common.yaml#/parameters/Limit
     responses:
       "200":
@@ -55,18 +66,26 @@ pull:
                       $ref: ../components/sync.yaml#/schemas/SyncPage
       "401":
         $ref: ../components/common.yaml#/responses/Unauthorized
+      "400":
+        $ref: ../components/common.yaml#/responses/BadRequest
       "409":
-        description: Cursor expired; rebuild only LocalSyncStore using bootstrap.
+        description: Cursor expired or absent; rebuild only LocalSyncStore using bootstrap.
         content:
           application/json:
-            schema:
-              $ref: ../components/common.yaml#/schemas/ErrorEnvelope
+              schema:
+                $ref: ../components/common.yaml#/schemas/ErrorEnvelope
+      "500":
+        $ref: ../components/common.yaml#/responses/InternalServerError
 
 bootstrap:
   post:
     operationId: bootstrapSyncProjection
     tags: [Sync]
     summary: Page through a complete cloud projection for a new or stale device.
+    description: |
+      The first page captures a server change watermark. Intermediate cursors
+      preserve that watermark; the final nextCursor is a pull cursor that starts
+      strictly after it, preventing a write during bootstrap from being lost.
     requestBody:
       required: true
       content:
@@ -87,5 +106,9 @@ bootstrap:
                       $ref: ../components/sync.yaml#/schemas/SyncPage
       "401":
         $ref: ../components/common.yaml#/responses/Unauthorized
+      "400":
+        $ref: ../components/common.yaml#/responses/BadRequest
       "403":
         $ref: ../components/common.yaml#/responses/Forbidden
+      "500":
+        $ref: ../components/common.yaml#/responses/InternalServerError

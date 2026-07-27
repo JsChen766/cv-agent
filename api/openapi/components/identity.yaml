@@ -37,6 +37,7 @@ schemas:
       - id
       - email
       - status
+      - deviceId
     properties:
       id:
         type: string
@@ -51,6 +52,8 @@ schemas:
           - suspended
           - pending_deletion
           - deleted
+      deviceId:
+        $ref: ./common.yaml#/schemas/Uuid
   LogoutResult:
     type: object
     required:

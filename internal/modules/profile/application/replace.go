@@ -7,21 +7,50 @@ import (
 
 	"coolto.local/cv-agent-app-be/internal/modules/profile/domain"
 	syncmod "coolto.local/cv-agent-app-be/internal/modules/sync"
+
+	"github.com/jackc/pgx/v5"
 )
 
 // Replace atomically applies the update, bumps entity_version and appends a
 // sync_changes upsert row. It rejects mismatched expected versions.
-func (s *Service) Replace(ctx context.Context, userID string, update domain.Update) (domain.Profile, error) {
+func (s *Service) Replace(
+	ctx context.Context,
+	userID string,
+	deviceID string,
+	update domain.Update,
+) (domain.Profile, error) {
 	if err := update.Validate(); err != nil {
 		return domain.Profile{}, err
 	}
-
 	tx, err := s.tx.BeginTx(ctx)
 	if err != nil {
 		return domain.Profile{}, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
+	next, err := s.ReplaceInTx(ctx, tx, userID, deviceID, update)
+	if err != nil {
+		return domain.Profile{}, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return domain.Profile{}, err
+	}
+	return next, nil
+}
+
+// ReplaceInTx applies the same Profile use case inside a caller-owned
+// transaction. Sync Push uses it so the business write and operation result
+// commit atomically.
+func (s *Service) ReplaceInTx(
+	ctx context.Context,
+	tx pgx.Tx,
+	userID string,
+	deviceID string,
+	update domain.Update,
+) (domain.Profile, error) {
+	if err := update.Validate(); err != nil {
+		return domain.Profile{}, err
+	}
 	current, err := s.repo.LoadForUpdate(ctx, tx, userID)
 	if err != nil {
 		return domain.Profile{}, err
@@ -30,7 +59,7 @@ func (s *Service) Replace(ctx context.Context, userID string, update domain.Upda
 		return domain.Profile{}, domain.ErrVersionConflict
 	}
 
-	next := applyUpdate(current, update, s.now())
+	next := applyUpdate(current, deviceID, update, s.now())
 	if err := s.repo.Replace(ctx, tx, next); err != nil {
 		if errors.Is(err, domain.ErrVersionConflict) {
 			return domain.Profile{}, domain.ErrVersionConflict
@@ -47,16 +76,19 @@ func (s *Service) Replace(ctx context.Context, userID string, update domain.Upda
 	}); err != nil {
 		return domain.Profile{}, err
 	}
-	if err := tx.Commit(ctx); err != nil {
-		return domain.Profile{}, err
-	}
 	return next, nil
 }
 
-func applyUpdate(current domain.Profile, u domain.Update, now time.Time) domain.Profile {
+func applyUpdate(
+	current domain.Profile,
+	deviceID string,
+	u domain.Update,
+	now time.Time,
+) domain.Profile {
 	next := current
 	next.EntityVersion = current.EntityVersion + 1
 	next.UpdatedAt = now
+	next.LastModifiedDeviceID = &deviceID
 	next.FullName = u.FullName
 	next.Phone = u.Phone
 	next.Location = u.Location

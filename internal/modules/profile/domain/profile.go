@@ -14,25 +14,26 @@ var (
 
 // Profile is the synchronized asset owned by a user. IDs equal user IDs.
 type Profile struct {
-	UserID            string
-	EntityVersion     int64
-	CreatedAt         time.Time
-	UpdatedAt         time.Time
-	FullName          *string
-	Phone             *string
-	Location          *string
-	CurrentTitle      *string
-	CurrentCompany    *string
-	YearsOfExperience *int16
-	CareerStage       *string
-	TargetRoles       []string
-	TargetIndustries  []string
-	TargetLocations   []string
-	PreferredLanguage string
-	ResumeStyle       *string
-	LinkedinURL       *string
-	GithubURL         *string
-	PersonalWebsite   *string
+	UserID               string
+	EntityVersion        int64
+	CreatedAt            time.Time
+	UpdatedAt            time.Time
+	LastModifiedDeviceID *string
+	FullName             *string
+	Phone                *string
+	Location             *string
+	CurrentTitle         *string
+	CurrentCompany       *string
+	YearsOfExperience    *int16
+	CareerStage          *string
+	TargetRoles          []string
+	TargetIndustries     []string
+	TargetLocations      []string
+	PreferredLanguage    string
+	ResumeStyle          *string
+	LinkedinURL          *string
+	GithubURL            *string
+	PersonalWebsite      *string
 }
 
 // Update is the atomic PUT payload applied under an optimistic lock.

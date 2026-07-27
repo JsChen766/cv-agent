@@ -68,7 +68,9 @@ func (h *Handler) Put(w http.ResponseWriter, r *http.Request) {
 		httpapi.WriteError(w, http.StatusBadRequest, "bad_request", message, requestID)
 		return
 	}
-	profile, err := h.service.Replace(r.Context(), principal.UserID, fromRequest(req))
+	profile, err := h.service.Replace(
+		r.Context(), principal.UserID, principal.DeviceID, fromRequest(req),
+	)
 	if err != nil {
 		writeError(w, r, err)
 		return

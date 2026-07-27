@@ -24,7 +24,6 @@
 
 Phase 0 完成前还需确认：
 
-- 本地 SyncStore 加密方案；
 - 云厂商、地域和邮件验证码供应商；
 - 功能 OpenAPI 审核结论。
 
@@ -373,6 +372,8 @@ Pull/Bootstrap，让 APP 能开始消费已写入的 `sync_changes`。
 
 ## Phase 2：同步内核
 
+状态：🟡 参考纵向切片已完成；通用内核可用，业务实体门槛随 Phase 3–5 验收。
+
 范围：
 
 - UUIDv7；
@@ -391,6 +392,50 @@ Pull/Bootstrap，让 APP 能开始消费已写入的 `sync_changes`。
 - 崩溃后安全重放；
 - 删除传播通过；
 - 500 条一页的同步压测通过。
+
+### Phase 2 纵向切片 1：Profile 参考链路与 APP 同步内核（2026-07-27）
+
+已完成：
+
+- 后端建立 HMAC-SHA256 签名、用户绑定、180 天有效期的 Pull/Bootstrap cursor；
+- Bootstrap 捕获用户 `sync_changes` 高水位，按 Projector 和实体 ID keyset 分页，
+  最后一页直接签发 Pull cursor；
+- Pull 按 `change_seq` 读取 `limit + 1`，页内折叠同实体变化，按业务模块批量 hydrate，
+  不由 Sync 模块读取业务表；
+- Push 按 operation 开独立事务，以用户 + `operationId` 事务级 advisory lock
+  串行化重放；Profile 更新、change 和幂等结果原子提交；
+- Profile 模块提供独立 Projector 与 CommandHandler，HTTP、同步编排、业务规则和 SQL
+  未堆入单一类型；`GET /users/me` 返回当前 Session 的 `deviceId`；
+- APP 建立持久设备 ID、SQLite `LocalSyncStore`、本地 Outbox、冲突/失败表、
+  Bootstrap/Pull 原子页写入、单 Worker 锁、Push-first 循环及指数退避；
+- payload 使用 AES-256-GCM，随机数据密钥只以 Electron `safeStorage` 包装后落盘；
+  系统安全存储不可用时 fail closed；
+- Profile 作为首个端到端协议参考；业务 Store 尚未切换到 LocalSyncStore，
+  通用 `enqueue` 入口留给 Phase 3–5 的业务 Adapter。
+
+验证证据：
+
+- 后端 `make fmt && make test && make check`：race tests、OpenAPI lint、gofmt、
+  vet、build、行数检查和 Compose config 全部通过；
+- Docker 联调验证 Bootstrap → Pull、缺 cursor 的 409、直接 Profile PUT 后 Pull、
+  Push applied、响应丢失后的 `already_applied`、幂等键复用冲突和陈旧版本冲突；
+- APP `npm run check`：181 个既有测试、Node/Vue 类型检查、Node build 和
+  Electron production build 全部通过；
+- SQLite/AES 内存 smoke 验证稳定 operation 去重、Push 结果回写、远端页覆盖和
+  cursor 同事务提交；
+- 所有新增业务文件均低于 250 行；最大文件为职责单一的
+  `local-outbox-store.ts`，未引入 Sync 上帝类。
+
+尚未完成 / 不在本切片冒充完成：
+
+- Experience/JD 的离线创建“只同步一次”、业务 CRUD 接线与双设备冲突属于 Phase 3；
+- Resume tombstone 和三路冲突属于 Phase 4，Application 状态机/删除传播属于 Phase 5；
+- 500 条/页真实多实体数据压测尚未执行；
+- Electron `safeStorage` 已通过类型和 production build，但尚未做打包应用内真实钥匙串 smoke；
+- cursor/change 和幂等记录的到期清理 job、生产密钥轮换与监控留待商业化阶段。
+
+因此 Phase 2 不标记整体完成；当前结果是后续业务模块必须复用的同步内核与 Profile
+参考实现，不应复制另一套同步事务或本地存储。
 
 ## Phase 3：Experience 与 JD
 

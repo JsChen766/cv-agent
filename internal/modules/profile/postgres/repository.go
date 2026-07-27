@@ -21,7 +21,7 @@ func NewRepository(pool *pgxpool.Pool) *Repository {
 }
 
 const columns = `
-id, entity_version, created_at, updated_at,
+id, entity_version, created_at, updated_at, last_modified_device_id,
 full_name, phone, location, current_title, current_company,
 years_of_experience, career_stage,
 target_roles, target_industries, target_locations,
@@ -42,29 +42,31 @@ func (r *Repository) LoadForUpdate(ctx context.Context, tx pgx.Tx, userID string
 
 const updateProfile = `
 UPDATE user_profiles SET
-    entity_version = $2,
-    updated_at = $3,
-    full_name = $4,
-    phone = $5,
-    location = $6,
-    current_title = $7,
-    current_company = $8,
-    years_of_experience = $9,
-    career_stage = $10,
-    target_roles = $11,
-    target_industries = $12,
-    target_locations = $13,
-    preferred_language = $14,
-    resume_style = $15,
-    linkedin_url = $16,
-    github_url = $17,
-    personal_website = $18
+	    entity_version = $2,
+	    updated_at = $3,
+	    last_modified_device_id = $4,
+	    full_name = $5,
+	    phone = $6,
+	    location = $7,
+	    current_title = $8,
+	    current_company = $9,
+	    years_of_experience = $10,
+	    career_stage = $11,
+	    target_roles = $12,
+	    target_industries = $13,
+	    target_locations = $14,
+	    preferred_language = $15,
+	    resume_style = $16,
+	    linkedin_url = $17,
+	    github_url = $18,
+	    personal_website = $19
 WHERE user_id = $1 AND entity_version = $2 - 1`
 
 // Replace applies a new profile row and enforces optimistic locking.
 func (r *Repository) Replace(ctx context.Context, tx pgx.Tx, profile domain.Profile) error {
 	tag, err := tx.Exec(ctx, updateProfile,
 		profile.UserID, profile.EntityVersion, profile.UpdatedAt,
+		profile.LastModifiedDeviceID,
 		profile.FullName, profile.Phone, profile.Location,
 		profile.CurrentTitle, profile.CurrentCompany,
 		profile.YearsOfExperience, profile.CareerStage,
@@ -85,6 +87,7 @@ func scanProfile(row pgx.Row) (domain.Profile, error) {
 	var p domain.Profile
 	err := row.Scan(
 		&p.UserID, &p.EntityVersion, &p.CreatedAt, &p.UpdatedAt,
+		&p.LastModifiedDeviceID,
 		&p.FullName, &p.Phone, &p.Location, &p.CurrentTitle, &p.CurrentCompany,
 		&p.YearsOfExperience, &p.CareerStage,
 		&p.TargetRoles, &p.TargetIndustries, &p.TargetLocations,

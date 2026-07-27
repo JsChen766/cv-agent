@@ -43,6 +43,9 @@ schemas:
       payload:
         type: object
         additionalProperties: true
+        description: |
+          Entity/action-specific command body. For user_profile/update this is
+          SyncUserProfilePayload; expectedVersion stays on the operation.
   SyncPushRequest:
     type: object
     additionalProperties: false
@@ -128,7 +131,9 @@ schemas:
       payload:
         type: object
         additionalProperties: true
-        description: Full current projection or a minimal delete tombstone.
+        description: |
+          Full current projection or a minimal delete tombstone. A user_profile
+          upsert uses SyncUserProfilePayload.
   SyncPage:
     type: object
     required:
@@ -163,3 +168,59 @@ schemas:
         minimum: 1
         maximum: 500
         default: 500
+  SyncUserProfilePayload:
+    type: object
+    additionalProperties: false
+    required:
+      - fullName
+      - phone
+      - location
+      - linkedinUrl
+      - githubUrl
+      - personalWebsite
+      - currentTitle
+      - currentCompany
+      - yearsOfExperience
+      - careerStage
+      - targetRoles
+      - targetIndustries
+      - targetLocations
+      - preferredLanguage
+      - resumeStyle
+    properties:
+      fullName:
+        type: [string, "null"]
+      phone:
+        type: [string, "null"]
+      location:
+        type: [string, "null"]
+      linkedinUrl:
+        type: [string, "null"]
+      githubUrl:
+        type: [string, "null"]
+      personalWebsite:
+        type: [string, "null"]
+      currentTitle:
+        type: [string, "null"]
+      currentCompany:
+        type: [string, "null"]
+      yearsOfExperience:
+        type: [integer, "null"]
+      careerStage:
+        type: [string, "null"]
+      targetRoles:
+        type: array
+        items:
+          type: string
+      targetIndustries:
+        type: array
+        items:
+          type: string
+      targetLocations:
+        type: array
+        items:
+          type: string
+      preferredLanguage:
+        type: string
+      resumeStyle:
+        type: [string, "null"]

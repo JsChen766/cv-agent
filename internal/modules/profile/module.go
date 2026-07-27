@@ -6,6 +6,7 @@ import (
 	"coolto.local/cv-agent-app-be/internal/modules/profile/application"
 	profilehttp "coolto.local/cv-agent-app-be/internal/modules/profile/httpapi"
 	"coolto.local/cv-agent-app-be/internal/modules/profile/postgres"
+	"coolto.local/cv-agent-app-be/internal/modules/profile/syncadapter"
 	syncmod "coolto.local/cv-agent-app-be/internal/modules/sync"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -13,7 +14,10 @@ import (
 
 // Module bundles the profile module components.
 type Module struct {
-	Handler *profilehttp.Handler
+	Handler   *profilehttp.Handler
+	Service   *application.Service
+	Projector syncmod.Projector
+	Commands  syncmod.CommandHandler
 }
 
 // New assembles the profile module. It reuses the shared sync recorder so
@@ -22,5 +26,9 @@ func New(pool *pgxpool.Pool, recorder syncmod.TxRecorder) *Module {
 	tx := application.NewPoolTxRunner(pool)
 	repo := postgres.NewRepository(pool)
 	service := application.NewService(tx, repo, recorder, func() time.Time { return time.Now().UTC() })
-	return &Module{Handler: profilehttp.NewHandler(service)}
+	return &Module{
+		Handler: profilehttp.NewHandler(service), Service: service,
+		Projector: syncadapter.NewProjector(service),
+		Commands:  syncadapter.NewCommandHandler(service),
+	}
 }

@@ -13,6 +13,7 @@ type Config struct {
 	HTTP            HTTP
 	Database        Database
 	Redis           Redis
+	Sync            Sync
 	SMTPAddress     string
 	DevPasswordAuth bool
 	ShutdownTimeout time.Duration
@@ -36,6 +37,11 @@ type Redis struct {
 	Address  string
 	Password string
 	DB       int
+}
+
+type Sync struct {
+	CursorSigningKey string
+	CursorMaxAge     time.Duration
 }
 
 type lookupFunc func(string) (string, bool)
@@ -87,6 +93,14 @@ func load(lookup lookupFunc) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	cfg.Sync.CursorSigningKey = value(lookup, "SYNC_CURSOR_SIGNING_KEY", "")
+	if cfg.Sync.CursorSigningKey == "" && isDevelopmentEnvironment(cfg.Environment) {
+		cfg.Sync.CursorSigningKey = "local-only-sync-cursor-signing-key"
+	}
+	cfg.Sync.CursorMaxAge, err = duration(lookup, "SYNC_CURSOR_MAX_AGE", "4320h")
+	if err != nil {
+		return Config{}, err
+	}
 	cfg.SMTPAddress = value(lookup, "SMTP_ADDRESS", "mailpit:1025")
 	cfg.DevPasswordAuth, err = boolValue(lookup, "ENABLE_DEV_PASSWORD_LOGIN", false)
 	if err != nil {
@@ -108,6 +122,12 @@ func (cfg Config) validate() error {
 	}
 	if cfg.Environment == "production" && cfg.DevPasswordAuth {
 		return errors.New("development password login is forbidden in production")
+	}
+	if len(cfg.Sync.CursorSigningKey) < 32 {
+		return errors.New("SYNC_CURSOR_SIGNING_KEY must contain at least 32 bytes")
+	}
+	if cfg.Sync.CursorMaxAge <= 0 {
+		return errors.New("SYNC_CURSOR_MAX_AGE must be positive")
 	}
 	return nil
 }
@@ -148,4 +168,9 @@ func boolValue(lookup lookupFunc, key string, fallback bool) (bool, error) {
 		return false, fmt.Errorf("%s: %w", key, err)
 	}
 	return result, nil
+}
+
+func isDevelopmentEnvironment(environment string) bool {
+	return environment == "local" || environment == "test" ||
+		environment == "dev" || environment == "development"
 }

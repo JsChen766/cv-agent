@@ -97,9 +97,10 @@ func (h *Handler) CurrentUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	httpapi.WriteSuccess(w, http.StatusOK, currentUserDTO{
-		ID:     principal.UserID,
-		Email:  principal.Email,
-		Status: principal.Status,
+		ID:       principal.UserID,
+		Email:    principal.Email,
+		Status:   principal.Status,
+		DeviceID: principal.DeviceID,
 	}, middleware.GetReqID(r.Context()))
 }
 
