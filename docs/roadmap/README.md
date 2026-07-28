@@ -819,6 +819,21 @@ transition 回放、错误父路径、跨 Application Interview 关联拒绝和�
 - 500 RPS 基线和故障演练通过；
 - staging APP 完整闭环通过。
 
+## N0 基线冻结（2026-07-28）
+
+跨仓库互相兼容的可追溯组合已记录（用户授权后 commit）：
+
+- **Backend commit**：`52edd98`（Experience date-precision baseline，migration 00008）
+- **App commit**：`283d486`（S1/S2 Experience & JD sync-store baseline）
+- **Migration version**：00008（00001–00008 全部 applied）
+- **Contract snapshot**：`contracts/app-v1/source-manifest.json` 17 个源文件 SHA-256 通过
+  `make contract-source-check`
+- **验证证据**：Backend `make check` + `make test`（-race）全绿；App `npm run check` 全绿
+  （196 tests）；行数最大 `jd/httpapi/handler.go` 224 行（<250 硬上限）
+- App 侧完整记录见
+  `../cv-agent-app/local-docs/p0-product-completion-roadmap/README.md` 的
+  「N0 冻结联调基线完成记录」。下一步进入 N1 真实 App 验收。
+
 ## 全路线约束
 
 - 跨仓库后续顺序以 `../cv-agent-app/local-docs/p0-product-completion-roadmap/README.md`
