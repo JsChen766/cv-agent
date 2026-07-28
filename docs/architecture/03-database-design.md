@@ -21,6 +21,7 @@
 - 数据库通过复合外键提供第二层用户所有权保护；
 - Resume 只保存云端当前文档；
 - Experience content revision 和 Application status event 保留不可变历史；
+- Experience 日期保留 `YYYY-MM`/`YYYY-MM-DD` 精度，结束日期可使用 `present`；
 - JD requirements 作为 JD 聚合原子更新；
 - 同步日志只存变更键，不复制大型正文；
 - 普通列表不读取 Resume JSONB 等大字段。
@@ -130,7 +131,10 @@ Schema v1 已完成用户审核，并按依赖实现为以下 Goose Migration：
 00004_application_tracker.sql
 00005_sync_and_reliability.sql
 00006_seed_development_plan.sql
+00007_tracker_parent_ownership.sql
+00008_experience_date_precision.sql
 ```
 
 每个 Migration 只负责结构变化；开发账号和演示业务数据使用独立 seed 命令。
-本地 Docker PostgreSQL 已成功从 version 1 升级至 version 6；Down 路径尚未执行破坏性验证。
+本地 Docker PostgreSQL 已成功从 version 1 升级至 version 8；`00008` 将 Experience
+起止日期改为保留 `YYYY-MM`/`YYYY-MM-DD`/`present` 精度的文本字段。Down 路径尚未执行破坏性验证。

@@ -41,6 +41,7 @@ Sync Push  ──┘
 - 响应业务字段使用 camelCase；
 - JD 的 `requirementMapId/sourceThreadId` 和 Experience 的 `factBankStatus` 仅作为 APP 过渡兼容
   字段，由 DTO 派生固定/null 值，不进入数据库；
+- Experience 日期保留 APP 的 `YYYY-MM`/`YYYY-MM-DD` 精度，`endDate` 可为 `present`；
 - Resume publish 的 `proposalId/sourceFingerprint/evidenceBindings/observation` 作为兼容输入接收，
   不建立 Agent 或 Observation 云端表；
 - 新增 `entityVersion` 后，APP Adapter/类型必须接线，写入不允许退回无条件覆盖。
@@ -94,8 +95,9 @@ JD 入参优先使用 `v2_importance/v2_category` 作为数据库规范值；兼
 - APP 的 Experience/JD/Resume Normalizer 与共享类型已接收 `entityVersion/deletedAt`，
   Resume metadata PATCH 会先读取当前版本再提交 `expectedVersion`；
 - Resume Replace 沿用 APP 已持久化的 `expectedContentHash`，并由后端拒绝无任何并发保护的替换；
-- LocalSyncStore、Outbox 和 Sync Worker 内核已接入；Experience、JD、Resume、
-  Application 仍需逐模块切换到该存储并补冲突 UI；
+- LocalSyncStore、Outbox 和 Sync Worker 内核已接入；Resume 以及 Experience/JD 的现有
+  创建/查询调用面已切换。Experience/JD 后续编辑/删除入口、Application 和统一冲突 UI
+  仍需按 App roadmap 逐模块接入；
 - OTP、Application Tracker、Interview 与 Reminder Adapter 尚未接入；本轮按用户要求不新增
   APP 当前不存在的 Tracker API/UI。
 

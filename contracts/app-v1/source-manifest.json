@@ -1,9 +1,9 @@
 {
-  "extractedAt": "2026-07-26",
+  "extractedAt": "2026-07-28",
   "sourceRepository": "../cv-agent-app",
   "files": {
-    "src/api/api-transport.ts": "ee4879fdae5fc77e395a33149117fd35ad438f420b084c394b5bf9354a28ac6f",
-    "src/api/types.ts": "e2d459c6dbdf94424e9043d6207157b0fe8c0a5827496bcd3e34e28171c751e0",
+    "src/api/api-transport.ts": "75bda74e86530e4a66a52d36ba201155e6c4e441d7b26d21c2530469446f525f",
+    "src/api/types.ts": "3730284d7b51de895abc55b44e1fd5b685fa142911be3d86233b8131bd8e1bbe",
     "src/api/normalizers.ts": "f0d4ec0fdff0631bc7b05b1ca321b4caa67f47f3e61c23541ac9b869e7fcd7a5",
     "src/api/experience-normalizers.ts": "5d251b13266c8ec2f8e45c6381e48dd73bd401fb563b5a12a55c6505fa7a3220",
     "src/api/experience-api.ts": "270418045e17e25be926c232bc9f8b682158082790a809d5ba005233c90d2e24",

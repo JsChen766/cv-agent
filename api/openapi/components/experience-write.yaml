@@ -31,11 +31,9 @@ schemas:
         type: [string, "null"]
         maxLength: 200
       start_date:
-        type: [string, "null"]
-        format: date
+        $ref: ./experience.yaml#/schemas/ExperienceStartDate
       end_date:
-        type: [string, "null"]
-        format: date
+        $ref: ./experience.yaml#/schemas/ExperienceEndDate
       tags:
         type: array
         items:

@@ -13,15 +13,18 @@
 | `organization` | `text` | nullable，最大 200 |
 | `role` | `text` | nullable，最大 200 |
 | `location` | `text` | nullable，最大 200 |
-| `start_date` | `date` | nullable |
-| `end_date` | `date` | nullable |
+| `start_date` | `text` | nullable，`YYYY-MM` 或 `YYYY-MM-DD` |
+| `end_date` | `text` | nullable，`YYYY-MM`、`YYYY-MM-DD` 或 `present` |
 | `tags` | `text[]` | NOT NULL，默认空数组 |
 | `status` | `text` | `active/archived` |
 | `current_revision_id` | `uuid` | 当前不可变 revision |
 
 约束：
 
-- `end_date IS NULL OR start_date IS NULL OR end_date >= start_date`；
+- 日期文本保留 APP 已确认的月份精度和“至今”语义，不擅自补日或丢弃 `present`；
+- 完整日期必须是真实日历日期；月份必须在 `01`–`12`；
+- 日期先后由 Domain 按区间比较：开始月份取该月第一天，结束月份取该月最后一天，
+  `present` 始终视为当前仍在进行；
 - 未删除 Experience 在业务层必须有 current revision；
 - `current_revision_id` 使用 `(user_id,current_revision_id)` 复合外键，确保 revision 同属该用户；
 - Service 还需校验 revision 的 `experience_id` 等于当前 Experience。

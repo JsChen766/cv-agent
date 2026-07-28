@@ -76,3 +76,33 @@ func TestTitleRuneCount(t *testing.T) {
 		t.Error("201 runes should be invalid")
 	}
 }
+
+func TestExperienceDatePrecision(t *testing.T) {
+	valid := [][2]*string{
+		{ptr("2022-01"), ptr("present")},
+		{ptr("2022-01"), ptr("2022-01")},
+		{ptr("2022-01-31"), ptr("2022-01")},
+		{ptr("2022-01"), ptr("2022-01-01")},
+	}
+	for _, dates := range valid {
+		input := validCreate()
+		input.StartDate, input.EndDate = dates[0], dates[1]
+		if err := input.Validate(); err != nil {
+			t.Errorf("expected valid range %q..%q: %v", *dates[0], *dates[1], err)
+		}
+	}
+
+	invalid := [][2]*string{
+		{ptr("2022"), ptr("2023-01")},
+		{ptr("2022-02-30"), ptr("present")},
+		{ptr("present"), ptr("present")},
+		{ptr("2022-02"), ptr("2022-01-31")},
+	}
+	for _, dates := range invalid {
+		input := validCreate()
+		input.StartDate, input.EndDate = dates[0], dates[1]
+		if err := input.Validate(); err == nil {
+			t.Errorf("expected invalid range %q..%q", *dates[0], *dates[1])
+		}
+	}
+}

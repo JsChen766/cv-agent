@@ -564,8 +564,25 @@ Pull/Bootstrap，让 APP 能开始消费已写入的 `sync_changes`。
 
 - 500 条/页多实体真实数据的同步分页压测（属 Phase 2 遗留压测项，未在本阶段执行）；
 - Repository 层单元测试（SQL 仍靠 Docker smoke 验证，与既有模块一致）；
-- APP 端 LocalSyncStore 将 Experience/JD 业务 Store 切换到同步链路的联调；
+- APP 端 Experience/JD 编辑、删除调用面及统一冲突 UI；现有创建/查询调用面已完成接线；
 - OTP、CI 等 Phase 1/其他阶段遗留项不在本阶段范围。
+
+### Phase 3 APP S1/S2 质检修复（2026-07-28）
+
+- 新增 `00008_experience_date_precision.sql`，Experience 起止日期由 PostgreSQL `date`
+  改为受约束文本，完整保留 App 的 `YYYY-MM`、`YYYY-MM-DD` 与结束日期 `present`；
+  Domain 同时校验真实日历日期及起止区间语义。
+- App 的 Experience/JD create 接入持久化幂等身份：同一 `idempotencyKey` 与相同请求
+  复用 entity/operation ID，同键不同请求在本地拒绝；JD requirement ID 不因重试漂移。
+- JD legacy category 在 Push 前统一归一到后端 canonical 枚举；未知值回落 `other`。
+- App 创建提示改为“本地已保存、等待同步”，projection 暴露同步状态，避免把 Outbox
+  入队误报为云端成功。
+- 验证：后端 `make fmt && make test && make check` 通过；App `npm run check` 通过
+  （196 tests）；空库从 `00001` 到 `00008` 迁移通过；真实 Docker Push/Bootstrap
+  保留 `2022-01` 到 `present`，JD `skill` 归一为 `technology`，重放返回
+  `already_applied`。临时测试业务资产已软删除。
+- 边界：当前 App 没有 Experience/JD 编辑/删除 executor 或 UI，因此本次只确认现有
+  创建/查询调用面；完整 update/delete、墓碑和冲突界面不得冒充完成。
 
 ## Phase 4：Resume Library
 
@@ -804,6 +821,9 @@ transition 回放、错误父路径、跨 Application Interview 关联拒绝和�
 
 ## 全路线约束
 
+- 跨仓库后续顺序以 `../cv-agent-app/local-docs/p0-product-completion-roadmap/README.md`
+  的“后续执行 Roadmap（2026-07-28）”为统一入口：N0 基线冻结 → N1 真实 App 验收 →
+  S3 Tracker 基础 → S4 Tracker 闭环 → S5 联调性能 → R1 上线准备；
 - 不引入 Agent、LLM 或 LangGraph；
 - 不建立云端 Resume 版本历史；
 - 不覆盖现有本地 Conversation/ResumeDraft；

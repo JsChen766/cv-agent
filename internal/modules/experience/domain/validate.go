@@ -27,7 +27,8 @@ func (c Create) Validate() error {
 		!checkOptional(c.Role, maxRole) ||
 		!checkOptional(c.Location, maxLocation) ||
 		!checkOptional(c.StartDate, maxDateText) ||
-		!checkOptional(c.EndDate, maxDateText) {
+		!checkOptional(c.EndDate, maxDateText) ||
+		!validExperienceDates(c.StartDate, c.EndDate) {
 		return ErrInvalidInput
 	}
 	if !checkTags(c.Tags) {
@@ -60,7 +61,8 @@ func (u Update) Validate() error {
 		!checkOptional(u.Role, maxRole) ||
 		!checkOptional(u.Location, maxLocation) ||
 		!checkOptional(u.StartDate, maxDateText) ||
-		!checkOptional(u.EndDate, maxDateText) {
+		!checkOptional(u.EndDate, maxDateText) ||
+		!validExperienceDates(u.StartDate, u.EndDate) {
 		return ErrInvalidInput
 	}
 	if u.Tags != nil && !checkTags(u.Tags) {

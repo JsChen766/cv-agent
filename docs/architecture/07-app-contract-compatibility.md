@@ -200,6 +200,9 @@ DELETE /v1/product/resumes/{resumeId}
 }
 ```
 
+`start_date` 接受 `YYYY-MM` 或 `YYYY-MM-DD`；`end_date` 另外接受 `present`。后端必须
+保留客户端提供的精度，不把月份静默补成某一天。
+
 ### JD 创建请求
 
 当前 Adapter 发送：

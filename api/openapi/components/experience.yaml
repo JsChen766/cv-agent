@@ -1,4 +1,18 @@
 schemas:
+  ExperienceStartDate:
+    type: [string, "null"]
+    pattern: '^[0-9]{4}-(0[1-9]|1[0-2])(-[0-9]{2})?$'
+    description: Month-precision or full calendar date. Full dates are validated by the domain.
+    examples:
+      - "2024-03"
+      - "2024-03-18"
+  ExperienceEndDate:
+    type: [string, "null"]
+    pattern: '^(present|[0-9]{4}-(0[1-9]|1[0-2])(-[0-9]{2})?)$'
+    description: Month-precision date, full calendar date, or present for an ongoing experience.
+    examples:
+      - present
+      - "2025-06"
   ExperienceCategory:
     type: string
     enum:
@@ -74,9 +88,9 @@ schemas:
       location:
         type: [string, "null"]
       startDate:
-        type: [string, "null"]
+        $ref: "#/schemas/ExperienceStartDate"
       endDate:
-        type: [string, "null"]
+        $ref: "#/schemas/ExperienceEndDate"
       tags:
         type: array
         items:
@@ -156,9 +170,9 @@ schemas:
       location:
         type: [string, "null"]
       start_date:
-        type: [string, "null"]
+        $ref: "#/schemas/ExperienceStartDate"
       end_date:
-        type: [string, "null"]
+        $ref: "#/schemas/ExperienceEndDate"
       tags:
         type: array
         items:
