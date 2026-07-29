@@ -33,8 +33,9 @@
 3. [`docs/roadmap/README.md`](docs/roadmap/README.md)，确认当前 Phase、完成状态和遗留项。
 
 跨仓库产品开发顺序以 `../cv-agent-app/local-docs/p0-product-completion-roadmap/README.md`
-为唯一入口。当前 J0–J3、E0–E2 已完成，下一阶段为 APP 侧 E3；后端 Experience 的完整更新、
-稳定 revision、搜索与冲突 baseline 契约已经收口，E2 未修改后端业务代码；Phase 5 的 Application 主记录及
+为唯一入口。当前 J0–J3、E0–E3 已完成，下一阶段为 APP 侧 E4；后端 Experience 的完整更新、
+稳定 revision、搜索与冲突 baseline 契约已经收口；E3 质检补齐了 Sync 幂等重放的完整
+`serverEntity` 快照语义，防止普通版本冲突被误判为服务端删除；Phase 5 的 Application 主记录及
 `resumeContentHashSnapshot` 契约也已接通，但 Interview、Note、Reminder 与本地通知仍按后续
 S4/S5 推进，不得提前混入其他阶段。
 

@@ -34,9 +34,14 @@ func (r *OperationRepository) Lock(
 
 const findOperation = `
 SELECT request_hash, result_status, entity_id, applied_version,
-       COALESCE(result_metadata->>'errorCode', '')
+       result_metadata
 FROM sync_operations
 WHERE user_id = $1 AND operation_id = $2`
+
+type operationResultMetadata struct {
+	ErrorCode    string `json:"errorCode,omitempty"`
+	ServerEntity any    `json:"serverEntity,omitempty"`
+}
 
 func (r *OperationRepository) Find(
 	ctx context.Context,
@@ -45,9 +50,10 @@ func (r *OperationRepository) Find(
 	operationID string,
 ) (*syncmod.StoredOperation, error) {
 	var stored syncmod.StoredOperation
+	var encodedMetadata []byte
 	err := tx.QueryRow(ctx, findOperation, userID, operationID).Scan(
 		&stored.RequestHash, &stored.Status, &stored.EntityID,
-		&stored.AppliedVersion, &stored.ErrorCode,
+		&stored.AppliedVersion, &encodedMetadata,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
@@ -55,6 +61,12 @@ func (r *OperationRepository) Find(
 	if err != nil {
 		return nil, err
 	}
+	var metadata operationResultMetadata
+	if err := json.Unmarshal(encodedMetadata, &metadata); err != nil {
+		return nil, err
+	}
+	stored.ErrorCode = metadata.ErrorCode
+	stored.ServerEntity = metadata.ServerEntity
 	return &stored, nil
 }
 
@@ -74,9 +86,8 @@ func (r *OperationRepository) Save(
 	createdAt time.Time,
 	expiresAt time.Time,
 ) error {
-	metadata := map[string]string{}
-	if result.ErrorCode != "" {
-		metadata["errorCode"] = result.ErrorCode
+	metadata := operationResultMetadata{
+		ErrorCode: result.ErrorCode, ServerEntity: result.ServerEntity,
 	}
 	encodedMetadata, err := json.Marshal(metadata)
 	if err != nil {

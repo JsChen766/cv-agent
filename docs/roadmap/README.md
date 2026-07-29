@@ -603,6 +603,21 @@ Pull/Bootstrap，让 APP 能开始消费已写入的 `sync_changes`。
   正文/标签搜索、active/archived 过滤和软删 tombstone；临时业务资产已软删除。
 - E1 没有实现或修改经历仓库 UI；页面布局、状态表达和响应式方案仍由 E2 在用户确认后实现。
 
+### Phase 3 APP E3 Experience 维护与冲突恢复收口（2026-07-29）
+
+- APP 已按用户确认方案完成 Experience 新建、编辑、归档、恢复、软删除、不可变 revision 和
+  未保存保护；所有写入继续经过不可变 Proposal、LocalSyncStore/Outbox 与乐观锁，Renderer
+  不绕过同步链路。
+- 真实 Electron + Docker 双 Worker 冲突验收发现：`sync_operations` 的幂等重放只恢复状态、
+  版本和错误码，没有恢复首次结果中的 `serverEntity`。冲突操作在响应丢失或并发重放后会返回
+  `appliedVersion != null` 但实体为空，APP 因而把仍存在的服务端 Experience 误判为墓碑。
+- 同步设计已明确同一 `operationId` 必须重放首次结果的完整恢复语义。PostgreSQL Adapter 现在把
+  `serverEntity` 与错误码一同保存在既有 `result_metadata` JSONB，并在 replay 时恢复；无 API 字段、
+  OpenAPI shape 或 migration 变化。新增纯回归测试覆盖 conflict replay 保留服务端快照。
+- Backend Docker `make fmt`、`make test`（`-race`）和 `make check` 全绿；OpenAPI lint、
+  gofmt、vet、build、行数门禁及 Compose 校验通过。修复后真实双 Worker 同 operation 重放仍显示
+  正确服务端正文，APP 完成对照、编辑锁定、重新应用本地修改并同步收敛；临时资产已软删除。
+
 ## Phase 4：Resume Library
 
 范围：

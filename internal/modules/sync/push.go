@@ -153,7 +153,7 @@ func replay(
 	}
 	return fromApply(base, ApplyResult{
 		Status: status, AppliedVersion: stored.AppliedVersion,
-		ErrorCode: stored.ErrorCode,
+		ErrorCode: stored.ErrorCode, ServerEntity: stored.ServerEntity,
 	})
 }
 

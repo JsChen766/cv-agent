@@ -77,6 +77,7 @@ type StoredOperation struct {
 	EntityID       string
 	AppliedVersion *int64
 	ErrorCode      string
+	ServerEntity   any
 }
 
 type OperationRepository interface {
