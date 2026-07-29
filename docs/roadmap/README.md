@@ -868,13 +868,28 @@ transition 回放、错误父路径、跨 Application Interview 关联拒绝和�
 - 质检通过：`make check`、`make test`（`-race`）、OpenAPI recommended lint、跨仓库 17 项来源
   SHA-256 校验；JD handler 224 行仍是既有目标提示，低于 250 行硬上限。
 
+### Phase 5 / APP S4 Tracker 闭环联调记录（2026-07-30）
+
+- APP 已完成 Interview、Note、Reminder 独立 Local-first Store、严格 Mapper、Proposal/IPC 与
+  “概览 / 日程 / 记录”详情交互；真实 Docker 链路覆盖子实体创建、离线重放、双设备 Note 冲突、
+  status event、父 Application 删除级联 tombstone，以及 JD/Resume 不级联删除。
+- 真实联调发现旧 Pull cursor 遇到已软删除 Application 的历史 status event 时，
+  `HydrateStatusEvents` 因要求父记录 active 而遗漏 projection，令整页返回 `internal_error`。
+  hydration 现只按不可变 event 自身 `user_id` 做所有权约束，允许读取已软删除父记录的历史事件；
+  active-only Bootstrap 和业务读取语义未改变，旧 cursor 已实际恢复并追到最新 event。
+- QA Application、1 场 Interview、2 条 Note、2 个 Reminder 已通过正式删除链软删除；数据库确认
+  子实体 tombstone 全部存在且关联 JD/Resume 仍 active。`make test`（含 `-race`）与 `make check`
+  全绿，OpenAPI、gofmt、vet、build、行数和 Compose 门禁通过。
+- S4 尚未最终完成：未打包 Electron 在当前 macOS 上创建系统通知时返回 `UNErrorDomain 1`，APP 未将
+  失败展示伪写为 delivered。需在允许通知的已打包/签名应用身份下补一次真实 show/去重验收；S5
+  未开始。
+
 未完成 / 未验证：
 
 - 500 条/页多实体真实数据的看板与同步分页性能压测（Phase 2 遗留压测项，Phase 5
   完成门槛「看板列表满足性能目标」尚未用真实指标验证）；
 - Repository 层单元测试（SQL 仍靠 Docker smoke 验证，与既有模块一致）；
-- APP 端 Interview、Note、Reminder 的 LocalSyncStore、详情布局及完整子实体联调；
-- 面试提醒「本地系统通知执行」属 APP 端职责，后端只存状态，留待 S4/S5 验证。
+- 已打包/签名 APP 身份下的本地系统通知 show 与同设备防重复实测；后端只存提醒状态，不执行通知。
 
 ## Phase 6：商业化准备
 

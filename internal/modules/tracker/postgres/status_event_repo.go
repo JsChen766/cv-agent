@@ -109,10 +109,12 @@ func (r *ApplicationRepository) ListStatusEvents(
 func (r *ApplicationRepository) HydrateStatusEvents(
 	ctx context.Context, userID string, ids []string,
 ) (map[string]domain.StatusEvent, error) {
+	// Pull may resume before an Application tombstone whose earlier status event
+	// is still in the change feed. Hydration must therefore include immutable
+	// events for soft-deleted parents; e.user_id remains the ownership boundary.
 	rows, err := r.pool.Query(ctx,
 		"SELECT "+statusEventColumns+" FROM application_status_events e"+
-			" JOIN applications a ON a.user_id = e.user_id AND a.id = e.application_id"+
-			" WHERE e.user_id = $1 AND e.id = ANY($2) AND a.deleted_at IS NULL",
+			" WHERE e.user_id = $1 AND e.id = ANY($2)",
 		userID, ids)
 	if err != nil {
 		return nil, err
