@@ -93,6 +93,25 @@ func TestCreateValidate(t *testing.T) {
 	if err := badDedupe.Validate(); err == nil {
 		t.Fatal("invalid dedupe key must fail")
 	}
+
+	resumeID := "019fcb77-7c45-7b53-8d6a-9f6df5cf27e5"
+	hash := strings.Repeat("a", 64)
+	withSnapshot := valid
+	withSnapshot.ResumeID = &resumeID
+	withSnapshot.ResumeContentHashSnapshot = &hash
+	if err := withSnapshot.Validate(); err != nil {
+		t.Fatalf("valid resume content hash snapshot failed: %v", err)
+	}
+	badHash := "not-a-hash"
+	withSnapshot.ResumeContentHashSnapshot = &badHash
+	if err := withSnapshot.Validate(); err == nil {
+		t.Fatal("invalid resume content hash snapshot must fail")
+	}
+	orphanHash := valid
+	orphanHash.ResumeContentHashSnapshot = &hash
+	if err := orphanHash.Validate(); err == nil {
+		t.Fatal("content hash snapshot without resume must fail")
+	}
 }
 
 func TestUpdateValidate(t *testing.T) {
@@ -107,6 +126,12 @@ func TestUpdateValidate(t *testing.T) {
 	zeroVersion.ExpectedVersion = 0
 	if err := zeroVersion.Validate(); err == nil {
 		t.Fatal("expectedVersion < 1 must fail")
+	}
+	hash := strings.Repeat("b", 64)
+	orphanHash := valid
+	orphanHash.ResumeContentHashSnapshot = &hash
+	if err := orphanHash.Validate(); err == nil {
+		t.Fatal("content hash snapshot without resume must fail")
 	}
 }
 

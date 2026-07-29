@@ -59,6 +59,9 @@ func (s *ApplicationService) UpdateInTx(
 		if err != nil {
 			return domain.Application{}, err
 		}
+		if update.ResumeID != nil && update.ResumeContentHashSnapshot == nil {
+			return domain.Application{}, domain.ErrInvalidInput
+		}
 	}
 	now := s.now()
 	next := current
@@ -69,6 +72,9 @@ func (s *ApplicationService) UpdateInTx(
 	next.ResumeID = update.ResumeID
 	next.JdTitleSnapshot = jdSnapshot
 	next.ResumeTitleSnapshot = resumeSnapshot
+	if resumeChanged {
+		next.ResumeContentHashSnapshot = update.ResumeContentHashSnapshot
+	}
 	next.CompanyName = update.CompanyName
 	next.RoleName = update.RoleName
 	next.DeliveryMethod = update.DeliveryMethod

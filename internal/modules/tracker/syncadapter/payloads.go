@@ -3,27 +3,28 @@ package syncadapter
 import "coolto.local/cv-agent-app-be/internal/modules/tracker/domain"
 
 type applicationPayload struct {
-	ID                  string  `json:"id"`
-	JdID                *string `json:"jdId"`
-	ResumeID            *string `json:"resumeId"`
-	CompanyName         string  `json:"companyName"`
-	RoleName            string  `json:"roleName"`
-	JdTitleSnapshot     *string `json:"jdTitleSnapshot"`
-	ResumeTitleSnapshot *string `json:"resumeTitleSnapshot"`
-	DeliveryMethod      string  `json:"deliveryMethod"`
-	TargetURL           *string `json:"targetUrl"`
-	AppliedAt           *string `json:"appliedAt"`
-	Status              string  `json:"status"`
-	PendingConfirmation bool    `json:"pendingConfirmation"`
-	Source              string  `json:"source"`
-	DedupeKey           *string `json:"dedupeKey"`
-	CompanyBusiness     *string `json:"companyBusiness"`
-	RoleSummary         *string `json:"roleSummary"`
-	CompanyCulture      *string `json:"companyCulture"`
-	RejectionReason     *string `json:"rejectionReason"`
-	EntityVersion       int64   `json:"entityVersion"`
-	CreatedAt           string  `json:"createdAt"`
-	UpdatedAt           string  `json:"updatedAt"`
+	ID                        string  `json:"id"`
+	JdID                      *string `json:"jdId"`
+	ResumeID                  *string `json:"resumeId"`
+	CompanyName               string  `json:"companyName"`
+	RoleName                  string  `json:"roleName"`
+	JdTitleSnapshot           *string `json:"jdTitleSnapshot"`
+	ResumeTitleSnapshot       *string `json:"resumeTitleSnapshot"`
+	ResumeContentHashSnapshot *string `json:"resumeContentHashSnapshot"`
+	DeliveryMethod            string  `json:"deliveryMethod"`
+	TargetURL                 *string `json:"targetUrl"`
+	AppliedAt                 *string `json:"appliedAt"`
+	Status                    string  `json:"status"`
+	PendingConfirmation       bool    `json:"pendingConfirmation"`
+	Source                    string  `json:"source"`
+	DedupeKey                 *string `json:"dedupeKey"`
+	CompanyBusiness           *string `json:"companyBusiness"`
+	RoleSummary               *string `json:"roleSummary"`
+	CompanyCulture            *string `json:"companyCulture"`
+	RejectionReason           *string `json:"rejectionReason"`
+	EntityVersion             int64   `json:"entityVersion"`
+	CreatedAt                 string  `json:"createdAt"`
+	UpdatedAt                 string  `json:"updatedAt"`
 }
 
 func applicationPayloadOf(a domain.Application) applicationPayload {
@@ -31,7 +32,8 @@ func applicationPayloadOf(a domain.Application) applicationPayload {
 		ID: a.ID, JdID: a.JdID, ResumeID: a.ResumeID,
 		CompanyName: a.CompanyName, RoleName: a.RoleName,
 		JdTitleSnapshot: a.JdTitleSnapshot, ResumeTitleSnapshot: a.ResumeTitleSnapshot,
-		DeliveryMethod: string(a.DeliveryMethod), TargetURL: a.TargetURL,
+		ResumeContentHashSnapshot: a.ResumeContentHashSnapshot,
+		DeliveryMethod:            string(a.DeliveryMethod), TargetURL: a.TargetURL,
 		AppliedAt: rfc3339Ptr(a.AppliedAt), Status: string(a.Status),
 		PendingConfirmation: a.PendingConfirmation, Source: string(a.Source),
 		DedupeKey: a.DedupeKey, CompanyBusiness: a.CompanyBusiness,

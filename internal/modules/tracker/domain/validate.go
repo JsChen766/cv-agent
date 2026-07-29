@@ -13,7 +13,7 @@ const (
 	maxText      = 20000
 )
 
-var dedupeKeyPattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
+var hashPattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
 // Validate enforces domain constraints for recording an application.
 func (c Create) Validate() error {
@@ -30,6 +30,12 @@ func (c Create) Validate() error {
 		return ErrInvalidInput
 	}
 	if !checkDedupeKey(c.DedupeKey) {
+		return ErrInvalidInput
+	}
+	if !checkContentHash(c.ResumeContentHashSnapshot) {
+		return ErrInvalidInput
+	}
+	if c.ResumeID == nil && c.ResumeContentHashSnapshot != nil {
 		return ErrInvalidInput
 	}
 	if !checkText(c.CompanyBusiness) || !checkText(c.RoleSummary) ||
@@ -54,6 +60,12 @@ func (u Update) Validate() error {
 		return ErrInvalidInput
 	}
 	if !checkURL(u.TargetURL) {
+		return ErrInvalidInput
+	}
+	if !checkContentHash(u.ResumeContentHashSnapshot) {
+		return ErrInvalidInput
+	}
+	if u.ResumeID == nil && u.ResumeContentHashSnapshot != nil {
 		return ErrInvalidInput
 	}
 	if !checkText(u.CompanyBusiness) || !checkText(u.RoleSummary) ||
@@ -100,5 +112,12 @@ func checkDedupeKey(value *string) bool {
 	if value == nil {
 		return true
 	}
-	return dedupeKeyPattern.MatchString(*value)
+	return hashPattern.MatchString(*value)
+}
+
+func checkContentHash(value *string) bool {
+	if value == nil {
+		return true
+	}
+	return hashPattern.MatchString(*value)
 }

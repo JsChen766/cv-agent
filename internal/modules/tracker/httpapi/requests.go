@@ -7,22 +7,23 @@ import (
 )
 
 type applicationCreateRequest struct {
-	ID                  string     `json:"id"`
-	JdID                *string    `json:"jdId"`
-	ResumeID            *string    `json:"resumeId"`
-	CompanyName         string     `json:"companyName"`
-	RoleName            string     `json:"roleName"`
-	JdTitleSnapshot     *string    `json:"jdTitleSnapshot"`
-	ResumeTitleSnapshot *string    `json:"resumeTitleSnapshot"`
-	DeliveryMethod      string     `json:"deliveryMethod"`
-	TargetURL           *string    `json:"targetUrl"`
-	AppliedAt           *time.Time `json:"appliedAt"`
-	PendingConfirmation bool       `json:"pendingConfirmation"`
-	Source              string     `json:"source"`
-	DedupeKey           *string    `json:"dedupeKey"`
-	CompanyBusiness     *string    `json:"companyBusiness"`
-	RoleSummary         *string    `json:"roleSummary"`
-	CompanyCulture      *string    `json:"companyCulture"`
+	ID                        string     `json:"id"`
+	JdID                      *string    `json:"jdId"`
+	ResumeID                  *string    `json:"resumeId"`
+	CompanyName               string     `json:"companyName"`
+	RoleName                  string     `json:"roleName"`
+	JdTitleSnapshot           *string    `json:"jdTitleSnapshot"`
+	ResumeTitleSnapshot       *string    `json:"resumeTitleSnapshot"`
+	ResumeContentHashSnapshot *string    `json:"resumeContentHashSnapshot"`
+	DeliveryMethod            string     `json:"deliveryMethod"`
+	TargetURL                 *string    `json:"targetUrl"`
+	AppliedAt                 *time.Time `json:"appliedAt"`
+	PendingConfirmation       bool       `json:"pendingConfirmation"`
+	Source                    string     `json:"source"`
+	DedupeKey                 *string    `json:"dedupeKey"`
+	CompanyBusiness           *string    `json:"companyBusiness"`
+	RoleSummary               *string    `json:"roleSummary"`
+	CompanyCulture            *string    `json:"companyCulture"`
 }
 
 func (req applicationCreateRequest) toDomain() domain.Create {
@@ -30,7 +31,8 @@ func (req applicationCreateRequest) toDomain() domain.Create {
 		ID: req.ID, JdID: req.JdID, ResumeID: req.ResumeID,
 		CompanyName: req.CompanyName, RoleName: req.RoleName,
 		JdTitleSnapshot: req.JdTitleSnapshot, ResumeTitleSnapshot: req.ResumeTitleSnapshot,
-		DeliveryMethod: domain.DeliveryMethod(req.DeliveryMethod), TargetURL: req.TargetURL,
+		ResumeContentHashSnapshot: req.ResumeContentHashSnapshot,
+		DeliveryMethod:            domain.DeliveryMethod(req.DeliveryMethod), TargetURL: req.TargetURL,
 		AppliedAt: normalizeTime(req.AppliedAt), PendingConfirmation: req.PendingConfirmation,
 		Source: domain.Source(req.Source), DedupeKey: req.DedupeKey,
 		CompanyBusiness: req.CompanyBusiness, RoleSummary: req.RoleSummary,
@@ -39,25 +41,27 @@ func (req applicationCreateRequest) toDomain() domain.Create {
 }
 
 type applicationUpdateRequest struct {
-	ExpectedVersion     int64      `json:"expectedVersion"`
-	JdID                *string    `json:"jdId"`
-	ResumeID            *string    `json:"resumeId"`
-	CompanyName         string     `json:"companyName"`
-	RoleName            string     `json:"roleName"`
-	DeliveryMethod      string     `json:"deliveryMethod"`
-	TargetURL           *string    `json:"targetUrl"`
-	AppliedAt           *time.Time `json:"appliedAt"`
-	PendingConfirmation bool       `json:"pendingConfirmation"`
-	CompanyBusiness     *string    `json:"companyBusiness"`
-	RoleSummary         *string    `json:"roleSummary"`
-	CompanyCulture      *string    `json:"companyCulture"`
-	RejectionReason     *string    `json:"rejectionReason"`
+	ExpectedVersion           int64      `json:"expectedVersion"`
+	JdID                      *string    `json:"jdId"`
+	ResumeID                  *string    `json:"resumeId"`
+	ResumeContentHashSnapshot *string    `json:"resumeContentHashSnapshot"`
+	CompanyName               string     `json:"companyName"`
+	RoleName                  string     `json:"roleName"`
+	DeliveryMethod            string     `json:"deliveryMethod"`
+	TargetURL                 *string    `json:"targetUrl"`
+	AppliedAt                 *time.Time `json:"appliedAt"`
+	PendingConfirmation       bool       `json:"pendingConfirmation"`
+	CompanyBusiness           *string    `json:"companyBusiness"`
+	RoleSummary               *string    `json:"roleSummary"`
+	CompanyCulture            *string    `json:"companyCulture"`
+	RejectionReason           *string    `json:"rejectionReason"`
 }
 
 func (req applicationUpdateRequest) toDomain() domain.Update {
 	return domain.Update{
 		ExpectedVersion: req.ExpectedVersion, JdID: req.JdID, ResumeID: req.ResumeID,
-		CompanyName: req.CompanyName, RoleName: req.RoleName,
+		ResumeContentHashSnapshot: req.ResumeContentHashSnapshot,
+		CompanyName:               req.CompanyName, RoleName: req.RoleName,
 		DeliveryMethod: domain.DeliveryMethod(req.DeliveryMethod), TargetURL: req.TargetURL,
 		AppliedAt: normalizeTime(req.AppliedAt), PendingConfirmation: req.PendingConfirmation,
 		CompanyBusiness: req.CompanyBusiness, RoleSummary: req.RoleSummary,

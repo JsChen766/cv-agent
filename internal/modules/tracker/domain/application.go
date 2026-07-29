@@ -51,68 +51,71 @@ const (
 // Application is a synchronized tracker record owned by a user. Company, role
 // and title snapshots are frozen at write time and never follow JD/Resume edits.
 type Application struct {
-	ID                   string
-	UserID               string
-	EntityVersion        int64
-	CreatedAt            time.Time
-	UpdatedAt            time.Time
-	DeletedAt            *time.Time
-	LastModifiedDeviceID *string
-	JdID                 *string
-	ResumeID             *string
-	CompanyName          string
-	RoleName             string
-	JdTitleSnapshot      *string
-	ResumeTitleSnapshot  *string
-	DeliveryMethod       DeliveryMethod
-	TargetURL            *string
-	AppliedAt            *time.Time
-	Status               Status
-	PendingConfirmation  bool
-	Source               Source
-	DedupeKey            *string
-	CompanyBusiness      *string
-	RoleSummary          *string
-	CompanyCulture       *string
-	RejectionReason      *string
+	ID                        string
+	UserID                    string
+	EntityVersion             int64
+	CreatedAt                 time.Time
+	UpdatedAt                 time.Time
+	DeletedAt                 *time.Time
+	LastModifiedDeviceID      *string
+	JdID                      *string
+	ResumeID                  *string
+	CompanyName               string
+	RoleName                  string
+	JdTitleSnapshot           *string
+	ResumeTitleSnapshot       *string
+	ResumeContentHashSnapshot *string
+	DeliveryMethod            DeliveryMethod
+	TargetURL                 *string
+	AppliedAt                 *time.Time
+	Status                    Status
+	PendingConfirmation       bool
+	Source                    Source
+	DedupeKey                 *string
+	CompanyBusiness           *string
+	RoleSummary               *string
+	CompanyCulture            *string
+	RejectionReason           *string
 }
 
 // Create is the validated payload for recording an application.
 type Create struct {
-	ID                  string
-	JdID                *string
-	ResumeID            *string
-	CompanyName         string
-	RoleName            string
-	JdTitleSnapshot     *string
-	ResumeTitleSnapshot *string
-	DeliveryMethod      DeliveryMethod
-	TargetURL           *string
-	AppliedAt           *time.Time
-	PendingConfirmation bool
-	Source              Source
-	DedupeKey           *string
-	CompanyBusiness     *string
-	RoleSummary         *string
-	CompanyCulture      *string
+	ID                        string
+	JdID                      *string
+	ResumeID                  *string
+	CompanyName               string
+	RoleName                  string
+	JdTitleSnapshot           *string
+	ResumeTitleSnapshot       *string
+	ResumeContentHashSnapshot *string
+	DeliveryMethod            DeliveryMethod
+	TargetURL                 *string
+	AppliedAt                 *time.Time
+	PendingConfirmation       bool
+	Source                    Source
+	DedupeKey                 *string
+	CompanyBusiness           *string
+	RoleSummary               *string
+	CompanyCulture            *string
 }
 
 // Update is the atomic PUT payload applied under an optimistic lock. It never
 // changes status; transitions use the dedicated command.
 type Update struct {
-	ExpectedVersion     int64
-	JdID                *string
-	ResumeID            *string
-	CompanyName         string
-	RoleName            string
-	DeliveryMethod      DeliveryMethod
-	TargetURL           *string
-	AppliedAt           *time.Time
-	PendingConfirmation bool
-	CompanyBusiness     *string
-	RoleSummary         *string
-	CompanyCulture      *string
-	RejectionReason     *string
+	ExpectedVersion           int64
+	JdID                      *string
+	ResumeID                  *string
+	ResumeContentHashSnapshot *string
+	CompanyName               string
+	RoleName                  string
+	DeliveryMethod            DeliveryMethod
+	TargetURL                 *string
+	AppliedAt                 *time.Time
+	PendingConfirmation       bool
+	CompanyBusiness           *string
+	RoleSummary               *string
+	CompanyCulture            *string
+	RejectionReason           *string
 }
 
 // Transition is the validated payload for a status change command.

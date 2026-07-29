@@ -14,6 +14,7 @@
 | `role_name` | `text` | NOT NULL，1–240 |
 | `jd_title_snapshot` | `text` | nullable |
 | `resume_title_snapshot` | `text` | nullable |
+| `resume_content_hash_snapshot` | `text` | nullable，实际投递 Resume 内容的 64 位 SHA-256 指纹 |
 | `delivery_method` | `text` | `form_fill/email_fill/manual/other` |
 | `target_url` | `text` | nullable，最大 4096 |
 | `applied_at` | `timestamptz` | 已投递时间 |
@@ -33,7 +34,11 @@
 - 手动记录通常 `pending_confirmation=false`；
 - 自动识别记录先设 true，确认操作递增版本；
 - 公司、岗位和标题快照不会随 JD/Resume 更新；
-- 显式修改 `jd_id/resume_id` 时重新读取对应资产标题并刷新快照；只修改源资产标题不回写历史快照；
+- 新正式投递由 APP 同时选择 JD 与实际 Resume，并冻结当前本地 Resume 投影的 `contentHash`；
+- 该指纹只证明当时使用的内容，不复制 Resume 正文，也不建立云端版本历史；
+- 普通元数据更新保留指纹；只有显式纠正 `resume_id` 时，才同时刷新 Resume 标题与内容指纹；
+- 显式修改 `jd_id` 时重新读取 JD 标题；只修改源资产标题或正文不回写历史快照；
+- 兼容旧记录时指纹可为空，客户端显示“历史记录未锁定版本”；
 - 通用 PUT/PATCH 不允许修改 `status`；
 - 状态只通过 transition command 更新；
 - `applied_at` 可在 pending confirmation 时为空，确认后必须存在；

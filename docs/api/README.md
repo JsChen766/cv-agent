@@ -72,6 +72,9 @@ JD 入参优先使用 `v2_importance/v2_category` 作为数据库规范值；兼
 ## 6. Application 规则
 
 - 用户确认投递完成后才创建普通 Application；
+- 新正式投递由 APP 选择 JD 与实际 Resume，并提交当前本地 Resume 投影的
+  `resumeContentHashSnapshot`；该字段不包含正文，也不提供版本回退能力；
+- 普通 PUT 保留该指纹；只有 `resumeId` 显式变化时才接收并刷新新指纹；
 - 浏览器/邮件自动识别可创建 `pendingConfirmation=true` 的记录；
 - `offer/rejected/no_response` 为终态；
 - 通用 PUT 不接受 `status`；

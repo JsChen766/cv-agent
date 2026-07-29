@@ -36,7 +36,8 @@
 
 1. 正式登录从密码改为邮箱验证码，登录 UI 必须新增验证码步骤；
 2. 双向同步需要新增 LocalSyncStore、Outbox 和 Sync Worker；
-3. Application、Interview 等是现有 APP 尚未实现的新资源。
+3. 原始 v1 基线没有 Application、Interview 等资源；Application 主记录已在后续 S3/J3 增量接入，
+   Interview、Note、Reminder 仍需继续增量开发。
 
 因此兼容性分为：
 
@@ -48,6 +49,15 @@
 | 正式 OTP 登录 | 增量修改登录 UI，登录后的 Transport 保持兼容 |
 | 双向同步与新模块 | 增量开发，不属于旧 contract |
 | LLM/Agent 调用 | APP 自行负责，不属于本后端 contract |
+
+### J3 增量兼容更新（2026-07-29）
+
+- APP 已增量接入 Application 本地 projection、Outbox、Tracker 与求职仓库，不改变旧
+  Experience/JD/Resume endpoint。
+- Application 新增可空 `resumeContentHashSnapshot`：旧 projection 缺失该字段时按 `null` 读取，
+  新记录必须冻结实际 Resume `contentHash`。
+- 普通 Application 更新不改变稳定版本快照；显式纠正 Resume 关联时同时更新 `resumeId`、标题快照
+  和内容指纹。该行为属于新 Application contract，不回写或扩展旧 Resume 云端版本模型。
 
 ## 2. 通用 HTTP Envelope
 

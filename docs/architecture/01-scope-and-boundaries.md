@@ -128,6 +128,7 @@ JD 原文、公司、岗位、来源、哈希和结构化 requirements。
 - 一份 Resume 只有一份当前 `structured`；
 - `structured` 是唯一云端内容来源；
 - `contentHash` 是内容指纹，不代表历史版本；
+- Application 可冻结实际投递 Resume 的 `contentHash`，但不复制正文，也不形成 Resume 版本实体；
 - `entityVersion` 用于并发写入保护；
 - 云端不提供版本历史、回退或 diff；
 - 本地 checkpoint 继续承担历史和恢复；

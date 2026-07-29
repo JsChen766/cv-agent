@@ -3,28 +3,29 @@ package httpapi
 import "time"
 
 type applicationDTO struct {
-	ID                  string  `json:"id"`
-	JdID                *string `json:"jdId"`
-	ResumeID            *string `json:"resumeId"`
-	CompanyName         string  `json:"companyName"`
-	RoleName            string  `json:"roleName"`
-	JdTitleSnapshot     *string `json:"jdTitleSnapshot"`
-	ResumeTitleSnapshot *string `json:"resumeTitleSnapshot"`
-	DeliveryMethod      string  `json:"deliveryMethod"`
-	TargetURL           *string `json:"targetUrl"`
-	AppliedAt           *string `json:"appliedAt"`
-	Status              string  `json:"status"`
-	PendingConfirmation bool    `json:"pendingConfirmation"`
-	Source              string  `json:"source"`
-	DedupeKey           *string `json:"dedupeKey"`
-	CompanyBusiness     *string `json:"companyBusiness"`
-	RoleSummary         *string `json:"roleSummary"`
-	CompanyCulture      *string `json:"companyCulture"`
-	RejectionReason     *string `json:"rejectionReason"`
-	EntityVersion       int64   `json:"entityVersion"`
-	CreatedAt           string  `json:"createdAt"`
-	UpdatedAt           string  `json:"updatedAt"`
-	DeletedAt           *string `json:"deletedAt"`
+	ID                        string  `json:"id"`
+	JdID                      *string `json:"jdId"`
+	ResumeID                  *string `json:"resumeId"`
+	CompanyName               string  `json:"companyName"`
+	RoleName                  string  `json:"roleName"`
+	JdTitleSnapshot           *string `json:"jdTitleSnapshot"`
+	ResumeTitleSnapshot       *string `json:"resumeTitleSnapshot"`
+	ResumeContentHashSnapshot *string `json:"resumeContentHashSnapshot"`
+	DeliveryMethod            string  `json:"deliveryMethod"`
+	TargetURL                 *string `json:"targetUrl"`
+	AppliedAt                 *string `json:"appliedAt"`
+	Status                    string  `json:"status"`
+	PendingConfirmation       bool    `json:"pendingConfirmation"`
+	Source                    string  `json:"source"`
+	DedupeKey                 *string `json:"dedupeKey"`
+	CompanyBusiness           *string `json:"companyBusiness"`
+	RoleSummary               *string `json:"roleSummary"`
+	CompanyCulture            *string `json:"companyCulture"`
+	RejectionReason           *string `json:"rejectionReason"`
+	EntityVersion             int64   `json:"entityVersion"`
+	CreatedAt                 string  `json:"createdAt"`
+	UpdatedAt                 string  `json:"updatedAt"`
+	DeletedAt                 *string `json:"deletedAt"`
 }
 
 type applicationListDTO struct {

@@ -11,7 +11,8 @@ schemas:
   Application:
     type: object
     required: [id, companyName, roleName, deliveryMethod, appliedAt, status,
-      pendingConfirmation, source, dedupeKey, entityVersion, createdAt, updatedAt, deletedAt]
+      pendingConfirmation, source, dedupeKey, resumeContentHashSnapshot,
+      entityVersion, createdAt, updatedAt, deletedAt]
     properties:
       id:
         $ref: ./common.yaml#/schemas/Uuid
@@ -29,6 +30,9 @@ schemas:
         type: [string, "null"]
       resumeTitleSnapshot:
         type: [string, "null"]
+      resumeContentHashSnapshot:
+        type: [string, "null"]
+        pattern: "^[0-9a-f]{64}$"
       deliveryMethod:
         type: string
         enum:
@@ -96,6 +100,9 @@ schemas:
       resumeId:
         type: [string, "null"]
         format: uuid
+      resumeContentHashSnapshot:
+        type: [string, "null"]
+        pattern: "^[0-9a-f]{64}$"
       companyName:
         type: string
         minLength: 1
@@ -143,6 +150,9 @@ schemas:
       resumeId:
         type: [string, "null"]
         format: uuid
+      resumeContentHashSnapshot:
+        type: [string, "null"]
+        pattern: "^[0-9a-f]{64}$"
       companyName:
         type: string
         minLength: 1

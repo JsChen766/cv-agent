@@ -704,7 +704,8 @@ Pull/Bootstrap，让 APP 能开始消费已写入的 `sync_changes`。
 
 ### Phase 5 交付记录（2026-07-27）
 
-状态：🟡 后端功能收口完成，但真实性能指标与 APP Tracker/本地通知闭环仍未完成。
+状态：🟡 Application 主记录的 APP Tracker/J3 闭环已完成；真实性能指标、Tracker 子实体和
+本地通知闭环仍未完成。
 Application Tracker 五个同步实体（application、application_status_event、
 interview_round、application_note、reminder）的 Go 实现端到端通过；CRUD、状态机、
 状态事件、看板查询、Interview/Note/Reminder 及同步接线均验证。沿用 Phase 2 同步内核与
@@ -788,13 +789,29 @@ Experience/JD 创建与读取、Resume 发布/列表/重命名/归档；返回�
 transition 回放、错误父路径、跨 Application Interview 关联拒绝和父删除传播；`make check`
 通过（JD handler 224 行仅超过 220 目标、低于 250 硬上限）。
 
+### Phase 5 / APP J3 联调记录（2026-07-29）
+
+- migration `00009_application_resume_content_hash_snapshot.sql` 将可空
+  `resume_content_hash_snapshot` 接入 Application；历史记录保持 `NULL`，新投递冻结实际提交
+  Resume 的 SHA-256 `contentHash`。
+- OpenAPI、HTTP request/DTO、domain validation、Application service、PostgreSQL repository、
+  Sync payload/command 已统一携带该字段。普通 PUT 保留现有指纹；只有显式更换 `resumeId` 时才要求
+  新指纹，并与 Resume 标题快照一起刷新。
+- APP 已通过不可变 Proposal、二次确认、LocalSyncStore/Outbox 和乐观锁完成 JD/Resume 预填投递、
+  软重复提示、精确 Tracker 过滤、双向资产定位及原记录显式纠正；不新增关系表或第二套投递状态。
+- 真实 Electron 创建记录后，后端 PostgreSQL 核对 `jd_id`、`resume_id`、标题、内容指纹及
+  `entity_version` 一致；随后通过 UI 纠正 Resume 并改回，两次均刷新为目标 Resume 的真实指纹。
+  验收记录已软删除清理，migration 状态为 version 9。
+- 质检通过：`make check`、`make test`（`-race`）、OpenAPI recommended lint、跨仓库 17 项来源
+  SHA-256 校验；JD handler 224 行仍是既有目标提示，低于 250 行硬上限。
+
 未完成 / 未验证：
 
 - 500 条/页多实体真实数据的看板与同步分页性能压测（Phase 2 遗留压测项，Phase 5
   完成门槛「看板列表满足性能目标」尚未用真实指标验证）；
 - Repository 层单元测试（SQL 仍靠 Docker smoke 验证，与既有模块一致）；
-- APP 端 LocalSyncStore 将 Tracker Store 切换到同步链路的联调；
-- 面试提醒「本地系统通知执行」属 APP 端职责，后端只存状态，未在本仓库验证。
+- APP 端 Interview、Note、Reminder 的 LocalSyncStore、详情布局及完整子实体联调；
+- 面试提醒「本地系统通知执行」属 APP 端职责，后端只存状态，留待 S4/S5 验证。
 
 ## Phase 6：商业化准备
 
