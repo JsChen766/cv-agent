@@ -42,19 +42,16 @@ func (u Update) Validate() error {
 	if u.ExpectedVersion < 1 {
 		return ErrInvalidInput
 	}
-	if u.Category != nil && !validCategory(*u.Category) {
+	if !validCategory(u.Category) || !validStatus(u.Status) {
 		return ErrInvalidInput
 	}
-	if u.Status != nil && !validStatus(*u.Status) {
+	if !validSource(u.Source) {
 		return ErrInvalidInput
 	}
-	if u.Source != "" && !validSource(u.Source) {
+	if !validTitle(u.Title) {
 		return ErrInvalidInput
 	}
-	if u.Title != nil && !validTitle(*u.Title) {
-		return ErrInvalidInput
-	}
-	if u.Content != nil && strings.TrimSpace(*u.Content) == "" {
+	if strings.TrimSpace(u.Content) == "" {
 		return ErrInvalidInput
 	}
 	if !checkOptional(u.Organization, maxOrganization) ||
@@ -65,7 +62,7 @@ func (u Update) Validate() error {
 		!validExperienceDates(u.StartDate, u.EndDate) {
 		return ErrInvalidInput
 	}
-	if u.Tags != nil && !checkTags(u.Tags) {
+	if !checkTags(u.Tags) {
 		return ErrInvalidInput
 	}
 	return nil

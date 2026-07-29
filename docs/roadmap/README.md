@@ -584,6 +584,25 @@ Pull/Bootstrap，让 APP 能开始消费已写入的 `sync_changes`。
 - 边界：当前 App 没有 Experience/JD 编辑/删除 executor 或 UI，因此本次只确认现有
   创建/查询调用面；完整 update/delete、墓碑和冲突界面不得冒充完成。
 
+### Phase 3 APP E1 Experience Store / IPC 收口（2026-07-29）
+
+- OpenAPI 和同步设计先行冻结 Experience 完整更新契约：Direct `PUT` 与 Sync update
+  必须提交全部当前字段，遗漏字段在反序列化阶段拒绝，显式 `null` 表示清空；创建和正文更新
+  可携带客户端生成的稳定 `revisionId`，纯元数据更新保持当前 revision。
+- Experience Application/Repository/SyncAdapter 已按完整状态更新；版本冲突返回最新聚合或
+  tombstone projection。列表默认只查 active，关键词覆盖标题、组织、角色、地点、标签和当前
+  revision 正文，统一 Unicode NFKC/trim/lowercase，多标签使用标准化完整匹配 AND。
+- App 本地同步将 `failed` 与 `conflict` 分离，并为每个实体加密保存最后服务端 payload、
+  operation 与错误码；新增接受服务端、基于最新版本重新应用、另存为新经历三类 Proposal，
+  服务端墓碑不允许一键覆盖。Renderer 只通过 IPC/Preload 准备并执行 Proposal，不构造 Outbox。
+- Match 与 Resume 共用 Experience 证据资格：仅 active 且 clean/pending 可产生新证据；
+  archived/conflict/failed/deleted 均阻断。Match 写入前复核 revision ID 与正文 hash。
+- 验证：后端 `make fmt && make test`、`make check` 全绿；App `npm run check` 全绿
+  （257 tests，含 250 行门禁、两套类型检查、Node/Electron build）。真实 Docker API +
+  PostgreSQL 验证完整 PUT、遗漏字段拒绝、显式 null、元数据不增 revision、指定 revision ID、
+  正文/标签搜索、active/archived 过滤和软删 tombstone；临时业务资产已软删除。
+- E1 没有实现或修改经历仓库 UI；页面布局、状态表达和响应式方案仍由 E2 在用户确认后实现。
+
 ## Phase 4：Resume Library
 
 范围：

@@ -43,20 +43,26 @@ func TestCreateValidate(t *testing.T) {
 }
 
 func TestUpdateValidate(t *testing.T) {
-	title := "New"
-	valid := Update{ExpectedVersion: 2, Title: &title}
+	valid := Update{
+		ExpectedVersion: 2, Category: CategoryWork, Title: "New",
+		Content: "updated", Status: StatusActive, Source: SourceManual,
+	}
 	if err := valid.Validate(); err != nil {
 		t.Fatalf("expected valid update, got %v", err)
 	}
-	if err := (Update{ExpectedVersion: 0}).Validate(); err == nil {
+	invalidVersion := valid
+	invalidVersion.ExpectedVersion = 0
+	if err := invalidVersion.Validate(); err == nil {
 		t.Error("expected error for version < 1")
 	}
-	blank := "  "
-	if err := (Update{ExpectedVersion: 1, Content: &blank}).Validate(); err == nil {
+	blank := valid
+	blank.Content = "  "
+	if err := blank.Validate(); err == nil {
 		t.Error("expected error for blank content")
 	}
-	badCat := Category("nope")
-	if err := (Update{ExpectedVersion: 1, Category: &badCat}).Validate(); err == nil {
+	badCat := valid
+	badCat.Category = "nope"
+	if err := badCat.Validate(); err == nil {
 		t.Error("expected error for bad category")
 	}
 }

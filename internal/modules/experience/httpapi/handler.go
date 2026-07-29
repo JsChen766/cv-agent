@@ -120,10 +120,17 @@ func parseListFilter(r *http.Request) (application.ListFilter, error) {
 	query := r.URL.Query()
 	filter := application.ListFilter{
 		Query: query.Get("q"), Tags: query["tags"], Limit: parseLimit(query.Get("limit")),
+		Status: domain.StatusActive,
 	}
 	if raw := query.Get("category"); raw != "" {
 		category := domain.Category(raw)
 		filter.Category = &category
+	}
+	if raw := query.Get("status"); raw != "" {
+		filter.Status = domain.Status(raw)
+	}
+	if !validListFilter(filter) {
+		return application.ListFilter{}, errors.New("invalid experience filter")
 	}
 	key, hasKey, err := pagination.Decode(query.Get("cursor"))
 	if err != nil {
@@ -131,6 +138,22 @@ func parseListFilter(r *http.Request) (application.ListFilter, error) {
 	}
 	filter.Cursor, filter.HasKey = key, hasKey
 	return filter, nil
+}
+
+func validListFilter(filter application.ListFilter) bool {
+	if filter.Status != domain.StatusActive && filter.Status != domain.StatusArchived {
+		return false
+	}
+	if filter.Category == nil {
+		return true
+	}
+	switch *filter.Category {
+	case domain.CategoryWork, domain.CategoryProject, domain.CategoryEducation,
+		domain.CategoryVolunteer, domain.CategoryOther:
+		return true
+	default:
+		return false
+	}
 }
 
 func parseLimit(raw string) int {

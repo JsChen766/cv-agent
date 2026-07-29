@@ -4,11 +4,17 @@ schemas:
     additionalProperties: false
     required:
       - expectedVersion
-    anyOf:
-      - required: [content]
-      - required: [title]
-      - required: [status]
-      - required: [tags]
+      - category
+      - title
+      - content
+      - organization
+      - role
+      - location
+      - start_date
+      - end_date
+      - tags
+      - status
+      - revisionSource
     properties:
       expectedVersion:
         $ref: ./common.yaml#/schemas/EntityVersion
@@ -50,6 +56,11 @@ schemas:
           - import
           - app_generated
         default: manual
+      revisionId:
+        oneOf:
+          - $ref: ./common.yaml#/schemas/Uuid
+          - type: "null"
+        description: Optional stable client-generated ID used only when content changes.
   ExperienceRevisionList:
     type: object
     required:

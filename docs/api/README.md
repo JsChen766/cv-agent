@@ -42,6 +42,10 @@ Sync Push  ──┘
 - JD 的 `requirementMapId/sourceThreadId` 和 Experience 的 `factBankStatus` 仅作为 APP 过渡兼容
   字段，由 DTO 派生固定/null 值，不进入数据库；
 - Experience 日期保留 APP 的 `YYYY-MM`/`YYYY-MM-DD` 精度，`endDate` 可为 `present`；
+- Experience PUT 是完整替换契约：除 `revisionId` 外必须提交全部当前字段，nullable 字段显式使用
+  `null` 清空，禁止用字段缺失表达“保持不变”；APP 只在 Main 进程把局部编辑合并为完整 payload；
+- Experience Sync Create/Update 携带稳定的客户端 `revisionId`。只有正文 hash 变化时服务端才使用该
+  ID 创建不可变 revision；纯元数据更新不得创建 revision，也不得重绑定当前 revision；
 - Resume publish 的 `proposalId/sourceFingerprint/evidenceBindings/observation` 作为兼容输入接收，
   不建立 Agent 或 Observation 云端表；
 - 新增 `entityVersion` 后，APP Adapter/类型必须接线，写入不允许退回无条件覆盖。
@@ -62,6 +66,8 @@ Sync Push  ──┘
 - 普通 DELETE 只写 `deletedAt` 并递增 `entityVersion`；
 - 墓碑保留到账号物理清除；
 - `archived` 是可恢复业务状态，不是删除；
+- Experience 列表默认仅返回 `active`；`archived` 必须显式筛选。关键词覆盖标题、组织、角色、地点、
+  标签与当前 revision 正文，多标签按 NFKC + trim + lowercase 后完整匹配 AND；
 - JD/Resume 删除后 Application 继续显示快照；
 - 状态事件不可普通删除。
 

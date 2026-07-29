@@ -80,6 +80,7 @@ type Experience struct {
 // Create is the validated payload for a new experience and its first revision.
 type Create struct {
 	ID           string
+	RevisionID   string
 	Category     Category
 	Title        string
 	Content      string
@@ -93,19 +94,20 @@ type Create struct {
 	Source       RevisionSource
 }
 
-// Update is the atomic PUT payload applied under an optimistic lock. Content is
-// optional; when present and changed it appends a new immutable revision.
+// Update is the complete atomic PUT state applied under an optimistic lock.
+// RevisionID is used only when Content changes.
 type Update struct {
 	ExpectedVersion int64
-	Category        *Category
-	Title           *string
-	Content         *string
+	RevisionID      string
+	Category        Category
+	Title           string
+	Content         string
 	Organization    *string
 	Role            *string
 	Location        *string
 	StartDate       *string
 	EndDate         *string
 	Tags            []string
-	Status          *Status
+	Status          Status
 	Source          RevisionSource
 }

@@ -57,7 +57,10 @@ func (s *Service) ReplaceInTx(
 	}
 	current.UserID = userID
 	if current.EntityVersion != update.ExpectedVersion {
-		return domain.Experience{}, domain.ErrVersionConflict
+		return current, domain.ErrVersionConflict
+	}
+	if current.DeletedAt != nil {
+		return current, domain.ErrVersionConflict
 	}
 	now := s.now()
 	next := applyUpdate(current, deviceRef(deviceID), update, now)
@@ -84,16 +87,19 @@ func (s *Service) maybeAppendRevision(
 	deviceID string,
 	update domain.Update,
 ) error {
-	if update.Content == nil {
-		return nil
-	}
-	newHash := contentHash(*update.Content)
+	newHash := contentHash(update.Content)
 	if current.CurrentRevision != nil && current.CurrentRevision.RevisionHash == newHash {
 		return nil
 	}
-	revID, err := id.NewV7()
-	if err != nil {
-		return err
+	revisionID := update.RevisionID
+	if revisionID == "" {
+		revID, err := id.NewV7()
+		if err != nil {
+			return err
+		}
+		revisionID = revID.String()
+	} else if !id.Valid(revisionID) {
+		return domain.ErrInvalidInput
 	}
 	source := update.Source
 	if source == "" {
@@ -104,8 +110,8 @@ func (s *Service) maybeAppendRevision(
 		number = current.CurrentRevision.RevisionNumber + 1
 	}
 	revision := domain.Revision{
-		ID: revID.String(), UserID: current.UserID, ExperienceID: current.ID, RevisionNumber: number,
-		Content: *update.Content, Source: source, RevisionHash: newHash,
+		ID: revisionID, UserID: current.UserID, ExperienceID: current.ID, RevisionNumber: number,
+		Content: update.Content, Source: source, RevisionHash: newHash,
 		CreatedByDevice: deviceRef(deviceID), CreatedAt: s.now(),
 	}
 	if err := s.repo.InsertRevision(ctx, tx, revision); err != nil {
@@ -126,23 +132,15 @@ func applyUpdate(
 	next.EntityVersion = current.EntityVersion + 1
 	next.UpdatedAt = now
 	next.LastModifiedDeviceID = deviceRef
-	if u.Category != nil {
-		next.Category = *u.Category
-	}
-	if u.Title != nil {
-		next.Title = *u.Title
-	}
-	if u.Status != nil {
-		next.Status = *u.Status
-	}
+	next.Category = u.Category
+	next.Title = u.Title
+	next.Status = u.Status
 	next.Organization = u.Organization
 	next.Role = u.Role
 	next.Location = u.Location
 	next.StartDate = u.StartDate
 	next.EndDate = u.EndDate
-	if u.Tags != nil {
-		next.Tags = normalizeTags(u.Tags)
-	}
+	next.Tags = normalizeTags(u.Tags)
 	return next
 }
 
@@ -186,7 +184,10 @@ func (s *Service) DeleteInTx(
 	}
 	current.UserID = userID
 	if current.EntityVersion != expectedVersion {
-		return domain.Experience{}, domain.ErrVersionConflict
+		return current, domain.ErrVersionConflict
+	}
+	if current.DeletedAt != nil {
+		return current, domain.ErrVersionConflict
 	}
 	now := s.now()
 	current.EntityVersion++

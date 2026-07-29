@@ -37,6 +37,7 @@ type ListFilter struct {
 	Query    string
 	Category *domain.Category
 	Tags     []string
+	Status   domain.Status
 	Limit    int
 	Cursor   pagination.Key
 	HasKey   bool

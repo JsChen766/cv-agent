@@ -182,3 +182,8 @@ schemas:
         enum:
           - active
           - archived
+      revisionId:
+        oneOf:
+          - $ref: ./common.yaml#/schemas/Uuid
+          - type: "null"
+        description: Optional stable client-generated initial revision ID.

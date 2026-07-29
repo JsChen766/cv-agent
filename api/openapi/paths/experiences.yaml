@@ -15,12 +15,22 @@ collection:
           $ref: ../components/experience.yaml#/schemas/ExperienceCategory
       - name: tags
         in: query
+        description: All supplied tags must match after Unicode NFKC, trim, and lowercase normalization.
         style: form
         explode: true
         schema:
           type: array
           items:
             type: string
+      - name: status
+        in: query
+        description: Defaults to active. Archived experiences require an explicit archived filter.
+        schema:
+          type: string
+          enum:
+            - active
+            - archived
+          default: active
       - name: limit
         in: query
         schema:
@@ -106,7 +116,7 @@ item:
     operationId: updateExperience
     tags:
       - Experience
-    summary: Update metadata and optionally append a new immutable content revision.
+    summary: Fully replace current fields and append an immutable revision only when content changes.
     requestBody:
       required: true
       content:

@@ -169,6 +169,13 @@ Resume 使用强冲突保护：
 
 - 普通字段更新使用乐观锁；
 - Experience 当前 revision 变化时不自动合并正文；
+- Experience Update Outbox 保存由 Main 进程生成的完整当前状态，不使用 nullable 字段缺失猜测
+  “保持不变”；Create/Update 同时携带稳定客户端 revision ID，服务端正文 hash 未变化时忽略该 ID；
+  E1 前已入队且不含 revision ID 的旧 Create 仍可重放并由服务端生成 ID，新的 APP 写入不得继续省略；
+- APP 为每个同步实体加密保存最后一次确认的服务端 payload。`pending` 保留该基线；`conflict`
+  与 `failed` 分开表达，validation/forbidden 不得伪装成版本冲突；
+- Experience 冲突只允许接受服务端、基于最新服务端版本重新提交本地内容、或把本地内容另存为新
+  Experience。远端已是墓碑时不允许重新覆盖原 ID，只能接受删除或另存为新；
 - Requirement ID 发生变更时，旧 MatchReport 在 APP 侧标记过期；
 - 删除与更新冲突时默认保留云端墓碑，并提示用户另存。
 

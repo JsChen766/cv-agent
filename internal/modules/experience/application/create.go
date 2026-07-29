@@ -74,14 +74,20 @@ func (s *Service) CreateInTx(
 		}
 		expID = generated.String()
 	}
-	revID, err := id.NewV7()
-	if err != nil {
-		return domain.Experience{}, err
+	revisionID := input.RevisionID
+	if revisionID == "" {
+		revID, err := id.NewV7()
+		if err != nil {
+			return domain.Experience{}, err
+		}
+		revisionID = revID.String()
+	} else if !id.Valid(revisionID) {
+		return domain.Experience{}, domain.ErrInvalidInput
 	}
 	now := s.now()
 	deviceRef := deviceRef(deviceID)
 	revision := domain.Revision{
-		ID: revID.String(), UserID: userID, ExperienceID: expID, RevisionNumber: 1,
+		ID: revisionID, UserID: userID, ExperienceID: expID, RevisionNumber: 1,
 		Content: input.Content, Source: input.Source,
 		RevisionHash: contentHash(input.Content), CreatedByDevice: deviceRef,
 		CreatedAt: now,

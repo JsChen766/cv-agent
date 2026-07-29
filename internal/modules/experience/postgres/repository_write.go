@@ -59,7 +59,7 @@ func (r *Repository) LoadForUpdate(
 	ctx context.Context, tx pgx.Tx, userID, id string,
 ) (domain.Experience, error) {
 	row := tx.QueryRow(ctx,
-		"SELECT "+experienceColumns+" FROM experiences e WHERE e.user_id = $1 AND e.id = $2 AND e.deleted_at IS NULL FOR UPDATE",
+		"SELECT "+experienceColumns+" FROM experiences e WHERE e.user_id = $1 AND e.id = $2 FOR UPDATE",
 		userID, id)
 	exp, err := scanExperience(row)
 	if err != nil {

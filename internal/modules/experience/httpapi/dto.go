@@ -46,6 +46,7 @@ type revisionListDTO struct {
 
 type createRequest struct {
 	ID           string   `json:"id"`
+	RevisionID   string   `json:"revisionId"`
 	Category     string   `json:"category"`
 	Title        string   `json:"title"`
 	Content      string   `json:"content"`
@@ -61,15 +62,16 @@ type createRequest struct {
 
 type updateRequest struct {
 	ExpectedVersion int64    `json:"expectedVersion"`
-	Category        *string  `json:"category"`
-	Title           *string  `json:"title"`
-	Content         *string  `json:"content"`
+	RevisionID      *string  `json:"revisionId"`
+	Category        string   `json:"category"`
+	Title           string   `json:"title"`
+	Content         string   `json:"content"`
 	Organization    *string  `json:"organization"`
 	Role            *string  `json:"role"`
 	Location        *string  `json:"location"`
 	StartDate       *string  `json:"start_date"`
 	EndDate         *string  `json:"end_date"`
 	Tags            []string `json:"tags"`
-	Status          *string  `json:"status"`
+	Status          string   `json:"status"`
 	Source          string   `json:"revisionSource"`
 }

@@ -93,7 +93,11 @@ func result(exp domain.Experience, err error) (syncmod.ApplyResult, error) {
 	if err != nil {
 		switch {
 		case errors.Is(err, domain.ErrVersionConflict):
-			return failure(syncmod.ResultConflict, "entity_version_conflict"), nil
+			version := exp.EntityVersion
+			conflict := failure(syncmod.ResultConflict, "entity_version_conflict")
+			conflict.AppliedVersion = &version
+			conflict.ServerEntity = toProjection(exp).Payload
+			return conflict, nil
 		case errors.Is(err, domain.ErrNotFound):
 			return failure(syncmod.ResultValidationFailed, "experience_not_found"), nil
 		case errors.Is(err, domain.ErrInvalidInput):

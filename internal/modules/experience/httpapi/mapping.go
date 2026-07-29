@@ -61,7 +61,8 @@ func toCreate(req createRequest) domain.Create {
 		status = domain.StatusActive
 	}
 	return domain.Create{
-		ID: req.ID, Category: domain.Category(req.Category), Title: req.Title,
+		ID: req.ID, RevisionID: req.RevisionID,
+		Category: domain.Category(req.Category), Title: req.Title,
 		Content: req.Content, Organization: req.Organization, Role: req.Role,
 		Location: req.Location, StartDate: req.StartDate, EndDate: req.EndDate,
 		Tags: ensureSlice(req.Tags), Status: status, Source: source,
@@ -69,21 +70,17 @@ func toCreate(req createRequest) domain.Create {
 }
 
 func toUpdate(req updateRequest) domain.Update {
-	update := domain.Update{
-		ExpectedVersion: req.ExpectedVersion, Title: req.Title, Content: req.Content,
+	revisionID := ""
+	if req.RevisionID != nil {
+		revisionID = *req.RevisionID
+	}
+	return domain.Update{
+		ExpectedVersion: req.ExpectedVersion, RevisionID: revisionID,
+		Category: domain.Category(req.Category), Title: req.Title, Content: req.Content,
 		Organization: req.Organization, Role: req.Role, Location: req.Location,
 		StartDate: req.StartDate, EndDate: req.EndDate, Tags: req.Tags,
-		Source: domain.RevisionSource(req.Source),
+		Status: domain.Status(req.Status), Source: domain.RevisionSource(req.Source),
 	}
-	if req.Category != nil {
-		category := domain.Category(*req.Category)
-		update.Category = &category
-	}
-	if req.Status != nil {
-		status := domain.Status(*req.Status)
-		update.Status = &status
-	}
-	return update
 }
 
 func ensureSlice(values []string) []string {

@@ -16,21 +16,30 @@ func (r *Repository) List(
 ) ([]domain.Experience, error) {
 	builder := strings.Builder{}
 	builder.WriteString("SELECT " + experienceColumns +
-		" FROM experiences e WHERE e.user_id = $1 AND e.deleted_at IS NULL")
+		" FROM experiences e LEFT JOIN experience_revisions cr" +
+		" ON cr.user_id = e.user_id AND cr.id = e.current_revision_id" +
+		" WHERE e.user_id = $1 AND e.deleted_at IS NULL")
 	args := []any{userID}
+	args = append(args, string(filter.Status))
+	builder.WriteString(" AND e.status = $" + ordinal(len(args)))
 	if filter.Category != nil {
 		args = append(args, string(*filter.Category))
 		builder.WriteString(" AND e.category = $" + ordinal(len(args)))
 	}
 	if trimmed := strings.TrimSpace(filter.Query); trimmed != "" {
-		args = append(args, "%"+trimmed+"%")
-		builder.WriteString(" AND (e.title ILIKE $" + ordinal(len(args)) +
-			" OR e.organization ILIKE $" + ordinal(len(args)) +
-			" OR e.role ILIKE $" + ordinal(len(args)) + ")")
+		args = append(args, trimmed)
+		arg := "$" + ordinal(len(args))
+		builder.WriteString(" AND strpos(lower(normalize(concat_ws(' ', e.title," +
+			" e.organization, e.role, e.location, array_to_string(e.tags, ' ')," +
+			" cr.content), NFKC)), lower(normalize(btrim(" + arg + "), NFKC))) > 0")
 	}
 	if len(filter.Tags) > 0 {
 		args = append(args, filter.Tags)
-		builder.WriteString(" AND e.tags && $" + ordinal(len(args)))
+		arg := "$" + ordinal(len(args))
+		builder.WriteString(" AND NOT EXISTS (SELECT 1 FROM unnest(" + arg +
+			"::text[]) wanted WHERE NOT EXISTS (SELECT 1 FROM unnest(e.tags) actual" +
+			" WHERE lower(normalize(btrim(actual), NFKC)) =" +
+			" lower(normalize(btrim(wanted), NFKC))))")
 	}
 	if filter.HasKey {
 		args = append(args, filter.Cursor.UpdatedAt, filter.Cursor.ID)
