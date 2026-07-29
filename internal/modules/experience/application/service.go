@@ -46,6 +46,7 @@ type ListFilter struct {
 // Repository persists experiences and their immutable revisions.
 type Repository interface {
 	Insert(ctx context.Context, tx pgx.Tx, exp domain.Experience, rev domain.Revision) error
+	Exists(ctx context.Context, userID, id string) (bool, error)
 	FindDetail(ctx context.Context, userID, id string) (domain.Experience, error)
 	List(ctx context.Context, userID string, filter ListFilter) ([]domain.Experience, error)
 	ListRevisions(ctx context.Context, userID, expID string, afterNumber, limit int) ([]domain.Revision, error)
@@ -104,8 +105,12 @@ func (s *Service) List(ctx context.Context, userID string, filter ListFilter) ([
 func (s *Service) ListRevisions(
 	ctx context.Context, userID, expID string, afterNumber, limit int,
 ) ([]domain.Revision, error) {
-	if _, err := s.repo.FindDetail(ctx, userID, expID); err != nil {
+	exists, err := s.repo.Exists(ctx, userID, expID)
+	if err != nil {
 		return nil, err
 	}
-	return s.repo.ListRevisions(ctx, userID, expID, afterNumber, limit)
+	if !exists {
+		return nil, domain.ErrNotFound
+	}
+	return s.repo.ListRevisions(ctx, userID, expID, afterNumber, limit+1)
 }

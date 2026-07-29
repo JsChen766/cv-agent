@@ -79,12 +79,14 @@ func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 			"列表参数不合法", middleware.GetReqID(r.Context()))
 		return
 	}
+	visibleLimit := filter.Limit
+	filter.Limit++
 	items, err := h.service.List(r.Context(), principal.UserID, filter)
 	if err != nil {
 		writeError(w, r, err)
 		return
 	}
-	httpapi.WriteSuccess(w, http.StatusOK, toListDTO(items, filter.Limit),
+	httpapi.WriteSuccess(w, http.StatusOK, toListDTO(items, visibleLimit),
 		middleware.GetReqID(r.Context()))
 }
 
@@ -168,33 +170,6 @@ func parseLimit(raw string) int {
 		return maxLimit
 	}
 	return limit
-}
-
-func toListDTO(items []domain.Experience, limit int) listDTO {
-	summaries := make([]summaryDTO, 0, len(items))
-	for _, exp := range items {
-		summaries = append(summaries, toSummaryDTO(exp))
-	}
-	dto := listDTO{Items: summaries}
-	if len(items) == limit && limit > 0 {
-		last := items[len(items)-1]
-		cursor := pagination.Encode(pagination.Key{UpdatedAt: last.UpdatedAt, ID: last.ID})
-		dto.NextCursor = &cursor
-	}
-	return dto
-}
-
-func toRevisionListDTO(revisions []domain.Revision, limit int) revisionListDTO {
-	items := make([]revisionDTO, 0, len(revisions))
-	for _, rev := range revisions {
-		items = append(items, toRevisionDTO(rev))
-	}
-	dto := revisionListDTO{Items: items}
-	if len(revisions) == limit && limit > 0 {
-		cursor := strconv.Itoa(revisions[len(revisions)-1].RevisionNumber)
-		dto.NextCursor = &cursor
-	}
-	return dto
 }
 
 func writeError(w http.ResponseWriter, r *http.Request, err error) {

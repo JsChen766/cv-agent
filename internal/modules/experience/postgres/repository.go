@@ -44,6 +44,17 @@ func scanExperience(row pgx.Row) (domain.Experience, error) {
 	return e, nil
 }
 
+// Exists checks resource ownership without loading current content or history.
+func (r *Repository) Exists(ctx context.Context, userID, id string) (bool, error) {
+	var exists bool
+	err := r.pool.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM experiences
+			WHERE user_id = $1 AND id = $2 AND deleted_at IS NULL
+		)`, userID, id).Scan(&exists)
+	return exists, err
+}
+
 // FindDetail returns one experience with its current revision and history.
 func (r *Repository) FindDetail(ctx context.Context, userID, id string) (domain.Experience, error) {
 	row := r.pool.QueryRow(ctx,

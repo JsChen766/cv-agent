@@ -618,6 +618,35 @@ Pull/Bootstrap，让 APP 能开始消费已写入的 `sync_changes`。
   gofmt、vet、build、行数门禁及 Compose 校验通过。修复后真实双 Worker 同 operation 重放仍显示
   正确服务端正文，APP 完成对照、编辑锁定、重新应用本地修改并同步收敛；临时资产已软删除。
 
+### Phase 3 APP E5 Experience 版本历史分页收口（2026-07-29）
+
+- `/v1/product/experiences/{id}/revisions` 的响应 shape、cursor 编码和数据库结构保持不变；本轮没有
+  migration。Application Service 不再用 `FindDetail` 加载聚合及完整历史做归属检查，改用 Repository
+  的轻量 `EXISTS`，查询同时带 `user_id`、Experience ID 与 `deleted_at IS NULL`，不存在、已删除和
+  跨用户资源继续统一返回 `experience_not_found`。
+- revision 查询改为请求 `limit + 1`，HTTP DTO 最多返回用户请求的 `limit` 条，并且只有 lookahead
+  行真实存在时才返回最后一条可见 revision 的 `nextCursor`；正好整页的最终页不再产生虚假下一页。
+- 新增确定性回归测试覆盖不存在/跨用户归属拒绝后不查询 revision、Service 将 limit 扩为 lookahead、
+  DTO 截断与正好整页无 cursor。Backend Docker `make test`（含 `-race`）和 `make check` 全绿，
+  OpenAPI lint、gofmt、vet、build、业务文件行数与 Compose 校验全部通过。
+- 真实 Electron + Docker 使用同一 QA Experience 验证 10+2、恢复后 10+3 分页、离线分页失败保留
+  已加载首屏以及恢复/离线 pending 同步；最终 QA Experience 已通过正式 Proposal 软删除，PostgreSQL
+  按精确 ID 确认墓碑。API 恢复为验收前停止状态。本轮未 commit、未 push。
+
+### Phase 3 APP E6 Experience 统一验收收口（2026-07-29）
+
+- 按正式单用户 200 条 Experience 上限执行容量验收。40 轮真实 Docker API 测量中，列表 p95
+  4.92ms、500 changes 后 Pull p95 32.37ms、Bootstrap p95 33.63ms；Electron 200 项首次可用
+  92ms，IPC 列表 p95 8.3ms，本地筛选 p95 26.5ms。
+- 正好 200 条且请求 `limit=200` 时发现列表错误返回 `nextCursor`；HTTP handler 现使用
+  `limit + 1` lookahead 并只在实际存在额外记录时生成游标，DTO 投影拆入职责单一的 pagination
+  文件。测试覆盖正好整页和额外一条两种边界，未修改 OpenAPI、数据库或同步 shape。
+- 专用双账号验证列表、精确 Experience、revision 与更新均严格按用户隔离；恶意 HTML/脚本只在
+  APP 中按文本呈现，非法 Renderer IPC 被 Main 拒绝且未写入。Backend `make test`（`-race`）与
+  `make check` 全绿；210 条 QA Experience 与 2 个 QA JD 已通过正式接口软删除并确认普通列表归零。
+- 跨仓库唯一 Roadmap 已将 E6 标为完成；下一阶段为 APP S4。Interview、Note、Reminder 和本地通知
+  未在本轮提前实现或验收。
+
 ## Phase 4：Resume Library
 
 范围：
