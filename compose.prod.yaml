@@ -52,7 +52,9 @@ x-api-environment: &api-environment
   BREVO_SENDER_EMAIL: ${BREVO_SENDER_EMAIL:-}
   BREVO_SENDER_NAME: ${BREVO_SENDER_NAME:-CV Agent}
   BREVO_REPLY_TO: ${BREVO_REPLY_TO:-}
-  ENABLE_DEV_PASSWORD_LOGIN: "false"
+  # 生产默认 false。仅测试服务器需要密码登录时，在 .env.prod 设为 true，
+  # 且 APP_ENV 必须为非 production（如 staging），否则启动会失败。
+  ENABLE_DEV_PASSWORD_LOGIN: ${ENABLE_DEV_PASSWORD_LOGIN:-false}
 
 services:
   api:
