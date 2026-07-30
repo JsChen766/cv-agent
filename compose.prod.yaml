@@ -10,7 +10,12 @@ name: cv-agent-app-be-prod
 #   - 只有 api 的端口对外；postgres/redis 仅绑 127.0.0.1，公网不可达。
 #   - 生产建议在 api 前再挂反向代理(Caddy/Nginx)终止 HTTPS，只放行 443。
 #   - APP_ENV=production 会触发配置守卫：弱密钥/开发登录会导致启动失败。
-#   - 不部署 mailpit，邮件走真实 Brevo。
+#
+# 邮件模式（EMAIL_PROVIDER）：
+#   - mailpit（默认）：不真实发信，OTP 验证码在 mailpit 面板查看，仅供测试。
+#     mailpit 面板只绑 127.0.0.1，需通过 SSH 隧道访问：
+#       ssh -L 8025:127.0.0.1:8025 user@服务器IP   然后浏览器开 http://localhost:8025
+#   - brevo：真实发信，需在 .env.prod 填 BREVO_* 变量。
 
 x-api-environment: &api-environment
   APP_ENV: ${APP_ENV:-production}
@@ -28,8 +33,9 @@ x-api-environment: &api-environment
   REDIS_DB: ${REDIS_DB:-0}
   SYNC_CURSOR_SIGNING_KEY: ${SYNC_CURSOR_SIGNING_KEY:?SYNC_CURSOR_SIGNING_KEY is required (>=32 bytes)}
   SYNC_CURSOR_MAX_AGE: ${SYNC_CURSOR_MAX_AGE:-4320h}
-  EMAIL_PROVIDER: ${EMAIL_PROVIDER:-brevo}
-  EMAIL_SENDER_ADDRESS: ${EMAIL_SENDER_ADDRESS:?EMAIL_SENDER_ADDRESS is required}
+  EMAIL_PROVIDER: ${EMAIL_PROVIDER:-mailpit}
+  SMTP_ADDRESS: ${SMTP_ADDRESS:-mailpit:1025}
+  EMAIL_SENDER_ADDRESS: ${EMAIL_SENDER_ADDRESS:-no-reply@coolto.local}
   EMAIL_SENDER_NAME: ${EMAIL_SENDER_NAME:-CV Agent}
   OTP_HASH_KEY: ${OTP_HASH_KEY:?OTP_HASH_KEY is required (>=32 bytes)}
   OTP_TTL: ${OTP_TTL:-10m}
@@ -41,9 +47,9 @@ x-api-environment: &api-environment
   OTP_IP_SEND_LIMIT: ${OTP_IP_SEND_LIMIT:-20}
   OTP_VERIFY_LIMIT: ${OTP_VERIFY_LIMIT:-10}
   BREVO_API_BASE_URL: ${BREVO_API_BASE_URL:-https://api.brevo.com/v3}
-  BREVO_API_KEY: ${BREVO_API_KEY:?BREVO_API_KEY is required}
-  BREVO_TEMPLATE_ID: ${BREVO_TEMPLATE_ID:?BREVO_TEMPLATE_ID is required}
-  BREVO_SENDER_EMAIL: ${BREVO_SENDER_EMAIL:?BREVO_SENDER_EMAIL is required}
+  BREVO_API_KEY: ${BREVO_API_KEY:-}
+  BREVO_TEMPLATE_ID: ${BREVO_TEMPLATE_ID:-}
+  BREVO_SENDER_EMAIL: ${BREVO_SENDER_EMAIL:-}
   BREVO_SENDER_NAME: ${BREVO_SENDER_NAME:-CV Agent}
   BREVO_REPLY_TO: ${BREVO_REPLY_TO:-}
   ENABLE_DEV_PASSWORD_LOGIN: "false"
@@ -65,6 +71,8 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      mailpit:
+        condition: service_started
     restart: unless-stopped
     stop_grace_period: 15s
 
@@ -105,6 +113,12 @@ services:
       interval: 3s
       timeout: 3s
       retries: 20
+    restart: unless-stopped
+
+  mailpit:
+    image: axllent/mailpit:v1.30.5
+    ports:
+      - "127.0.0.1:${MAILPIT_UI_PORT:-8025}:8025"
     restart: unless-stopped
 
   migrate:
