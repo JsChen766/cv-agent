@@ -1,0 +1,139 @@
+name: cv-agent-app-be-prod
+
+# 生产/公网测试专用编排。与本地 compose.yaml 完全独立，不影响 make dev。
+# 用法：
+#   cp .env.prod.example .env.prod   # 填好所有密钥后
+#   docker compose --env-file .env.prod -f compose.prod.yaml up -d
+#   docker compose --env-file .env.prod -f compose.prod.yaml --profile tools run --rm migrate up
+#
+# 安全要点：
+#   - 只有 api 的端口对外；postgres/redis 仅绑 127.0.0.1，公网不可达。
+#   - 生产建议在 api 前再挂反向代理(Caddy/Nginx)终止 HTTPS，只放行 443。
+#   - APP_ENV=production 会触发配置守卫：弱密钥/开发登录会导致启动失败。
+#   - 不部署 mailpit，邮件走真实 Brevo。
+
+x-api-environment: &api-environment
+  APP_ENV: ${APP_ENV:-production}
+  HTTP_ADDRESS: ${HTTP_ADDRESS:-:8080}
+  HTTP_READ_HEADER_TIMEOUT: ${HTTP_READ_HEADER_TIMEOUT:-5s}
+  HTTP_READ_TIMEOUT: ${HTTP_READ_TIMEOUT:-15s}
+  HTTP_WRITE_TIMEOUT: ${HTTP_WRITE_TIMEOUT:-30s}
+  HTTP_IDLE_TIMEOUT: ${HTTP_IDLE_TIMEOUT:-60s}
+  SHUTDOWN_TIMEOUT: ${SHUTDOWN_TIMEOUT:-10s}
+  DATABASE_URL: ${DATABASE_URL:?DATABASE_URL is required}
+  DATABASE_MAX_CONNS: ${DATABASE_MAX_CONNS:-20}
+  DATABASE_MIN_CONNS: ${DATABASE_MIN_CONNS:-2}
+  REDIS_ADDRESS: ${REDIS_ADDRESS:-redis:6379}
+  REDIS_PASSWORD: ${REDIS_PASSWORD:?REDIS_PASSWORD is required}
+  REDIS_DB: ${REDIS_DB:-0}
+  SYNC_CURSOR_SIGNING_KEY: ${SYNC_CURSOR_SIGNING_KEY:?SYNC_CURSOR_SIGNING_KEY is required (>=32 bytes)}
+  SYNC_CURSOR_MAX_AGE: ${SYNC_CURSOR_MAX_AGE:-4320h}
+  EMAIL_PROVIDER: ${EMAIL_PROVIDER:-brevo}
+  EMAIL_SENDER_ADDRESS: ${EMAIL_SENDER_ADDRESS:?EMAIL_SENDER_ADDRESS is required}
+  EMAIL_SENDER_NAME: ${EMAIL_SENDER_NAME:-CV Agent}
+  OTP_HASH_KEY: ${OTP_HASH_KEY:?OTP_HASH_KEY is required (>=32 bytes)}
+  OTP_TTL: ${OTP_TTL:-10m}
+  OTP_RESEND_AFTER: ${OTP_RESEND_AFTER:-60s}
+  OTP_MAX_ATTEMPTS: ${OTP_MAX_ATTEMPTS:-5}
+  OTP_RATE_WINDOW: ${OTP_RATE_WINDOW:-15m}
+  OTP_EMAIL_SEND_LIMIT: ${OTP_EMAIL_SEND_LIMIT:-5}
+  OTP_DEVICE_SEND_LIMIT: ${OTP_DEVICE_SEND_LIMIT:-10}
+  OTP_IP_SEND_LIMIT: ${OTP_IP_SEND_LIMIT:-20}
+  OTP_VERIFY_LIMIT: ${OTP_VERIFY_LIMIT:-10}
+  BREVO_API_BASE_URL: ${BREVO_API_BASE_URL:-https://api.brevo.com/v3}
+  BREVO_API_KEY: ${BREVO_API_KEY:?BREVO_API_KEY is required}
+  BREVO_TEMPLATE_ID: ${BREVO_TEMPLATE_ID:?BREVO_TEMPLATE_ID is required}
+  BREVO_SENDER_EMAIL: ${BREVO_SENDER_EMAIL:?BREVO_SENDER_EMAIL is required}
+  BREVO_SENDER_NAME: ${BREVO_SENDER_NAME:-CV Agent}
+  BREVO_REPLY_TO: ${BREVO_REPLY_TO:-}
+  ENABLE_DEV_PASSWORD_LOGIN: "false"
+
+services:
+  api:
+    build:
+      context: .
+      target: production
+      args:
+        GO_VERSION: "1.26.5"
+    image: cv-agent-app-be:prod
+    init: true
+    environment: *api-environment
+    ports:
+      - "${API_BIND:-0.0.0.0}:${API_PORT:-8080}:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    stop_grace_period: 15s
+
+  postgres:
+    image: postgres:18.4-bookworm
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:?POSTGRES_DB is required}
+      POSTGRES_USER: ${POSTGRES_USER:?POSTGRES_USER is required}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+    restart: unless-stopped
+
+  redis:
+    image: redis:8.0.6-alpine
+    command:
+      - "redis-server"
+      - "--appendonly"
+      - "yes"
+      - "--appendfsync"
+      - "everysec"
+      - "--requirepass"
+      - "${REDIS_PASSWORD:?REDIS_PASSWORD is required}"
+    ports:
+      - "127.0.0.1:${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD}", "ping"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  migrate:
+    build:
+      context: .
+      target: dev
+      args:
+        GO_VERSION: "1.26.5"
+        AIR_VERSION: "v1.65.1"
+        GOOSE_VERSION: "v3.27.3"
+    profiles: ["tools"]
+    working_dir: /workspace
+    environment:
+      <<: *api-environment
+      GOOSE_DRIVER: postgres
+      GOOSE_DBSTRING: ${DATABASE_URL:?DATABASE_URL is required}
+      GOOSE_MIGRATION_DIR: migrations
+    volumes:
+      - .:/workspace
+      - go-mod-cache:/go/pkg/mod
+      - go-build-cache:/root/.cache/go-build
+    depends_on:
+      postgres:
+        condition: service_healthy
+    entrypoint: ["/workspace/scripts/goose_guard.sh"]
+    command: ["status"]
+
+volumes:
+  postgres-data:
+  redis-data:
+  go-mod-cache:
+  go-build-cache:
