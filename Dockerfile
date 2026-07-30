@@ -7,6 +7,8 @@ FROM golang:${GO_VERSION}-bookworm AS dev
 ARG AIR_VERSION=v1.65.1
 ARG GOOSE_VERSION=v3.27.3
 
+ENV GOPROXY=https://goproxy.cn,direct
+
 RUN GOBIN=/usr/local/bin go install github.com/air-verse/air@${AIR_VERSION} \
     && GOBIN=/usr/local/bin go install github.com/pressly/goose/v3/cmd/goose@${GOOSE_VERSION}
 
@@ -16,6 +18,8 @@ COPY . .
 CMD ["air", "-c", ".air.toml"]
 
 FROM golang:${GO_VERSION}-bookworm AS build
+
+ENV GOPROXY=https://goproxy.cn,direct
 
 WORKDIR /src
 COPY . .
