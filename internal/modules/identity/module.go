@@ -51,9 +51,19 @@ func New(pool *pgxpool.Pool, opts Options) *Module {
 		provisioner = application.NoopProvisioner{}
 	}
 	devLogin := application.NewDevLoginService(users, credentials, issuer, provisioner, opts.DeviceNSSalt)
-	sender := identityemail.NewSMTPSender(
-		opts.Email.SMTPAddress, opts.Email.SenderEmail, opts.Email.SenderName,
-	)
+	var sender application.EmailSender
+	if opts.Email.Provider == "brevo" {
+		sender = identityemail.NewBrevoSender(
+			opts.Email.BrevoAPIBaseURL, opts.Email.BrevoAPIKey,
+			opts.Email.BrevoTemplateID,
+			opts.Email.BrevoSenderEmail, opts.Email.BrevoSenderName,
+			opts.Email.BrevoReplyTo,
+		)
+	} else {
+		sender = identityemail.NewSMTPSender(
+			opts.Email.SMTPAddress, opts.Email.SenderEmail, opts.Email.SenderName,
+		)
+	}
 	emailLogin := application.NewEmailLoginService(
 		challenges, sender, identityredis.NewRateLimiter(opts.Redis), issuer, provisioner,
 		application.EmailLoginConfig{

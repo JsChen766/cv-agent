@@ -25,6 +25,13 @@ type Email struct {
 	SMTPAddress string
 	SenderEmail string
 	SenderName  string
+	// Brevo transactional email
+	BrevoAPIBaseURL  string
+	BrevoAPIKey      string
+	BrevoTemplateID  int
+	BrevoSenderEmail string
+	BrevoSenderName  string
+	BrevoReplyTo     string
 }
 
 type OTP struct {
@@ -161,6 +168,9 @@ func (cfg Config) validate() error {
 	}
 	if cfg.Email.Provider != "mailpit" && cfg.Email.Provider != "brevo" {
 		return errors.New("EMAIL_PROVIDER must be mailpit or brevo")
+	}
+	if cfg.Email.Provider == "brevo" && cfg.Email.BrevoAPIKey == "" {
+		return errors.New("BREVO_API_KEY is required when EMAIL_PROVIDER=brevo")
 	}
 	if cfg.Sync.CursorMaxAge <= 0 {
 		return errors.New("SYNC_CURSOR_MAX_AGE must be positive")

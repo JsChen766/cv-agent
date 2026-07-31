@@ -7,6 +7,16 @@ func loadEmailOTP(cfg *Config, lookup lookupFunc) error {
 		lookup, "EMAIL_SENDER_ADDRESS", "no-reply@coolto.local",
 	)
 	cfg.Email.SenderName = value(lookup, "EMAIL_SENDER_NAME", "Coolto")
+	cfg.Email.BrevoAPIBaseURL = value(lookup, "BREVO_API_BASE_URL", "https://api.brevo.com/v3")
+	cfg.Email.BrevoAPIKey = value(lookup, "BREVO_API_KEY", "")
+	cfg.Email.BrevoSenderEmail = value(lookup, "BREVO_SENDER_EMAIL", "")
+	cfg.Email.BrevoSenderName = value(lookup, "BREVO_SENDER_NAME", "CV Agent")
+	cfg.Email.BrevoReplyTo = value(lookup, "BREVO_REPLY_TO", "")
+	var brevoTemplateErr error
+	cfg.Email.BrevoTemplateID, brevoTemplateErr = intValue(lookup, "BREVO_TEMPLATE_ID", 0)
+	if brevoTemplateErr != nil {
+		return brevoTemplateErr
+	}
 	cfg.OTP.HashKey = value(lookup, "OTP_HASH_KEY", "")
 	if cfg.OTP.HashKey == "" && isDevelopmentEnvironment(cfg.Environment) {
 		cfg.OTP.HashKey = "local-only-otp-hash-key-change-before-production"
