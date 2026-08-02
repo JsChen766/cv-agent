@@ -125,6 +125,10 @@ Phase 0 完成前还需确认：
   `migrate down`，避免自动破坏生产数据。
 - GitHub 与服务器 Secrets、主机指纹和现场健康验证必须在首次 workflow 实跑后补充真实结果；在该证据
   写回前，本记录只表示 CI/部署配置已建立，不提前宣称灾备或 Phase 6 完成。
+- 首次生产 workflow `#1`（run `30754169801`）真实触发后，`quality` 在容器内执行 `go build` 时因
+  GitHub Runner 挂载工作区的 Git ownership 校验失败；`deploy` 被依赖门禁正确阻断，生产服务器未更新。
+  dev 镜像随后显式信任固定挂载目录 `/workspace`，本地重建镜像后重新通过 `make check` 与 `make test`；
+  该修复仍需下一次远程 workflow 验证后才能关闭遗留项。
 
 ## Phase 1：账号、设备与权益
 

@@ -9,7 +9,8 @@ ARG GOOSE_VERSION=v3.27.3
 
 ENV GOPROXY=https://goproxy.cn,direct
 
-RUN GOBIN=/usr/local/bin go install github.com/air-verse/air@${AIR_VERSION} \
+RUN git config --system --add safe.directory /workspace \
+    && GOBIN=/usr/local/bin go install github.com/air-verse/air@${AIR_VERSION} \
     && GOBIN=/usr/local/bin go install github.com/pressly/goose/v3/cmd/goose@${GOOSE_VERSION}
 
 WORKDIR /workspace
