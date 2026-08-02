@@ -128,7 +128,12 @@ Phase 0 完成前还需确认：
 - 首次生产 workflow `#1`（run `30754169801`）真实触发后，`quality` 在容器内执行 `go build` 时因
   GitHub Runner 挂载工作区的 Git ownership 校验失败；`deploy` 被依赖门禁正确阻断，生产服务器未更新。
   dev 镜像随后显式信任固定挂载目录 `/workspace`，本地重建镜像后重新通过 `make check` 与 `make test`；
-  该修复仍需下一次远程 workflow 验证后才能关闭遗留项。
+  该失败及门禁行为均已保留为真实验收证据。
+- 修复后的生产 workflow `#2`（run `30754486528`）已完整通过：`quality` 中 `make check` 与 race tests
+  成功，随后 `deploy` 完成 Secrets 校验、专用 SSH 部署、公开 readiness 和临时 Runner key 清理。
+  服务器最终精确运行提交 `5d071b004a2ef0f3e9695c8c1419e02332d11981`，API 容器已重建，PostgreSQL、
+  Redis 保持健康，migration `00001`–`00009` 均为已应用，`https://hkapi.coolto.com.cn/health/ready`
+  返回 `ready`。至此本节 CI 与单机生产自动部署验收通过；这不扩大为其他 Phase 或灾备能力完成。
 
 ## Phase 1：账号、设备与权益
 
