@@ -51,6 +51,18 @@ make migrate-status
 make migrate-up
 ```
 
+## Main 自动部署
+
+远程 `main` 每次收到 push 后由 `.github/workflows/main-ci-deploy.yml` 依次执行
+`make check`、`make test`，全部通过后才进入 GitHub `production` Environment，通过专用 SSH key
+调用服务器 `/usr/local/bin/cv-agent-deploy <commit-sha>`。服务器只部署本次 workflow 对应、且仍然
+位于 `origin/main` 的精确提交，然后构建镜像、执行向前 migration、重建 Compose 服务并检查 readiness。
+
+GitHub `production` Environment 必须配置 `DEPLOY_HOST`、`DEPLOY_PORT`、`DEPLOY_USER`、
+`DEPLOY_SSH_PRIVATE_KEY` 和 `DEPLOY_KNOWN_HOSTS`。生产密钥只保存在服务器被 Git 忽略且权限为 600 的
+`.env.prod`，不得复制到 GitHub Actions、仓库或日志。部署失败禁止自动执行 `migrate down`；应保留现场、
+按失败阶段恢复应用或数据库。
+
 `make down` 保留 PostgreSQL 和 Redis 数据卷。不要在未确认时执行 `docker compose down -v`。
 
 ## 文档

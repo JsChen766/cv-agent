@@ -114,6 +114,18 @@ Phase 0 完成前还需确认：
 
 因此 Phase 0 不标记完成。后续 Codex 默认只做审核、指导和验收，不主动实现业务模块。
 
+### Phase 0 CI 与单机生产自动部署完成记录（2026-08-02）
+
+- 远程 `main` push 先在 GitHub-hosted runner 执行 Docker-only `make check` 与 `make test -race`；
+  只有质量门禁通过才进入 `production` Environment，部署任务串行且不取消正在执行的生产发布。
+- GitHub Actions 使用专用最小权限 SSH key 调用服务器固定部署脚本，只传递本次 `GITHUB_SHA`；服务器
+  再次确认该提交仍为 `origin/main`，拒绝任意 SHA、脏工作树和并发部署。
+- 服务器保留原 `/home/ubuntu/cv-agent-app-be/.env.prod` 与全部 Docker volume；自动部署顺序固定为
+  fetch → 精确 checkout → Compose config → build → 向前 migration → up → 本机 readiness。失败不执行
+  `migrate down`，避免自动破坏生产数据。
+- GitHub 与服务器 Secrets、主机指纹和现场健康验证必须在首次 workflow 实跑后补充真实结果；在该证据
+  写回前，本记录只表示 CI/部署配置已建立，不提前宣称灾备或 Phase 6 完成。
+
 ## Phase 1：账号、设备与权益
 
 范围：
