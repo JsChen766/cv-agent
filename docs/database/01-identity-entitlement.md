@@ -123,6 +123,7 @@ Redis 只做发送/尝试限流，Challenge 真相保存在 PostgreSQL。请求�
 | 列 | 类型 | 约束/含义 |
 | --- | --- | --- |
 | `full_name` | `text` | nullable，最大 120 |
+| `contact_email` | `text` | nullable，最大 320；简历联系邮箱，与登录身份邮箱分离 |
 | `phone` | `text` | nullable，最大 40 |
 | `location` | `text` | nullable，最大 160 |
 | `current_title` | `text` | nullable，最大 160 |

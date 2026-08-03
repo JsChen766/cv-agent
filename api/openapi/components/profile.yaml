@@ -23,6 +23,9 @@ schemas:
     properties:
       fullName:
         type: [string, "null"]
+      contactEmail:
+        type: [string, "null"]
+        format: email
       email:
         type: [string, "null"]
         format: email
@@ -71,6 +74,7 @@ schemas:
     required:
       - expectedVersion
       - fullName
+      - contactEmail
       - phone
       - location
       - linkedinUrl
@@ -91,6 +95,10 @@ schemas:
       fullName:
         type: [string, "null"]
         maxLength: 120
+      contactEmail:
+        type: [string, "null"]
+        format: email
+        maxLength: 320
       phone:
         type: [string, "null"]
         maxLength: 40

@@ -2,6 +2,7 @@ package httpapi
 
 type profileDTO struct {
 	FullName          *string  `json:"fullName"`
+	ContactEmail      *string  `json:"contactEmail"`
 	Email             *string  `json:"email"`
 	Phone             *string  `json:"phone"`
 	Location          *string  `json:"location"`
@@ -24,6 +25,7 @@ type profileDTO struct {
 type updateRequest struct {
 	ExpectedVersion   int64    `json:"expectedVersion"`
 	FullName          *string  `json:"fullName"`
+	ContactEmail      *string  `json:"contactEmail"`
 	Phone             *string  `json:"phone"`
 	Location          *string  `json:"location"`
 	LinkedinURL       *string  `json:"linkedinUrl"`

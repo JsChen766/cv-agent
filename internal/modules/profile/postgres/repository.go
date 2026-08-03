@@ -26,7 +26,7 @@ full_name, phone, location, current_title, current_company,
 years_of_experience, career_stage,
 target_roles, target_industries, target_locations,
 preferred_language, resume_style,
-linkedin_url, github_url, personal_website`
+linkedin_url, github_url, personal_website, contact_email`
 
 // Find returns the profile for a user without locking.
 func (r *Repository) Find(ctx context.Context, userID string) (domain.Profile, error) {
@@ -46,20 +46,21 @@ UPDATE user_profiles SET
 	    updated_at = $3,
 	    last_modified_device_id = $4,
 	    full_name = $5,
-	    phone = $6,
-	    location = $7,
-	    current_title = $8,
-	    current_company = $9,
-	    years_of_experience = $10,
-	    career_stage = $11,
-	    target_roles = $12,
-	    target_industries = $13,
-	    target_locations = $14,
-	    preferred_language = $15,
-	    resume_style = $16,
-	    linkedin_url = $17,
-	    github_url = $18,
-	    personal_website = $19
+	    contact_email = $6,
+	    phone = $7,
+	    location = $8,
+	    current_title = $9,
+	    current_company = $10,
+	    years_of_experience = $11,
+	    career_stage = $12,
+	    target_roles = $13,
+	    target_industries = $14,
+	    target_locations = $15,
+	    preferred_language = $16,
+	    resume_style = $17,
+	    linkedin_url = $18,
+	    github_url = $19,
+	    personal_website = $20
 WHERE user_id = $1 AND entity_version = $2 - 1`
 
 // Replace applies a new profile row and enforces optimistic locking.
@@ -67,7 +68,7 @@ func (r *Repository) Replace(ctx context.Context, tx pgx.Tx, profile domain.Prof
 	tag, err := tx.Exec(ctx, updateProfile,
 		profile.UserID, profile.EntityVersion, profile.UpdatedAt,
 		profile.LastModifiedDeviceID,
-		profile.FullName, profile.Phone, profile.Location,
+		profile.FullName, profile.ContactEmail, profile.Phone, profile.Location,
 		profile.CurrentTitle, profile.CurrentCompany,
 		profile.YearsOfExperience, profile.CareerStage,
 		profile.TargetRoles, profile.TargetIndustries, profile.TargetLocations,
@@ -92,7 +93,7 @@ func scanProfile(row pgx.Row) (domain.Profile, error) {
 		&p.YearsOfExperience, &p.CareerStage,
 		&p.TargetRoles, &p.TargetIndustries, &p.TargetLocations,
 		&p.PreferredLanguage, &p.ResumeStyle,
-		&p.LinkedinURL, &p.GithubURL, &p.PersonalWebsite,
+		&p.LinkedinURL, &p.GithubURL, &p.PersonalWebsite, &p.ContactEmail,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return domain.Profile{}, domain.ErrProfileNotFound

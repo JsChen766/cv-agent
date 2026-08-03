@@ -173,6 +173,7 @@ schemas:
     additionalProperties: false
     required:
       - fullName
+      - contactEmail
       - phone
       - location
       - linkedinUrl
@@ -190,6 +191,9 @@ schemas:
     properties:
       fullName:
         type: [string, "null"]
+      contactEmail:
+        type: [string, "null"]
+        format: email
       phone:
         type: [string, "null"]
       location:

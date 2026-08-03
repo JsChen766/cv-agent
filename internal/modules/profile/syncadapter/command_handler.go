@@ -65,6 +65,7 @@ func (h *CommandHandler) Apply(
 
 type updatePayload struct {
 	FullName          *string  `json:"fullName"`
+	ContactEmail      *string  `json:"contactEmail"`
 	Phone             *string  `json:"phone"`
 	Location          *string  `json:"location"`
 	LinkedinURL       *string  `json:"linkedinUrl"`
@@ -84,7 +85,8 @@ type updatePayload struct {
 func (p updatePayload) toDomain(expectedVersion int64) domain.Update {
 	return domain.Update{
 		ExpectedVersion: expectedVersion,
-		FullName:        p.FullName, Phone: p.Phone, Location: p.Location,
+		FullName:        p.FullName, ContactEmail: p.ContactEmail,
+		Phone: p.Phone, Location: p.Location,
 		LinkedinURL: p.LinkedinURL, GithubURL: p.GithubURL,
 		PersonalWebsite: p.PersonalWebsite, CurrentTitle: p.CurrentTitle,
 		CurrentCompany: p.CurrentCompany, YearsOfExperience: p.YearsOfExperience,

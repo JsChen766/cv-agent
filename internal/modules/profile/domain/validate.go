@@ -1,12 +1,15 @@
 package domain
 
 import (
+	"net/mail"
+	"net/url"
 	"strings"
 	"unicode/utf8"
 )
 
 const (
 	maxFullName        = 120
+	maxContactEmail    = 320
 	maxPhone           = 40
 	maxLocation        = 160
 	maxCurrentTitle    = 160
@@ -28,15 +31,16 @@ func (u Update) Validate() error {
 		return ErrInvalidInput
 	}
 	if !checkOptional(u.FullName, maxFullName) ||
+		!checkEmail(u.ContactEmail) ||
 		!checkOptional(u.Phone, maxPhone) ||
 		!checkOptional(u.Location, maxLocation) ||
 		!checkOptional(u.CurrentTitle, maxCurrentTitle) ||
 		!checkOptional(u.CurrentCompany, maxCurrentCompany) ||
 		!checkOptional(u.CareerStage, maxCareerStage) ||
 		!checkOptional(u.ResumeStyle, maxResumeStyle) ||
-		!checkOptional(u.LinkedinURL, maxURL) ||
-		!checkOptional(u.GithubURL, maxURL) ||
-		!checkOptional(u.PersonalWebsite, maxURL) {
+		!checkHTTPSURL(u.LinkedinURL) ||
+		!checkHTTPSURL(u.GithubURL) ||
+		!checkHTTPSURL(u.PersonalWebsite) {
 		return ErrInvalidInput
 	}
 	if u.YearsOfExperience != nil {
@@ -60,6 +64,28 @@ func checkOptional(value *string, limit int) bool {
 		return true
 	}
 	return utf8.RuneCountInString(*value) <= limit
+}
+
+func checkEmail(value *string) bool {
+	if !checkOptional(value, maxContactEmail) {
+		return false
+	}
+	if value == nil {
+		return true
+	}
+	parsed, err := mail.ParseAddress(*value)
+	return err == nil && parsed.Address == *value
+}
+
+func checkHTTPSURL(value *string) bool {
+	if !checkOptional(value, maxURL) {
+		return false
+	}
+	if value == nil {
+		return true
+	}
+	parsed, err := url.ParseRequestURI(*value)
+	return err == nil && parsed.Scheme == "https" && parsed.Host != ""
 }
 
 func checkStringList(values []string) bool {

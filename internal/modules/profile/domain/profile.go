@@ -20,6 +20,7 @@ type Profile struct {
 	UpdatedAt            time.Time
 	LastModifiedDeviceID *string
 	FullName             *string
+	ContactEmail         *string
 	Phone                *string
 	Location             *string
 	CurrentTitle         *string
@@ -40,6 +41,7 @@ type Profile struct {
 type Update struct {
 	ExpectedVersion   int64
 	FullName          *string
+	ContactEmail      *string
 	Phone             *string
 	Location          *string
 	CurrentTitle      *string

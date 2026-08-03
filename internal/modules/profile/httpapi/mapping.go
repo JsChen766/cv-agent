@@ -9,6 +9,7 @@ const timeLayout = "2006-01-02T15:04:05Z07:00"
 func toDTO(profile domain.Profile, email string) profileDTO {
 	dto := profileDTO{
 		FullName:          profile.FullName,
+		ContactEmail:      profile.ContactEmail,
 		Phone:             profile.Phone,
 		Location:          profile.Location,
 		LinkedinURL:       profile.LinkedinURL,
@@ -40,6 +41,7 @@ func fromRequest(req updateRequest) domain.Update {
 	return domain.Update{
 		ExpectedVersion:   req.ExpectedVersion,
 		FullName:          req.FullName,
+		ContactEmail:      req.ContactEmail,
 		Phone:             req.Phone,
 		Location:          req.Location,
 		CurrentTitle:      req.CurrentTitle,

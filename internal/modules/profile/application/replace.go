@@ -90,6 +90,7 @@ func applyUpdate(
 	next.UpdatedAt = now
 	next.LastModifiedDeviceID = &deviceID
 	next.FullName = u.FullName
+	next.ContactEmail = u.ContactEmail
 	next.Phone = u.Phone
 	next.Location = u.Location
 	next.CurrentTitle = u.CurrentTitle

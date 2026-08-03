@@ -57,6 +57,7 @@ func (p *Projector) Bootstrap(
 
 type payload struct {
 	FullName          *string  `json:"fullName"`
+	ContactEmail      *string  `json:"contactEmail"`
 	Phone             *string  `json:"phone"`
 	Location          *string  `json:"location"`
 	LinkedinURL       *string  `json:"linkedinUrl"`
@@ -78,7 +79,8 @@ func toProjection(profile domain.Profile) syncmod.Projection {
 		EntityType: syncmod.EntityTypeUserProfile, EntityID: profile.UserID,
 		EntityVersion: profile.EntityVersion, UpdatedAt: profile.UpdatedAt,
 		Payload: payload{
-			FullName: profile.FullName, Phone: profile.Phone, Location: profile.Location,
+			FullName: profile.FullName, ContactEmail: profile.ContactEmail,
+			Phone: profile.Phone, Location: profile.Location,
 			LinkedinURL: profile.LinkedinURL, GithubURL: profile.GithubURL,
 			PersonalWebsite: profile.PersonalWebsite, CurrentTitle: profile.CurrentTitle,
 			CurrentCompany: profile.CurrentCompany, YearsOfExperience: profile.YearsOfExperience,
