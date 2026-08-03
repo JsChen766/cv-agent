@@ -935,6 +935,20 @@ transition 回放、错误父路径、跨 Application Interview 关联拒绝和�
 - 500 RPS 基线和故障演练通过；
 - staging APP 完整闭环通过。
 
+## S4.5 Section C：可扩展经历与技能事实模型（2026-08-03）
+
+- migration `00011_experience_resume_sections.sql` 已在本机 Docker PostgreSQL 实际应用：为 Experience 增加
+  可空的 `resume_section_key`、`resume_section_label`，并以数据库约束保证字段成对、key 小写 kebab-case、label
+  非空且最长 120 字符，以及只有既有 `other` category 能使用开放 section。历史五类 category 和历史 `other`
+  的空字段保持兼容，不回写、不制造正文 revision。
+- OpenAPI、HTTP DTO/mapper、domain validation、PostgreSQL repository、sync command/payload/projector 一致传递
+  该元数据；服务端拒绝缺失配对、非法 key 或核心 category 的自定义 section。开放 key 不由服务端 central switch
+  枚举，允许后续合法未知类型；`skills` 只是 App 侧的显式事实 section key，服务端不从 JD 或 tag 生成内容。
+- 验证通过：`make fmt && make test && make migrate-up && make migrate-status`、`make check` 和 Docker API 重建均通过；
+  仅有未触及的既有 224/222 行目标提示，未超过 250 行硬上限。使用 `http://127.0.0.1:8080` 完成同步创建
+  `research-papers` section、bootstrap 回读以及 expected-version 软删除的闭环，未回退线上，测试资产已清理。
+- 本记录只完成 S4.5 Section C 的后端契约与本地联调；Section D–H 未开始。
+
 ## N0 基线冻结（2026-07-28）
 
 跨仓库互相兼容的可追溯组合已记录（用户授权后 commit）：

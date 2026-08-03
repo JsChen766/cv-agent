@@ -27,6 +27,7 @@ func toSummaryDTO(exp domain.Experience) summaryDTO {
 		ID: exp.ID, Category: string(exp.Category), Title: exp.Title,
 		Organization: exp.Organization, Role: exp.Role, Location: exp.Location,
 		StartDate: exp.StartDate, EndDate: exp.EndDate, Tags: ensureSlice(exp.Tags),
+		ResumeSectionKey: exp.ResumeSectionKey, ResumeSectionLabel: exp.ResumeSectionLabel,
 		Status: string(exp.Status), CurrentRevisionID: exp.CurrentRevisionID,
 		CreatedAt:     exp.CreatedAt.UTC().Format(timeLayout),
 		UpdatedAt:     exp.UpdatedAt.UTC().Format(timeLayout),
@@ -65,7 +66,8 @@ func toCreate(req createRequest) domain.Create {
 		Category: domain.Category(req.Category), Title: req.Title,
 		Content: req.Content, Organization: req.Organization, Role: req.Role,
 		Location: req.Location, StartDate: req.StartDate, EndDate: req.EndDate,
-		Tags: ensureSlice(req.Tags), Status: status, Source: source,
+		Tags: ensureSlice(req.Tags), ResumeSectionKey: req.ResumeSectionKey,
+		ResumeSectionLabel: req.ResumeSectionLabel, Status: status, Source: source,
 	}
 }
 
@@ -79,6 +81,7 @@ func toUpdate(req updateRequest) domain.Update {
 		Category: domain.Category(req.Category), Title: req.Title, Content: req.Content,
 		Organization: req.Organization, Role: req.Role, Location: req.Location,
 		StartDate: req.StartDate, EndDate: req.EndDate, Tags: req.Tags,
+		ResumeSectionKey: req.ResumeSectionKey, ResumeSectionLabel: req.ResumeSectionLabel,
 		Status: domain.Status(req.Status), Source: domain.RevisionSource(req.Source),
 	}
 }

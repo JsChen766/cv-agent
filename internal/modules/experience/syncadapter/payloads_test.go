@@ -15,8 +15,10 @@ const completeUpdate = `{
   "location":null,
   "startDate":"2024-01",
   "endDate":"present",
-  "tags":["Go","Sync"],
-  "status":"active",
+	"tags":["Go","Sync"],
+	"resumeSectionKey":null,
+	"resumeSectionLabel":null,
+	"status":"active",
   "source":"manual"
 }`
 
@@ -37,6 +39,25 @@ func TestUpdatePayloadRequiresCompleteState(t *testing.T) {
 	raw := []byte(`{"revisionId":"019fa941-7cd1-7cb0-9a9e-b0cccf1c7322"}`)
 	if err := json.Unmarshal(raw, &missing); err == nil {
 		t.Fatal("expected missing full-state fields to fail")
+	}
+}
+
+func TestOpenSectionPayloadPreservesUnknownValidKeyAndLabel(t *testing.T) {
+	var payload createPayload
+	raw := []byte(`{
+	  "revisionId":"019fa941-7cd1-7cb0-9a9e-b0cccf1c7322",
+	  "category":"other","title":"Paper","content":"Published paper",
+	  "organization":null,"role":null,"location":null,"startDate":null,"endDate":null,
+	  "tags":["Research"],"resumeSectionKey":"papers","resumeSectionLabel":"Papers",
+	  "status":"active","source":"import"
+	}`)
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		t.Fatalf("decode open section: %v", err)
+	}
+	created := payload.toDomain()
+	if created.ResumeSectionKey == nil || *created.ResumeSectionKey != "papers" ||
+		created.ResumeSectionLabel == nil || *created.ResumeSectionLabel != "Papers" {
+		t.Fatalf("section fields drifted: %#v", created)
 	}
 }
 

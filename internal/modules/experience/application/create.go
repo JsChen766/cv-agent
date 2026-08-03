@@ -97,7 +97,8 @@ func (s *Service) CreateInTx(
 		LastModifiedDeviceID: deviceRef, Category: input.Category, Title: input.Title,
 		Organization: input.Organization, Role: input.Role, Location: input.Location,
 		StartDate: input.StartDate, EndDate: input.EndDate,
-		Tags: normalizeTags(input.Tags), Status: input.Status,
+		Tags: normalizeTags(input.Tags), ResumeSectionKey: input.ResumeSectionKey,
+		ResumeSectionLabel: input.ResumeSectionLabel, Status: input.Status,
 		CurrentRevisionID: &revision.ID, CurrentRevision: &revision,
 	}
 	if err := s.repo.Insert(ctx, tx, exp, revision); err != nil {

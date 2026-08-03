@@ -25,7 +25,7 @@ const experienceColumns = `
 e.id, e.entity_version, e.created_at, e.updated_at, e.deleted_at,
 e.last_modified_device_id, e.category, e.title, e.organization, e.role,
 e.location, e.start_date::text, e.end_date::text, e.tags, e.status,
-e.current_revision_id`
+e.resume_section_key, e.resume_section_label, e.current_revision_id`
 
 func scanExperience(row pgx.Row) (domain.Experience, error) {
 	var e domain.Experience
@@ -33,6 +33,7 @@ func scanExperience(row pgx.Row) (domain.Experience, error) {
 		&e.ID, &e.EntityVersion, &e.CreatedAt, &e.UpdatedAt, &e.DeletedAt,
 		&e.LastModifiedDeviceID, &e.Category, &e.Title, &e.Organization, &e.Role,
 		&e.Location, &e.StartDate, &e.EndDate, &e.Tags, &e.Status,
+		&e.ResumeSectionKey, &e.ResumeSectionLabel,
 		&e.CurrentRevisionID,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {

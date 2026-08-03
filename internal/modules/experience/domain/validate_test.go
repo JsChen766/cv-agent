@@ -112,3 +112,32 @@ func TestExperienceDatePrecision(t *testing.T) {
 		}
 	}
 }
+
+func TestResumeSectionValidationKeepsCoreCategoriesStable(t *testing.T) {
+	valid := validCreate()
+	valid.Category = CategoryOther
+	valid.ResumeSectionKey = ptr("research-papers")
+	valid.ResumeSectionLabel = ptr("Research Papers")
+	if err := valid.Validate(); err != nil {
+		t.Fatalf("expected open section to be valid: %v", err)
+	}
+	legacy := validCreate()
+	legacy.Category = CategoryOther
+	if err := legacy.Validate(); err != nil {
+		t.Fatalf("legacy other must remain valid: %v", err)
+	}
+	for name, input := range map[string]Create{
+		"key without label": func() Create { c := valid; c.ResumeSectionLabel = nil; return c }(),
+		"custom core category": func() Create {
+			c := validCreate()
+			c.ResumeSectionKey = ptr("award")
+			c.ResumeSectionLabel = ptr("Award")
+			return c
+		}(),
+		"invalid key": func() Create { c := valid; c.ResumeSectionKey = ptr("Not Legal"); return c }(),
+	} {
+		if err := input.Validate(); err == nil {
+			t.Errorf("%s: expected validation error", name)
+		}
+	}
+}

@@ -71,6 +71,8 @@ type Experience struct {
 	StartDate            *string
 	EndDate              *string
 	Tags                 []string
+	ResumeSectionKey     *string
+	ResumeSectionLabel   *string
 	Status               Status
 	CurrentRevisionID    *string
 	CurrentRevision      *Revision
@@ -79,35 +81,39 @@ type Experience struct {
 
 // Create is the validated payload for a new experience and its first revision.
 type Create struct {
-	ID           string
-	RevisionID   string
-	Category     Category
-	Title        string
-	Content      string
-	Organization *string
-	Role         *string
-	Location     *string
-	StartDate    *string
-	EndDate      *string
-	Tags         []string
-	Status       Status
-	Source       RevisionSource
+	ID                 string
+	RevisionID         string
+	Category           Category
+	Title              string
+	Content            string
+	Organization       *string
+	Role               *string
+	Location           *string
+	StartDate          *string
+	EndDate            *string
+	Tags               []string
+	ResumeSectionKey   *string
+	ResumeSectionLabel *string
+	Status             Status
+	Source             RevisionSource
 }
 
 // Update is the complete atomic PUT state applied under an optimistic lock.
 // RevisionID is used only when Content changes.
 type Update struct {
-	ExpectedVersion int64
-	RevisionID      string
-	Category        Category
-	Title           string
-	Content         string
-	Organization    *string
-	Role            *string
-	Location        *string
-	StartDate       *string
-	EndDate         *string
-	Tags            []string
-	Status          Status
-	Source          RevisionSource
+	ExpectedVersion    int64
+	RevisionID         string
+	Category           Category
+	Title              string
+	Content            string
+	Organization       *string
+	Role               *string
+	Location           *string
+	StartDate          *string
+	EndDate            *string
+	Tags               []string
+	ResumeSectionKey   *string
+	ResumeSectionLabel *string
+	Status             Status
+	Source             RevisionSource
 }

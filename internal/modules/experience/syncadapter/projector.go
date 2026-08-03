@@ -72,20 +72,22 @@ type revisionPayload struct {
 }
 
 type payload struct {
-	ID                string           `json:"id"`
-	Category          string           `json:"category"`
-	Title             string           `json:"title"`
-	Organization      *string          `json:"organization"`
-	Role              *string          `json:"role"`
-	Location          *string          `json:"location"`
-	StartDate         *string          `json:"startDate"`
-	EndDate           *string          `json:"endDate"`
-	Tags              []string         `json:"tags"`
-	Status            string           `json:"status"`
-	CurrentRevisionID *string          `json:"currentRevisionId"`
-	CurrentRevision   *revisionPayload `json:"currentRevision"`
-	CreatedAt         string           `json:"createdAt"`
-	UpdatedAt         string           `json:"updatedAt"`
+	ID                 string           `json:"id"`
+	Category           string           `json:"category"`
+	Title              string           `json:"title"`
+	Organization       *string          `json:"organization"`
+	Role               *string          `json:"role"`
+	Location           *string          `json:"location"`
+	StartDate          *string          `json:"startDate"`
+	EndDate            *string          `json:"endDate"`
+	Tags               []string         `json:"tags"`
+	ResumeSectionKey   *string          `json:"resumeSectionKey"`
+	ResumeSectionLabel *string          `json:"resumeSectionLabel"`
+	Status             string           `json:"status"`
+	CurrentRevisionID  *string          `json:"currentRevisionId"`
+	CurrentRevision    *revisionPayload `json:"currentRevision"`
+	CreatedAt          string           `json:"createdAt"`
+	UpdatedAt          string           `json:"updatedAt"`
 }
 
 func toProjection(exp domain.Experience) syncmod.Projection {
@@ -106,6 +108,7 @@ func toPayload(exp domain.Experience) payload {
 		ID: exp.ID, Category: string(exp.Category), Title: exp.Title,
 		Organization: exp.Organization, Role: exp.Role, Location: exp.Location,
 		StartDate: exp.StartDate, EndDate: exp.EndDate, Tags: slice(exp.Tags),
+		ResumeSectionKey: exp.ResumeSectionKey, ResumeSectionLabel: exp.ResumeSectionLabel,
 		Status: string(exp.Status), CurrentRevisionID: exp.CurrentRevisionID,
 		CreatedAt: rfc3339(exp.CreatedAt), UpdatedAt: rfc3339(exp.UpdatedAt),
 	}

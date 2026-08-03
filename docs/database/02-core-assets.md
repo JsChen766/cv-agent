@@ -16,6 +16,8 @@
 | `start_date` | `text` | nullable，`YYYY-MM` 或 `YYYY-MM-DD` |
 | `end_date` | `text` | nullable，`YYYY-MM`、`YYYY-MM-DD` 或 `present` |
 | `tags` | `text[]` | NOT NULL，默认空数组 |
+| `resume_section_key` | `text` | nullable，规范化 kebab-case；仅 `other` 可设置 |
+| `resume_section_label` | `text` | nullable，最大 120；与 key 成对出现 |
 | `status` | `text` | `active/archived` |
 | `current_revision_id` | `uuid` | 当前不可变 revision |
 
@@ -28,6 +30,10 @@
 - 未删除 Experience 在业务层必须有 current revision；
 - `current_revision_id` 使用 `(user_id,current_revision_id)` 复合外键，确保 revision 同属该用户；
 - Service 还需校验 revision 的 `experience_id` 等于当前 Experience。
+- `category` 继续只接受五个既有值；论文、奖项、证书、研究、社团和未来合法类型使用
+  `category=other` 加 key/label，不扩展后端 category 枚举。历史 `other` 的双空字段仍合法。
+- `skills` 是显式的 `other` section key；它的正文仍是不可变 revision，简历端必须为展示 bullet
+  提供同一 snapshot 的 quote/offset，不得把 tags 或 raw_text 作为无证据捷径。
 
 索引：
 

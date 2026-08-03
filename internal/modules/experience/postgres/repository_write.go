@@ -12,8 +12,8 @@ const insertExperience = `
 INSERT INTO experiences (
     id, user_id, entity_version, created_at, updated_at, last_modified_device_id,
     category, title, organization, role, location, start_date, end_date,
-    tags, status, current_revision_id
-) VALUES ($1, $2, $3, $4, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, NULL)`
+    tags, resume_section_key, resume_section_label, status, current_revision_id
+) VALUES ($1, $2, $3, $4, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, NULL)`
 
 const insertRevision = `
 INSERT INTO experience_revisions (
@@ -34,7 +34,8 @@ func (r *Repository) Insert(
 	if _, err := tx.Exec(ctx, insertExperience,
 		exp.ID, exp.UserID, exp.EntityVersion, exp.CreatedAt, exp.LastModifiedDeviceID,
 		string(exp.Category), exp.Title, exp.Organization, exp.Role, exp.Location,
-		nullableDate(exp.StartDate), nullableDate(exp.EndDate), exp.Tags, string(exp.Status),
+		nullableDate(exp.StartDate), nullableDate(exp.EndDate), exp.Tags,
+		exp.ResumeSectionKey, exp.ResumeSectionLabel, string(exp.Status),
 	); err != nil {
 		return err
 	}
@@ -86,8 +87,8 @@ const updateAggregate = `
 UPDATE experiences SET
     entity_version = $3, updated_at = $4, last_modified_device_id = $5,
     category = $6, title = $7, organization = $8, role = $9, location = $10,
-    start_date = $11, end_date = $12, tags = $13, status = $14,
-    current_revision_id = $15
+    start_date = $11, end_date = $12, tags = $13, resume_section_key = $14,
+    resume_section_label = $15, status = $16, current_revision_id = $17
 WHERE user_id = $1 AND id = $2 AND entity_version = $3 - 1 AND deleted_at IS NULL`
 
 // UpdateAggregate applies a new aggregate row under an optimistic lock.
@@ -95,7 +96,8 @@ func (r *Repository) UpdateAggregate(ctx context.Context, tx pgx.Tx, exp domain.
 	tag, err := tx.Exec(ctx, updateAggregate,
 		exp.UserID, exp.ID, exp.EntityVersion, exp.UpdatedAt, exp.LastModifiedDeviceID,
 		string(exp.Category), exp.Title, exp.Organization, exp.Role, exp.Location,
-		nullableDate(exp.StartDate), nullableDate(exp.EndDate), exp.Tags, string(exp.Status),
+		nullableDate(exp.StartDate), nullableDate(exp.EndDate), exp.Tags,
+		exp.ResumeSectionKey, exp.ResumeSectionLabel, string(exp.Status),
 		exp.CurrentRevisionID,
 	)
 	if err != nil {

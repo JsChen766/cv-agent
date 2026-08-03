@@ -141,6 +141,8 @@ func applyUpdate(
 	next.StartDate = u.StartDate
 	next.EndDate = u.EndDate
 	next.Tags = normalizeTags(u.Tags)
+	next.ResumeSectionKey = u.ResumeSectionKey
+	next.ResumeSectionLabel = u.ResumeSectionLabel
 	return next
 }
 

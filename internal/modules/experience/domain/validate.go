@@ -1,6 +1,7 @@
 package domain
 
 import (
+	"regexp"
 	"strings"
 	"unicode/utf8"
 )
@@ -13,7 +14,10 @@ const (
 	maxDateText     = 40
 	maxTags         = 40
 	maxTagLength    = 80
+	maxSectionLabel = 120
 )
+
+var sectionKeyPattern = regexp.MustCompile(`^[a-z][a-z0-9-]{0,63}$`)
 
 // Validate enforces domain constraints for a new experience.
 func (c Create) Validate() error {
@@ -32,6 +36,9 @@ func (c Create) Validate() error {
 		return ErrInvalidInput
 	}
 	if !checkTags(c.Tags) {
+		return ErrInvalidInput
+	}
+	if !checkResumeSection(c.Category, c.ResumeSectionKey, c.ResumeSectionLabel) {
 		return ErrInvalidInput
 	}
 	return nil
@@ -65,7 +72,22 @@ func (u Update) Validate() error {
 	if !checkTags(u.Tags) {
 		return ErrInvalidInput
 	}
+	if !checkResumeSection(u.Category, u.ResumeSectionKey, u.ResumeSectionLabel) {
+		return ErrInvalidInput
+	}
 	return nil
+}
+
+func checkResumeSection(category Category, key, label *string) bool {
+	if key == nil && label == nil {
+		return true
+	}
+	if category != CategoryOther || key == nil || label == nil {
+		return false
+	}
+	return sectionKeyPattern.MatchString(*key) &&
+		utf8.RuneCountInString(strings.TrimSpace(*label)) <= maxSectionLabel &&
+		strings.TrimSpace(*label) != ""
 }
 
 func validCategory(c Category) bool {
